@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="auth-card">
+  <h1>Регистрация</h1>
+  <form method="post" action="/register" class="grid one-col">
+    <label>
+      Логин
+      <input type="text" name="username" required />
+    </label>
+    <label>
+      Email
+      <input type="email" name="email" required />
+    </label>
+    <label>
+      Пароль
+      <input type="password" name="password" required />
+    </label>
+    <label>
+      Повтор пароля
+      <input type="password" name="password_confirm" required />
+    </label>
+    <button type="submit" class="btn">Создать аккаунт</button>
+  </form>
+  <p class="muted">Уже есть аккаунт? <a href="/login">Войти</a></p>
+</section>
+{% endblock %}

@@ -1,0 +1,552 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="section-head">
+  <h1>{{ "Редактирование карточки" if editing else "Новая карточка косплана" }}</h1>
+  <a href="/cosplan" class="btn">Назад к списку</a>
+</section>
+
+<form method="post" action="{{ '/cosplan/' ~ card_id ~ '/edit' if editing else '/cosplan/new' }}" class="grid one-col big-form" id="cosplan-form">
+  <section class="box">
+    <h2>Основное</h2>
+    <div class="grid two-col">
+      <label>
+        Имя персонажа *
+        <input type="text" name="character_name" value="{{ form.character_name }}" required />
+      </label>
+      <label>
+        Фандом
+        <input type="text" name="fandom" list="fandom-options" value="{{ form.fandom }}" />
+        <datalist id="fandom-options">
+          {% for value in fandom_options %}
+            <option value="{{ value }}"></option>
+          {% endfor %}
+        </datalist>
+      </label>
+    </div>
+
+    <label class="inline-check">
+      <input type="checkbox" name="is_au" id="is_au" {% if form.is_au %}checked{% endif %} />
+      AU
+    </label>
+    <label id="au_text_wrap">
+      Описание AU
+      <textarea name="au_text" rows="3">{{ form.au_text }}</textarea>
+    </label>
+  </section>
+
+  <section class="box">
+    <h2>Костюм</h2>
+    <div class="grid two-col">
+      <label>
+        Способ
+        <select name="costume_type" id="costume_type">
+          <option value="sew" {% if form.costume_type == 'sew' %}selected{% endif %}>Пошив</option>
+          <option value="buy" {% if form.costume_type == 'buy' %}selected{% endif %}>Покупка</option>
+        </select>
+      </label>
+      <label>
+        Валюта
+        <input type="text" list="currency-options" name="costume_currency" value="{{ form.costume_currency }}" />
+      </label>
+    </div>
+
+    <div id="costume_buy_wrap">
+      <label class="inline-check">
+        <input type="checkbox" name="costume_bought" {% if form.costume_bought %}checked{% endif %} />
+        Куплено
+      </label>
+      <div class="grid two-col">
+        <label>
+          Ссылка на товар
+          <input type="url" name="costume_link" value="{{ form.costume_link }}" />
+        </label>
+        <label>
+          Цена покупки
+          <input type="text" name="costume_buy_price" value="{{ form.costume_buy_price }}" class="price-field" />
+        </label>
+      </div>
+    </div>
+
+    <div id="costume_sew_wrap">
+      <div class="grid two-col">
+        <label>
+          Вариант пошива
+          <select name="sewing_type" id="sewing_type">
+            <option value="self" {% if form.sewing_type == 'self' %}selected{% endif %}>Самопошив</option>
+            <option value="outsourced" {% if form.sewing_type == 'outsourced' %}selected{% endif %}>Исполнитель</option>
+          </select>
+        </label>
+        <label>
+          Срок
+          <input type="date" name="costume_deadline" value="{{ form.costume_deadline }}" />
+        </label>
+      </div>
+
+      <div id="sewing_materials_wrap" class="inline-group">
+        <label class="inline-check"><input type="checkbox" name="sewing_fabric" {% if form.sewing_fabric %}checked{% endif %} /> Ткань</label>
+        <label class="inline-check"><input type="checkbox" name="sewing_hardware" {% if form.sewing_hardware %}checked{% endif %} /> Фурнитура</label>
+        <label class="inline-check"><input type="checkbox" name="sewing_pattern" {% if form.sewing_pattern %}checked{% endif %} /> Выкройка</label>
+      </div>
+
+      <div id="costume_executor_wrap">
+        <label>
+          Исполнитель
+          <input type="text" name="costume_executor" value="{{ form.costume_executor }}" />
+        </label>
+      </div>
+
+      <div id="costume_payments_wrap" class="grid two-col">
+        <label>
+          Предоплата
+          <input type="text" name="costume_prepayment" value="{{ form.costume_prepayment }}" class="price-field" />
+        </label>
+        <label>
+          Постоплата
+          <input type="text" name="costume_postpayment" value="{{ form.costume_postpayment }}" class="price-field" />
+        </label>
+      </div>
+
+      <div id="self_sew_costs_wrap" class="grid two-col">
+        <label>
+          Стоимость ткани
+          <input type="text" name="costume_fabric_price" value="{{ form.costume_fabric_price }}" class="price-field" />
+        </label>
+        <label>
+          Стоимость фурнитуры
+          <input type="text" name="costume_hardware_price" value="{{ form.costume_hardware_price }}" class="price-field" />
+        </label>
+      </div>
+    </div>
+  </section>
+
+  <section class="box">
+    <h2>Обувь</h2>
+    <label>
+      Способ
+      <select name="shoes_type" id="shoes_type">
+        <option value="buy" {% if form.shoes_type == 'buy' %}selected{% endif %}>Покупка</option>
+        <option value="craft" {% if form.shoes_type == 'craft' %}selected{% endif %}>Крафт</option>
+      </select>
+    </label>
+
+    <div id="shoes_buy_wrap">
+      <label class="inline-check">
+        <input type="checkbox" name="shoes_bought" {% if form.shoes_bought %}checked{% endif %} />
+        Куплено
+      </label>
+      <div class="grid two-col">
+        <label>
+          Ссылка (если не куплено)
+          <input type="url" name="shoes_link" value="{{ form.shoes_link }}" />
+        </label>
+        <label>
+          Цена покупки
+          <input type="text" name="shoes_buy_price" value="{{ form.shoes_buy_price }}" class="price-field" />
+        </label>
+      </div>
+    </div>
+
+    <div id="shoes_craft_wrap" class="grid three-col">
+      <label>
+        Исполнитель
+        <input type="text" name="shoes_executor" value="{{ form.shoes_executor }}" />
+      </label>
+      <label>
+        Срок
+        <input type="date" name="shoes_deadline" value="{{ form.shoes_deadline }}" />
+      </label>
+      <label>
+        Цена
+        <input type="text" name="shoes_price" value="{{ form.shoes_price }}" class="price-field" />
+      </label>
+    </div>
+    <label>
+      Валюта
+      <input type="text" list="currency-options" name="shoes_currency" value="{{ form.shoes_currency }}" />
+    </label>
+  </section>
+
+  <section class="box">
+    <h2>Линзы</h2>
+    <label class="inline-check">
+      <input type="checkbox" name="lenses_enabled" id="lenses_enabled" {% if form.lenses_enabled %}checked{% endif %} />
+      Нужны линзы
+    </label>
+    <div id="lenses_wrap" class="grid four-col">
+      <label>
+        Цвет
+        <input type="text" name="lenses_color" value="{{ form.lenses_color }}" />
+      </label>
+      <label>
+        Комментарий
+        <input type="text" name="lenses_comment" value="{{ form.lenses_comment }}" />
+      </label>
+      <label>
+        Цена линз
+        <input type="text" name="lenses_price" value="{{ form.lenses_price }}" class="price-field" />
+      </label>
+      <label>
+        Валюта
+        <input type="text" list="currency-options" name="lenses_currency" value="{{ form.lenses_currency }}" />
+      </label>
+    </div>
+  </section>
+
+  <section class="box">
+    <h2>Парик</h2>
+    <label>
+      Способ
+      <select name="wig_type" id="wig_type">
+        <option value="wigmaker" {% if form.wig_type == 'wigmaker' %}selected{% endif %}>Вигмейкер</option>
+        <option value="buy" {% if form.wig_type == 'buy' %}selected{% endif %}>Покупка</option>
+      </select>
+    </label>
+
+    <div id="wigmaker_wrap" class="grid three-col">
+      <label>
+        Имя вигмейкера
+        <input type="text" name="wigmaker_name" value="{{ form.wigmaker_name }}" />
+      </label>
+      <label>
+        Цена
+        <input type="text" name="wig_price" value="{{ form.wig_price }}" class="price-field" />
+      </label>
+      <label>
+        Срок
+        <input type="date" name="wig_deadline" value="{{ form.wig_deadline }}" />
+      </label>
+    </div>
+
+    <div id="wig_buy_wrap" class="grid two-col">
+      <label>
+        Ссылка на покупку парика
+        <input type="url" name="wig_link" value="{{ form.wig_link }}" />
+      </label>
+      <label>
+        Цена покупки
+        <input type="text" name="wig_buy_price" value="{{ form.wig_buy_price }}" class="price-field" />
+      </label>
+    </div>
+    <label>
+      Валюта
+      <input type="text" list="currency-options" name="wig_currency" value="{{ form.wig_currency }}" />
+    </label>
+  </section>
+
+  <section class="box">
+    <h2>Проект / личное</h2>
+    <div class="grid two-col">
+      <label>
+        Тип
+        <select name="plan_type" id="plan_type">
+          <option value="personal" {% if form.plan_type == 'personal' %}selected{% endif %}>Личное</option>
+          <option value="project" {% if form.plan_type == 'project' %}selected{% endif %}>Проект</option>
+        </select>
+      </label>
+      <label id="project_leader_wrap">
+        Руководитель
+        <input type="text" name="project_leader" list="project-leader-options" value="{{ form.project_leader }}" />
+      </label>
+    </div>
+    <datalist id="project-leader-options">
+      {% for value in project_leader_options %}
+        <option value="{{ value }}"></option>
+      {% endfor %}
+    </datalist>
+
+    <label>Cosband (мультивыбор)</label>
+    <div class="chips-wrap">
+      {% for value in cosband_options %}
+      <label class="chip-check">
+        <input type="checkbox" name="cosbands" value="{{ value }}" {% if value in form.cosbands_json %}checked{% endif %} />
+        {{ value }}
+      </label>
+      {% endfor %}
+    </div>
+    <label>
+      Добавить cosband (через запятую)
+      <input type="text" name="cosbands_new" placeholder="Новый cosband" />
+    </label>
+
+    <div class="grid three-col">
+      <label>
+        Дедлайн
+        <input type="date" name="project_deadline" value="{{ form.project_deadline }}" />
+      </label>
+      <label>
+        Город
+        <input type="text" name="city" value="{{ form.city }}" />
+      </label>
+      <label>
+        Дата подачи
+        <input type="date" name="submission_date" value="{{ form.submission_date }}" />
+      </label>
+    </div>
+
+    <label>Планируемый фестиваль (мультивыбор)</label>
+    <div class="grid two-col">
+      <label>
+        Фильтр по городу
+        <input type="text" id="festival_city_filter" placeholder="Например, Москва" list="festival-city-options" />
+        <datalist id="festival-city-options">
+          {% for item in festival_items %}
+            {% if item.city %}<option value="{{ item.city }}"></option>{% endif %}
+          {% endfor %}
+        </datalist>
+      </label>
+    </div>
+
+    <div class="chips-wrap" id="festival-chips-db">
+      {% for item in festival_items %}
+      <label class="chip-check festival-chip" data-city="{{ item.city|lower }}" data-name="{{ item.name|lower }}">
+        <input type="checkbox" name="planned_festivals" value="{{ item.name }}" {% if item.name in form.planned_festivals_json %}checked{% endif %} />
+        {{ item.name }}{% if item.city %} ({{ item.city }}){% endif %}
+      </label>
+      {% endfor %}
+      {% for value in festival_custom_options %}
+      <label class="chip-check festival-chip" data-city="" data-name="{{ value|lower }}">
+        <input type="checkbox" name="planned_festivals" value="{{ value }}" {% if value in form.planned_festivals_json %}checked{% endif %} />
+        {{ value }}
+      </label>
+      {% endfor %}
+    </div>
+    <label>
+      Добавить фестивали (через запятую)
+      <input type="text" name="planned_festivals_new" placeholder="Название фестиваля" />
+    </label>
+
+    <label>Номинации (мультивыбор)</label>
+    <div class="chips-wrap">
+      {% for value in nomination_options %}
+      <label class="chip-check">
+        <input type="checkbox" name="nominations" value="{{ value }}" {% if value in form.nominations_json %}checked{% endif %} />
+        {{ value }}
+      </label>
+      {% endfor %}
+    </div>
+    <label>
+      Добавить номинации (через запятую)
+      <input type="text" name="nominations_new" placeholder="Номинация" />
+    </label>
+  </section>
+
+  <section class="box">
+    <h2>Фотосет и сокосплееры</h2>
+    <label>Фотограф(ы)</label>
+    <div class="chips-wrap">
+      {% for value in photographer_options %}
+      <label class="chip-check">
+        <input type="checkbox" name="photographers" value="{{ value }}" {% if value in form.photographers_json %}checked{% endif %} />
+        {{ value }}
+      </label>
+      {% endfor %}
+    </div>
+    <label>
+      Добавить фотографа (через запятую)
+      <input type="text" name="photographers_new" />
+    </label>
+
+    <label>Студия(и)</label>
+    <div class="chips-wrap">
+      {% for value in studio_options %}
+      <label class="chip-check">
+        <input type="checkbox" name="studios" value="{{ value }}" {% if value in form.studios_json %}checked{% endif %} />
+        {{ value }}
+      </label>
+      {% endfor %}
+    </div>
+    <label>
+      Добавить студию (через запятую)
+      <input type="text" name="studios_new" />
+    </label>
+
+    <div class="grid three-col">
+      <label>
+        Дата фотосета
+        <input type="date" name="photoset_date" value="{{ form.photoset_date }}" />
+      </label>
+      <label>
+        Цена фотосета
+        <input type="text" name="photoset_price" value="{{ form.photoset_price }}" class="price-field" />
+      </label>
+      <label>
+        Валюта
+        <input type="text" list="currency-options" name="photoset_currency" value="{{ form.photoset_currency }}" />
+      </label>
+    </div>
+
+    <label>Сокосплеер(ы)</label>
+    <div class="chips-wrap">
+      {% for value in coproplayer_options %}
+      <label class="chip-check">
+        <input type="checkbox" name="coproplayers" value="{{ value }}" {% if value in form.coproplayers_json %}checked{% endif %} />
+        {{ value }}
+      </label>
+      {% endfor %}
+    </div>
+    <label>
+      Добавить сокосплеера (через запятую)
+      <input type="text" name="coproplayers_new" />
+    </label>
+
+    <label>
+      Сокосплеер по нику пользователя (через запятую)
+      <input type="text" name="coproplayer_nicks_input" value="{{ form.coproplayer_nicks_input }}" placeholder="nickname1, nickname2" />
+    </label>
+  </section>
+
+  <section class="box">
+    <h2>Ориентировочная стоимость проекта</h2>
+    <p class="estimated-total">
+      <strong><span id="estimated_total_value">{{ '%.2f'|format(form.estimated_total or 0) }}</span> <span id="estimated_total_currency">{{ form.estimated_total_currency }}</span></strong>
+      <span class="muted">Сумма по всем указанным ценам в карточке (если валют несколько, будет MIXED)</span>
+    </p>
+  </section>
+
+  <section class="box">
+    <h2>Комментарий</h2>
+    <label>
+      Примечания
+      <textarea name="notes" rows="5">{{ form.notes }}</textarea>
+    </label>
+  </section>
+
+  <datalist id="currency-options">
+    {% for value in currency_options %}
+      <option value="{{ value }}"></option>
+    {% endfor %}
+  </datalist>
+
+  <div class="actions-inline">
+    <button type="submit" class="btn btn-accent">{{ "Сохранить" if editing else "Создать" }}</button>
+    <a href="/cosplan" class="btn">Отмена</a>
+  </div>
+</form>
+
+<script>
+  const toggleVisibility = (id, visible) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.style.display = visible ? "" : "none";
+  };
+
+  const applyFormRules = () => {
+    const isAu = document.getElementById("is_au")?.checked;
+    toggleVisibility("au_text_wrap", !!isAu);
+
+    const costumeType = document.getElementById("costume_type")?.value;
+    const sewingType = document.getElementById("sewing_type")?.value;
+    toggleVisibility("costume_buy_wrap", costumeType === "buy");
+    toggleVisibility("costume_sew_wrap", costumeType === "sew");
+    toggleVisibility("sewing_materials_wrap", costumeType === "sew" && sewingType === "self");
+    toggleVisibility("self_sew_costs_wrap", costumeType === "sew" && sewingType === "self");
+    toggleVisibility("costume_executor_wrap", costumeType === "sew" && sewingType === "outsourced");
+    toggleVisibility("costume_payments_wrap", costumeType === "sew" && sewingType === "outsourced");
+
+    const shoesType = document.getElementById("shoes_type")?.value;
+    toggleVisibility("shoes_buy_wrap", shoesType === "buy");
+    toggleVisibility("shoes_craft_wrap", shoesType === "craft");
+
+    const wigType = document.getElementById("wig_type")?.value;
+    toggleVisibility("wigmaker_wrap", wigType === "wigmaker");
+    toggleVisibility("wig_buy_wrap", wigType === "buy");
+
+    const lensesEnabled = document.getElementById("lenses_enabled")?.checked;
+    toggleVisibility("lenses_wrap", !!lensesEnabled);
+
+    const planType = document.getElementById("plan_type")?.value;
+    toggleVisibility("project_leader_wrap", planType === "project");
+  };
+
+  const applyFestivalCityFilter = () => {
+    const filter = (document.getElementById("festival_city_filter")?.value || "").trim().toLowerCase();
+    document.querySelectorAll(".festival-chip").forEach((chip) => {
+      if (!filter) {
+        chip.style.display = "";
+        return;
+      }
+      const city = chip.dataset.city || "";
+      chip.style.display = city.includes(filter) ? "" : "none";
+    });
+  };
+
+  const updateEstimatedTotal = () => {
+    let total = 0;
+    const currencies = new Set();
+    const currencyByPriceField = {
+      "costume_prepayment": "costume_currency",
+      "costume_postpayment": "costume_currency",
+      "costume_buy_price": "costume_currency",
+      "costume_fabric_price": "costume_currency",
+      "costume_hardware_price": "costume_currency",
+      "shoes_buy_price": "shoes_currency",
+      "shoes_price": "shoes_currency",
+      "lenses_price": "lenses_currency",
+      "wig_price": "wig_currency",
+      "wig_buy_price": "wig_currency",
+      "photoset_price": "photoset_currency",
+    };
+    document.querySelectorAll(".price-field").forEach((input) => {
+      const fieldRoot = input.closest("label") || input;
+      if (fieldRoot.offsetParent === null) {
+        return;
+      }
+      const value = (input.value || "").replace(/\s+/g, "").replace(",", ".");
+      if (!value) return;
+      const parsed = Number(value);
+      if (!Number.isNaN(parsed)) {
+        total += parsed;
+        const currencyName = currencyByPriceField[input.name];
+        if (currencyName) {
+          const currencyInput = document.querySelector(`[name="${currencyName}"]`);
+          const currencyValue = (currencyInput?.value || "").trim().toUpperCase();
+          if (currencyValue) {
+            currencies.add(currencyValue);
+          }
+        }
+      }
+    });
+    const target = document.getElementById("estimated_total_value");
+    if (target) {
+      target.textContent = total.toFixed(2);
+    }
+    const currencyTarget = document.getElementById("estimated_total_currency");
+    if (currencyTarget) {
+      if (currencies.size === 1) {
+        currencyTarget.textContent = Array.from(currencies)[0];
+      } else if (currencies.size > 1) {
+        currencyTarget.textContent = "MIXED";
+      } else {
+        currencyTarget.textContent = "";
+      }
+    }
+  };
+
+  ["is_au", "costume_type", "sewing_type", "shoes_type", "wig_type", "lenses_enabled", "plan_type"].forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) {
+      el.addEventListener("change", applyFormRules);
+    }
+  });
+
+  const cityFilterInput = document.getElementById("festival_city_filter");
+  if (cityFilterInput) {
+    cityFilterInput.addEventListener("input", applyFestivalCityFilter);
+  }
+
+  document.querySelectorAll(".price-field").forEach((input) => {
+    input.addEventListener("input", updateEstimatedTotal);
+  });
+  ["costume_currency", "shoes_currency", "lenses_currency", "wig_currency", "photoset_currency"].forEach((name) => {
+    const input = document.querySelector(`[name="${name}"]`);
+    if (input) {
+      input.addEventListener("input", updateEstimatedTotal);
+      input.addEventListener("change", updateEstimatedTotal);
+    }
+  });
+
+  applyFormRules();
+  applyFestivalCityFilter();
+  updateEstimatedTotal();
+</script>
+{% endblock %}

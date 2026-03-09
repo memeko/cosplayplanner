@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="section-head">
+  <h1>{{ "Редактирование фестиваля" if editing else "Новый фестиваль" }}</h1>
+  <a href="/festivals" class="btn">Назад к списку</a>
+</section>
+
+<form method="post" action="{{ '/festivals/' ~ festival_id ~ '/edit' if editing else '/festivals/new' }}" class="grid one-col big-form" id="festival-form">
+  <section class="box">
+    <div class="grid two-col">
+      <label>
+        Название *
+        <input type="text" name="name" value="{{ form.name }}" required />
+      </label>
+      <label>
+        Ссылка
+        <input type="url" name="url" value="{{ form.url }}" />
+      </label>
+    </div>
+    <div class="grid three-col">
+      <label>
+        Город
+        <input type="text" name="city" value="{{ form.city }}" />
+      </label>
+      <label>
+        Дата фестиваля
+        <input type="date" name="event_date" value="{{ form.event_date }}" />
+      </label>
+      <label>
+        Дедлайн подачи
+        <input type="date" name="submission_deadline" value="{{ form.submission_deadline }}" />
+      </label>
+    </div>
+
+    <div class="grid three-col">
+      <label>
+        Номинация 1
+        <input type="text" name="nomination_1" value="{{ form.nomination_1 }}" />
+      </label>
+      <label>
+        Номинация 2
+        <input type="text" name="nomination_2" value="{{ form.nomination_2 }}" />
+      </label>
+      <label>
+        Номинация 3
+        <input type="text" name="nomination_3" value="{{ form.nomination_3 }}" />
+      </label>
+    </div>
+
+    <label class="inline-check">
+      <input type="checkbox" name="is_going" id="is_going" {% if form.is_going %}checked{% endif %} />
+      Я иду
+    </label>
+
+    <div id="going_coproplayers_wrap">
+      <label>Сокосплеер(ы)</label>
+      <div class="chips-wrap">
+        {% for value in coproplayer_options %}
+        <label class="chip-check">
+          <input type="checkbox" name="going_coproplayers" value="{{ value }}" {% if value in form.going_coproplayers_json %}checked{% endif %} />
+          {{ value }}
+        </label>
+        {% endfor %}
+      </div>
+      <label>
+        Добавить сокосплеера (через запятую)
+        <input type="text" name="going_coproplayers_new" />
+      </label>
+    </div>
+  </section>
+
+  <div class="actions-inline">
+    <button type="submit" class="btn btn-accent">{{ "Сохранить" if editing else "Создать" }}</button>
+    <a href="/festivals" class="btn">Отмена</a>
+  </div>
+</form>
+
+<script>
+  const isGoing = document.getElementById("is_going");
+  const wrap = document.getElementById("going_coproplayers_wrap");
+  const apply = () => { wrap.style.display = isGoing && isGoing.checked ? "" : "none"; };
+  if (isGoing) { isGoing.addEventListener("change", apply); }
+  apply();
+</script>
+{% endblock %}

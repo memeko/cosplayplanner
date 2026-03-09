@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="section-head">
+  <h1>Мои проекты</h1>
+</section>
+
+{% if cards %}
+<div class="cards-grid">
+  {% for card in cards %}
+  {% set owner = owners_by_id.get(card.user_id) %}
+  <article class="card">
+    <h3><a href="/cosplan/{{ card.id }}" class="card-title-link">{{ card.character_name }}</a></h3>
+    <p class="meta">Участник: @{{ owner.username if owner else "unknown" }}</p>
+    <p class="meta">Фандом: {{ card.fandom or "—" }}</p>
+    <p class="meta">Дедлайн проекта: {{ card.project_deadline.strftime('%d-%m-%Y') if card.project_deadline else "—" }}</p>
+    <p class="meta">Ориентировочная цена: {{ '%.2f'|format(card_totals.get(card.id, 0.0)) }} {{ card_total_currencies.get(card.id, "") }}</p>
+    {% if card.planned_festivals_json %}
+      <p class="meta">Планируемые фестивали: {{ card.planned_festivals_json | join(", ") }}</p>
+    {% endif %}
+
+    <form method="post" action="/my-projects/{{ card.id }}/comment">
+      <label>
+        Комментарий руководителя
+        <textarea name="leader_comment" rows="3" placeholder="Сообщение появится в треде комментариев карточки"></textarea>
+      </label>
+      <button type="submit" class="btn btn-accent">Добавить комментарий</button>
+    </form>
+  </article>
+  {% endfor %}
+</div>
+{% else %}
+<p class="muted">Вас пока не указали руководителем ни в одной проектной карточке.</p>
+{% endif %}
+{% endblock %}

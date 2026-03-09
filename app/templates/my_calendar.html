@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="section-head">
+  <h1>Мой календарь</h1>
+</section>
+
+{% if month_groups %}
+  {% for group in month_groups %}
+    <section class="box">
+      <h2>{{ group.title }}</h2>
+      <ul class="calendar-list">
+        {% for item in group.rows %}
+          <li>
+            <span class="calendar-date">{{ item.date.strftime('%d-%m-%Y') if item.date else "—" }}</span>
+            <span class="chip">{{ item.kind }}</span>
+            <strong>{{ item.title }}</strong>
+            <span class="muted">Город: {{ item.city or "—" }}</span>
+          </li>
+        {% endfor %}
+      </ul>
+    </section>
+  {% endfor %}
+{% else %}
+  <section class="box">
+    <p class="muted">Занятых дат пока нет. Даты появятся, когда добавите фотосеты или фестивали с отметкой «Я иду».</p>
+  </section>
+{% endif %}
+{% endblock %}

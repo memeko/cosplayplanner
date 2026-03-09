@@ -1,0 +1,224 @@
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    Column,
+    Date,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
+from sqlalchemy.orm import relationship
+
+from .database import Base
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True)
+    username = Column(String(100), nullable=False, unique=True, index=True)
+    email = Column(String(255), nullable=False, unique=True, index=True)
+    home_city = Column(String(255), nullable=True, index=True)
+    password_hash = Column(String(255), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    options = relationship("UserOption", back_populates="user", cascade="all, delete-orphan")
+    cards = relationship(
+        "CosplanCard",
+        back_populates="user",
+        cascade="all, delete-orphan",
+        foreign_keys="CosplanCard.user_id",
+    )
+    shared_cards_sent = relationship(
+        "CosplanCard",
+        cascade="all, delete-orphan",
+        foreign_keys="CosplanCard.shared_from_user_id",
+    )
+    in_progress_cards = relationship("InProgressCard", back_populates="user", cascade="all, delete-orphan")
+    festivals = relationship("Festival", back_populates="user", cascade="all, delete-orphan")
+    incoming_notifications = relationship(
+        "FestivalNotification",
+        back_populates="recipient",
+        cascade="all, delete-orphan",
+        foreign_keys="FestivalNotification.user_id",
+    )
+    outgoing_notifications = relationship(
+        "FestivalNotification",
+        back_populates="sender",
+        cascade="all, delete-orphan",
+        foreign_keys="FestivalNotification.from_user_id",
+    )
+    card_comments = relationship("CardComment", back_populates="author", cascade="all, delete-orphan")
+
+
+class UserOption(Base):
+    __tablename__ = "user_options"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    group = Column(String(64), nullable=False, index=True)
+    value = Column(String(255), nullable=False)
+
+    user = relationship("User", back_populates="options")
+
+    __table_args__ = (UniqueConstraint("user_id", "group", "value", name="uq_user_option_value"),)
+
+
+class CosplanCard(Base):
+    __tablename__ = "cosplan_cards"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+
+    character_name = Column(String(255), nullable=False, index=True)
+    fandom = Column(String(255), nullable=True, index=True)
+    is_au = Column(Boolean, nullable=False, default=False)
+    au_text = Column(Text, nullable=True)
+
+    costume_type = Column(String(32), nullable=True)  # sew | buy
+    sewing_type = Column(String(32), nullable=True)  # self | outsourced
+    sewing_fabric = Column(Boolean, nullable=False, default=False)
+    sewing_hardware = Column(Boolean, nullable=False, default=False)
+    sewing_pattern = Column(Boolean, nullable=False, default=False)
+    costume_executor = Column(String(255), nullable=True)
+    costume_deadline = Column(Date, nullable=True)
+    costume_prepayment = Column(Float, nullable=True)
+    costume_postpayment = Column(Float, nullable=True)
+    costume_fabric_price = Column(Float, nullable=True)
+    costume_hardware_price = Column(Float, nullable=True)
+    costume_bought = Column(Boolean, nullable=False, default=False)
+    costume_link = Column(Text, nullable=True)
+    costume_buy_price = Column(Float, nullable=True)
+    costume_currency = Column(String(16), nullable=True)
+
+    shoes_type = Column(String(32), nullable=True)  # buy | craft
+    shoes_bought = Column(Boolean, nullable=False, default=False)
+    shoes_link = Column(Text, nullable=True)
+    shoes_buy_price = Column(Float, nullable=True)
+    shoes_executor = Column(String(255), nullable=True)
+    shoes_deadline = Column(Date, nullable=True)
+    shoes_price = Column(Float, nullable=True)
+    shoes_currency = Column(String(16), nullable=True)
+
+    lenses_enabled = Column(Boolean, nullable=False, default=False)
+    lenses_comment = Column(Text, nullable=True)
+    lenses_color = Column(String(64), nullable=True)
+    lenses_price = Column(Float, nullable=True)
+    lenses_currency = Column(String(16), nullable=True)
+
+    wig_type = Column(String(32), nullable=True)  # wigmaker | buy
+    wigmaker_name = Column(String(255), nullable=True)
+    wig_price = Column(Float, nullable=True)
+    wig_buy_price = Column(Float, nullable=True)
+    wig_currency = Column(String(16), nullable=True)
+    wig_deadline = Column(Date, nullable=True)
+    wig_link = Column(Text, nullable=True)
+
+    plan_type = Column(String(32), nullable=True)  # project | personal
+    project_leader = Column(String(255), nullable=True)
+    cosbands_json = Column(JSON, nullable=False, default=list)
+    project_deadline = Column(Date, nullable=True)
+
+    planned_festivals_json = Column(JSON, nullable=False, default=list)
+    submission_date = Column(Date, nullable=True)
+    nominations_json = Column(JSON, nullable=False, default=list)
+    city = Column(String(255), nullable=True)
+
+    photographers_json = Column(JSON, nullable=False, default=list)
+    studios_json = Column(JSON, nullable=False, default=list)
+    photoset_date = Column(Date, nullable=True)
+    photoset_price = Column(Float, nullable=True)
+    photoset_currency = Column(String(16), nullable=True)
+
+    coproplayers_json = Column(JSON, nullable=False, default=list)
+    coproplayer_nicks_json = Column(JSON, nullable=False, default=list)
+
+    # Shared copy support: if this is a propagated card for another user.
+    is_shared_copy = Column(Boolean, nullable=False, default=False)
+    source_card_id = Column(Integer, ForeignKey("cosplan_cards.id", ondelete="SET NULL"), nullable=True, index=True)
+    shared_from_user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    notes = Column(Text, nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    user = relationship("User", back_populates="cards", foreign_keys=[user_id])
+    in_progress = relationship("InProgressCard", back_populates="cosplan_card", uselist=False)
+    source_card = relationship("CosplanCard", remote_side=[id], foreign_keys=[source_card_id])
+    comments = relationship("CardComment", back_populates="card", cascade="all, delete-orphan")
+
+
+class CardComment(Base):
+    __tablename__ = "card_comments"
+
+    id = Column(Integer, primary_key=True)
+    card_id = Column(Integer, ForeignKey("cosplan_cards.id", ondelete="CASCADE"), nullable=False, index=True)
+    author_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    parent_id = Column(Integer, ForeignKey("card_comments.id", ondelete="SET NULL"), nullable=True, index=True)
+    body = Column(Text, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    card = relationship("CosplanCard", back_populates="comments")
+    author = relationship("User", back_populates="card_comments")
+    parent = relationship("CardComment", remote_side=[id], back_populates="replies")
+    replies = relationship("CardComment", back_populates="parent")
+
+
+class InProgressCard(Base):
+    __tablename__ = "in_progress_cards"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    cosplan_card_id = Column(Integer, ForeignKey("cosplan_cards.id", ondelete="CASCADE"), nullable=False, unique=True)
+    checklist_json = Column(JSON, nullable=False, default=list)
+    is_frozen = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    user = relationship("User", back_populates="in_progress_cards")
+    cosplan_card = relationship("CosplanCard", back_populates="in_progress")
+
+
+class Festival(Base):
+    __tablename__ = "festivals"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+
+    name = Column(String(255), nullable=False, index=True)
+    url = Column(Text, nullable=True)
+    city = Column(String(255), nullable=True, index=True)
+    event_date = Column(Date, nullable=True)
+    submission_deadline = Column(Date, nullable=True)
+
+    nomination_1 = Column(String(255), nullable=True)
+    nomination_2 = Column(String(255), nullable=True)
+    nomination_3 = Column(String(255), nullable=True)
+
+    is_going = Column(Boolean, nullable=False, default=False)
+    going_coproplayers_json = Column(JSON, nullable=False, default=list)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    user = relationship("User", back_populates="festivals")
+
+
+class FestivalNotification(Base):
+    __tablename__ = "festival_notifications"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    from_user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    source_card_id = Column(Integer, ForeignKey("cosplan_cards.id", ondelete="SET NULL"), nullable=True, index=True)
+    message = Column(Text, nullable=False)
+    is_read = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    recipient = relationship("User", back_populates="incoming_notifications", foreign_keys=[user_id])
+    sender = relationship("User", back_populates="outgoing_notifications", foreign_keys=[from_user_id])

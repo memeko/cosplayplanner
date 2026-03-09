@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{{ title or project_name or "Cosplay Planner" }}</title>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg" />
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="container topbar-row">
+      <a class="brand" href="/">{{ project_name or "Cosplay Planner" }}</a>
+      {% if user %}
+      <nav class="tabs">
+        <a href="/cosplan" class="tab {% if active_tab == 'cosplan' %}active{% endif %}">Косплан</a>
+        <a href="/in-progress" class="tab {% if active_tab == 'in-progress' %}active{% endif %}">In Progress</a>
+        <a href="/my-projects" class="tab {% if active_tab == 'my-projects' %}active{% endif %}">Мои проекты</a>
+        <a href="/my-calendar" class="tab {% if active_tab == 'my-calendar' %}active{% endif %}">Мой календарь</a>
+        <a href="/festivals" class="tab {% if active_tab == 'festivals' %}active{% endif %}">Фестивали</a>
+        <a href="/profile" class="tab {% if active_tab == 'profile' %}active{% endif %}">Профиль</a>
+      </nav>
+      <form method="post" action="/logout">
+        <button type="submit" class="btn btn-link">Выйти</button>
+      </form>
+      {% endif %}
+    </div>
+  </header>
+
+  <main class="container">
+    {% if flash %}
+      <div class="flash flash-{{ flash.kind }}">{{ flash.text }}</div>
+    {% endif %}
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

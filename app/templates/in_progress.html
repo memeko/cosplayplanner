@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="section-head">
+  <h1>In Progress</h1>
+  <a href="/cosplan" class="btn">Добавить из косплана</a>
+</section>
+
+{% if progress_items %}
+<div class="cards-grid">
+  {% for row in progress_items %}
+  <article class="card {% if row.is_frozen %}frozen-progress{% endif %}">
+    <div class="row-between">
+      <h3>
+        {% if row.cosplan_card %}
+          <a href="/cosplan/{{ row.cosplan_card.id }}" class="card-title-link">{{ row.cosplan_card.character_name }}</a>
+        {% else %}
+          Без карточки
+        {% endif %}
+      </h3>
+      <div class="actions-inline">
+        <form method="post" action="/in-progress/{{ row.id }}/freeze-toggle">
+          <button type="submit" class="btn {% if row.is_frozen %}btn-accent{% endif %}">
+            {{ "Разморозить" if row.is_frozen else "Заморозить" }}
+          </button>
+        </form>
+        <form method="post" action="/in-progress/{{ row.id }}/remove" onsubmit="return confirm('Убрать из In Progress?');">
+          <button type="submit" class="btn btn-danger">Убрать</button>
+        </form>
+      </div>
+    </div>
+    {% if row.cosplan_card %}
+      <p class="meta">Фандом: {{ row.cosplan_card.fandom or "—" }}</p>
+      <p class="meta">План: {{ "Проект" if row.cosplan_card.plan_type == "project" else "Личное" }}</p>
+    {% endif %}
+    {% if row.is_frozen %}
+      <p class="meta"><strong>Статус: Заморожено</strong></p>
+    {% endif %}
+
+    <h4>Чеклист</h4>
+    {% set items = row.checklist_json or [] %}
+    {% if items %}
+      <ul class="checklist">
+      {% for item in items %}
+        <li>
+          <form method="post" action="/in-progress/{{ row.id }}/checklist/toggle/{{ loop.index0 }}" class="inline-form">
+            <button type="submit" class="btn btn-small">{{ "☑" if item.done else "☐" }}</button>
+          </form>
+          <span class="{% if item.done %}done{% endif %}">{{ item.text }}</span>
+          <form method="post" action="/in-progress/{{ row.id }}/checklist/delete/{{ loop.index0 }}" class="inline-form">
+            <button type="submit" class="btn btn-small btn-danger">✕</button>
+          </form>
+        </li>
+      {% endfor %}
+      </ul>
+    {% else %}
+      <p class="muted">Чеклист пуст.</p>
+    {% endif %}
+
+    <form method="post" action="/in-progress/{{ row.id }}/checklist/add" class="actions-inline">
+      <input type="text" name="item_text" placeholder="Новый пункт чеклиста" required />
+      <button type="submit" class="btn">Добавить</button>
+    </form>
+  </article>
+  {% endfor %}
+</div>
+{% else %}
+<p class="muted">Нет карточек в работе. Добавьте их из вкладки «Косплан».</p>
+{% endif %}
+{% endblock %}

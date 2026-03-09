@@ -1,0 +1,144 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="section-head">
+  <h1>Фестивали</h1>
+  <div class="actions-inline wrap">
+    <a href="/festivals/new" class="btn btn-accent">Новый фестиваль</a>
+    <form method="post" action="/festivals/import-cosplay2">
+      <button type="submit" class="btn">Импорт с cosplay2.ru</button>
+    </form>
+    <a href="/festivals/export.ics?only_going=1" class="btn">Экспорт в календарь (.ics)</a>
+  </div>
+</section>
+
+{% if user_home_city %}
+<section class="box compact-box">
+  <p class="muted">
+    Лавандовым выделены фестивали из вашего основного города: <strong>{{ user_home_city }}</strong>.
+  </p>
+</section>
+{% endif %}
+
+{% if notifications %}
+<section class="box">
+  <div class="row-between">
+    <h2>Оповещения {% if unread_notifications %}<span class="chip chip-alert">{{ unread_notifications }}</span>{% endif %}</h2>
+    <form method="post" action="/festivals/notifications/mark-read">
+      <button type="submit" class="btn">Отметить прочитанным</button>
+    </form>
+  </div>
+  <ul class="notifications-list">
+    {% for note in notifications %}
+      <li class="{% if not note.is_read %}notification-unread{% endif %}">
+        {{ note.message }}
+        <span class="muted">({{ note.created_at }})</span>
+      </li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
+
+<section class="box">
+  <h2>Фильтры (для фестивалей, куда вы идёте)</h2>
+  <form method="get" action="/festivals" class="grid four-col">
+    <label>
+      Город
+      <input type="text" name="city" value="{{ city_filter }}" list="city-options" />
+      <datalist id="city-options">
+        {% for value in city_options %}
+          <option value="{{ value }}"></option>
+        {% endfor %}
+      </datalist>
+    </label>
+    <label>
+      Номинация
+      <input type="text" name="nomination" value="{{ nomination_filter }}" list="nomination-options" />
+      <datalist id="nomination-options">
+        {% for value in nomination_options %}
+          <option value="{{ value }}"></option>
+        {% endfor %}
+      </datalist>
+    </label>
+    <label>
+      Сокосплеер
+      <input type="text" name="coproplayer" value="{{ coproplayer_filter }}" list="coproplayer-options" />
+      <datalist id="coproplayer-options">
+        {% for value in coproplayer_options %}
+          <option value="{{ value }}"></option>
+        {% endfor %}
+      </datalist>
+    </label>
+    <label class="inline-check top-offset">
+      <input type="checkbox" name="only_going" value="1" {% if only_going %}checked{% endif %} />
+      Только "я иду"
+    </label>
+    <div class="actions-inline">
+      <button type="submit" class="btn">Применить</button>
+      <a href="/festivals" class="btn">Сброс</a>
+    </div>
+  </form>
+</section>
+
+{% if show_summary %}
+<section class="box">
+  <h2>Сводка на ближайшие 30 дней</h2>
+  {% if summary_rows %}
+  <table class="table">
+    <thead>
+      <tr>
+        <th>Дата</th>
+        <th>Тип</th>
+        <th>Фестиваль</th>
+        <th>Город</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in summary_rows %}
+      <tr class="{% if row.is_home_city %}summary-home-city{% endif %}">
+        <td>{{ row.date.strftime('%d-%m-%Y') if row.date else "—" }}</td>
+        <td>{{ row.kind }}</td>
+        <td>{{ row.festival.name }}</td>
+        <td>{{ row.festival.city or "—" }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">В ближайшие 30 дней нет фестивалей или дедлайнов в базе.</p>
+  {% endif %}
+</section>
+{% endif %}
+
+{% if festivals %}
+<div class="cards-grid">
+  {% for festival in festivals %}
+  {% set is_planned = (festival.name|lower) in planned_festival_names %}
+  {% set is_shared_planned = (festival.name|lower) in shared_planned_festival_names %}
+  <article class="card {% if is_planned %}planned{% endif %} {% if is_shared_planned %}planned-shared{% endif %} {% if festival.id in home_city_festival_ids %}home-city-highlight{% endif %}">
+    <div class="row-between">
+      <h3>{{ festival.name }}</h3>
+      {% if festival.is_going %}<span class="chip">Я иду</span>{% endif %}
+    </div>
+    <p class="meta">Город: {{ festival.city or "—" }}</p>
+    <p class="meta">Дата: {{ festival.event_date.strftime('%d-%m-%Y') if festival.event_date else "—" }}</p>
+    <p class="meta">Дедлайн подачи: {{ festival.submission_deadline.strftime('%d-%m-%Y') if festival.submission_deadline else "—" }}</p>
+    <p class="meta">Номинации: {{ [festival.nomination_1, festival.nomination_2, festival.nomination_3] | reject('equalto', None) | reject('equalto', '') | list | join(', ') or '—' }}</p>
+    {% if festival.going_coproplayers_json %}
+      <p class="meta">Сокосплеер: {{ festival.going_coproplayers_json | join(', ') }}</p>
+    {% endif %}
+    {% if festival.url %}
+      <p><a href="{{ festival.url }}" target="_blank" rel="noreferrer">Ссылка на фестиваль</a></p>
+    {% endif %}
+    <div class="actions-inline">
+      <a href="/festivals/{{ festival.id }}/edit" class="btn">Редактировать</a>
+      <form method="post" action="/festivals/{{ festival.id }}/delete" onsubmit="return confirm('Удалить фестиваль?');">
+        <button type="submit" class="btn btn-danger">Удалить</button>
+      </form>
+    </div>
+  </article>
+  {% endfor %}
+</div>
+{% else %}
+<p class="muted">Фестивали пока не добавлены.</p>
+{% endif %}
+{% endblock %}

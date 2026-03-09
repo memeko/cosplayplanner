@@ -1,0 +1,96 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="section-head">
+  <h1>{{ card.character_name }}</h1>
+  <div class="actions-inline">
+    <a href="/cosplan" class="btn">К списку</a>
+    {% if not card.is_shared_copy and card.user_id == user.id %}
+      <a href="/cosplan/{{ card.id }}/edit" class="btn">Редактировать</a>
+    {% endif %}
+  </div>
+</section>
+
+<section class="box">
+  {% if card_owner and card_owner.id != user.id %}
+    <p class="meta">Участник: @{{ card_owner.username }}</p>
+  {% endif %}
+  <p class="meta">Фандом: {{ card.fandom or "—" }}</p>
+  <p class="meta">Тип: {{ "Проект" if card.plan_type == "project" else "Личное" }}</p>
+  <p class="meta">Руководитель: {{ "@" ~ card.project_leader if card.project_leader else "—" }}</p>
+  <p class="meta">Город: {{ card.city or "—" }}</p>
+  <p class="meta">Планируемые фестивали: {{ card.planned_festivals_json | join(", ") if card.planned_festivals_json else "—" }}</p>
+  <p class="meta">Ориентировочная цена: {{ '%.2f'|format(card_total or 0) }} {{ card_total_currency }}</p>
+</section>
+
+{% if card.notes %}
+<section class="box">
+  <h2>Примечания</h2>
+  <p class="notes-block">{{ card.notes }}</p>
+</section>
+{% endif %}
+
+{% if card_date_conflicts.get(card.id) %}
+<section class="box">
+  <div class="card-disclaimer">
+    <strong>Конфликт дат</strong>
+    <ul>
+      {% for warning in card_date_conflicts.get(card.id) %}
+        <li>{{ warning }}</li>
+      {% endfor %}
+    </ul>
+  </div>
+</section>
+{% endif %}
+
+<section class="box">
+  <h2>Комментарии проекта</h2>
+  {% if top_level_comments %}
+    <div class="comments-list">
+      {% for comment in top_level_comments %}
+        {% set author = comment_authors.get(comment.author_id) %}
+        <article class="comment-card">
+          <div class="comment-meta">@{{ author.username if author else "unknown" }} · {{ comment.created_at.strftime('%d-%m-%Y %H:%M') if comment.created_at else "" }}</div>
+          <p class="notes-block">{{ comment.body }}</p>
+          {% if replies_by_parent.get(comment.id) %}
+            <div class="comment-replies">
+              {% for reply in replies_by_parent.get(comment.id) %}
+                {% set reply_author = comment_authors.get(reply.author_id) %}
+                <article class="comment-reply">
+                  <div class="comment-meta">@{{ reply_author.username if reply_author else "unknown" }} · {{ reply.created_at.strftime('%d-%m-%Y %H:%M') if reply.created_at else "" }}</div>
+                  <p class="notes-block">{{ reply.body }}</p>
+                </article>
+              {% endfor %}
+            </div>
+          {% endif %}
+          {% if can_comment %}
+            <form method="post" action="/cosplan/{{ card.id }}/comments" class="comment-form">
+              <input type="hidden" name="parent_id" value="{{ comment.id }}" />
+              <input type="hidden" name="redirect_to" value="/cosplan/{{ card.id }}" />
+              <label>
+                Ответ
+                <textarea name="comment_body" rows="2" required></textarea>
+              </label>
+              <button type="submit" class="btn">Ответить</button>
+            </form>
+          {% endif %}
+        </article>
+      {% endfor %}
+    </div>
+  {% else %}
+    <p class="muted">Комментариев пока нет.</p>
+  {% endif %}
+
+  {% if can_comment %}
+    <form method="post" action="/cosplan/{{ card.id }}/comments" class="comment-form">
+      <input type="hidden" name="redirect_to" value="/cosplan/{{ card.id }}" />
+      <label>
+        Новое сообщение
+        <textarea name="comment_body" rows="3" required></textarea>
+      </label>
+      <button type="submit" class="btn btn-accent">Отправить</button>
+    </form>
+  {% else %}
+    <p class="muted">Комментирование доступно участнику и руководителю проекта.</p>
+  {% endif %}
+</section>
+{% endblock %}
