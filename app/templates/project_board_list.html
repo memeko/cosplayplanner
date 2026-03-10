@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="section-head">
+  <h1>Поиск в проекты</h1>
+  <a href="/project-board/new" class="btn btn-accent">Опубликовать объявление</a>
+</section>
+
+{% if posts %}
+<div class="cards-grid">
+  {% for post in posts %}
+  {% set owner = owners_by_id.get(post.user_id) %}
+  <article class="card">
+    <div class="row-between">
+      <h3>{{ post.fandom }}</h3>
+      <span class="chip">{{ "Фотосет" if post.event_type == "photoset" else "Фестиваль" }}</span>
+    </div>
+    <p class="meta">Дата: {{ post.event_date.strftime('%d-%m-%Y') if post.event_date else "—" }}</p>
+    <p class="meta">
+      Ник человека:
+      @{{ post.contact_nick }}
+      {% if owner %}
+        <span class="muted">(автор: @{{ owner.cosplay_nick or owner.username }})</span>
+      {% endif %}
+    </p>
+    <p class="meta">Для связи (тг или вк): {{ post.contact_link or "—" }}</p>
+    {% if post.comment %}
+      <p class="notes-block">{{ post.comment }}</p>
+    {% endif %}
+    {% if user and user.id == post.user_id %}
+      <div class="actions-inline">
+        <a href="/project-board/{{ post.id }}/edit" class="btn">Редактировать</a>
+      </div>
+    {% endif %}
+  </article>
+  {% endfor %}
+</div>
+{% else %}
+<section class="box">
+  <p class="muted">Объявлений пока нет. Опубликуйте первое объявление для поиска в проекты.</p>
+</section>
+{% endif %}
+{% endblock %}

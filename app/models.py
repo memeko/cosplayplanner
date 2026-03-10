@@ -42,6 +42,7 @@ class User(Base):
     )
     in_progress_cards = relationship("InProgressCard", back_populates="user", cascade="all, delete-orphan")
     festivals = relationship("Festival", back_populates="user", cascade="all, delete-orphan")
+    project_search_posts = relationship("ProjectSearchPost", back_populates="user", cascade="all, delete-orphan")
     incoming_notifications = relationship(
         "FestivalNotification",
         back_populates="recipient",
@@ -217,6 +218,25 @@ class Festival(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
     user = relationship("User", back_populates="festivals")
+
+
+class ProjectSearchPost(Base):
+    __tablename__ = "project_search_posts"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+
+    fandom = Column(String(255), nullable=False, index=True)
+    event_date = Column(Date, nullable=True, index=True)
+    event_type = Column(String(32), nullable=False, index=True)  # photoset | festival
+    comment = Column(Text, nullable=True)
+    contact_nick = Column(String(100), nullable=False)
+    contact_link = Column(String(255), nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    user = relationship("User", back_populates="project_search_posts")
 
 
 class FestivalNotification(Base):

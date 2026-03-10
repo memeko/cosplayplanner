@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="section-head">
+  <h1>{{ "Редактирование объявления" if editing else "Новое объявление" }}</h1>
+  <a href="/project-board" class="btn">Назад к доске</a>
+</section>
+
+<form method="post" action="{{ '/project-board/' ~ post_id ~ '/edit' if editing else '/project-board/new' }}" class="grid one-col big-form">
+  <section class="box">
+    <div class="grid two-col">
+      <label>
+        Фандом *
+        <input type="text" name="fandom" value="{{ form.fandom }}" list="board-fandom-options" required />
+      </label>
+      <label>
+        Дата *
+        <input type="date" name="event_date" value="{{ form.event_date }}" required />
+      </label>
+    </div>
+
+    <div class="grid two-col">
+      <label>
+        Тип *
+        <select name="event_type" required>
+          <option value="photoset" {% if form.event_type == 'photoset' %}selected{% endif %}>Фотосет</option>
+          <option value="festival" {% if form.event_type == 'festival' %}selected{% endif %}>Фестиваль</option>
+        </select>
+      </label>
+      <label>
+        Ник человека *
+        <input type="text" name="contact_nick" value="{{ form.contact_nick }}" placeholder="@nick" required />
+      </label>
+    </div>
+
+    <label>
+      Для связи (тг или вк):
+      <input type="text" name="contact_link" value="{{ form.contact_link }}" placeholder="t.me/username или vk.com/id" />
+    </label>
+
+    <label>
+      Комментарий
+      <textarea name="comment" rows="5">{{ form.comment }}</textarea>
+    </label>
+  </section>
+
+  <datalist id="board-fandom-options">
+    {% for value in fandom_options %}
+      <option value="{{ value }}"></option>
+    {% endfor %}
+  </datalist>
+
+  <div class="actions-inline">
+    <button type="submit" class="btn btn-accent">{{ "Сохранить" if editing else "Опубликовать" }}</button>
+    <a href="/project-board" class="btn">Отмена</a>
+  </div>
+</form>
+{% endblock %}

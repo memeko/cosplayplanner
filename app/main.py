@@ -24,7 +24,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .cosplay2_parser import guess_name_from_url, normalize_url, parse_events_from_homepage
 from .database import Base, engine, get_db
-from .models import CardComment, CosplanCard, Festival, FestivalNotification, InProgressCard, User
+from .models import CardComment, CosplanCard, Festival, FestivalNotification, InProgressCard, ProjectSearchPost, User
 from .services import (
     as_list,
     esc_ics,
@@ -154,6 +154,8 @@ def apply_schema_migrations() -> None:
             FestivalNotification.__table__.create(bind=conn, checkfirst=True)
         if "card_comments" not in existing_tables:
             CardComment.__table__.create(bind=conn, checkfirst=True)
+        if "project_search_posts" not in existing_tables:
+            ProjectSearchPost.__table__.create(bind=conn, checkfirst=True)
 
         for table_name, columns in required_columns.items():
             if table_name not in existing_tables and table_name != "festival_notifications":
@@ -970,6 +972,28 @@ def get_festival_form_values(festival: Festival | None = None) -> dict[str, Any]
         "is_going": bool(festival.is_going),
         "going_coproplayers_json": as_list(festival.going_coproplayers_json),
         "going_coproplayers_input": ", ".join(as_list(festival.going_coproplayers_json)),
+    }
+
+
+def get_project_search_post_form_values(post: ProjectSearchPost | None = None, user: User | None = None) -> dict[str, Any]:
+    default_nick = preferred_user_alias(user) if user else ""
+    if not post:
+        return {
+            "fandom": "",
+            "event_date": "",
+            "event_type": "photoset",
+            "comment": "",
+            "contact_nick": default_nick,
+            "contact_link": "",
+        }
+
+    return {
+        "fandom": post.fandom or "",
+        "event_date": post.event_date.isoformat() if post.event_date else "",
+        "event_type": post.event_type or "photoset",
+        "comment": post.comment or "",
+        "contact_nick": post.contact_nick or default_nick,
+        "contact_link": post.contact_link or "",
     }
 
 
@@ -2003,6 +2027,159 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
         active_tab="my-calendar",
         month_groups=grouped,
     )
+
+
+def project_board_fandom_options(db: Session, user: User) -> list[str]:
+    global_fandoms = db.execute(
+        select(ProjectSearchPost.fandom).where(ProjectSearchPost.fandom.is_not(None)).order_by(ProjectSearchPost.fandom)
+    ).scalars().all()
+    return merge_unique(global_fandoms, get_options(db, user.id, "fandom"))
+
+
+def save_project_search_post_from_form(form: Any, post: ProjectSearchPost) -> tuple[bool, str]:
+    fandom = str(form.get("fandom", "")).strip()
+    event_date = parse_date(str(form.get("event_date", "")))
+    event_type = str(form.get("event_type", "")).strip()
+    comment = str(form.get("comment", "")).strip() or None
+    contact_nick = normalize_username(str(form.get("contact_nick", "")).strip())
+    contact_link = str(form.get("contact_link", "")).strip() or None
+
+    if not fandom:
+        return False, "Укажите фандом."
+    if not event_date:
+        return False, "Укажите дату."
+    if event_type not in {"photoset", "festival"}:
+        return False, "Выберите тип: фотосет или фестиваль."
+    if not contact_nick:
+        return False, "Укажите ник человека."
+
+    post.fandom = fandom
+    post.event_date = event_date
+    post.event_type = event_type
+    post.comment = comment
+    post.contact_nick = contact_nick
+    post.contact_link = contact_link
+    return True, ""
+
+
+@app.get("/project-board", response_class=HTMLResponse)
+def project_board_list(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    posts = db.execute(
+        select(ProjectSearchPost).order_by(
+            ProjectSearchPost.event_date.is_(None),
+            ProjectSearchPost.event_date,
+            ProjectSearchPost.created_at.desc(),
+        )
+    ).scalars().all()
+
+    owner_ids = {post.user_id for post in posts}
+    owners_by_id: dict[int, User] = {}
+    if owner_ids:
+        owners = db.execute(select(User).where(User.id.in_(owner_ids))).scalars().all()
+        owners_by_id = {owner.id: owner for owner in owners}
+
+    return template_response(
+        request,
+        "project_board_list.html",
+        user=user,
+        active_tab="project-board",
+        posts=posts,
+        owners_by_id=owners_by_id,
+    )
+
+
+@app.get("/project-board/new", response_class=HTMLResponse)
+def project_board_new(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    return template_response(
+        request,
+        "project_board_form.html",
+        user=user,
+        active_tab="project-board",
+        editing=False,
+        post_id=None,
+        form=get_project_search_post_form_values(user=user),
+        fandom_options=project_board_fandom_options(db, user),
+    )
+
+
+@app.post("/project-board/new")
+async def project_board_create(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    form = await request.form()
+    post = ProjectSearchPost(user_id=user.id, fandom="")
+    ok, error_text = save_project_search_post_from_form(form, post)
+    if not ok:
+        add_flash(request, error_text, "error")
+        return redirect("/project-board/new")
+
+    db.add(post)
+    remember_options(db, user.id, "fandom", [post.fandom])
+    db.commit()
+    add_flash(request, "Объявление добавлено.", "success")
+    return redirect("/project-board")
+
+
+@app.get("/project-board/{post_id}/edit", response_class=HTMLResponse)
+def project_board_edit(post_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    post = db.get(ProjectSearchPost, post_id)
+    if not post:
+        add_flash(request, "Объявление не найдено.", "error")
+        return redirect("/project-board")
+    if post.user_id != user.id:
+        add_flash(request, "Редактировать можно только своё объявление.", "error")
+        return redirect("/project-board")
+
+    return template_response(
+        request,
+        "project_board_form.html",
+        user=user,
+        active_tab="project-board",
+        editing=True,
+        post_id=post.id,
+        form=get_project_search_post_form_values(post, user),
+        fandom_options=project_board_fandom_options(db, user),
+    )
+
+
+@app.post("/project-board/{post_id}/edit")
+async def project_board_update(post_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    post = db.get(ProjectSearchPost, post_id)
+    if not post:
+        add_flash(request, "Объявление не найдено.", "error")
+        return redirect("/project-board")
+    if post.user_id != user.id:
+        add_flash(request, "Редактировать можно только своё объявление.", "error")
+        return redirect("/project-board")
+
+    form = await request.form()
+    ok, error_text = save_project_search_post_from_form(form, post)
+    if not ok:
+        add_flash(request, error_text, "error")
+        return redirect(f"/project-board/{post_id}/edit")
+
+    remember_options(db, user.id, "fandom", [post.fandom])
+    db.commit()
+    add_flash(request, "Объявление обновлено.", "success")
+    return redirect("/project-board")
 
 
 @app.get("/festivals", response_class=HTMLResponse)
