@@ -56,6 +56,18 @@ class User(Base):
         foreign_keys="FestivalNotification.from_user_id",
     )
     card_comments = relationship("CardComment", back_populates="author", cascade="all, delete-orphan")
+    rehearsal_cards = relationship("RehearsalCard", back_populates="user", cascade="all, delete-orphan")
+    rehearsal_entries = relationship(
+        "RehearsalEntry",
+        back_populates="participant",
+        cascade="all, delete-orphan",
+        foreign_keys="RehearsalEntry.user_id",
+    )
+    rehearsal_entries_created = relationship(
+        "RehearsalEntry",
+        back_populates="proposer",
+        foreign_keys="RehearsalEntry.proposed_by_user_id",
+    )
 
 
 class UserOption(Base):
@@ -163,6 +175,8 @@ class CosplanCard(Base):
     in_progress = relationship("InProgressCard", back_populates="cosplan_card", uselist=False)
     source_card = relationship("CosplanCard", remote_side=[id], foreign_keys=[source_card_id])
     comments = relationship("CardComment", back_populates="card", cascade="all, delete-orphan")
+    rehearsal_cards = relationship("RehearsalCard", back_populates="cosplan_card", cascade="all, delete-orphan")
+    rehearsal_entries = relationship("RehearsalEntry", back_populates="cosplan_card", cascade="all, delete-orphan")
 
 
 class CardComment(Base):
@@ -194,6 +208,46 @@ class InProgressCard(Base):
 
     user = relationship("User", back_populates="in_progress_cards")
     cosplan_card = relationship("CosplanCard", back_populates="in_progress")
+
+
+class RehearsalCard(Base):
+    __tablename__ = "rehearsal_cards"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    cosplan_card_id = Column(Integer, ForeignKey("cosplan_cards.id", ondelete="CASCADE"), nullable=False, index=True)
+    deadline_date = Column(Date, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    user = relationship("User", back_populates="rehearsal_cards")
+    cosplan_card = relationship("CosplanCard", back_populates="rehearsal_cards")
+    entries = relationship("RehearsalEntry", back_populates="rehearsal_card", cascade="all, delete-orphan")
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "cosplan_card_id", name="uq_rehearsal_card_user_cosplan"),
+    )
+
+
+class RehearsalEntry(Base):
+    __tablename__ = "rehearsal_entries"
+
+    id = Column(Integer, primary_key=True)
+    rehearsal_card_id = Column(Integer, ForeignKey("rehearsal_cards.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    cosplan_card_id = Column(Integer, ForeignKey("cosplan_cards.id", ondelete="CASCADE"), nullable=False, index=True)
+    proposed_by_user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    source_type = Column(String(32), nullable=False, index=True)  # participant | leader
+    status = Column(String(32), nullable=False, index=True)  # proposed | approved | accepted | declined
+    entry_date = Column(Date, nullable=False, index=True)
+    entry_time = Column(String(8), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    rehearsal_card = relationship("RehearsalCard", back_populates="entries")
+    participant = relationship("User", back_populates="rehearsal_entries", foreign_keys=[user_id])
+    proposer = relationship("User", back_populates="rehearsal_entries_created", foreign_keys=[proposed_by_user_id])
+    cosplan_card = relationship("CosplanCard", back_populates="rehearsal_entries")
 
 
 class Festival(Base):

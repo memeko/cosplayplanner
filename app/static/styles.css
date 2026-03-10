@@ -190,6 +190,10 @@ textarea {
   justify-content: flex-end;
 }
 
+.wrap-start {
+  justify-content: flex-start;
+}
+
 .box,
 .card,
 .auth-card {
@@ -386,6 +390,59 @@ textarea {
 
 .notification-unread {
   font-weight: 600;
+}
+
+.rehearsal-list {
+  list-style: none;
+  margin: 10px 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.rehearsal-item {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #f8fafc;
+  padding: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.rehearsal-status {
+  margin-left: 6px;
+}
+
+.rehearsal-status-proposed {
+  background: #fff7ed;
+  border-color: #fed7aa;
+  color: #9a3412;
+}
+
+.rehearsal-status-approved,
+.rehearsal-status-accepted {
+  background: #ecfdf3;
+  border-color: #86efac;
+  color: #166534;
+}
+
+.rehearsal-status-declined {
+  background: #fff1f2;
+  border-color: #fda4af;
+  color: #9f1239;
+}
+
+.btn-accept {
+  border-color: #86efac;
+  color: #166534;
+}
+
+.btn-decline {
+  border-color: #fda4af;
+  color: #9f1239;
 }
 
 .card-disclaimer {

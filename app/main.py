@@ -16,7 +16,7 @@ from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse,
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from passlib.context import CryptContext
-from sqlalchemy import inspect, or_, select, text
+from sqlalchemy import and_, func, inspect, or_, select, text
 from sqlalchemy.orm import Session
 from starlette.middleware.gzip import GZipMiddleware
 from starlette.middleware.sessions import SessionMiddleware
@@ -24,7 +24,17 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .cosplay2_parser import guess_name_from_url, normalize_url, parse_events_from_homepage
 from .database import Base, engine, get_db
-from .models import CardComment, CosplanCard, Festival, FestivalNotification, InProgressCard, ProjectSearchPost, User
+from .models import (
+    CardComment,
+    CosplanCard,
+    Festival,
+    FestivalNotification,
+    InProgressCard,
+    ProjectSearchPost,
+    RehearsalCard,
+    RehearsalEntry,
+    User,
+)
 from .services import (
     as_list,
     esc_ics,
@@ -97,6 +107,14 @@ DEFAULT_NOMINATIONS = [
     "караоке",
 ]
 
+REHEARSAL_SOURCE_PARTICIPANT = "participant"
+REHEARSAL_SOURCE_LEADER = "leader"
+
+REHEARSAL_STATUS_PROPOSED = "proposed"
+REHEARSAL_STATUS_APPROVED = "approved"
+REHEARSAL_STATUS_ACCEPTED = "accepted"
+REHEARSAL_STATUS_DECLINED = "declined"
+
 
 def apply_schema_migrations() -> None:
     # Lightweight SQLite migration path for local/self-host deployments.
@@ -160,6 +178,10 @@ def apply_schema_migrations() -> None:
             CardComment.__table__.create(bind=conn, checkfirst=True)
         if "project_search_posts" not in existing_tables:
             ProjectSearchPost.__table__.create(bind=conn, checkfirst=True)
+        if "rehearsal_cards" not in existing_tables:
+            RehearsalCard.__table__.create(bind=conn, checkfirst=True)
+        if "rehearsal_entries" not in existing_tables:
+            RehearsalEntry.__table__.create(bind=conn, checkfirst=True)
 
         for table_name, columns in required_columns.items():
             if table_name not in existing_tables and table_name != "festival_notifications":
@@ -406,6 +428,60 @@ def festival_is_active(festival: Festival, today: date) -> bool:
         return True
     end_date = festival_range_end(festival)
     return bool(end_date and end_date >= today)
+
+
+def parse_time_hhmm(raw: str) -> str | None:
+    value = raw.strip()
+    if not value:
+        return None
+    if len(value) != 5 or value[2] != ":":
+        return None
+    hh_raw, mm_raw = value.split(":", 1)
+    if not (hh_raw.isdigit() and mm_raw.isdigit()):
+        return None
+    hh = int(hh_raw)
+    mm = int(mm_raw)
+    if not (0 <= hh <= 23 and 0 <= mm <= 59):
+        return None
+    return f"{hh:02d}:{mm:02d}"
+
+
+def rehearsal_status_label(status: str) -> str:
+    mapping = {
+        REHEARSAL_STATUS_PROPOSED: "Предложено",
+        REHEARSAL_STATUS_APPROVED: "Одобрено",
+        REHEARSAL_STATUS_ACCEPTED: "Принято",
+        REHEARSAL_STATUS_DECLINED: "Отклонено",
+    }
+    return mapping.get(status, status)
+
+
+def can_manage_project_card(user: User, card: CosplanCard) -> bool:
+    if card.plan_type != "project":
+        return False
+    return user_matches_alias(user, card.project_leader)
+
+
+def get_or_create_rehearsal_card(db: Session, *, user_id: int, cosplan_card: CosplanCard) -> RehearsalCard:
+    rehearsal_card = db.execute(
+        select(RehearsalCard).where(
+            RehearsalCard.user_id == user_id,
+            RehearsalCard.cosplan_card_id == cosplan_card.id,
+        )
+    ).scalar_one_or_none()
+    if rehearsal_card:
+        if rehearsal_card.deadline_date != cosplan_card.project_deadline:
+            rehearsal_card.deadline_date = cosplan_card.project_deadline
+        return rehearsal_card
+
+    rehearsal_card = RehearsalCard(
+        user_id=user_id,
+        cosplan_card_id=cosplan_card.id,
+        deadline_date=cosplan_card.project_deadline,
+    )
+    db.add(rehearsal_card)
+    db.flush()
+    return rehearsal_card
 
 
 def sqlite_database_path() -> Path | None:
@@ -1120,11 +1196,48 @@ def profile_page(request: Request, db: Session = Depends(get_db)):
     user = current_user(request, db)
     if not user:
         return redirect("/login")
+
+    is_stats_admin = (
+        (user.email or "").strip().casefold() == "angenzel@gmail.com"
+        or normalize_username(user.username).casefold() == "brfox_cosplay"
+        or normalize_username(user.cosplay_nick).casefold() == "brfox_cosplay"
+    )
+    admin_stats: dict[str, Any] | None = None
+    if is_stats_admin:
+        total_users = int(db.execute(select(func.count(User.id))).scalar() or 0)
+        total_cosplan_cards = int(
+            db.execute(select(func.count(CosplanCard.id)).where(CosplanCard.is_shared_copy.is_(False))).scalar() or 0
+        )
+
+        raw_cities = db.execute(select(User.home_city)).scalars().all()
+        city_counts: dict[str, int] = defaultdict(int)
+        city_labels: dict[str, str] = {}
+        for raw_city in raw_cities:
+            cleaned = (raw_city or "").strip()
+            key = cleaned.casefold() if cleaned else "__empty__"
+            city_counts[key] += 1
+            if key not in city_labels:
+                city_labels[key] = cleaned or "Не указан"
+
+        city_stats = [
+            {"city": city_labels[key], "count": count}
+            for key, count in city_counts.items()
+        ]
+        city_stats.sort(key=lambda item: (-item["count"], item["city"]))
+
+        admin_stats = {
+            "total_users": total_users,
+            "total_cosplan_cards": total_cosplan_cards,
+            "city_stats": city_stats,
+            "unique_city_count": sum(1 for item in city_stats if item["city"] != "Не указан"),
+        }
+
     return template_response(
         request,
         "profile.html",
         user=user,
         active_tab="profile",
+        admin_stats=admin_stats,
     )
 
 
@@ -1698,6 +1811,11 @@ async def cosplan_update(card_id: int, request: Request, db: Session = Depends(g
 
     save_card_from_form(form, card, user, db)
     sync_shared_cards_for_nicks(card, user, db)
+    linked_rehearsal_cards = db.execute(
+        select(RehearsalCard).where(RehearsalCard.cosplan_card_id == card.id)
+    ).scalars().all()
+    for rehearsal_card in linked_rehearsal_cards:
+        rehearsal_card.deadline_date = card.project_deadline
     db.commit()
 
     add_flash(request, "Карточка косплана обновлена.", "success")
@@ -1736,6 +1854,17 @@ def cosplan_delete(card_id: int, request: Request, db: Session = Depends(get_db)
     ).scalar_one_or_none()
     if progress:
         db.delete(progress)
+
+    rehearsal_entries = db.execute(
+        select(RehearsalEntry).where(RehearsalEntry.cosplan_card_id == card.id)
+    ).scalars().all()
+    for rehearsal_entry in rehearsal_entries:
+        db.delete(rehearsal_entry)
+    rehearsal_cards = db.execute(
+        select(RehearsalCard).where(RehearsalCard.cosplan_card_id == card.id)
+    ).scalars().all()
+    for rehearsal_card in rehearsal_cards:
+        db.delete(rehearsal_card)
 
     db.delete(card)
     db.commit()
@@ -1791,6 +1920,20 @@ def in_progress_list(request: Request, db: Session = Depends(get_db)):
         and today <= row.cosplan_card.project_deadline <= urgent_deadline
         and not row.is_frozen
     }
+    progress_card_ids = [row.cosplan_card_id for row in progress_items if row.cosplan_card_id]
+    leader_rehearsals_by_card: dict[int, list[RehearsalEntry]] = defaultdict(list)
+    if progress_card_ids:
+        leader_entries = db.execute(
+            select(RehearsalEntry)
+            .where(
+                RehearsalEntry.user_id == user.id,
+                RehearsalEntry.source_type == REHEARSAL_SOURCE_LEADER,
+                RehearsalEntry.cosplan_card_id.in_(progress_card_ids),
+            )
+            .order_by(RehearsalEntry.entry_date, RehearsalEntry.entry_time, RehearsalEntry.id)
+        ).scalars().all()
+        for entry in leader_entries:
+            leader_rehearsals_by_card[entry.cosplan_card_id].append(entry)
 
     return template_response(
         request,
@@ -1799,6 +1942,12 @@ def in_progress_list(request: Request, db: Session = Depends(get_db)):
         active_tab="in-progress",
         progress_items=progress_items,
         urgent_progress_ids=urgent_progress_ids,
+        leader_rehearsals_by_card=leader_rehearsals_by_card,
+        rehearsal_status_labels={
+            REHEARSAL_STATUS_PROPOSED: rehearsal_status_label(REHEARSAL_STATUS_PROPOSED),
+            REHEARSAL_STATUS_ACCEPTED: rehearsal_status_label(REHEARSAL_STATUS_ACCEPTED),
+            REHEARSAL_STATUS_DECLINED: rehearsal_status_label(REHEARSAL_STATUS_DECLINED),
+        },
     )
 
 
@@ -1915,6 +2064,208 @@ def in_progress_toggle_freeze(progress_id: int, request: Request, db: Session = 
     return redirect("/in-progress")
 
 
+@app.get("/rehearsals", response_class=HTMLResponse)
+def rehearsals_list(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    available_cards = db.execute(
+        select(CosplanCard)
+        .where(CosplanCard.user_id == user.id, CosplanCard.is_shared_copy.is_(False))
+        .order_by(CosplanCard.character_name)
+    ).scalars().all()
+    rehearsal_cards = db.execute(
+        select(RehearsalCard)
+        .where(RehearsalCard.user_id == user.id)
+        .order_by(RehearsalCard.updated_at.desc(), RehearsalCard.id.desc())
+    ).scalars().all()
+    deadlines_synced = False
+    for rehearsal_card in rehearsal_cards:
+        card = rehearsal_card.cosplan_card
+        if not card:
+            continue
+        if rehearsal_card.deadline_date != card.project_deadline:
+            rehearsal_card.deadline_date = card.project_deadline
+            deadlines_synced = True
+    if deadlines_synced:
+        db.commit()
+
+    entries = db.execute(
+        select(RehearsalEntry)
+        .where(RehearsalEntry.user_id == user.id)
+        .order_by(RehearsalEntry.entry_date, RehearsalEntry.entry_time, RehearsalEntry.id)
+    ).scalars().all()
+    entries_by_card: dict[int, list[RehearsalEntry]] = defaultdict(list)
+    participant_entries_count: dict[int, int] = defaultdict(int)
+    for entry in entries:
+        entries_by_card[entry.rehearsal_card_id].append(entry)
+        if entry.source_type == REHEARSAL_SOURCE_PARTICIPANT:
+            participant_entries_count[entry.rehearsal_card_id] += 1
+
+    proposer_ids = {entry.proposed_by_user_id for entry in entries if entry.proposed_by_user_id}
+    proposers_by_id: dict[int, User] = {}
+    if proposer_ids:
+        proposers = db.execute(select(User).where(User.id.in_(proposer_ids))).scalars().all()
+        proposers_by_id = {item.id: item for item in proposers}
+
+    return template_response(
+        request,
+        "rehearsals.html",
+        user=user,
+        active_tab="rehearsals",
+        available_cards=available_cards,
+        rehearsal_cards=rehearsal_cards,
+        entries_by_card=entries_by_card,
+        participant_entries_count=participant_entries_count,
+        proposers_by_id=proposers_by_id,
+        rehearsal_status_labels={
+            REHEARSAL_STATUS_PROPOSED: rehearsal_status_label(REHEARSAL_STATUS_PROPOSED),
+            REHEARSAL_STATUS_APPROVED: rehearsal_status_label(REHEARSAL_STATUS_APPROVED),
+            REHEARSAL_STATUS_ACCEPTED: rehearsal_status_label(REHEARSAL_STATUS_ACCEPTED),
+            REHEARSAL_STATUS_DECLINED: rehearsal_status_label(REHEARSAL_STATUS_DECLINED),
+        },
+    )
+
+
+@app.post("/rehearsals/new")
+async def rehearsals_create(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    form = await request.form()
+    raw_id = str(form.get("cosplan_card_id", "")).strip()
+    if not raw_id.isdigit():
+        add_flash(request, "Выберите карточку косплана.", "error")
+        return redirect("/rehearsals")
+
+    card = db.execute(
+        select(CosplanCard).where(
+            CosplanCard.id == int(raw_id),
+            CosplanCard.user_id == user.id,
+            CosplanCard.is_shared_copy.is_(False),
+        )
+    ).scalar_one_or_none()
+    if not card:
+        add_flash(request, "Карточка косплана не найдена.", "error")
+        return redirect("/rehearsals")
+
+    existing_rehearsal_card = db.execute(
+        select(RehearsalCard).where(
+            RehearsalCard.user_id == user.id,
+            RehearsalCard.cosplan_card_id == card.id,
+        )
+    ).scalar_one_or_none()
+    rehearsal_card = get_or_create_rehearsal_card(db, user_id=user.id, cosplan_card=card)
+    db.commit()
+    add_flash(
+        request,
+        "Карточка репетиций обновлена." if existing_rehearsal_card else "Карточка репетиций создана.",
+        "success",
+    )
+    return redirect("/rehearsals")
+
+
+@app.post("/rehearsals/{rehearsal_card_id}/add-date")
+async def rehearsals_add_date(rehearsal_card_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    rehearsal_card = db.execute(
+        select(RehearsalCard).where(
+            RehearsalCard.id == rehearsal_card_id,
+            RehearsalCard.user_id == user.id,
+        )
+    ).scalar_one_or_none()
+    if not rehearsal_card:
+        add_flash(request, "Карточка репетиций не найдена.", "error")
+        return redirect("/rehearsals")
+
+    form = await request.form()
+    entry_date = parse_date(str(form.get("entry_date", "")))
+    if not entry_date:
+        add_flash(request, "Укажите дату репетиции.", "error")
+        return redirect("/rehearsals")
+
+    participant_entries_count = db.execute(
+        select(RehearsalEntry)
+        .where(
+            RehearsalEntry.rehearsal_card_id == rehearsal_card.id,
+            RehearsalEntry.source_type == REHEARSAL_SOURCE_PARTICIPANT,
+        )
+        .order_by(RehearsalEntry.id)
+    ).scalars().all()
+    if len(participant_entries_count) >= 10:
+        add_flash(request, "В одной карточке можно указать не более 10 дат репетиций.", "error")
+        return redirect("/rehearsals")
+
+    card = rehearsal_card.cosplan_card
+    if card and can_manage_project_card(user, card):
+        # Если владелец карточки также руководитель, заявка сразу одобряется.
+        status = REHEARSAL_STATUS_APPROVED
+    elif card and card.plan_type == "project" and (card.project_leader or "").strip():
+        status = REHEARSAL_STATUS_PROPOSED
+    else:
+        status = REHEARSAL_STATUS_APPROVED
+
+    db.add(
+        RehearsalEntry(
+            rehearsal_card_id=rehearsal_card.id,
+            user_id=user.id,
+            cosplan_card_id=rehearsal_card.cosplan_card_id,
+            proposed_by_user_id=user.id,
+            source_type=REHEARSAL_SOURCE_PARTICIPANT,
+            status=status,
+            entry_date=entry_date,
+            entry_time=None,
+        )
+    )
+    db.commit()
+    if status == REHEARSAL_STATUS_PROPOSED:
+        add_flash(request, "Дата отправлена руководителю со статусом «Предложено».", "success")
+    else:
+        add_flash(request, "Дата репетиции добавлена в календарь.", "success")
+    return redirect("/rehearsals")
+
+
+@app.post("/rehearsals/entries/{entry_id}/respond")
+async def rehearsals_respond(entry_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    form = await request.form()
+    decision = str(form.get("decision", "")).strip().lower()
+    next_url = safe_redirect_target(str(form.get("next", "")).strip(), "/rehearsals")
+    if decision not in {"accept", "decline"}:
+        add_flash(request, "Некорректный статус ответа.", "error")
+        return redirect(next_url)
+
+    entry = db.execute(
+        select(RehearsalEntry).where(
+            RehearsalEntry.id == entry_id,
+            RehearsalEntry.user_id == user.id,
+            RehearsalEntry.source_type == REHEARSAL_SOURCE_LEADER,
+        )
+    ).scalar_one_or_none()
+    if not entry:
+        add_flash(request, "Запись репетиции не найдена.", "error")
+        return redirect(next_url)
+
+    entry.status = REHEARSAL_STATUS_ACCEPTED if decision == "accept" else REHEARSAL_STATUS_DECLINED
+    db.commit()
+    add_flash(
+        request,
+        "Репетиция принята и добавлена в календарь."
+        if entry.status == REHEARSAL_STATUS_ACCEPTED
+        else "Репетиция отклонена.",
+        "success" if entry.status == REHEARSAL_STATUS_ACCEPTED else "info",
+    )
+    return redirect(next_url)
+
+
 @app.get("/my-projects", response_class=HTMLResponse)
 def my_projects_list(request: Request, db: Session = Depends(get_db)):
     user = current_user(request, db)
@@ -1943,6 +2294,22 @@ def my_projects_list(request: Request, db: Session = Depends(get_db)):
         total, currency = estimate_card_total_and_currency(card)
         card_totals[card.id] = total
         card_total_currencies[card.id] = currency
+
+    pending_rehearsals_by_card: dict[int, list[RehearsalEntry]] = defaultdict(list)
+    card_ids = [card.id for card in cards]
+    if card_ids:
+        pending_entries = db.execute(
+            select(RehearsalEntry)
+            .where(
+                RehearsalEntry.cosplan_card_id.in_(card_ids),
+                RehearsalEntry.source_type == REHEARSAL_SOURCE_PARTICIPANT,
+                RehearsalEntry.status == REHEARSAL_STATUS_PROPOSED,
+            )
+            .order_by(RehearsalEntry.entry_date, RehearsalEntry.entry_time, RehearsalEntry.id)
+        ).scalars().all()
+        for entry in pending_entries:
+            pending_rehearsals_by_card[entry.cosplan_card_id].append(entry)
+
     return template_response(
         request,
         "my_projects.html",
@@ -1952,6 +2319,13 @@ def my_projects_list(request: Request, db: Session = Depends(get_db)):
         owners_by_id=owners_by_id,
         card_totals=card_totals,
         card_total_currencies=card_total_currencies,
+        pending_rehearsals_by_card=pending_rehearsals_by_card,
+        rehearsal_status_labels={
+            REHEARSAL_STATUS_PROPOSED: rehearsal_status_label(REHEARSAL_STATUS_PROPOSED),
+            REHEARSAL_STATUS_APPROVED: rehearsal_status_label(REHEARSAL_STATUS_APPROVED),
+            REHEARSAL_STATUS_ACCEPTED: rehearsal_status_label(REHEARSAL_STATUS_ACCEPTED),
+            REHEARSAL_STATUS_DECLINED: rehearsal_status_label(REHEARSAL_STATUS_DECLINED),
+        },
     )
 
 
@@ -1982,6 +2356,104 @@ async def my_projects_comment(card_id: int, request: Request, db: Session = Depe
     return redirect("/my-projects")
 
 
+@app.post("/my-projects/rehearsals/propose")
+async def my_projects_propose_rehearsal(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    form = await request.form()
+    selected_ids: list[int] = []
+    for raw in form.getlist("cosplan_card_ids"):
+        value = str(raw).strip()
+        if value.isdigit():
+            selected_ids.append(int(value))
+    selected_ids = list(dict.fromkeys(selected_ids))
+
+    if not selected_ids:
+        add_flash(request, "Выберите хотя бы одну карточку проекта.", "error")
+        return redirect("/my-projects")
+
+    rehearsal_date = parse_date(str(form.get("entry_date", "")))
+    if not rehearsal_date:
+        add_flash(request, "Укажите дату репетиции.", "error")
+        return redirect("/my-projects")
+
+    rehearsal_time = parse_time_hhmm(str(form.get("entry_time", "")))
+    raw_time = str(form.get("entry_time", "")).strip()
+    if raw_time and rehearsal_time is None:
+        add_flash(request, "Время укажите в формате ЧЧ:ММ.", "error")
+        return redirect("/my-projects")
+
+    cards = db.execute(select(CosplanCard).where(CosplanCard.id.in_(selected_ids))).scalars().all()
+    target_cards = [card for card in cards if can_manage_project_card(user, card)]
+    if not target_cards:
+        add_flash(request, "Нет доступных карточек для предложения репетиции.", "error")
+        return redirect("/my-projects")
+
+    created = 0
+    for card in target_cards:
+        rehearsal_card = get_or_create_rehearsal_card(db, user_id=card.user_id, cosplan_card=card)
+        existing_progress = db.execute(
+            select(InProgressCard).where(
+                InProgressCard.user_id == card.user_id,
+                InProgressCard.cosplan_card_id == card.id,
+            )
+        ).scalar_one_or_none()
+        if not existing_progress:
+            db.add(InProgressCard(user_id=card.user_id, cosplan_card_id=card.id, checklist_json=[]))
+        db.add(
+            RehearsalEntry(
+                rehearsal_card_id=rehearsal_card.id,
+                user_id=card.user_id,
+                cosplan_card_id=card.id,
+                proposed_by_user_id=user.id,
+                source_type=REHEARSAL_SOURCE_LEADER,
+                status=REHEARSAL_STATUS_PROPOSED,
+                entry_date=rehearsal_date,
+                entry_time=rehearsal_time,
+            )
+        )
+        created += 1
+
+    db.commit()
+    add_flash(request, f"Предложение репетиции отправлено для карточек: {created}.", "success")
+    return redirect("/my-projects")
+
+
+@app.post("/my-projects/rehearsals/{entry_id}/decision")
+async def my_projects_rehearsal_decision(entry_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    form = await request.form()
+    decision = str(form.get("decision", "")).strip().lower()
+    if decision not in {"approve", "reject"}:
+        add_flash(request, "Некорректное действие.", "error")
+        return redirect("/my-projects")
+
+    entry = db.get(RehearsalEntry, entry_id)
+    if not entry or entry.source_type != REHEARSAL_SOURCE_PARTICIPANT:
+        add_flash(request, "Запись репетиции не найдена.", "error")
+        return redirect("/my-projects")
+
+    card = db.get(CosplanCard, entry.cosplan_card_id)
+    if not card or not can_manage_project_card(user, card):
+        add_flash(request, "Недостаточно прав для изменения статуса.", "error")
+        return redirect("/my-projects")
+
+    if decision == "approve":
+        entry.status = REHEARSAL_STATUS_APPROVED
+        db.commit()
+        add_flash(request, "Репетиция одобрена и добавлена участнику в календарь.", "success")
+    else:
+        db.delete(entry)
+        db.commit()
+        add_flash(request, "Репетиция отклонена и удалена из предложений.", "info")
+    return redirect("/my-projects")
+
+
 @app.get("/my-calendar", response_class=HTMLResponse)
 def my_calendar(request: Request, db: Session = Depends(get_db)):
     user = current_user(request, db)
@@ -2004,6 +2476,25 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
             CosplanCard.photoset_date >= today,
         )
     ).scalars().all()
+    rehearsal_entries = db.execute(
+        select(RehearsalEntry)
+        .where(
+            RehearsalEntry.user_id == user.id,
+            RehearsalEntry.entry_date.is_not(None),
+            RehearsalEntry.entry_date >= today,
+            or_(
+                and_(
+                    RehearsalEntry.source_type == REHEARSAL_SOURCE_PARTICIPANT,
+                    RehearsalEntry.status == REHEARSAL_STATUS_APPROVED,
+                ),
+                and_(
+                    RehearsalEntry.source_type == REHEARSAL_SOURCE_LEADER,
+                    RehearsalEntry.status == REHEARSAL_STATUS_ACCEPTED,
+                ),
+            ),
+        )
+        .order_by(RehearsalEntry.entry_date, RehearsalEntry.entry_time, RehearsalEntry.id)
+    ).scalars().all()
     alias_to_username, users_by_username, _ = build_user_alias_lookup(db)
 
     entries: list[dict[str, Any]] = []
@@ -2016,6 +2507,7 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
         entries.append(
             {
                 "date": festival.event_date,
+                "time": "",
                 "kind": "Фестиваль (Я иду)",
                 "title": festival.name or "Без названия",
                 "city": festival.city or "—",
@@ -2032,14 +2524,29 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
         entries.append(
             {
                 "date": card.photoset_date,
+                "time": "",
                 "kind": "Фотосет",
                 "title": card.character_name or "Без карточки",
                 "city": card.city or "—",
                 "coproplayers": ", ".join(coproplayers_display),
             }
         )
+    for entry in rehearsal_entries:
+        card = entry.cosplan_card
+        if not card:
+            continue
+        entries.append(
+            {
+                "date": entry.entry_date,
+                "time": entry.entry_time or "",
+                "kind": "Репетиция",
+                "title": card.character_name or "Без карточки",
+                "city": card.city or "—",
+                "coproplayers": "",
+            }
+        )
 
-    entries.sort(key=lambda item: (item["date"], item["kind"], item["title"]))
+    entries.sort(key=lambda item: (item["date"], item.get("time", ""), item["kind"], item["title"]))
     grouped: list[dict[str, Any]] = []
     by_month: dict[tuple[int, int], list[dict[str, Any]]] = defaultdict(list)
     for entry in entries:

@@ -35,4 +35,35 @@
     </div>
   </form>
 </section>
+
+{% if admin_stats %}
+<section class="box">
+  <h2>Статистика сервиса</h2>
+  <p class="meta">Всего зарегистрированных пользователей: <strong>{{ admin_stats.total_users }}</strong></p>
+  <p class="meta">Всего созданных карточек косплана: <strong>{{ admin_stats.total_cosplan_cards }}</strong></p>
+  <p class="meta">Уникальных городов (без «Не указан»): <strong>{{ admin_stats.unique_city_count }}</strong></p>
+
+  <h3>Пользователи по городам</h3>
+  {% if admin_stats.city_stats %}
+    <table class="table">
+      <thead>
+        <tr>
+          <th>Город</th>
+          <th>Пользователей</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in admin_stats.city_stats %}
+          <tr>
+            <td>{{ row.city }}</td>
+            <td>{{ row.count }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p class="muted">Данных по городам пока нет.</p>
+  {% endif %}
+</section>
+{% endif %}
 {% endblock %}

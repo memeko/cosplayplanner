@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="section-head">
+  <h1>Репетиции</h1>
+</section>
+
+<section class="box">
+  <h2>Новая карточка репетиций</h2>
+  <form method="post" action="/rehearsals/new" class="actions-inline wrap-start">
+    <label>
+      Карточка косплана
+      <select name="cosplan_card_id" required>
+        <option value="">Выберите карточку</option>
+        {% for card in available_cards %}
+          <option value="{{ card.id }}">{{ card.character_name }}{% if card.fandom %} ({{ card.fandom }}){% endif %}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <button type="submit" class="btn btn-accent">Создать / открыть</button>
+  </form>
+</section>
+
+{% if rehearsal_cards %}
+<div class="cards-grid">
+  {% for row in rehearsal_cards %}
+  {% set card = row.cosplan_card %}
+  {% set row_entries = entries_by_card.get(row.id, []) %}
+  <article class="card">
+    <div class="row-between">
+      <h3>
+        {% if card %}
+          <a href="/cosplan/{{ card.id }}" class="card-title-link">{{ card.character_name }}</a>
+        {% else %}
+          Карточка удалена
+        {% endif %}
+      </h3>
+      <span class="chip">Дат: {{ participant_entries_count.get(row.id, 0) }}/10</span>
+    </div>
+    <p class="meta">Фандом: {{ card.fandom if card else "—" }}</p>
+    <p class="meta">Тип: {{ "Проект" if card and card.plan_type == "project" else "Личное" }}</p>
+    <p class="meta">Дедлайн: {{ row.deadline_date.strftime('%d-%m-%Y') if row.deadline_date else "—" }}</p>
+
+    <form method="post" action="/rehearsals/{{ row.id }}/add-date" class="actions-inline wrap-start">
+      <label>
+        Дата репетиции
+        <input type="date" name="entry_date" required />
+      </label>
+      <button type="submit" class="btn">Добавить дату</button>
+    </form>
+
+    {% if row_entries %}
+      <ul class="rehearsal-list">
+        {% for entry in row_entries %}
+        <li class="rehearsal-item">
+          <div>
+            <strong>{{ entry.entry_date.strftime('%d-%m-%Y') if entry.entry_date else "—" }}</strong>
+            {% if entry.entry_time %}
+              <span class="muted">{{ entry.entry_time }}</span>
+            {% endif %}
+            <span class="chip rehearsal-status rehearsal-status-{{ entry.status }}">{{ rehearsal_status_labels.get(entry.status, entry.status) }}</span>
+            {% if entry.source_type == "leader" %}
+              <span class="muted">предложил(а): @{{ proposers_by_id[entry.proposed_by_user_id].username if entry.proposed_by_user_id in proposers_by_id else "руководитель" }}</span>
+            {% endif %}
+          </div>
+          {% if entry.source_type == "leader" and entry.status == "proposed" %}
+          <div class="actions-inline">
+            <form method="post" action="/rehearsals/entries/{{ entry.id }}/respond">
+              <input type="hidden" name="decision" value="accept" />
+              <input type="hidden" name="next" value="/rehearsals" />
+              <button type="submit" class="btn btn-accept">Принять</button>
+            </form>
+            <form method="post" action="/rehearsals/entries/{{ entry.id }}/respond">
+              <input type="hidden" name="decision" value="decline" />
+              <input type="hidden" name="next" value="/rehearsals" />
+              <button type="submit" class="btn btn-decline">Отклонить</button>
+            </form>
+          </div>
+          {% endif %}
+        </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p class="muted">Даты репетиций пока не добавлены.</p>
+    {% endif %}
+  </article>
+  {% endfor %}
+</div>
+{% else %}
+<section class="box">
+  <p class="muted">Карточек репетиций пока нет. Создайте первую карточку, выбрав косплан.</p>
+</section>
+{% endif %}
+{% endblock %}

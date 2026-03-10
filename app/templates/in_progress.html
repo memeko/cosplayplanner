@@ -39,6 +39,40 @@
       <p class="meta"><strong>Внимание: до дедлайна меньше двух недель.</strong></p>
     {% endif %}
 
+    {% set rehearsal_items = leader_rehearsals_by_card.get(row.cosplan_card_id, []) %}
+    {% if rehearsal_items %}
+      <h4>Репетиции от руководителя</h4>
+      <ul class="rehearsal-list">
+        {% for rehearsal in rehearsal_items %}
+          <li class="rehearsal-item">
+            <div>
+              <strong>{{ rehearsal.entry_date.strftime('%d-%m-%Y') if rehearsal.entry_date else "—" }}</strong>
+              {% if rehearsal.entry_time %}
+                <span class="muted">{{ rehearsal.entry_time }}</span>
+              {% endif %}
+              <span class="chip rehearsal-status rehearsal-status-{{ rehearsal.status }}">
+                {{ rehearsal_status_labels.get(rehearsal.status, rehearsal.status) }}
+              </span>
+            </div>
+            {% if rehearsal.status == "proposed" %}
+              <div class="actions-inline">
+                <form method="post" action="/rehearsals/entries/{{ rehearsal.id }}/respond">
+                  <input type="hidden" name="decision" value="accept" />
+                  <input type="hidden" name="next" value="/in-progress" />
+                  <button type="submit" class="btn btn-accept">Принять</button>
+                </form>
+                <form method="post" action="/rehearsals/entries/{{ rehearsal.id }}/respond">
+                  <input type="hidden" name="decision" value="decline" />
+                  <input type="hidden" name="next" value="/in-progress" />
+                  <button type="submit" class="btn btn-decline">Отклонить</button>
+                </form>
+              </div>
+            {% endif %}
+          </li>
+        {% endfor %}
+      </ul>
+    {% endif %}
+
     <h4>Чеклист</h4>
     {% set items = row.checklist_json or [] %}
     {% if items %}
