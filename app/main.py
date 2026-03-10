@@ -130,6 +130,7 @@ def apply_schema_migrations() -> None:
             ("craft_material_price", "FLOAT"),
             ("craft_deadline", "DATE"),
             ("craft_currency", "VARCHAR(16)"),
+            ("references_json", "JSON NOT NULL DEFAULT '[]'"),
         ],
         "festival_notifications": [
             ("id", "INTEGER PRIMARY KEY"),
@@ -616,6 +617,7 @@ def card_fields_for_sync() -> list[str]:
         "photoset_date",
         "photoset_price",
         "photoset_currency",
+        "references_json",
         "coproplayers_json",
         "coproplayer_nicks_json",
         "notes",
@@ -826,6 +828,8 @@ def get_card_form_values(card: CosplanCard | None = None) -> dict[str, Any]:
             "photoset_date": "",
             "photoset_price": "",
             "photoset_currency": "RUB",
+            "references_json": [],
+            "references_input": "",
             "coproplayers_json": [],
             "coproplayer_nicks_json": [],
             "coproplayers_input": "",
@@ -896,6 +900,8 @@ def get_card_form_values(card: CosplanCard | None = None) -> dict[str, Any]:
         "photoset_date": card.photoset_date.isoformat() if card.photoset_date else "",
         "photoset_price": "" if card.photoset_price is None else f"{card.photoset_price:g}",
         "photoset_currency": card.photoset_currency or "RUB",
+        "references_json": as_list(card.references_json),
+        "references_input": "\n".join(as_list(card.references_json)),
         "coproplayers_json": as_list(card.coproplayers_json),
         "coproplayer_nicks_json": as_list(card.coproplayer_nicks_json),
         "coproplayers_input": ", ".join(as_list(card.coproplayers_json) or as_list(card.coproplayer_nicks_json)),
@@ -1046,7 +1052,7 @@ async def register_submit(request: Request, db: Session = Depends(get_db)):
     db.refresh(user)
 
     request.session["user_id"] = user.id
-    add_flash(request, "Аккаунт создан.", "success")
+    add_flash(request, "welcome", "welcome")
     return redirect("/cosplan")
 
 
@@ -1179,6 +1185,7 @@ def cosplan_list(request: Request, q: str = "", db: Session = Depends(get_db)):
                 card.project_leader or "",
                 card.notes or "",
             ]
+            searchable.extend(as_list(card.references_json))
             coproplayers = as_list(card.coproplayers_json) or as_list(card.coproplayer_nicks_json)
             searchable.extend(coproplayers)
             searchable.extend(
@@ -1241,6 +1248,7 @@ def cosplan_export_csv(request: Request, db: Session = Depends(get_db)):
             "nominations",
             "coproplayers",
             "coproplayer_nicks",
+            "references",
             "costume_type",
             "shoes_type",
             "wig_type",
@@ -1265,6 +1273,7 @@ def cosplan_export_csv(request: Request, db: Session = Depends(get_db)):
                 ", ".join(as_list(card.nominations_json)),
                 ", ".join(as_list(card.coproplayers_json)),
                 ", ".join(as_list(card.coproplayer_nicks_json)),
+                ", ".join(as_list(card.references_json)),
                 card.costume_type or "",
                 card.shoes_type or "",
                 card.wig_type or "",
@@ -1349,6 +1358,7 @@ def cosplan_detail(card_id: int, request: Request, db: Session = Depends(get_db)
         card_owner=card_owner,
         card_total=card_total,
         card_total_currency=card_total_currency,
+        reference_urls=as_list(card.references_json),
         card_date_conflicts=card_date_conflicts,
         can_comment=can_comment_on_card(card, user),
         top_level_comments=top_level_comments,
@@ -1585,6 +1595,8 @@ def save_card_from_form(form: Any, card: CosplanCard, user: User, db: Session) -
     card.photoset_date = parse_date(str(form.get("photoset_date", "")))
     card.photoset_price = parse_float(str(form.get("photoset_price", "")))
     card.photoset_currency = str(form.get("photoset_currency", "")).strip() or None
+    references = merge_unique(split_csv(str(form.get("references_input", ""))))
+    card.references_json = [value for value in references if value.lower().startswith(("http://", "https://"))]
 
     card.coproplayers_json = coproplayer_aliases
     card.coproplayer_nicks_json = coproplayer_nicks

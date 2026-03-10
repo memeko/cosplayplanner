@@ -22,6 +22,19 @@
   <p class="meta">Ориентировочная цена: {{ '%.2f'|format(card_total or 0) }} {{ card_total_currency }}</p>
 </section>
 
+{% if reference_urls %}
+<section class="box">
+  <h2>Референсы</h2>
+  <div class="reference-grid">
+    {% for url in reference_urls %}
+      <a class="reference-tile" href="{{ url }}" target="_blank" rel="noreferrer">
+        <img src="{{ url }}" alt="Референс" loading="lazy" onerror="this.parentElement.remove();" />
+      </a>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
 {% if card.notes %}
 <section class="box">
   <h2>Примечания</h2>

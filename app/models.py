@@ -145,6 +145,7 @@ class CosplanCard(Base):
     photoset_date = Column(Date, nullable=True)
     photoset_price = Column(Float, nullable=True)
     photoset_currency = Column(String(16), nullable=True)
+    references_json = Column(JSON, nullable=False, default=list)
 
     coproplayers_json = Column(JSON, nullable=False, default=list)
     coproplayer_nicks_json = Column(JSON, nullable=False, default=list)

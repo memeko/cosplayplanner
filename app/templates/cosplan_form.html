@@ -439,6 +439,22 @@
   </section>
 
   <section class="box">
+    <h2>Референсы</h2>
+    <label>
+      URL изображений (через запятую, ; или с новой строки)
+      <textarea name="references_input" id="references_input" rows="5" placeholder="https://...">{{ form.references_input }}</textarea>
+    </label>
+    <p class="muted">Файлы не загружаются на сервер: используются только внешние ссылки.</p>
+    <div class="reference-grid" id="references_preview">
+      {% for url in form.references_json %}
+        <a class="reference-tile" href="{{ url }}" target="_blank" rel="noreferrer">
+          <img src="{{ url }}" alt="Референс" loading="lazy" onerror="this.parentElement.remove();" />
+        </a>
+      {% endfor %}
+    </div>
+  </section>
+
+  <section class="box">
     <h2>Ориентировочная стоимость проекта</h2>
     <p class="estimated-total">
       <strong><span id="estimated_total_value">{{ '%.2f'|format(form.estimated_total or 0) }}</span> <span id="estimated_total_currency">{{ form.estimated_total_currency }}</span></strong>
@@ -578,6 +594,34 @@
     }
   };
 
+  const updateReferencesPreview = () => {
+    const textarea = document.getElementById("references_input");
+    const wrap = document.getElementById("references_preview");
+    if (!textarea || !wrap) return;
+    const parts = (textarea.value || "")
+      .split(/[\n,;]/g)
+      .map((v) => v.trim())
+      .filter((v) => v && /^https?:\/\//i.test(v));
+    const unique = Array.from(new Set(parts.map((v) => v.trim())));
+    wrap.innerHTML = "";
+    unique.forEach((url) => {
+      const link = document.createElement("a");
+      link.className = "reference-tile";
+      link.href = url;
+      link.target = "_blank";
+      link.rel = "noreferrer";
+      const image = document.createElement("img");
+      image.src = url;
+      image.alt = "Референс";
+      image.loading = "lazy";
+      image.onerror = () => {
+        link.remove();
+      };
+      link.appendChild(image);
+      wrap.appendChild(link);
+    });
+  };
+
   ["is_au", "costume_type", "sewing_type", "shoes_type", "wig_type", "craft_type", "lenses_enabled", "plan_type"].forEach((id) => {
     const el = document.getElementById(id);
     if (el) {
@@ -588,6 +632,10 @@
   const cityFilterInput = document.getElementById("festival_city_filter");
   if (cityFilterInput) {
     cityFilterInput.addEventListener("input", applyFestivalCityFilter);
+  }
+  const referencesInput = document.getElementById("references_input");
+  if (referencesInput) {
+    referencesInput.addEventListener("input", updateReferencesPreview);
   }
 
   document.querySelectorAll(".price-field").forEach((input) => {
@@ -604,5 +652,6 @@
   applyFormRules();
   applyFestivalCityFilter();
   updateEstimatedTotal();
+  updateReferencesPreview();
 </script>
 {% endblock %}

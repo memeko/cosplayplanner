@@ -29,8 +29,22 @@
   </header>
 
   <main class="container">
-    {% if flash %}
+    {% if flash and flash.kind != "welcome" %}
       <div class="flash flash-{{ flash.kind }}">{{ flash.text }}</div>
+    {% endif %}
+
+    {% if flash and flash.kind == "welcome" %}
+      <div class="welcome-overlay" id="welcome-modal">
+        <div class="welcome-modal">
+          <h2>Спасибо за регистрацию и успешных проектов!</h2>
+          <p>Спасибо, что решил(а) пользоваться этим планнером. Надеюсь, он поможет тебе систематизировать проекты, их стоимость и ничего не потерять. Он призван облегчить рутину в подготовке для косплееров. Все фестивали импортируются с любимого Cosplay2ru.</p>
+          <p>Этот проект некоммерческий. Но я буду благодарен, если ты подпишешься на мой телеграм-канал <a href="https://t.me/brfox_cosplay" target="_blank" rel="noreferrer">«Братец Лис» (t.me/brfox_cosplay)</a>. Также ты можешь писать в сообщения канала свои пожелания по развитию проекта.</p>
+          <p>С уважением,<br />Братец Лис</p>
+          <div class="actions-inline">
+            <button type="button" class="btn btn-accent" onclick="document.getElementById('welcome-modal').style.display='none'">Понятно</button>
+          </div>
+        </div>
+      </div>
     {% endif %}
     {% block content %}{% endblock %}
   </main>
