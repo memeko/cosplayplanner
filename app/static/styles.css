@@ -537,6 +537,96 @@ textarea {
   line-height: 1.45;
 }
 
+.landing-hero {
+  min-height: 50vh;
+  display: grid;
+  gap: 12px;
+  place-items: center;
+  text-align: center;
+  padding: 28px 18px;
+}
+
+.landing-logo-wrap {
+  width: 132px;
+  height: 132px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: #ffffff;
+  display: grid;
+  place-items: center;
+  box-shadow: 0 8px 18px rgba(8, 51, 68, 0.1);
+}
+
+.landing-logo {
+  width: 84px;
+  height: 84px;
+}
+
+.landing-actions {
+  justify-content: center;
+}
+
+.landing-features {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  margin-top: 12px;
+}
+
+.landing-feature {
+  border: 1px solid var(--line);
+  background: #f8fafc;
+  border-radius: 12px;
+  padding: 12px;
+}
+
+.landing-feature h3 {
+  margin-bottom: 6px;
+}
+
+.landing-feature p {
+  margin: 0;
+  color: var(--muted);
+}
+
+.register-policy-note {
+  margin: 0;
+  font-size: 13px;
+}
+
+.policy-spoiler {
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+  padding: 10px;
+  background: #f8fafc;
+}
+
+.policy-spoiler summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.policy-spoiler p {
+  margin: 10px 0 0;
+}
+
+.policy-page {
+  line-height: 1.48;
+}
+
+.policy-page h1 {
+  margin-bottom: 6px;
+}
+
+.policy-page h2 {
+  margin: 18px 0 8px;
+}
+
+.policy-page p,
+.policy-page li {
+  margin: 0 0 8px;
+}
+
 @media (max-width: 900px) {
   .two-col,
   .three-col,

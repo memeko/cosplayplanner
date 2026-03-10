@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="landing-hero box">
+  <div class="landing-logo-wrap">
+    <img src="/static/favicon.svg" alt="Cosplay Planner" class="landing-logo" />
+  </div>
+  <h1>Все планы – в одном месте!</h1>
+  <p class="muted">
+    Cosplay Planner помогает вести косплан, фестивали, календарь и командную работу по проектам.
+  </p>
+  <div class="actions-inline landing-actions">
+    <a href="/login" class="btn btn-accent">Войти</a>
+    <a href="/register" class="btn">Регистрация</a>
+  </div>
+</section>
+
+<section class="box">
+  <h2>Памятка по функционалу</h2>
+  <div class="landing-features">
+    <article class="landing-feature">
+      <h3>Косплан</h3>
+      <p>Карточки персонажей, бюджет по блокам, сроки, референсы и связь с фестивалями.</p>
+    </article>
+    <article class="landing-feature">
+      <h3>In Progress</h3>
+      <p>Активные проекты с чеклистами, заморозкой и контролем дедлайнов.</p>
+    </article>
+    <article class="landing-feature">
+      <h3>Фестивали</h3>
+      <p>База фестивалей, фильтры, оповещения, импорт, сводка и экспорт в календарь.</p>
+    </article>
+    <article class="landing-feature">
+      <h3>Мой календарь</h3>
+      <p>Единый список занятых дат по фестивалям и фотосетам.</p>
+    </article>
+    <article class="landing-feature">
+      <h3>Мои проекты</h3>
+      <p>Карточки, где вы указаны руководителем, с отдельными комментариями.</p>
+    </article>
+    <article class="landing-feature">
+      <h3>Поиск в проекты</h3>
+      <p>Общая доска объявлений для поиска участников на фестиваль или фотосет.</p>
+    </article>
+  </div>
+</section>
+{% endblock %}

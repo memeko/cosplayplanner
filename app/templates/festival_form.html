@@ -23,9 +23,16 @@
         <input type="text" name="city" value="{{ form.city }}" />
       </label>
       <label>
-        Дата фестиваля
+        Дата начала фестиваля
         <input type="date" name="event_date" value="{{ form.event_date }}" />
       </label>
+      <label>
+        Дата окончания
+        <input type="date" name="event_end_date" value="{{ form.event_end_date }}" />
+      </label>
+    </div>
+
+    <div class="grid three-col">
       <label>
         Дедлайн подачи
         <input type="date" name="submission_deadline" value="{{ form.submission_deadline }}" />

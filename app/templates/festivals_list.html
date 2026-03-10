@@ -95,7 +95,16 @@
     <tbody>
       {% for row in summary_rows %}
       <tr class="{% if row.is_home_city %}summary-home-city{% endif %}">
-        <td>{{ row.date.strftime('%d-%m-%Y') if row.date else "—" }}</td>
+        <td>
+          {% if row.kind == "Событие" and row.festival.event_date %}
+            {{ row.festival.event_date.strftime('%d-%m-%Y') }}
+            {% if row.festival.event_end_date and row.festival.event_end_date != row.festival.event_date %}
+              — {{ row.festival.event_end_date.strftime('%d-%m-%Y') }}
+            {% endif %}
+          {% else %}
+            {{ row.date.strftime('%d-%m-%Y') if row.date else "—" }}
+          {% endif %}
+        </td>
         <td>{{ row.kind }}</td>
         <td>{{ row.festival.name }}</td>
         <td>{{ row.festival.city or "—" }}</td>
@@ -120,7 +129,17 @@
       {% if festival.is_going %}<span class="chip">Я иду</span>{% endif %}
     </div>
     <p class="meta">Город: {{ festival.city or "—" }}</p>
-    <p class="meta">Дата: {{ festival.event_date.strftime('%d-%m-%Y') if festival.event_date else "—" }}</p>
+    <p class="meta">
+      Дата:
+      {% if festival.event_date %}
+        {{ festival.event_date.strftime('%d-%m-%Y') }}
+        {% if festival.event_end_date and festival.event_end_date != festival.event_date %}
+          — {{ festival.event_end_date.strftime('%d-%m-%Y') }}
+        {% endif %}
+      {% else %}
+        —
+      {% endif %}
+    </p>
     <p class="meta">Дедлайн подачи: {{ festival.submission_deadline.strftime('%d-%m-%Y') if festival.submission_deadline else "—" }}</p>
     <p class="meta">Номинации: {{ [festival.nomination_1, festival.nomination_2, festival.nomination_3] | reject('equalto', None) | reject('equalto', '') | list | join(', ') or '—' }}</p>
     {% if festival.going_coproplayers_json %}

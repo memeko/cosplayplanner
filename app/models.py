@@ -206,6 +206,7 @@ class Festival(Base):
     url = Column(Text, nullable=True)
     city = Column(String(255), nullable=True, index=True)
     event_date = Column(Date, nullable=True)
+    event_end_date = Column(Date, nullable=True)
     submission_deadline = Column(Date, nullable=True)
 
     nomination_1 = Column(String(255), nullable=True)

@@ -144,6 +144,9 @@ def apply_schema_migrations() -> None:
         "in_progress_cards": [
             ("is_frozen", "BOOLEAN NOT NULL DEFAULT 0"),
         ],
+        "festivals": [
+            ("event_end_date", "DATE"),
+        ],
     }
 
     with engine.begin() as conn:
@@ -388,6 +391,21 @@ def get_accessible_card(
 
 def month_label_ru(value: date) -> str:
     return f"{RU_MONTH_NAMES[value.month]} {value.year}"
+
+
+def festival_range_end(festival: Festival) -> date | None:
+    if not festival.event_date:
+        return festival.event_end_date
+    if not festival.event_end_date or festival.event_end_date < festival.event_date:
+        return festival.event_date
+    return festival.event_end_date
+
+
+def festival_is_active(festival: Festival, today: date) -> bool:
+    if not festival.event_date:
+        return True
+    end_date = festival_range_end(festival)
+    return bool(end_date and end_date >= today)
 
 
 def sqlite_database_path() -> Path | None:
@@ -957,6 +975,7 @@ def get_festival_form_values(festival: Festival | None = None) -> dict[str, Any]
             "url": "",
             "city": "",
             "event_date": "",
+            "event_end_date": "",
             "submission_deadline": "",
             "nomination_1": "",
             "nomination_2": "",
@@ -971,6 +990,7 @@ def get_festival_form_values(festival: Festival | None = None) -> dict[str, Any]
         "url": festival.url or "",
         "city": festival.city or "",
         "event_date": festival.event_date.isoformat() if festival.event_date else "",
+        "event_end_date": festival.event_end_date.isoformat() if festival.event_end_date else "",
         "submission_deadline": festival.submission_deadline.isoformat() if festival.submission_deadline else "",
         "nomination_1": festival.nomination_1 or "",
         "nomination_2": festival.nomination_2 or "",
@@ -1008,7 +1028,13 @@ def index(request: Request, db: Session = Depends(get_db)):
     user = current_user(request, db)
     if user:
         return redirect("/cosplan")
-    return redirect("/login")
+    return template_response(request, "landing.html", user=None, active_tab=None)
+
+
+@app.get("/privacy-policy", response_class=HTMLResponse)
+def privacy_policy_page(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    return template_response(request, "privacy_policy.html", user=user, active_tab=None)
 
 
 @app.get("/register", response_class=HTMLResponse)
@@ -2213,7 +2239,7 @@ def festivals_list(request: Request, db: Session = Depends(get_db)):
     active_festivals = [
         festival
         for festival in festivals
-        if not festival.event_date or festival.event_date >= today
+        if festival_is_active(festival, today)
     ]
 
     alias_to_username, users_by_username, alias_options = build_user_alias_lookup(db)
@@ -2279,12 +2305,18 @@ def festivals_list(request: Request, db: Session = Depends(get_db)):
     summary_rows: list[dict[str, Any]] = []
     for festival in active_festivals:
         is_home_city = city_matches(home_city_value, festival.city)
-        if festival.event_date and today <= festival.event_date <= month_limit:
+        festival_end_date = festival_range_end(festival)
+        if (
+            festival.event_date
+            and festival_end_date
+            and festival_end_date >= today
+            and festival.event_date <= month_limit
+        ):
             summary_rows.append(
                 {
                     "kind": "Событие",
                     "festival": festival,
-                    "date": festival.event_date,
+                    "date": festival.event_date if festival.event_date >= today else today,
                     "is_home_city": is_home_city,
                 }
             )
@@ -2410,10 +2442,18 @@ def festivals_edit(festival_id: int, request: Request, db: Session = Depends(get
 def save_festival_from_form(form: Any, festival: Festival, user: User, db: Session) -> None:
     alias_to_username, _, _ = build_user_alias_lookup(db)
 
+    event_date = parse_date(str(form.get("event_date", "")))
+    event_end_date = parse_date(str(form.get("event_end_date", "")))
+    if not event_date and event_end_date:
+        event_date = event_end_date
+    if event_date and event_end_date and event_end_date < event_date:
+        event_end_date = event_date
+
     festival.name = str(form.get("name", "")).strip()
     festival.url = str(form.get("url", "")).strip() or None
     festival.city = str(form.get("city", "")).strip() or None
-    festival.event_date = parse_date(str(form.get("event_date", "")))
+    festival.event_date = event_date
+    festival.event_end_date = event_end_date
     festival.submission_deadline = parse_date(str(form.get("submission_deadline", "")))
     festival.nomination_1 = str(form.get("nomination_1", "")).strip() or None
     festival.nomination_2 = str(form.get("nomination_2", "")).strip() or None
@@ -2620,6 +2660,7 @@ def festivals_export_ics(request: Request, db: Session = Depends(get_db)):
             continue
 
         if festival.event_date:
+            event_end_date = festival_range_end(festival)
             lines.extend(
                 [
                     "BEGIN:VEVENT",
@@ -2627,6 +2668,11 @@ def festivals_export_ics(request: Request, db: Session = Depends(get_db)):
                     f"DTSTAMP:{dtstamp}",
                     f"SUMMARY:{esc_ics(festival.name)}",
                     f"DTSTART;VALUE=DATE:{festival.event_date.strftime('%Y%m%d')}",
+                    *(
+                        [f"DTEND;VALUE=DATE:{(event_end_date + timedelta(days=1)).strftime('%Y%m%d')}"]
+                        if event_end_date and event_end_date > festival.event_date
+                        else []
+                    ),
                     f"LOCATION:{esc_ics(festival.city)}",
                     f"URL:{esc_ics(festival.url)}",
                     f"DESCRIPTION:{esc_ics('Фестиваль. Номинации: ' + ', '.join([n for n in [festival.nomination_1, festival.nomination_2, festival.nomination_3] if n]))}",
