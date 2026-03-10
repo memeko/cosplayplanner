@@ -547,19 +547,21 @@ textarea {
 }
 
 .landing-logo-wrap {
-  width: 132px;
-  height: 132px;
+  width: min(30vw, 200px);
+  max-width: 30vw;
+  aspect-ratio: 1 / 1;
   border-radius: 999px;
   border: 1px solid var(--line);
   background: #ffffff;
   display: grid;
   place-items: center;
+  margin-inline: auto;
   box-shadow: 0 8px 18px rgba(8, 51, 68, 0.1);
 }
 
 .landing-logo {
-  width: 84px;
-  height: 84px;
+  width: 62%;
+  height: 62%;
 }
 
 .landing-actions {
