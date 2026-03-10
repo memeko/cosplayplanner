@@ -53,19 +53,21 @@
     </label>
 
     <div id="going_coproplayers_wrap">
-      <label>Сокосплеер(ы)</label>
-      <div class="chips-wrap">
-        {% for value in coproplayer_options %}
-        <label class="chip-check">
-          <input type="checkbox" name="going_coproplayers" value="{{ value }}" {% if value in form.going_coproplayers_json %}checked{% endif %} />
-          {{ value }}
-        </label>
-        {% endfor %}
-      </div>
       <label>
-        Добавить сокосплеера (через запятую)
-        <input type="text" name="going_coproplayers_new" />
+        Сокосплеер(ы) (через запятую)
+        <input
+          type="text"
+          name="going_coproplayers_input"
+          value="{{ form.going_coproplayers_input }}"
+          list="festival-coproplayer-options"
+          placeholder="username1, cosplay_nick2"
+        />
       </label>
+      <datalist id="festival-coproplayer-options">
+        {% for value in coproplayer_alias_options %}
+          <option value="{{ value }}"></option>
+        {% endfor %}
+      </datalist>
     </div>
   </section>
 

@@ -22,6 +22,7 @@ class User(Base):
 
     id = Column(Integer, primary_key=True)
     username = Column(String(100), nullable=False, unique=True, index=True)
+    cosplay_nick = Column(String(100), nullable=True, unique=True, index=True)
     email = Column(String(255), nullable=False, unique=True, index=True)
     home_city = Column(String(255), nullable=True, index=True)
     password_hash = Column(String(255), nullable=False)
@@ -111,13 +112,22 @@ class CosplanCard(Base):
     lenses_price = Column(Float, nullable=True)
     lenses_currency = Column(String(16), nullable=True)
 
-    wig_type = Column(String(32), nullable=True)  # wigmaker | buy
+    wig_type = Column(String(32), nullable=True)  # wigmaker | buy | no_buy
     wigmaker_name = Column(String(255), nullable=True)
     wig_price = Column(Float, nullable=True)
     wig_buy_price = Column(Float, nullable=True)
     wig_currency = Column(String(16), nullable=True)
     wig_deadline = Column(Date, nullable=True)
     wig_link = Column(Text, nullable=True)
+    wig_no_buy_from = Column(String(255), nullable=True)
+    wig_restyle = Column(Boolean, nullable=False, default=False)
+
+    craft_type = Column(String(32), nullable=True)  # self | order
+    craft_master = Column(String(255), nullable=True)
+    craft_price = Column(Float, nullable=True)
+    craft_material_price = Column(Float, nullable=True)
+    craft_deadline = Column(Date, nullable=True)
+    craft_currency = Column(String(16), nullable=True)
 
     plan_type = Column(String(32), nullable=True)  # project | personal
     project_leader = Column(String(255), nullable=True)

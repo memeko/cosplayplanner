@@ -11,6 +11,10 @@
       <input type="text" name="username" value="{{ user.username }}" required />
     </label>
     <label>
+      Ник косплеера
+      <input type="text" name="cosplay_nick" value="{{ user.cosplay_nick or '' }}" placeholder="Например, neko_cos" />
+    </label>
+    <label>
       Email
       <input type="email" name="email" value="{{ user.email }}" required />
     </label>

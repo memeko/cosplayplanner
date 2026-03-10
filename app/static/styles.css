@@ -235,6 +235,11 @@ textarea {
   border-color: #ef4444;
 }
 
+.card.urgent-progress {
+  background: #fff7ed;
+  border-color: #fb923c;
+}
+
 .card-title-link {
   color: inherit;
   text-decoration: none;

@@ -199,6 +199,7 @@
       <select name="wig_type" id="wig_type">
         <option value="wigmaker" {% if form.wig_type == 'wigmaker' %}selected{% endif %}>Вигмейкер</option>
         <option value="buy" {% if form.wig_type == 'buy' %}selected{% endif %}>Покупка</option>
+        <option value="no_buy" {% if form.wig_type == 'no_buy' %}selected{% endif %}>Не требуется покупка</option>
       </select>
     </label>
 
@@ -227,10 +228,60 @@
         <input type="text" name="wig_buy_price" value="{{ form.wig_buy_price }}" class="price-field" />
       </label>
     </div>
+
+    <div id="wig_no_buy_wrap" class="grid two-col">
+      <label>
+        Использовать парик от
+        <input type="text" name="wig_no_buy_from" value="{{ form.wig_no_buy_from }}" />
+      </label>
+      <label class="inline-check top-offset">
+        <input type="checkbox" name="wig_restyle" {% if form.wig_restyle %}checked{% endif %} />
+        Переукладка
+      </label>
+    </div>
     <label>
       Валюта
       <input type="text" list="currency-options" name="wig_currency" value="{{ form.wig_currency }}" />
     </label>
+  </section>
+
+  <section class="box">
+    <h2>Крафт</h2>
+    <div class="grid two-col">
+      <label>
+        Вариант
+        <select name="craft_type" id="craft_type">
+          <option value="self" {% if form.craft_type == 'self' %}selected{% endif %}>Самодельный</option>
+          <option value="order" {% if form.craft_type == 'order' %}selected{% endif %}>Заказ</option>
+        </select>
+      </label>
+      <label>
+        Валюта
+        <input type="text" list="currency-options" name="craft_currency" value="{{ form.craft_currency }}" />
+      </label>
+    </div>
+
+    <div id="craft_order_wrap" class="grid three-col">
+      <label>
+        Мастер
+        <input type="text" name="craft_master" value="{{ form.craft_master }}" />
+      </label>
+      <label>
+        Цена
+        <input type="text" name="craft_price" value="{{ form.craft_price }}" class="price-field" />
+      </label>
+      <label>
+        Дедлайн
+        <input type="date" name="craft_deadline" value="{{ form.craft_deadline }}" />
+      </label>
+    </div>
+
+    <div id="craft_self_wrap" class="grid one-col">
+      <label>
+        Стоимость материалов
+        <input type="text" name="craft_material_price" value="{{ form.craft_material_price }}" class="price-field" />
+      </label>
+    </div>
   </section>
 
   <section class="box">
@@ -375,23 +426,15 @@
       </label>
     </div>
 
-    <label>Сокосплеер(ы)</label>
-    <div class="chips-wrap">
-      {% for value in coproplayer_options %}
-      <label class="chip-check">
-        <input type="checkbox" name="coproplayers" value="{{ value }}" {% if value in form.coproplayers_json %}checked{% endif %} />
-        {{ value }}
-      </label>
-      {% endfor %}
-    </div>
     <label>
-      Добавить сокосплеера (через запятую)
-      <input type="text" name="coproplayers_new" />
-    </label>
-
-    <label>
-      Сокосплеер по нику пользователя (через запятую)
-      <input type="text" name="coproplayer_nicks_input" value="{{ form.coproplayer_nicks_input }}" placeholder="nickname1, nickname2" />
+      Сокосплеер(ы) (через запятую)
+      <input
+        type="text"
+        name="coproplayers_input"
+        value="{{ form.coproplayers_input }}"
+        list="coproplayer-alias-options"
+        placeholder="username1, cosplay_nick2"
+      />
     </label>
   </section>
 
@@ -413,6 +456,12 @@
 
   <datalist id="currency-options">
     {% for value in currency_options %}
+      <option value="{{ value }}"></option>
+    {% endfor %}
+  </datalist>
+
+  <datalist id="coproplayer-alias-options">
+    {% for value in coproplayer_alias_options %}
       <option value="{{ value }}"></option>
     {% endfor %}
   </datalist>
@@ -450,6 +499,11 @@
     const wigType = document.getElementById("wig_type")?.value;
     toggleVisibility("wigmaker_wrap", wigType === "wigmaker");
     toggleVisibility("wig_buy_wrap", wigType === "buy");
+    toggleVisibility("wig_no_buy_wrap", wigType === "no_buy");
+
+    const craftType = document.getElementById("craft_type")?.value;
+    toggleVisibility("craft_order_wrap", craftType === "order");
+    toggleVisibility("craft_self_wrap", craftType !== "order");
 
     const lensesEnabled = document.getElementById("lenses_enabled")?.checked;
     toggleVisibility("lenses_wrap", !!lensesEnabled);
@@ -484,6 +538,8 @@
       "lenses_price": "lenses_currency",
       "wig_price": "wig_currency",
       "wig_buy_price": "wig_currency",
+      "craft_price": "craft_currency",
+      "craft_material_price": "craft_currency",
       "photoset_price": "photoset_currency",
     };
     document.querySelectorAll(".price-field").forEach((input) => {
@@ -522,7 +578,7 @@
     }
   };
 
-  ["is_au", "costume_type", "sewing_type", "shoes_type", "wig_type", "lenses_enabled", "plan_type"].forEach((id) => {
+  ["is_au", "costume_type", "sewing_type", "shoes_type", "wig_type", "craft_type", "lenses_enabled", "plan_type"].forEach((id) => {
     const el = document.getElementById(id);
     if (el) {
       el.addEventListener("change", applyFormRules);
@@ -537,7 +593,7 @@
   document.querySelectorAll(".price-field").forEach((input) => {
     input.addEventListener("input", updateEstimatedTotal);
   });
-  ["costume_currency", "shoes_currency", "lenses_currency", "wig_currency", "photoset_currency"].forEach((name) => {
+  ["costume_currency", "shoes_currency", "lenses_currency", "wig_currency", "craft_currency", "photoset_currency"].forEach((name) => {
     const input = document.querySelector(`[name="${name}"]`);
     if (input) {
       input.addEventListener("input", updateEstimatedTotal);

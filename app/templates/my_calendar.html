@@ -15,6 +15,9 @@
             <span class="chip">{{ item.kind }}</span>
             <strong>{{ item.title }}</strong>
             <span class="muted">Город: {{ item.city or "—" }}</span>
+            {% if item.coproplayers %}
+              <span class="muted">Сокосплеер: {{ item.coproplayers }}</span>
+            {% endif %}
           </li>
         {% endfor %}
       </ul>

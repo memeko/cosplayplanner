@@ -8,7 +8,7 @@
 {% if progress_items %}
 <div class="cards-grid">
   {% for row in progress_items %}
-  <article class="card {% if row.is_frozen %}frozen-progress{% endif %}">
+  <article class="card {% if row.is_frozen %}frozen-progress{% endif %} {% if row.id in urgent_progress_ids %}urgent-progress{% endif %}">
     <div class="row-between">
       <h3>
         {% if row.cosplan_card %}
@@ -31,9 +31,12 @@
     {% if row.cosplan_card %}
       <p class="meta">Фандом: {{ row.cosplan_card.fandom or "—" }}</p>
       <p class="meta">План: {{ "Проект" if row.cosplan_card.plan_type == "project" else "Личное" }}</p>
+      <p class="meta">Дедлайн проекта: {{ row.cosplan_card.project_deadline.strftime('%d-%m-%Y') if row.cosplan_card.project_deadline else "—" }}</p>
     {% endif %}
     {% if row.is_frozen %}
       <p class="meta"><strong>Статус: Заморожено</strong></p>
+    {% elif row.id in urgent_progress_ids %}
+      <p class="meta"><strong>Внимание: до дедлайна меньше двух недель.</strong></p>
     {% endif %}
 
     <h4>Чеклист</h4>

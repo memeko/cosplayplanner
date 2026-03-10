@@ -89,6 +89,14 @@ RU_MONTH_NAMES = [
     "Декабрь",
 ]
 
+DEFAULT_NOMINATIONS = [
+    "одиночное дефиле",
+    "групповое дефиле",
+    "сценка",
+    "фотокосплей",
+    "караоке",
+]
+
 
 def apply_schema_migrations() -> None:
     # Lightweight SQLite migration path for local/self-host deployments.
@@ -98,6 +106,7 @@ def apply_schema_migrations() -> None:
     required_columns: dict[str, list[tuple[str, str]]] = {
         "users": [
             ("home_city", "VARCHAR(255)"),
+            ("cosplay_nick", "VARCHAR(100)"),
         ],
         "cosplan_cards": [
             ("costume_bought", "BOOLEAN NOT NULL DEFAULT 0"),
@@ -113,6 +122,14 @@ def apply_schema_migrations() -> None:
             ("is_shared_copy", "BOOLEAN NOT NULL DEFAULT 0"),
             ("source_card_id", "INTEGER"),
             ("shared_from_user_id", "INTEGER"),
+            ("wig_no_buy_from", "VARCHAR(255)"),
+            ("wig_restyle", "BOOLEAN NOT NULL DEFAULT 0"),
+            ("craft_type", "VARCHAR(32)"),
+            ("craft_master", "VARCHAR(255)"),
+            ("craft_price", "FLOAT"),
+            ("craft_material_price", "FLOAT"),
+            ("craft_deadline", "DATE"),
+            ("craft_currency", "VARCHAR(16)"),
         ],
         "festival_notifications": [
             ("id", "INTEGER PRIMARY KEY"),
@@ -214,6 +231,8 @@ def estimate_card_total_and_currency(card: CosplanCard) -> tuple[float, str]:
     add(card.lenses_price, card.lenses_currency)
     add(card.wig_price, card.wig_currency)
     add(card.wig_buy_price, card.wig_currency)
+    add(card.craft_price, card.craft_currency)
+    add(card.craft_material_price, card.craft_currency)
     add(card.photoset_price, card.photoset_currency)
 
     if not currencies:
@@ -243,6 +262,74 @@ def usernames_match(left: str | None, right: str | None) -> bool:
     return bool(left_value) and left_value == right_value
 
 
+def user_aliases(user: User) -> list[str]:
+    return merge_unique([normalize_username(user.username), normalize_username(user.cosplay_nick)])
+
+
+def preferred_user_alias(user: User) -> str:
+    return normalize_username(user.cosplay_nick) or normalize_username(user.username)
+
+
+def build_user_alias_lookup(db: Session) -> tuple[dict[str, str], dict[str, User], list[str]]:
+    users = db.execute(select(User).order_by(User.username)).scalars().all()
+    alias_to_username: dict[str, str] = {}
+    users_by_username: dict[str, User] = {}
+    alias_options: list[str] = []
+
+    for user in users:
+        username_key = normalize_username(user.username)
+        if not username_key:
+            continue
+        users_by_username[username_key.casefold()] = user
+
+        for alias in user_aliases(user):
+            alias_key = normalize_username(alias)
+            if not alias_key:
+                continue
+            alias_to_username.setdefault(alias_key.casefold(), username_key)
+            alias_options.append(alias_key)
+
+    return alias_to_username, users_by_username, merge_unique(alias_options)
+
+
+def resolve_alias_to_username(raw_alias: str | None, alias_to_username: dict[str, str]) -> str:
+    cleaned = normalize_username(raw_alias)
+    if not cleaned:
+        return ""
+    return alias_to_username.get(cleaned.casefold(), cleaned)
+
+
+def resolve_aliases_to_usernames(raw_aliases: list[str], alias_to_username: dict[str, str]) -> list[str]:
+    resolved = [resolve_alias_to_username(alias, alias_to_username) for alias in raw_aliases]
+    return merge_unique(resolved)
+
+
+def user_matches_alias(user: User, alias: str | None) -> bool:
+    cleaned = normalize_username(alias).casefold()
+    if not cleaned:
+        return False
+    return cleaned in {normalize_username(user.username).casefold(), normalize_username(user.cosplay_nick).casefold()}
+
+
+def format_coproplayer_names(
+    values: list[str],
+    alias_to_username: dict[str, str],
+    users_by_username: dict[str, User],
+) -> list[str]:
+    result: list[str] = []
+    for value in values:
+        normalized = normalize_username(value)
+        if not normalized:
+            continue
+        canonical_username = alias_to_username.get(normalized.casefold(), normalized)
+        target_user = users_by_username.get(canonical_username.casefold())
+        if target_user:
+            result.append(f"@{preferred_user_alias(target_user)}")
+        else:
+            result.append(f"@{normalized}")
+    return merge_unique(result)
+
+
 def normalize_city(value: str | None) -> str:
     if not value:
         return ""
@@ -267,7 +354,7 @@ def can_comment_on_card(card: CosplanCard, user: User) -> bool:
         return False
     if card.user_id == user.id:
         return True
-    return usernames_match(card.project_leader, user.username)
+    return user_matches_alias(user, card.project_leader)
 
 
 def safe_redirect_target(target: str | None, fallback: str) -> str:
@@ -291,7 +378,7 @@ def get_accessible_card(
         return None
     if card.user_id == user.id:
         return card
-    if allow_project_leader and not card.is_shared_copy and usernames_match(card.project_leader, user.username):
+    if allow_project_leader and not card.is_shared_copy and user_matches_alias(user, card.project_leader):
         return card
     return None
 
@@ -506,6 +593,14 @@ def card_fields_for_sync() -> list[str]:
         "wig_currency",
         "wig_deadline",
         "wig_link",
+        "wig_no_buy_from",
+        "wig_restyle",
+        "craft_type",
+        "craft_master",
+        "craft_price",
+        "craft_material_price",
+        "craft_deadline",
+        "craft_currency",
         "plan_type",
         "project_leader",
         "cosbands_json",
@@ -534,8 +629,11 @@ def sync_shared_cards_for_nicks(source_card: CosplanCard, owner: User, db: Sessi
     if source_card.is_shared_copy:
         return
 
+    alias_to_username, _, _ = build_user_alias_lookup(db)
     raw_nicks = as_list(source_card.coproplayer_nicks_json)
-    target_nicks = [nick for nick in merge_unique(raw_nicks) if nick and nick.casefold() != owner.username.casefold()]
+    resolved_nicks = resolve_aliases_to_usernames(raw_nicks, alias_to_username)
+    owner_username = normalize_username(owner.username).casefold()
+    target_nicks = [nick for nick in resolved_nicks if nick and nick.casefold() != owner_username]
 
     if not target_nicks:
         existing_copies = db.execute(
@@ -552,10 +650,8 @@ def sync_shared_cards_for_nicks(source_card: CosplanCard, owner: User, db: Sessi
         )
         return
 
-    matched_users = db.execute(
-        select(User).where(User.username.in_(target_nicks))
-    ).scalars().all()
-    users_by_nick = {user.username.casefold(): user for user in matched_users if user.id != owner.id}
+    matched_users = db.execute(select(User).where(User.username.in_(target_nicks))).scalars().all()
+    users_by_nick = {normalize_username(user.username).casefold(): user for user in matched_users if user.id != owner.id}
     target_ids = {user.id for user in users_by_nick.values()}
 
     existing_copies = db.execute(
@@ -707,6 +803,14 @@ def get_card_form_values(card: CosplanCard | None = None) -> dict[str, Any]:
             "wig_currency": "RUB",
             "wig_deadline": "",
             "wig_link": "",
+            "wig_no_buy_from": "",
+            "wig_restyle": False,
+            "craft_type": "self",
+            "craft_master": "",
+            "craft_price": "",
+            "craft_material_price": "",
+            "craft_deadline": "",
+            "craft_currency": "RUB",
             "plan_type": "personal",
             "project_leader": "",
             "cosbands_json": [],
@@ -722,7 +826,7 @@ def get_card_form_values(card: CosplanCard | None = None) -> dict[str, Any]:
             "photoset_currency": "RUB",
             "coproplayers_json": [],
             "coproplayer_nicks_json": [],
-            "coproplayer_nicks_input": "",
+            "coproplayers_input": "",
             "estimated_total": 0.0,
             "estimated_total_currency": "",
             "notes": "",
@@ -769,6 +873,14 @@ def get_card_form_values(card: CosplanCard | None = None) -> dict[str, Any]:
         "wig_currency": card.wig_currency or "RUB",
         "wig_deadline": card.wig_deadline.isoformat() if card.wig_deadline else "",
         "wig_link": card.wig_link or "",
+        "wig_no_buy_from": card.wig_no_buy_from or "",
+        "wig_restyle": bool(card.wig_restyle),
+        "craft_type": card.craft_type or "self",
+        "craft_master": card.craft_master or "",
+        "craft_price": "" if card.craft_price is None else f"{card.craft_price:g}",
+        "craft_material_price": "" if card.craft_material_price is None else f"{card.craft_material_price:g}",
+        "craft_deadline": card.craft_deadline.isoformat() if card.craft_deadline else "",
+        "craft_currency": card.craft_currency or "RUB",
         "plan_type": card.plan_type or "personal",
         "project_leader": card.project_leader or "",
         "cosbands_json": as_list(card.cosbands_json),
@@ -784,7 +896,7 @@ def get_card_form_values(card: CosplanCard | None = None) -> dict[str, Any]:
         "photoset_currency": card.photoset_currency or "RUB",
         "coproplayers_json": as_list(card.coproplayers_json),
         "coproplayer_nicks_json": as_list(card.coproplayer_nicks_json),
-        "coproplayer_nicks_input": ", ".join(as_list(card.coproplayer_nicks_json)),
+        "coproplayers_input": ", ".join(as_list(card.coproplayers_json) or as_list(card.coproplayer_nicks_json)),
         "estimated_total": estimated_total,
         "estimated_total_currency": estimated_currency,
         "notes": card.notes or "",
@@ -798,10 +910,15 @@ def card_options(db: Session, user: User) -> dict[str, Any]:
     festival_items = [{"name": row[0], "city": row[1] or ""} for row in festival_rows if row[0]]
     festival_names = [row["name"] for row in festival_items]
 
-    all_usernames = db.execute(select(User.username).order_by(User.username)).scalars().all()
+    _, _, alias_options = build_user_alias_lookup(db)
     project_leader_options = merge_unique(
-        all_usernames,
+        alias_options,
         get_options(db, user.id, "project_leader"),
+    )
+    coproplayer_alias_options = merge_unique(
+        alias_options,
+        get_options(db, user.id, "coproplayer"),
+        get_options(db, user.id, "coproplayer_nick"),
     )
 
     all_festival_options = merge_unique(festival_names, get_options(db, user.id, "festival"))
@@ -813,10 +930,10 @@ def card_options(db: Session, user: User) -> dict[str, Any]:
         "festival_options": all_festival_options,
         "festival_items": festival_items,
         "festival_custom_options": festival_custom_options,
-        "nomination_options": get_options(db, user.id, "nomination"),
+        "nomination_options": merge_unique(DEFAULT_NOMINATIONS, get_options(db, user.id, "nomination")),
         "photographer_options": get_options(db, user.id, "photographer"),
         "studio_options": get_options(db, user.id, "studio"),
-        "coproplayer_options": get_options(db, user.id, "coproplayer"),
+        "coproplayer_alias_options": coproplayer_alias_options,
         "project_leader_options": project_leader_options,
         "currency_options": merge_unique(
             ["RUB", "USD", "EUR"],
@@ -838,6 +955,7 @@ def get_festival_form_values(festival: Festival | None = None) -> dict[str, Any]
             "nomination_3": "",
             "is_going": False,
             "going_coproplayers_json": [],
+            "going_coproplayers_input": "",
         }
 
     return {
@@ -851,6 +969,7 @@ def get_festival_form_values(festival: Festival | None = None) -> dict[str, Any]
         "nomination_3": festival.nomination_3 or "",
         "is_going": bool(festival.is_going),
         "going_coproplayers_json": as_list(festival.going_coproplayers_json),
+        "going_coproplayers_input": ", ".join(as_list(festival.going_coproplayers_json)),
     }
 
 
@@ -886,7 +1005,13 @@ async def register_submit(request: Request, db: Session = Depends(get_db)):
         add_flash(request, "Пароли не совпадают.", "error")
         return redirect("/register")
 
-    exists_stmt = select(User).where(or_(User.username == username, User.email == email))
+    exists_stmt = select(User).where(
+        or_(
+            User.username == username,
+            User.email == email,
+            User.cosplay_nick == username,
+        )
+    )
     if db.execute(exists_stmt).scalar_one_or_none():
         add_flash(request, "Пользователь с таким логином или email уже существует.", "error")
         return redirect("/register")
@@ -955,17 +1080,37 @@ async def profile_update(request: Request, db: Session = Depends(get_db)):
 
     form = await request.form()
     username = str(form.get("username", "")).strip()
+    cosplay_nick = normalize_username(str(form.get("cosplay_nick", "")).strip())
     email = str(form.get("email", "")).strip().lower()
     home_city = str(form.get("home_city", "")).strip()
     new_password = str(form.get("new_password", "")).strip()
     new_password_confirm = str(form.get("new_password_confirm", "")).strip()
 
     if username and username != user.username:
-        exists = db.execute(select(User).where(User.username == username, User.id != user.id)).scalar_one_or_none()
+        exists = db.execute(
+            select(User).where(
+                User.id != user.id,
+                or_(User.username == username, User.cosplay_nick == username),
+            )
+        ).scalar_one_or_none()
         if exists:
-            add_flash(request, "Такой ник уже используется.", "error")
+            add_flash(request, "Такой ник уже используется как username или ник косплеера.", "error")
             return redirect("/profile")
         user.username = username
+
+    if cosplay_nick and cosplay_nick != normalize_username(user.cosplay_nick):
+        exists = db.execute(
+            select(User).where(
+                User.id != user.id,
+                or_(User.cosplay_nick == cosplay_nick, User.username == cosplay_nick),
+            )
+        ).scalar_one_or_none()
+        if exists:
+            add_flash(request, "Такой ник косплеера уже используется как username или ник косплеера.", "error")
+            return redirect("/profile")
+        user.cosplay_nick = cosplay_nick
+    elif not cosplay_nick:
+        user.cosplay_nick = None
 
     if email and email != user.email:
         exists = db.execute(select(User).where(User.email == email, User.id != user.id)).scalar_one_or_none()
@@ -997,19 +1142,28 @@ def cosplan_list(request: Request, q: str = "", db: Session = Depends(get_db)):
         select(CosplanCard).where(CosplanCard.user_id == user.id).order_by(CosplanCard.updated_at.desc())
     ).scalars().all()
 
-    stmt = select(CosplanCard).where(CosplanCard.user_id == user.id)
-    if q:
-        pattern = f"%{q.strip()}%"
-        stmt = stmt.where(
-            or_(
-                CosplanCard.character_name.ilike(pattern),
-                CosplanCard.fandom.ilike(pattern),
-                CosplanCard.city.ilike(pattern),
-                CosplanCard.notes.ilike(pattern),
-            )
-        )
+    cards = list(all_cards)
+    if q.strip():
+        alias_to_username, users_by_username, _ = build_user_alias_lookup(db)
+        needle = q.strip().casefold()
 
-    cards = db.execute(stmt.order_by(CosplanCard.updated_at.desc())).scalars().all()
+        def matches(card: CosplanCard) -> bool:
+            searchable: list[str] = [
+                card.character_name or "",
+                card.fandom or "",
+                card.city or "",
+                card.project_leader or "",
+                card.notes or "",
+            ]
+            coproplayers = as_list(card.coproplayers_json) or as_list(card.coproplayer_nicks_json)
+            searchable.extend(coproplayers)
+            searchable.extend(
+                [value.lstrip("@") for value in format_coproplayer_names(coproplayers, alias_to_username, users_by_username)]
+            )
+            return any(needle in value.casefold() for value in searchable if value)
+
+        cards = [card for card in all_cards if matches(card)]
+
     festivals = db.execute(
         select(Festival).where(Festival.user_id == user.id, Festival.event_date.is_not(None))
     ).scalars().all()
@@ -1255,6 +1409,8 @@ def cosplan_edit(card_id: int, request: Request, db: Session = Depends(get_db)):
 
 
 def save_card_from_form(form: Any, card: CosplanCard, user: User, db: Session) -> None:
+    alias_to_username, _, _ = build_user_alias_lookup(db)
+
     card.character_name = str(form.get("character_name", "")).strip()
     card.fandom = str(form.get("fandom", "")).strip() or None
     card.is_au = to_bool(form.get("is_au"))
@@ -1332,19 +1488,45 @@ def save_card_from_form(form: Any, card: CosplanCard, user: User, db: Session) -
         card.wigmaker_name = None
         card.wig_price = None
         card.wig_deadline = None
+        card.wig_no_buy_from = None
+        card.wig_restyle = False
         card.wig_buy_price = parse_float(str(form.get("wig_buy_price", "")))
-    else:
+        card.wig_link = str(form.get("wig_link", "")).strip() or None
+    elif card.wig_type == "no_buy":
+        card.wigmaker_name = None
+        card.wig_price = None
+        card.wig_deadline = None
+        card.wig_buy_price = None
+        card.wig_link = None
+        card.wig_no_buy_from = str(form.get("wig_no_buy_from", "")).strip() or None
+        card.wig_restyle = to_bool(form.get("wig_restyle"))
+    else:  # wigmaker
         card.wigmaker_name = str(form.get("wigmaker_name", "")).strip() or None
         card.wig_price = parse_float(str(form.get("wig_price", "")))
         card.wig_deadline = parse_date(str(form.get("wig_deadline", "")))
         card.wig_buy_price = None
+        card.wig_link = None
+        card.wig_no_buy_from = None
+        card.wig_restyle = False
     card.wig_currency = str(form.get("wig_currency", "")).strip() or None
-    card.wig_link = str(form.get("wig_link", "")).strip() or None
+
+    card.craft_type = str(form.get("craft_type", "")).strip() or "self"
+    if card.craft_type == "order":
+        card.craft_master = str(form.get("craft_master", "")).strip() or None
+        card.craft_price = parse_float(str(form.get("craft_price", "")))
+        card.craft_deadline = parse_date(str(form.get("craft_deadline", "")))
+        card.craft_material_price = None
+    else:
+        card.craft_master = None
+        card.craft_price = None
+        card.craft_deadline = None
+        card.craft_material_price = parse_float(str(form.get("craft_material_price", "")))
+    card.craft_currency = str(form.get("craft_currency", "")).strip() or None
 
     card.plan_type = str(form.get("plan_type", "")).strip() or None
     if card.plan_type == "project":
         project_leader_raw = str(form.get("project_leader", "")).strip()
-        card.project_leader = normalize_username(project_leader_raw) or None
+        card.project_leader = resolve_alias_to_username(project_leader_raw, alias_to_username) or None
     else:
         card.project_leader = None
     card.project_deadline = parse_date(str(form.get("project_deadline", "")))
@@ -1360,11 +1542,13 @@ def save_card_from_form(form: Any, card: CosplanCard, user: User, db: Session) -
         split_csv(str(form.get("photographers_new", ""))),
     )
     studios = merge_unique(form.getlist("studios"), split_csv(str(form.get("studios_new", ""))))
-    coproplayers = merge_unique(
-        form.getlist("coproplayers"),
-        split_csv(str(form.get("coproplayers_new", ""))),
+    coproplayer_aliases = merge_unique(
+        split_csv(str(form.get("coproplayers_input", ""))),
+        form.getlist("coproplayers"),  # backward compatibility with older forms
+        split_csv(str(form.get("coproplayers_new", ""))),  # backward compatibility
+        split_csv(str(form.get("coproplayer_nicks_input", ""))),  # backward compatibility
     )
-    coproplayer_nicks = merge_unique(split_csv(str(form.get("coproplayer_nicks_input", ""))))
+    coproplayer_nicks = resolve_aliases_to_usernames(coproplayer_aliases, alias_to_username)
 
     card.cosbands_json = cosbands
     card.planned_festivals_json = festivals
@@ -1378,7 +1562,7 @@ def save_card_from_form(form: Any, card: CosplanCard, user: User, db: Session) -
     card.photoset_price = parse_float(str(form.get("photoset_price", "")))
     card.photoset_currency = str(form.get("photoset_currency", "")).strip() or None
 
-    card.coproplayers_json = coproplayers
+    card.coproplayers_json = coproplayer_aliases
     card.coproplayer_nicks_json = coproplayer_nicks
     card.notes = str(form.get("notes", "")).strip() or None
 
@@ -1388,7 +1572,7 @@ def save_card_from_form(form: Any, card: CosplanCard, user: User, db: Session) -
     remember_options(db, user.id, "nomination", nominations)
     remember_options(db, user.id, "photographer", photographers)
     remember_options(db, user.id, "studio", studios)
-    remember_options(db, user.id, "coproplayer", coproplayers)
+    remember_options(db, user.id, "coproplayer", merge_unique(coproplayer_aliases, coproplayer_nicks))
     remember_options(db, user.id, "coproplayer_nick", coproplayer_nicks)
     remember_options(db, user.id, "project_leader", [card.project_leader or ""])
     remember_options(
@@ -1400,6 +1584,7 @@ def save_card_from_form(form: Any, card: CosplanCard, user: User, db: Session) -
             card.shoes_currency or "",
             card.lenses_currency or "",
             card.wig_currency or "",
+            card.craft_currency or "",
             card.photoset_currency or "",
         ],
     )
@@ -1534,6 +1719,16 @@ def in_progress_list(request: Request, db: Session = Depends(get_db)):
         .where(InProgressCard.user_id == user.id)
         .order_by(InProgressCard.is_frozen.asc(), InProgressCard.updated_at.desc())
     ).scalars().all()
+    today = date.today()
+    urgent_deadline = today + timedelta(days=14)
+    urgent_progress_ids = {
+        row.id
+        for row in progress_items
+        if row.cosplan_card
+        and row.cosplan_card.project_deadline
+        and today <= row.cosplan_card.project_deadline <= urgent_deadline
+        and not row.is_frozen
+    }
 
     return template_response(
         request,
@@ -1541,6 +1736,7 @@ def in_progress_list(request: Request, db: Session = Depends(get_db)):
         user=user,
         active_tab="in-progress",
         progress_items=progress_items,
+        urgent_progress_ids=urgent_progress_ids,
     )
 
 
@@ -1670,7 +1866,7 @@ def my_projects_list(request: Request, db: Session = Depends(get_db)):
             CosplanCard.project_leader.is_not(None),
         )
     ).scalars().all()
-    cards = [card for card in project_cards if usernames_match(card.project_leader, user.username)]
+    cards = [card for card in project_cards if user_matches_alias(user, card.project_leader)]
     cards.sort(key=lambda item: item.updated_at or item.created_at or datetime.min, reverse=True)
 
     owner_ids = {card.user_id for card in cards}
@@ -1708,7 +1904,7 @@ async def my_projects_comment(card_id: int, request: Request, db: Session = Depe
         add_flash(request, "Карточка проекта не найдена.", "error")
         return redirect("/my-projects")
 
-    if not can_comment_on_card(card, user) or not usernames_match(card.project_leader, user.username):
+    if not can_comment_on_card(card, user) or not user_matches_alias(user, card.project_leader):
         add_flash(request, "Нет прав на комментарий для этой карточки.", "error")
         return redirect("/my-projects")
 
@@ -1746,24 +1942,38 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
             CosplanCard.photoset_date >= today,
         )
     ).scalars().all()
+    alias_to_username, users_by_username, _ = build_user_alias_lookup(db)
 
     entries: list[dict[str, Any]] = []
     for festival in festivals:
+        coproplayers_display = format_coproplayer_names(
+            as_list(festival.going_coproplayers_json),
+            alias_to_username,
+            users_by_username,
+        )
         entries.append(
             {
                 "date": festival.event_date,
                 "kind": "Фестиваль (Я иду)",
                 "title": festival.name or "Без названия",
                 "city": festival.city or "—",
+                "coproplayers": ", ".join(coproplayers_display),
             }
         )
     for card in cards:
+        card_coproplayers = as_list(card.coproplayers_json) or as_list(card.coproplayer_nicks_json)
+        coproplayers_display = format_coproplayer_names(
+            card_coproplayers,
+            alias_to_username,
+            users_by_username,
+        )
         entries.append(
             {
                 "date": card.photoset_date,
                 "kind": "Фотосет",
                 "title": card.character_name or "Без карточки",
                 "city": card.city or "—",
+                "coproplayers": ", ".join(coproplayers_display),
             }
         )
 
@@ -1817,8 +2027,15 @@ def festivals_list(request: Request, db: Session = Depends(get_db)):
         if not festival.event_date or festival.event_date >= today
     ]
 
+    alias_to_username, users_by_username, alias_options = build_user_alias_lookup(db)
+    festival_coproplayers_display: dict[int, list[str]] = {}
+
     filtered: list[Festival] = []
     for festival in active_festivals:
+        raw_coproplayers = as_list(festival.going_coproplayers_json)
+        display_coproplayers = format_coproplayer_names(raw_coproplayers, alias_to_username, users_by_username)
+        festival_coproplayers_display[festival.id] = display_coproplayers
+
         if only_going and not festival.is_going:
             continue
 
@@ -1829,8 +2046,13 @@ def festivals_list(request: Request, db: Session = Depends(get_db)):
         if nomination_filter and not any(nomination_filter.casefold() in value.casefold() for value in nominations if value):
             continue
 
-        coproplayers = as_list(festival.going_coproplayers_json)
-        if coproplayer_filter and not any(coproplayer_filter.casefold() in value.casefold() for value in coproplayers):
+        coproplayer_search_targets = merge_unique(
+            raw_coproplayers,
+            [value.lstrip("@") for value in display_coproplayers],
+        )
+        if coproplayer_filter and not any(
+            coproplayer_filter.casefold() in value.casefold() for value in coproplayer_search_targets
+        ):
             continue
 
         filtered.append(festival)
@@ -1891,6 +2113,7 @@ def festivals_list(request: Request, db: Session = Depends(get_db)):
 
     city_options = merge_unique([festival.city for festival in active_festivals if festival.city])
     nomination_options = merge_unique(
+        DEFAULT_NOMINATIONS,
         [festival.nomination_1 or "" for festival in active_festivals],
         [festival.nomination_2 or "" for festival in active_festivals],
         [festival.nomination_3 or "" for festival in active_festivals],
@@ -1898,6 +2121,7 @@ def festivals_list(request: Request, db: Session = Depends(get_db)):
     )
     coproplayer_options = merge_unique(
         [value for festival in active_festivals for value in as_list(festival.going_coproplayers_json)],
+        alias_options,
         get_options(db, user.id, "coproplayer"),
     )
 
@@ -1925,6 +2149,7 @@ def festivals_list(request: Request, db: Session = Depends(get_db)):
         city_options=city_options,
         nomination_options=nomination_options,
         coproplayer_options=coproplayer_options,
+        festival_coproplayers_display=festival_coproplayers_display,
         show_summary=show_summary,
         summary_rows=summary_rows,
         notifications=notifications,
@@ -1954,6 +2179,7 @@ def festivals_new(request: Request, db: Session = Depends(get_db)):
     if not user:
         return redirect("/login")
 
+    _, _, alias_options = build_user_alias_lookup(db)
     return template_response(
         request,
         "festival_form.html",
@@ -1962,7 +2188,7 @@ def festivals_new(request: Request, db: Session = Depends(get_db)):
         editing=False,
         festival_id=None,
         form=get_festival_form_values(),
-        coproplayer_options=get_options(db, user.id, "coproplayer"),
+        coproplayer_alias_options=merge_unique(alias_options, get_options(db, user.id, "coproplayer")),
     )
 
 
@@ -1979,6 +2205,7 @@ def festivals_edit(festival_id: int, request: Request, db: Session = Depends(get
         add_flash(request, "Фестиваль не найден.", "error")
         return redirect("/festivals")
 
+    _, _, alias_options = build_user_alias_lookup(db)
     return template_response(
         request,
         "festival_form.html",
@@ -1987,11 +2214,13 @@ def festivals_edit(festival_id: int, request: Request, db: Session = Depends(get
         editing=True,
         festival_id=festival.id,
         form=get_festival_form_values(festival),
-        coproplayer_options=get_options(db, user.id, "coproplayer"),
+        coproplayer_alias_options=merge_unique(alias_options, get_options(db, user.id, "coproplayer")),
     )
 
 
 def save_festival_from_form(form: Any, festival: Festival, user: User, db: Session) -> None:
+    alias_to_username, _, _ = build_user_alias_lookup(db)
+
     festival.name = str(form.get("name", "")).strip()
     festival.url = str(form.get("url", "")).strip() or None
     festival.city = str(form.get("city", "")).strip() or None
@@ -2002,14 +2231,20 @@ def save_festival_from_form(form: Any, festival: Festival, user: User, db: Sessi
     festival.nomination_3 = str(form.get("nomination_3", "")).strip() or None
     festival.is_going = to_bool(form.get("is_going"))
 
-    coproplayers = merge_unique(
-        form.getlist("going_coproplayers"),
-        split_csv(str(form.get("going_coproplayers_new", ""))),
+    raw_coproplayer_aliases = merge_unique(
+        split_csv(str(form.get("going_coproplayers_input", ""))),
+        form.getlist("going_coproplayers"),  # backward compatibility with previous form
+        split_csv(str(form.get("going_coproplayers_new", ""))),  # backward compatibility
     )
-    festival.going_coproplayers_json = coproplayers
+    festival.going_coproplayers_json = resolve_aliases_to_usernames(raw_coproplayer_aliases, alias_to_username)
 
-    remember_options(db, user.id, "coproplayer", coproplayers)
-    remember_options(db, user.id, "nomination", [festival.nomination_1 or "", festival.nomination_2 or "", festival.nomination_3 or ""])
+    remember_options(db, user.id, "coproplayer", merge_unique(raw_coproplayer_aliases, festival.going_coproplayers_json))
+    remember_options(
+        db,
+        user.id,
+        "nomination",
+        merge_unique(DEFAULT_NOMINATIONS, [festival.nomination_1 or "", festival.nomination_2 or "", festival.nomination_3 or ""]),
+    )
     remember_options(db, user.id, "festival", [festival.name])
 
 
