@@ -69,6 +69,7 @@ uvicorn app.main:app --reload
 - `PROJECT_NAME_FILE`
 
 По умолчанию приложение использует `/data/cosplay.db`, если каталог `/data` существует и доступен на запись, иначе `./cosplay.db`.
+`SECRET_KEY` обязателен: небезопасный fallback в коде отключён.
 
 ## Имя проекта
 

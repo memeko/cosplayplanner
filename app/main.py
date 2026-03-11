@@ -59,10 +59,21 @@ def load_project_name() -> str:
         return default_name
 
 
+def load_secret_key() -> str:
+    secret = os.getenv("SECRET_KEY", "").strip()
+    if not secret:
+        raise RuntimeError(
+            "SECRET_KEY is required. Set a strong random SECRET_KEY in environment variables."
+        )
+    if secret == "change-this-secret-key":
+        raise RuntimeError("Insecure default SECRET_KEY is not allowed.")
+    return secret
+
+
 PROJECT_NAME = load_project_name()
 app = FastAPI(title=PROJECT_NAME)
 
-secret_key = os.getenv("SECRET_KEY", "change-this-secret-key")
+secret_key = load_secret_key()
 session_https_only = to_bool(os.getenv("SESSION_HTTPS_ONLY", "0"))
 trusted_hosts = [item.strip() for item in os.getenv("TRUSTED_HOSTS", "").split(",") if item.strip()]
 
