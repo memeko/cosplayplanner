@@ -109,6 +109,7 @@ class CosplanCard(Base):
     costume_link = Column(Text, nullable=True)
     costume_buy_price = Column(Float, nullable=True)
     costume_currency = Column(String(16), nullable=True)
+    costume_notes = Column(Text, nullable=True)
 
     shoes_type = Column(String(32), nullable=True)  # buy | craft
     shoes_bought = Column(Boolean, nullable=False, default=False)
@@ -156,8 +157,18 @@ class CosplanCard(Base):
     studios_json = Column(JSON, nullable=False, default=list)
     photoset_date = Column(Date, nullable=True)
     photoset_price = Column(Float, nullable=True)
+    photoset_photographer_price = Column(Float, nullable=True)
+    photoset_studio_price = Column(Float, nullable=True)
+    photoset_props_price = Column(Float, nullable=True)
+    photoset_extra_price = Column(Float, nullable=True)
     photoset_currency = Column(String(16), nullable=True)
+    photoset_comment = Column(Text, nullable=True)
+    photoset_props_checklist_json = Column(JSON, nullable=False, default=list)
     references_json = Column(JSON, nullable=False, default=list)
+    pose_references_json = Column(JSON, nullable=False, default=list)
+    unknown_prices_json = Column(JSON, nullable=False, default=list)
+    costume_parts_json = Column(JSON, nullable=False, default=list)
+    craft_parts_json = Column(JSON, nullable=False, default=list)
 
     coproplayers_json = Column(JSON, nullable=False, default=list)
     coproplayer_nicks_json = Column(JSON, nullable=False, default=list)

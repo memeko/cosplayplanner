@@ -4,18 +4,30 @@
   <h1>Мой календарь</h1>
 </section>
 
+<style>
+  .calendar-same-date {
+    border-left: 4px solid #c62828;
+    background: #fff1f1;
+    padding-left: 0.6rem;
+    border-radius: 8px;
+  }
+</style>
+
 {% if month_groups %}
   {% for group in month_groups %}
     <section class="box">
       <h2>{{ group.title }}</h2>
       <ul class="calendar-list">
         {% for item in group.rows %}
-          <li>
+          <li class="{% if item.same_date_highlight %}calendar-same-date{% endif %}">
             <span class="calendar-date">{{ item.date.strftime('%d-%m-%Y') if item.date else "—" }}</span>
             {% if item.time %}
               <span class="chip">{{ item.time }}</span>
             {% endif %}
             <span class="chip">{{ item.kind }}</span>
+            {% if item.same_date_highlight %}
+              <span class="chip chip-alert">Совпадает по дате ({{ item.same_date_count }})</span>
+            {% endif %}
             <strong>{{ item.title }}</strong>
             <span class="muted">Город: {{ item.city or "—" }}</span>
             {% if item.coproplayers %}

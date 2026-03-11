@@ -22,6 +22,45 @@
   <p class="meta">Ориентировочная цена: {{ '%.2f'|format(card_total or 0) }} {{ card_total_currency }}</p>
 </section>
 
+{% if card.costume_notes %}
+<section class="box">
+  <h2>Костюм: дополнительно</h2>
+  <p class="notes-block">{{ card.costume_notes }}</p>
+</section>
+{% endif %}
+
+{% if card.photoset_date or card.photoset_comment or photoset_props_checklist or card.photoset_photographer_price is not none or card.photoset_studio_price is not none or card.photoset_props_price is not none or card.photoset_extra_price is not none %}
+<section class="box">
+  <h2>Фотосессия</h2>
+  <p class="meta">Дата: {{ card.photoset_date.strftime('%d-%m-%Y') if card.photoset_date else "—" }}</p>
+  <p class="meta">Фотограф: {{ card.photoset_photographer_price if card.photoset_photographer_price is not none else "—" }} {{ card.photoset_currency or "" }}</p>
+  <p class="meta">Студия: {{ card.photoset_studio_price if card.photoset_studio_price is not none else "—" }} {{ card.photoset_currency or "" }}</p>
+  <p class="meta">Реквизит: {{ card.photoset_props_price if card.photoset_props_price is not none else "—" }} {{ card.photoset_currency or "" }}</p>
+  <p class="meta">Дополнительно: {{ card.photoset_extra_price if card.photoset_extra_price is not none else "—" }} {{ card.photoset_currency or "" }}</p>
+  {% if card.photoset_comment %}
+    <p class="notes-block">{{ card.photoset_comment }}</p>
+  {% endif %}
+  {% if photoset_props_checklist %}
+    <h3>Чеклист реквизита</h3>
+    <ul class="notes-list">
+      {% for item in photoset_props_checklist %}
+        <li>{% if item.done == '__YES__' %}☑{% else %}☐{% endif %} {{ item.text }}</li>
+      {% endfor %}
+    </ul>
+  {% endif %}
+</section>
+{% endif %}
+
+<style>
+  .pinterest-frame {
+    width: 200px;
+    height: 270px;
+    border: 0;
+    border-radius: 10px;
+    background: #fff;
+  }
+</style>
+
 {% if reference_urls %}
 <section class="box">
   <h2>Референсы</h2>
@@ -32,6 +71,62 @@
       </a>
     {% endfor %}
   </div>
+</section>
+{% endif %}
+
+{% if pose_reference_urls %}
+<section class="box">
+  <h2>Референсы поз / кадров</h2>
+  <div class="reference-grid">
+    {% for url in pose_reference_urls %}
+      {% set embed_src = pinterest_embed_src(url) %}
+      {% if embed_src %}
+        <iframe class="pinterest-frame" src="{{ embed_src }}" loading="lazy"></iframe>
+      {% else %}
+        <a class="reference-tile" href="{{ url }}" target="_blank" rel="noreferrer">
+          <img src="{{ url }}" alt="Референс позы" loading="lazy" onerror="this.parentElement.remove();" />
+        </a>
+      {% endif %}
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
+{% if costume_parts %}
+<section class="box">
+  <h2>Костюм: дополнительные ссылки</h2>
+  <ul class="notes-list">
+    {% for item in costume_parts if item is mapping %}
+      <li>
+        {% if item.get("url") %}<a href="{{ item.get('url') }}" target="_blank" rel="noreferrer">{{ item.get("url") }}</a>{% endif %}
+        {% if item.get("unknown") %}
+          <span class="chip">Цена неизвестна</span>
+        {% elif item.get("price") is not none %}
+          <span class="chip">{{ item.get("price") }} {{ item.get("currency", "") }}</span>
+        {% endif %}
+        {% if item.get("comment") %}<span class="muted">{{ item.get("comment") }}</span>{% endif %}
+      </li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
+
+{% if craft_parts %}
+<section class="box">
+  <h2>Крафт: дополнительные ссылки</h2>
+  <ul class="notes-list">
+    {% for item in craft_parts if item is mapping %}
+      <li>
+        {% if item.get("url") %}<a href="{{ item.get('url') }}" target="_blank" rel="noreferrer">{{ item.get("url") }}</a>{% endif %}
+        {% if item.get("unknown") %}
+          <span class="chip">Цена неизвестна</span>
+        {% elif item.get("price") is not none %}
+          <span class="chip">{{ item.get("price") }} {{ item.get("currency", "") }}</span>
+        {% endif %}
+        {% if item.get("comment") %}<span class="muted">{{ item.get("comment") }}</span>{% endif %}
+      </li>
+    {% endfor %}
+  </ul>
 </section>
 {% endif %}
 

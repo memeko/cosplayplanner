@@ -5,6 +5,40 @@
   <a href="/cosplan" class="btn">Назад к списку</a>
 </section>
 
+<style>
+  .parts-row { display: grid; grid-template-columns: 2fr 1fr 2fr auto; gap: 0.5rem; margin-bottom: 0.5rem; align-items: end; }
+  .parts-row button { height: 38px; }
+  .checklist-row { display: grid; grid-template-columns: auto 1fr auto; gap: 0.5rem; align-items: center; margin-bottom: 0.5rem; }
+  .checklist-row button { height: 36px; }
+  .alias-suggest { position: relative; }
+  .alias-suggest-list {
+    position: absolute;
+    z-index: 20;
+    left: 0;
+    right: 0;
+    top: calc(100% + 4px);
+    background: #fff;
+    border: 1px solid #d9d9d9;
+    border-radius: 10px;
+    box-shadow: 0 6px 18px rgba(0,0,0,0.08);
+    max-height: 220px;
+    overflow: auto;
+    display: none;
+  }
+  .alias-suggest-item {
+    display: block;
+    width: 100%;
+    text-align: left;
+    border: 0;
+    background: transparent;
+    padding: 0.5rem 0.7rem;
+    cursor: pointer;
+  }
+  .alias-suggest-item:hover { background: #f2f6ff; }
+  .unknown-price-mark { display: inline-flex; align-items: center; gap: 0.3rem; margin-top: 0.25rem; font-size: 0.86rem; }
+  .pinterest-frame { width: 200px; height: 270px; border: 0; border-radius: 10px; background: #fff; }
+</style>
+
 <form method="post" action="{{ '/cosplan/' ~ card_id ~ '/edit' if editing else '/cosplan/new' }}" class="grid one-col big-form" id="cosplan-form">
   <section class="box">
     <h2>Основное</h2>
@@ -117,6 +151,39 @@
         </label>
       </div>
     </div>
+
+    <h3>Дополнительные ссылки по костюму</h3>
+    <div id="costume_parts_rows">
+      {% for item in form.costume_parts_json %}
+      <div class="parts-row">
+        <input type="hidden" name="costume_part_row_id" value="{{ item.row_id }}" />
+        <label>
+          Ссылка
+          <input type="url" name="costume_part_link" value="{{ item.url }}" />
+        </label>
+        <label>
+          Цена
+          <input type="text" name="costume_part_price" value="{{ item.price }}" class="price-field part-price-field" />
+          <span class="unknown-price-mark">
+            <input type="checkbox" name="costume_part_unknown" value="{{ item.row_id }}" {% if item.unknown == '__YES__' %}checked{% endif %} />
+            Цена неизвестна
+          </span>
+        </label>
+        <label>
+          Комментарий
+          <input type="text" name="costume_part_comment" value="{{ item.comment }}" />
+        </label>
+        <button type="button" class="btn btn-danger" onclick="removePartRow(this)">Удалить</button>
+      </div>
+      {% endfor %}
+    </div>
+    <button type="button" class="btn" id="add_costume_part_btn">Добавить ссылку</button>
+
+    <h3>Дополнительно:</h3>
+    <label>
+      Комментарий по костюму
+      <textarea name="costume_notes" rows="3" placeholder="Особенности, правки, уточнения">{{ form.costume_notes }}</textarea>
+    </label>
   </section>
 
   <section class="box">
@@ -282,6 +349,33 @@
         <input type="text" name="craft_material_price" value="{{ form.craft_material_price }}" class="price-field" />
       </label>
     </div>
+
+    <h3>Дополнительные ссылки по крафту</h3>
+    <div id="craft_parts_rows">
+      {% for item in form.craft_parts_json %}
+      <div class="parts-row">
+        <input type="hidden" name="craft_part_row_id" value="{{ item.row_id }}" />
+        <label>
+          Ссылка
+          <input type="url" name="craft_part_link" value="{{ item.url }}" />
+        </label>
+        <label>
+          Цена
+          <input type="text" name="craft_part_price" value="{{ item.price }}" class="price-field part-price-field" />
+          <span class="unknown-price-mark">
+            <input type="checkbox" name="craft_part_unknown" value="{{ item.row_id }}" {% if item.unknown == '__YES__' %}checked{% endif %} />
+            Цена неизвестна
+          </span>
+        </label>
+        <label>
+          Комментарий
+          <input type="text" name="craft_part_comment" value="{{ item.comment }}" />
+        </label>
+        <button type="button" class="btn btn-danger" onclick="removePartRow(this)">Удалить</button>
+      </div>
+      {% endfor %}
+    </div>
+    <button type="button" class="btn" id="add_craft_part_btn">Добавить ссылку</button>
   </section>
 
   <section class="box">
@@ -294,9 +388,10 @@
           <option value="project" {% if form.plan_type == 'project' %}selected{% endif %}>Проект</option>
         </select>
       </label>
-      <label id="project_leader_wrap">
+      <label id="project_leader_wrap" class="alias-suggest">
         Руководитель
-        <input type="text" name="project_leader" list="project-leader-options" value="{{ form.project_leader }}" />
+        <input type="text" name="project_leader" id="project_leader" list="project-leader-options" value="{{ form.project_leader }}" autocomplete="off" />
+        <div class="alias-suggest-list" id="project-leader-suggest"></div>
       </label>
     </div>
     <datalist id="project-leader-options">
@@ -411,14 +506,10 @@
       <input type="text" name="studios_new" />
     </label>
 
-    <div class="grid three-col">
+    <div class="grid two-col">
       <label>
         Дата фотосета
         <input type="date" name="photoset_date" value="{{ form.photoset_date }}" />
-      </label>
-      <label>
-        Цена фотосета
-        <input type="text" name="photoset_price" value="{{ form.photoset_price }}" class="price-field" />
       </label>
       <label>
         Валюта
@@ -426,15 +517,55 @@
       </label>
     </div>
 
+    <div class="grid two-col">
+      <label>
+        Фотограф:
+        <input type="text" name="photoset_photographer_price" value="{{ form.photoset_photographer_price }}" class="price-field" />
+      </label>
+      <label>
+        Студия:
+        <input type="text" name="photoset_studio_price" value="{{ form.photoset_studio_price }}" class="price-field" />
+      </label>
+      <label>
+        Реквизит:
+        <input type="text" name="photoset_props_price" value="{{ form.photoset_props_price }}" class="price-field" />
+      </label>
+      <label>
+        Дополнительно (дым-машина и т.д.):
+        <input type="text" name="photoset_extra_price" value="{{ form.photoset_extra_price }}" class="price-field" />
+      </label>
+    </div>
+
     <label>
+      Пояснение (например, концепция или ссылка на таблицу с раскадровками)
+      <textarea name="photoset_comment" rows="3">{{ form.photoset_comment }}</textarea>
+    </label>
+
+    <h3>Чеклист реквизита</h3>
+    <div id="photoset_prop_rows">
+      {% for item in form.photoset_props_checklist_json %}
+      <div class="checklist-row">
+        <input type="hidden" name="photoset_prop_row_id" value="{{ item.row_id }}" />
+        <input type="checkbox" name="photoset_prop_done" value="{{ item.row_id }}" {% if item.done == '__YES__' %}checked{% endif %} />
+        <input type="text" name="photoset_prop_text" value="{{ item.text }}" placeholder="Пункт реквизита" />
+        <button type="button" class="btn btn-danger" onclick="removeChecklistRow(this)">Удалить</button>
+      </div>
+      {% endfor %}
+    </div>
+    <button type="button" class="btn" id="add_photoset_prop_btn">Добавить пункт реквизита</button>
+
+    <label class="alias-suggest">
       Сокосплеер(ы) (через запятую)
       <input
         type="text"
         name="coproplayers_input"
+        id="coproplayers_input"
         value="{{ form.coproplayers_input }}"
         list="coproplayer-alias-options"
         placeholder="username1, cosplay_nick2"
+        autocomplete="off"
       />
+      <div class="alias-suggest-list" id="coproplayer-suggest"></div>
     </label>
   </section>
 
@@ -455,10 +586,39 @@
   </section>
 
   <section class="box">
+    <h2>Референсы поз / кадров</h2>
+    <label>
+      Ссылки на Pinterest или iframe (через запятую, ; или с новой строки)
+      <textarea name="pose_references_input" id="pose_references_input" rows="5" placeholder="https://www.pinterest.com/pin/...">{{ form.pose_references_input }}</textarea>
+    </label>
+    <p class="muted">Можно вставить ссылку на Pinterest-пин или iframe Pinterest. Ссылки сохраняются без загрузки файлов на сервер.</p>
+    <div class="reference-grid" id="pose_references_preview">
+      {% for url in form.pose_references_json %}
+        {% if url.startswith('iframe:') %}
+          <iframe class="pinterest-frame" src="{{ url[7:] }}" loading="lazy"></iframe>
+        {% elif 'pinterest.' in url and '/pin/' in url %}
+          {% set pin_id = (url.split('/pin/')[1].split('/')[0]) if ('/pin/' in url) else '' %}
+          {% if pin_id %}
+            <iframe class="pinterest-frame" src="https://assets.pinterest.com/ext/embed.html?id={{ pin_id }}" loading="lazy"></iframe>
+          {% else %}
+            <a class="reference-tile" href="{{ url }}" target="_blank" rel="noreferrer">
+              <img src="{{ url }}" alt="Референс позы" loading="lazy" onerror="this.parentElement.remove();" />
+            </a>
+          {% endif %}
+        {% else %}
+          <a class="reference-tile" href="{{ url }}" target="_blank" rel="noreferrer">
+            <img src="{{ url }}" alt="Референс позы" loading="lazy" onerror="this.parentElement.remove();" />
+          </a>
+        {% endif %}
+      {% endfor %}
+    </div>
+  </section>
+
+  <section class="box">
     <h2>Ориентировочная стоимость проекта</h2>
     <p class="estimated-total">
       <strong><span id="estimated_total_value">{{ '%.2f'|format(form.estimated_total or 0) }}</span> <span id="estimated_total_currency">{{ form.estimated_total_currency }}</span></strong>
-      <span class="muted">Сумма по всем указанным ценам в карточке (если валют несколько, будет MIXED)</span>
+      <span class="muted">Сумма по всем указанным ценам в карточке. Если есть неизвестные цены, будет пометка «УТОЧНЯЕТСЯ».</span>
     </p>
   </section>
 
@@ -482,6 +642,8 @@
     {% endfor %}
   </datalist>
 
+  <input type="hidden" id="unknown_prices_initial" value='{{ form.unknown_prices_json | tojson }}' />
+
   <div class="actions-inline">
     <button type="submit" class="btn btn-accent">{{ "Сохранить" if editing else "Создать" }}</button>
     <a href="/cosplan" class="btn">Отмена</a>
@@ -493,6 +655,100 @@
     const el = document.getElementById(id);
     if (!el) return;
     el.style.display = visible ? "" : "none";
+  };
+
+  const normalizeCity = (value) => {
+    if (!value) return "";
+    const aliases = {
+      "спб": "санктпетербург",
+      "питер": "санктпетербург",
+      "санктпетербург": "санктпетербург",
+      "мск": "москва",
+      "moscow": "москва",
+    };
+    let cleaned = value.toLowerCase().replace(/ё/g, "е");
+    cleaned = cleaned.replace(/\b(г\.?|город)\b/g, " ");
+    cleaned = cleaned.replace(/[^a-zа-я0-9]+/g, " ").trim().replace(/\s+/g, " ");
+    const compact = cleaned.replace(/\s+/g, "");
+    return aliases[compact] || compact;
+  };
+
+  const cityMatches = (leftRaw, rightRaw) => {
+    const left = normalizeCity(leftRaw);
+    const right = normalizeCity(rightRaw);
+    if (!left || !right) return false;
+    if (left === right) return true;
+    return left.includes(right) || right.includes(left);
+  };
+
+  const parseListEntries = (text) =>
+    (text || "")
+      .split(/[\n,;]/g)
+      .map((value) => value.trim())
+      .filter(Boolean);
+
+  const extractPinterestEmbed = (value) => {
+    if (!value) return "";
+    if (value.startsWith("iframe:")) {
+      return value.replace(/^iframe:/, "").trim();
+    }
+    const iframeSrc = value.match(/src=["']([^"']+)["']/i);
+    if (iframeSrc?.[1]) {
+      return iframeSrc[1].trim();
+    }
+    const pinMatch = value.match(/pinterest\.[^/]+\/pin\/(\d+)/i);
+    if (pinMatch?.[1]) {
+      return `https://assets.pinterest.com/ext/embed.html?id=${pinMatch[1]}`;
+    }
+    return "";
+  };
+
+  const createImageTile = (url, altText) => {
+    const link = document.createElement("a");
+    link.className = "reference-tile";
+    link.href = url;
+    link.target = "_blank";
+    link.rel = "noreferrer";
+    const image = document.createElement("img");
+    image.src = url;
+    image.alt = altText;
+    image.loading = "lazy";
+    image.onerror = () => link.remove();
+    link.appendChild(image);
+    return link;
+  };
+
+  const updateReferencesPreview = () => {
+    const referencesInput = document.getElementById("references_input");
+    const referencesWrap = document.getElementById("references_preview");
+    if (referencesInput && referencesWrap) {
+      referencesWrap.innerHTML = "";
+      const links = Array.from(
+        new Set(parseListEntries(referencesInput.value).filter((value) => /^https?:\/\//i.test(value)))
+      );
+      links.forEach((url) => referencesWrap.appendChild(createImageTile(url, "Референс")));
+    }
+
+    const poseInput = document.getElementById("pose_references_input");
+    const poseWrap = document.getElementById("pose_references_preview");
+    if (poseInput && poseWrap) {
+      poseWrap.innerHTML = "";
+      const links = Array.from(new Set(parseListEntries(poseInput.value)));
+      links.forEach((value) => {
+        const embed = extractPinterestEmbed(value);
+        if (embed) {
+          const iframe = document.createElement("iframe");
+          iframe.className = "pinterest-frame";
+          iframe.loading = "lazy";
+          iframe.src = embed;
+          poseWrap.appendChild(iframe);
+          return;
+        }
+        if (/^https?:\/\//i.test(value)) {
+          poseWrap.appendChild(createImageTile(value, "Референс позы"));
+        }
+      });
+    }
   };
 
   const applyFormRules = () => {
@@ -529,19 +785,33 @@
   };
 
   const applyFestivalCityFilter = () => {
-    const filter = (document.getElementById("festival_city_filter")?.value || "").trim().toLowerCase();
+    const filter = (document.getElementById("festival_city_filter")?.value || "").trim();
     document.querySelectorAll(".festival-chip").forEach((chip) => {
       if (!filter) {
         chip.style.display = "";
         return;
       }
       const city = chip.dataset.city || "";
-      chip.style.display = city.includes(filter) ? "" : "none";
+      chip.style.display = cityMatches(city, filter) ? "" : "none";
     });
+  };
+
+  const getPriceFieldUnknown = (input) => {
+    if (!input?.name) return false;
+    const unknownBox = document.querySelector(`input[name="unknown_prices"][value="${input.name}"]`);
+    return !!(unknownBox && unknownBox.checked);
+  };
+
+  const getPartRowUnknown = (input) => {
+    const row = input?.closest(".parts-row");
+    if (!row) return false;
+    const checkbox = row.querySelector('input[name="costume_part_unknown"], input[name="craft_part_unknown"]');
+    return !!(checkbox && checkbox.checked);
   };
 
   const updateEstimatedTotal = () => {
     let total = 0;
+    let hasUnknown = false;
     const currencies = new Set();
     const currencyByPriceField = {
       "costume_prepayment": "costume_currency",
@@ -557,10 +827,21 @@
       "craft_price": "craft_currency",
       "craft_material_price": "craft_currency",
       "photoset_price": "photoset_currency",
+      "photoset_photographer_price": "photoset_currency",
+      "photoset_studio_price": "photoset_currency",
+      "photoset_props_price": "photoset_currency",
+      "photoset_extra_price": "photoset_currency",
+      "costume_part_price": "costume_currency",
+      "craft_part_price": "craft_currency",
     };
     document.querySelectorAll(".price-field").forEach((input) => {
       const fieldRoot = input.closest("label") || input;
       if (fieldRoot.offsetParent === null) {
+        return;
+      }
+      const isUnknown = input.classList.contains("part-price-field") ? getPartRowUnknown(input) : getPriceFieldUnknown(input);
+      if (isUnknown) {
+        hasUnknown = true;
         return;
       }
       const value = (input.value || "").replace(/\s+/g, "").replace(",", ".");
@@ -578,13 +859,15 @@
         }
       }
     });
+
     const target = document.getElementById("estimated_total_value");
-    if (target) {
-      target.textContent = total.toFixed(2);
-    }
+    if (target) target.textContent = total.toFixed(2);
+
     const currencyTarget = document.getElementById("estimated_total_currency");
     if (currencyTarget) {
-      if (currencies.size === 1) {
+      if (hasUnknown) {
+        currencyTarget.textContent = "УТОЧНЯЕТСЯ";
+      } else if (currencies.size === 1) {
         currencyTarget.textContent = Array.from(currencies)[0];
       } else if (currencies.size > 1) {
         currencyTarget.textContent = "MIXED";
@@ -594,31 +877,211 @@
     }
   };
 
-  const updateReferencesPreview = () => {
-    const textarea = document.getElementById("references_input");
-    const wrap = document.getElementById("references_preview");
-    if (!textarea || !wrap) return;
-    const parts = (textarea.value || "")
-      .split(/[\n,;]/g)
-      .map((v) => v.trim())
-      .filter((v) => v && /^https?:\/\//i.test(v));
-    const unique = Array.from(new Set(parts.map((v) => v.trim())));
-    wrap.innerHTML = "";
-    unique.forEach((url) => {
-      const link = document.createElement("a");
-      link.className = "reference-tile";
-      link.href = url;
-      link.target = "_blank";
-      link.rel = "noreferrer";
-      const image = document.createElement("img");
-      image.src = url;
-      image.alt = "Референс";
-      image.loading = "lazy";
-      image.onerror = () => {
-        link.remove();
-      };
-      link.appendChild(image);
-      wrap.appendChild(link);
+  const attachUnknownPriceCheckboxes = () => {
+    let initialValues = [];
+    try {
+      initialValues = JSON.parse(document.getElementById("unknown_prices_initial")?.value || "[]");
+    } catch (_err) {
+      initialValues = [];
+    }
+    const initialSet = new Set(initialValues);
+
+    document.querySelectorAll(".price-field:not(.part-price-field)").forEach((input) => {
+      if (input.dataset.unknownReady === "1") return;
+      input.dataset.unknownReady = "1";
+      const marker = document.createElement("span");
+      marker.className = "unknown-price-mark";
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.name = "unknown_prices";
+      checkbox.value = input.name;
+      if (initialSet.has(input.name)) {
+        checkbox.checked = true;
+      }
+      checkbox.addEventListener("change", () => {
+        if (checkbox.checked) input.value = "";
+        updateEstimatedTotal();
+      });
+      input.addEventListener("input", () => {
+        if (input.value.trim()) {
+          checkbox.checked = false;
+        }
+        updateEstimatedTotal();
+      });
+      marker.appendChild(checkbox);
+      marker.appendChild(document.createTextNode("Цена неизвестна"));
+      input.insertAdjacentElement("afterend", marker);
+    });
+  };
+
+  const makePartRow = (prefix) => {
+    const rowId = `${prefix}-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
+    const row = document.createElement("div");
+    row.className = "parts-row";
+    row.innerHTML = `
+      <input type="hidden" name="${prefix}_part_row_id" value="${rowId}" />
+      <label>
+        Ссылка
+        <input type="url" name="${prefix}_part_link" />
+      </label>
+      <label>
+        Цена
+        <input type="text" name="${prefix}_part_price" class="price-field part-price-field" />
+        <span class="unknown-price-mark">
+          <input type="checkbox" name="${prefix}_part_unknown" value="${rowId}" />
+          Цена неизвестна
+        </span>
+      </label>
+      <label>
+        Комментарий
+        <input type="text" name="${prefix}_part_comment" />
+      </label>
+      <button type="button" class="btn btn-danger">Удалить</button>
+    `;
+    row.querySelector("button").addEventListener("click", () => {
+      row.remove();
+      updateEstimatedTotal();
+    });
+    row.querySelectorAll('input').forEach((el) => {
+      el.addEventListener("input", updateEstimatedTotal);
+      el.addEventListener("change", updateEstimatedTotal);
+    });
+    return row;
+  };
+
+  window.removePartRow = (button) => {
+    const row = button?.closest(".parts-row");
+    if (row) {
+      row.remove();
+      updateEstimatedTotal();
+    }
+  };
+
+  const setupPartsControls = () => {
+    const costumeAdd = document.getElementById("add_costume_part_btn");
+    const craftAdd = document.getElementById("add_craft_part_btn");
+    const costumeWrap = document.getElementById("costume_parts_rows");
+    const craftWrap = document.getElementById("craft_parts_rows");
+
+    if (costumeAdd && costumeWrap) {
+      costumeAdd.addEventListener("click", () => {
+        costumeWrap.appendChild(makePartRow("costume"));
+        updateEstimatedTotal();
+      });
+    }
+    if (craftAdd && craftWrap) {
+      craftAdd.addEventListener("click", () => {
+        craftWrap.appendChild(makePartRow("craft"));
+        updateEstimatedTotal();
+      });
+    }
+
+    document.querySelectorAll(".parts-row input").forEach((input) => {
+      input.addEventListener("input", updateEstimatedTotal);
+      input.addEventListener("change", updateEstimatedTotal);
+    });
+  };
+
+  const makeChecklistRow = () => {
+    const rowId = `prop-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
+    const row = document.createElement("div");
+    row.className = "checklist-row";
+    row.innerHTML = `
+      <input type="hidden" name="photoset_prop_row_id" value="${rowId}" />
+      <input type="checkbox" name="photoset_prop_done" value="${rowId}" />
+      <input type="text" name="photoset_prop_text" placeholder="Пункт реквизита" />
+      <button type="button" class="btn btn-danger">Удалить</button>
+    `;
+    row.querySelector("button").addEventListener("click", () => row.remove());
+    return row;
+  };
+
+  window.removeChecklistRow = (button) => {
+    const row = button?.closest(".checklist-row");
+    if (row) row.remove();
+  };
+
+  const setupChecklistControls = () => {
+    const addButton = document.getElementById("add_photoset_prop_btn");
+    const wrap = document.getElementById("photoset_prop_rows");
+    if (!addButton || !wrap) return;
+    addButton.addEventListener("click", () => {
+      wrap.appendChild(makeChecklistRow());
+    });
+  };
+
+  const bindAliasSuggest = ({ inputId, listId, multi }) => {
+    const input = document.getElementById(inputId);
+    const list = document.getElementById(listId);
+    if (!input || !list) return;
+
+    let pendingRequest = null;
+    const close = () => {
+      list.innerHTML = "";
+      list.style.display = "none";
+    };
+    const setValue = (picked) => {
+      if (!multi) {
+        input.value = picked;
+        close();
+        return;
+      }
+      const raw = input.value || "";
+      const parts = raw.split(",");
+      parts[parts.length - 1] = ` ${picked}`;
+      input.value = `${parts.map((part) => part.trim()).filter(Boolean).join(", ")}, `;
+      close();
+    };
+
+    const render = (items) => {
+      list.innerHTML = "";
+      if (!items.length) {
+        close();
+        return;
+      }
+      items.forEach((item) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "alias-suggest-item";
+        button.textContent = item;
+        button.addEventListener("click", () => setValue(item));
+        list.appendChild(button);
+      });
+      list.style.display = "";
+    };
+
+    const getQuery = () => {
+      const value = (input.value || "").trim();
+      if (!multi) return value;
+      const pieces = value.split(",");
+      return (pieces[pieces.length - 1] || "").trim();
+    };
+
+    input.addEventListener("input", async () => {
+      const query = getQuery();
+      if (!query || query.length < 2) {
+        close();
+        return;
+      }
+      if (pendingRequest) pendingRequest.abort();
+      pendingRequest = new AbortController();
+      try {
+        const response = await fetch(`/api/users/search?q=${encodeURIComponent(query)}&limit=8`, {
+          signal: pendingRequest.signal,
+        });
+        if (!response.ok) {
+          close();
+          return;
+        }
+        const payload = await response.json();
+        render(Array.isArray(payload.items) ? payload.items : []);
+      } catch (_err) {
+        close();
+      }
+    });
+
+    input.addEventListener("blur", () => {
+      setTimeout(close, 120);
     });
   };
 
@@ -633,13 +1096,19 @@
   if (cityFilterInput) {
     cityFilterInput.addEventListener("input", applyFestivalCityFilter);
   }
+
   const referencesInput = document.getElementById("references_input");
   if (referencesInput) {
     referencesInput.addEventListener("input", updateReferencesPreview);
   }
+  const poseReferencesInput = document.getElementById("pose_references_input");
+  if (poseReferencesInput) {
+    poseReferencesInput.addEventListener("input", updateReferencesPreview);
+  }
 
   document.querySelectorAll(".price-field").forEach((input) => {
     input.addEventListener("input", updateEstimatedTotal);
+    input.addEventListener("change", updateEstimatedTotal);
   });
   ["costume_currency", "shoes_currency", "lenses_currency", "wig_currency", "craft_currency", "photoset_currency"].forEach((name) => {
     const input = document.querySelector(`[name="${name}"]`);
@@ -649,6 +1118,11 @@
     }
   });
 
+  bindAliasSuggest({ inputId: "project_leader", listId: "project-leader-suggest", multi: false });
+  bindAliasSuggest({ inputId: "coproplayers_input", listId: "coproplayer-suggest", multi: true });
+  attachUnknownPriceCheckboxes();
+  setupPartsControls();
+  setupChecklistControls();
   applyFormRules();
   applyFestivalCityFilter();
   updateEstimatedTotal();

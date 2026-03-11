@@ -11,6 +11,11 @@
   </div>
 </section>
 
+<style>
+  .going-toggle-form { margin: 0; }
+  .going-toggle-form .inline-check { margin: 0; font-size: 0.9rem; }
+</style>
+
 {% if user_home_city %}
 <section class="box compact-box">
   <p class="muted">
@@ -126,7 +131,14 @@
   <article class="card {% if is_planned %}planned{% endif %} {% if is_shared_planned %}planned-shared{% endif %} {% if festival.id in home_city_festival_ids %}home-city-highlight{% endif %}">
     <div class="row-between">
       <h3>{{ festival.name }}</h3>
-      {% if festival.is_going %}<span class="chip">Я иду</span>{% endif %}
+      <form method="post" action="/festivals/{{ festival.id }}/toggle-going" class="going-toggle-form">
+        <input type="hidden" name="next" value="/festivals{% if current_query %}?{{ current_query }}{% endif %}" />
+        <label class="inline-check">
+          <input type="checkbox" name="is_going" value="1" {% if festival.is_going %}checked{% endif %} onchange="this.form.submit()" />
+          Я иду
+        </label>
+        <noscript><button type="submit" class="btn">Сохранить</button></noscript>
+      </form>
     </div>
     <p class="meta">Город: {{ festival.city or "—" }}</p>
     <p class="meta">

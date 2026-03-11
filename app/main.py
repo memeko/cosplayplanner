@@ -3,10 +3,12 @@ from __future__ import annotations
 import csv
 import io
 import os
+import re
 import sqlite3
 import uuid
 from collections import defaultdict
 from datetime import date, datetime, timedelta
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
 
@@ -143,6 +145,7 @@ def apply_schema_migrations() -> None:
             ("costume_buy_price", "FLOAT"),
             ("costume_fabric_price", "FLOAT"),
             ("costume_hardware_price", "FLOAT"),
+            ("costume_notes", "TEXT"),
             ("shoes_buy_price", "FLOAT"),
             ("lenses_price", "FLOAT"),
             ("lenses_currency", "VARCHAR(16)"),
@@ -160,6 +163,16 @@ def apply_schema_migrations() -> None:
             ("craft_deadline", "DATE"),
             ("craft_currency", "VARCHAR(16)"),
             ("references_json", "JSON NOT NULL DEFAULT '[]'"),
+            ("pose_references_json", "JSON NOT NULL DEFAULT '[]'"),
+            ("unknown_prices_json", "JSON NOT NULL DEFAULT '[]'"),
+            ("costume_parts_json", "JSON NOT NULL DEFAULT '[]'"),
+            ("craft_parts_json", "JSON NOT NULL DEFAULT '[]'"),
+            ("photoset_photographer_price", "FLOAT"),
+            ("photoset_studio_price", "FLOAT"),
+            ("photoset_props_price", "FLOAT"),
+            ("photoset_extra_price", "FLOAT"),
+            ("photoset_comment", "TEXT"),
+            ("photoset_props_checklist_json", "JSON NOT NULL DEFAULT '[]'"),
         ],
         "festival_notifications": [
             ("id", "INTEGER PRIMARY KEY"),
@@ -250,6 +263,7 @@ def readyz(db: Session = Depends(get_db)) -> dict[str, str]:
 def estimate_card_total_and_currency(card: CosplanCard) -> tuple[float, str]:
     total = 0.0
     currencies: set[str] = set()
+    has_unknown = False
 
     def add(value: float | None, currency: str | None) -> None:
         nonlocal total
@@ -272,8 +286,38 @@ def estimate_card_total_and_currency(card: CosplanCard) -> tuple[float, str]:
     add(card.wig_buy_price, card.wig_currency)
     add(card.craft_price, card.craft_currency)
     add(card.craft_material_price, card.craft_currency)
-    add(card.photoset_price, card.photoset_currency)
+    photoset_breakdown = [
+        card.photoset_photographer_price,
+        card.photoset_studio_price,
+        card.photoset_props_price,
+        card.photoset_extra_price,
+    ]
+    if any(value is not None for value in photoset_breakdown):
+        for value in photoset_breakdown:
+            add(value, card.photoset_currency)
+    else:
+        add(card.photoset_price, card.photoset_currency)
 
+    for item in as_list(card.costume_parts_json):
+        if not isinstance(item, dict):
+            continue
+        if to_bool(item.get("unknown")):
+            has_unknown = True
+            continue
+        add(parse_float(str(item.get("price", ""))), str(item.get("currency", "")) or card.costume_currency)
+    for item in as_list(card.craft_parts_json):
+        if not isinstance(item, dict):
+            continue
+        if to_bool(item.get("unknown")):
+            has_unknown = True
+            continue
+        add(parse_float(str(item.get("price", ""))), str(item.get("currency", "")) or card.craft_currency)
+
+    if as_list(card.unknown_prices_json):
+        has_unknown = True
+
+    if has_unknown:
+        return total, "УТОЧНЯЕТСЯ"
     if not currencies:
         return total, ""
     if len(currencies) == 1:
@@ -372,10 +416,26 @@ def format_coproplayer_names(
 def normalize_city(value: str | None) -> str:
     if not value:
         return ""
-    cleaned = value.strip().casefold()
-    cleaned = cleaned.replace("г.", "").replace("город", "").strip()
+    cleaned = value.strip().casefold().replace("ё", "е")
+    cleaned = re.sub(r"\b(г\.?|город)\b", " ", cleaned)
+    cleaned = re.sub(r"[^a-zа-я0-9]+", " ", cleaned)
     cleaned = " ".join(cleaned.split())
-    return cleaned
+    compact = cleaned.replace(" ", "")
+
+    aliases = {
+        "спб": "санктпетербург",
+        "санктпетербург": "санктпетербург",
+        "санктпетербур": "санктпетербург",
+        "sanktpeterburg": "санктпетербург",
+        "saintpetersburg": "санктпетербург",
+        "stpetersburg": "санктпетербург",
+        "питер": "санктпетербург",
+        "мск": "москва",
+        "москва": "москва",
+        "moskva": "москва",
+        "moscow": "москва",
+    }
+    return aliases.get(compact, compact)
 
 
 def city_matches(base_city: str | None, candidate_city: str | None) -> bool:
@@ -385,7 +445,12 @@ def city_matches(base_city: str | None, candidate_city: str | None) -> bool:
         return False
     if left == right:
         return True
-    return left in right or right in left
+    if left in right or right in left:
+        return True
+    min_len = min(len(left), len(right))
+    if min_len >= 5 and SequenceMatcher(None, left, right).ratio() >= 0.84:
+        return True
+    return False
 
 
 def can_comment_on_card(card: CosplanCard, user: User) -> bool:
@@ -555,6 +620,384 @@ def _short_names(names: list[str], limit: int = 3) -> str:
     return f"{shown} и ещё {len(unique) - limit}"
 
 
+def iter_date_range(start_date: date | None, end_date: date | None) -> list[date]:
+    if not start_date:
+        return []
+    resolved_end = end_date or start_date
+    if resolved_end < start_date:
+        resolved_end = start_date
+    days: list[date] = []
+    cursor = start_date
+    while cursor <= resolved_end:
+        days.append(cursor)
+        cursor += timedelta(days=1)
+    return days
+
+
+def enqueue_notification_if_missing(
+    db: Session,
+    *,
+    user_id: int,
+    from_user_id: int | None,
+    source_card_id: int | None,
+    message: str,
+) -> bool:
+    conditions = [FestivalNotification.user_id == user_id, FestivalNotification.message == message]
+    if from_user_id is None:
+        conditions.append(FestivalNotification.from_user_id.is_(None))
+    else:
+        conditions.append(FestivalNotification.from_user_id == from_user_id)
+    if source_card_id is None:
+        conditions.append(FestivalNotification.source_card_id.is_(None))
+    else:
+        conditions.append(FestivalNotification.source_card_id == source_card_id)
+
+    exists = db.execute(select(FestivalNotification).where(and_(*conditions))).scalar_one_or_none()
+    if exists:
+        exists.is_read = False
+        return False
+
+    db.add(
+        FestivalNotification(
+            user_id=user_id,
+            from_user_id=from_user_id,
+            source_card_id=source_card_id,
+            message=message,
+            is_read=False,
+        )
+    )
+    return True
+
+
+def user_busy_items_on_date(
+    db: Session,
+    *,
+    user_id: int,
+    target_date: date,
+    exclude_card_id: int | None = None,
+    exclude_source_card_id: int | None = None,
+    exclude_festival_id: int | None = None,
+    ignore_festival_name: str | None = None,
+    exclude_rehearsal_entry_id: int | None = None,
+) -> list[str]:
+    busy: list[str] = []
+
+    festivals = db.execute(
+        select(Festival).where(
+            Festival.user_id == user_id,
+            Festival.is_going.is_(True),
+            Festival.event_date.is_not(None),
+        )
+    ).scalars().all()
+    ignored_name = (ignore_festival_name or "").strip().casefold()
+    for festival in festivals:
+        if exclude_festival_id and festival.id == exclude_festival_id:
+            continue
+        if ignored_name and (festival.name or "").strip().casefold() == ignored_name:
+            continue
+        for festival_date in iter_date_range(festival.event_date, festival.event_end_date):
+            if festival_date == target_date:
+                busy.append(f"фестиваль «{festival.name or 'Без названия'}»")
+                break
+
+    cards = db.execute(
+        select(CosplanCard).where(
+            CosplanCard.user_id == user_id,
+            CosplanCard.photoset_date == target_date,
+        )
+    ).scalars().all()
+    for card in cards:
+        if exclude_card_id and card.id == exclude_card_id:
+            continue
+        if exclude_source_card_id and card.is_shared_copy and card.source_card_id == exclude_source_card_id:
+            continue
+        busy.append(f"фотосет «{card.character_name or 'Без названия'}»")
+
+    rehearsal_entries = db.execute(
+        select(RehearsalEntry).where(
+            RehearsalEntry.user_id == user_id,
+            RehearsalEntry.entry_date == target_date,
+            RehearsalEntry.status.in_(
+                [
+                    REHEARSAL_STATUS_PROPOSED,
+                    REHEARSAL_STATUS_APPROVED,
+                    REHEARSAL_STATUS_ACCEPTED,
+                ]
+            ),
+        )
+    ).scalars().all()
+    for entry in rehearsal_entries:
+        if exclude_rehearsal_entry_id and entry.id == exclude_rehearsal_entry_id:
+            continue
+        status_label = rehearsal_status_label(entry.status).lower()
+        card_name = entry.cosplan_card.character_name if entry.cosplan_card else "карточка"
+        busy.append(f"репетиция ({status_label}) по «{card_name}»")
+
+    return merge_unique(busy)
+
+
+def parse_reference_values(raw_value: str) -> list[str]:
+    if not raw_value:
+        return []
+    items: list[str] = []
+    chunks = re.split(r"[\n,;]+", raw_value)
+    for chunk in chunks:
+        value = chunk.strip()
+        if not value:
+            continue
+        if value.startswith("iframe:"):
+            iframe_src = value.removeprefix("iframe:").strip()
+            if iframe_src.lower().startswith(("http://", "https://")):
+                items.append(f"iframe:{iframe_src}")
+            continue
+        if value.lower().startswith("<iframe"):
+            match = re.search(r'src=["\']([^"\']+)["\']', value, flags=re.IGNORECASE)
+            if match:
+                src = match.group(1).strip()
+                if src.lower().startswith(("http://", "https://")):
+                    items.append(f"iframe:{src}")
+            continue
+        if value.lower().startswith(("http://", "https://")):
+            items.append(value)
+    return merge_unique(items)
+
+
+def pinterest_embed_src(url: str) -> str | None:
+    value = (url or "").strip()
+    if value.startswith("iframe:"):
+        iframe_src = value.removeprefix("iframe:").strip()
+        return iframe_src if iframe_src else None
+
+    match = re.search(r"pinterest\.[^/]+/pin/(\d+)", value, flags=re.IGNORECASE)
+    if match:
+        pin_id = match.group(1)
+        return f"https://assets.pinterest.com/ext/embed.html?id={pin_id}"
+    return None
+
+
+def parse_parts_from_form(form: Any, prefix: str, default_currency: str | None) -> list[dict[str, Any]]:
+    row_ids = [str(value).strip() for value in form.getlist(f"{prefix}_part_row_id")]
+    links = [str(value).strip() for value in form.getlist(f"{prefix}_part_link")]
+    prices = [str(value).strip() for value in form.getlist(f"{prefix}_part_price")]
+    comments = [str(value).strip() for value in form.getlist(f"{prefix}_part_comment")]
+    unknown_ids = {str(value).strip() for value in form.getlist(f"{prefix}_part_unknown") if str(value).strip()}
+
+    size = max(len(row_ids), len(links), len(prices), len(comments))
+    if size == 0:
+        return []
+
+    rows: list[dict[str, Any]] = []
+    for index in range(size):
+        row_id = row_ids[index] if index < len(row_ids) and row_ids[index] else str(index)
+        link = links[index] if index < len(links) else ""
+        comment = comments[index] if index < len(comments) else ""
+        raw_price = prices[index] if index < len(prices) else ""
+        unknown = row_id in unknown_ids
+        parsed_price = None if unknown else parse_float(raw_price)
+        if not (link or comment or raw_price or unknown):
+            continue
+        rows.append(
+            {
+                "url": link,
+                "price": parsed_price,
+                "comment": comment,
+                "currency": (default_currency or "").strip().upper(),
+                "unknown": unknown,
+            }
+        )
+    return rows
+
+
+def format_parts_for_form(parts: list[Any]) -> list[dict[str, str]]:
+    formatted: list[dict[str, str]] = []
+    for idx, raw_item in enumerate(parts):
+        if not isinstance(raw_item, dict):
+            continue
+        price = raw_item.get("price")
+        formatted.append(
+            {
+                "row_id": str(raw_item.get("row_id") or f"row-{idx}"),
+                "url": str(raw_item.get("url", "") or ""),
+                "price": "" if price is None else f"{price:g}",
+                "comment": str(raw_item.get("comment", "") or ""),
+                "unknown": "__YES__" if to_bool(raw_item.get("unknown")) else "__NO__",
+            }
+        )
+    return formatted
+
+
+def parse_checklist_rows_from_form(form: Any, prefix: str) -> list[dict[str, Any]]:
+    row_ids = [str(value).strip() for value in form.getlist(f"{prefix}_row_id")]
+    texts = [str(value).strip() for value in form.getlist(f"{prefix}_text")]
+    done_ids = {str(value).strip() for value in form.getlist(f"{prefix}_done") if str(value).strip()}
+    size = max(len(row_ids), len(texts))
+    if size == 0:
+        return []
+
+    items: list[dict[str, Any]] = []
+    for index in range(size):
+        row_id = row_ids[index] if index < len(row_ids) and row_ids[index] else str(index)
+        text_value = texts[index].strip() if index < len(texts) else ""
+        if not text_value:
+            continue
+        items.append({"text": text_value, "done": row_id in done_ids})
+    return items
+
+
+def format_checklist_for_form(items: list[Any]) -> list[dict[str, str]]:
+    formatted: list[dict[str, str]] = []
+    for index, raw_item in enumerate(items):
+        if isinstance(raw_item, dict):
+            text_value = str(raw_item.get("text", "")).strip()
+            done_value = "__YES__" if to_bool(raw_item.get("done")) else "__NO__"
+        else:
+            text_value = str(raw_item).strip()
+            done_value = "__NO__"
+        if not text_value:
+            continue
+        formatted.append({"row_id": f"item-{index}", "text": text_value, "done": done_value})
+    return formatted
+
+
+def notify_coproplayer_conflicts_for_card(db: Session, *, card: CosplanCard, owner: User) -> int:
+    coproplayers = as_list(card.coproplayer_nicks_json)
+    if not coproplayers:
+        return 0
+
+    target_users = db.execute(select(User).where(User.username.in_(coproplayers))).scalars().all()
+    users_by_username = {normalize_username(item.username).casefold(): item for item in target_users}
+
+    contexts: list[tuple[date, str, str | None]] = []
+    if card.photoset_date:
+        contexts.append((card.photoset_date, f"фотосет «{card.character_name}»", None))
+
+    planned_names = {name.casefold(): name for name in as_list(card.planned_festivals_json)}
+    if planned_names:
+        owner_festivals = db.execute(
+            select(Festival).where(
+                Festival.user_id == owner.id,
+                Festival.event_date.is_not(None),
+            )
+        ).scalars().all()
+        for festival in owner_festivals:
+            name_key = (festival.name or "").strip().casefold()
+            if name_key not in planned_names:
+                continue
+            for event_day in iter_date_range(festival.event_date, festival.event_end_date):
+                contexts.append((event_day, f"выступление на фестивале «{festival.name}»", festival.name or ""))
+
+    notified = 0
+    owner_alias = preferred_user_alias(owner)
+    for username in coproplayers:
+        target_user = users_by_username.get(username.casefold())
+        if not target_user or target_user.id == owner.id:
+            continue
+        target_alias = preferred_user_alias(target_user)
+
+        for target_date, context_name, ignore_festival_name in contexts:
+            conflicts = user_busy_items_on_date(
+                db,
+                user_id=target_user.id,
+                target_date=target_date,
+                exclude_source_card_id=card.id,
+                ignore_festival_name=ignore_festival_name,
+            )
+            if not conflicts:
+                continue
+            conflict_text = "; ".join(conflicts)
+            readable_date = target_date.strftime("%d-%m-%Y")
+            message_for_owner = (
+                f"У сокосплеера @{target_alias} конфликт на {readable_date} для «{card.character_name}»: "
+                f"{context_name}. Занято: {conflict_text}."
+            )
+            message_for_target = (
+                f"@{owner_alias} указал(а) вас в карточке «{card.character_name}» ({context_name}, {readable_date}), "
+                f"но у вас конфликт: {conflict_text}."
+            )
+            if enqueue_notification_if_missing(
+                db,
+                user_id=owner.id,
+                from_user_id=target_user.id,
+                source_card_id=card.id,
+                message=message_for_owner,
+            ):
+                notified += 1
+            if enqueue_notification_if_missing(
+                db,
+                user_id=target_user.id,
+                from_user_id=owner.id,
+                source_card_id=card.id,
+                message=message_for_target,
+            ):
+                notified += 1
+    return notified
+
+
+def notify_coproplayer_conflicts_for_festival(
+    db: Session,
+    *,
+    festival: Festival,
+    owner: User,
+) -> int:
+    if not festival.is_going:
+        return 0
+    festival_dates = iter_date_range(festival.event_date, festival.event_end_date)
+    if not festival_dates:
+        return 0
+
+    coproplayers = as_list(festival.going_coproplayers_json)
+    if not coproplayers:
+        return 0
+
+    target_users = db.execute(select(User).where(User.username.in_(coproplayers))).scalars().all()
+    users_by_username = {normalize_username(item.username).casefold(): item for item in target_users}
+
+    owner_alias = preferred_user_alias(owner)
+    notified = 0
+    for username in coproplayers:
+        target_user = users_by_username.get(username.casefold())
+        if not target_user or target_user.id == owner.id:
+            continue
+        target_alias = preferred_user_alias(target_user)
+        for target_date in festival_dates:
+            conflicts = user_busy_items_on_date(
+                db,
+                user_id=target_user.id,
+                target_date=target_date,
+                ignore_festival_name=festival.name or "",
+                exclude_festival_id=festival.id,
+            )
+            if not conflicts:
+                continue
+            conflict_text = "; ".join(conflicts)
+            readable_date = target_date.strftime("%d-%m-%Y")
+            message_for_owner = (
+                f"У сокосплеера @{target_alias} конфликт на {readable_date} для фестиваля «{festival.name}»: "
+                f"{conflict_text}."
+            )
+            message_for_target = (
+                f"@{owner_alias} отметил(а) вас сокосплеером на фестивале «{festival.name}» ({readable_date}), "
+                f"но у вас конфликт: {conflict_text}."
+            )
+            if enqueue_notification_if_missing(
+                db,
+                user_id=owner.id,
+                from_user_id=target_user.id,
+                source_card_id=None,
+                message=message_for_owner,
+            ):
+                notified += 1
+            if enqueue_notification_if_missing(
+                db,
+                user_id=target_user.id,
+                from_user_id=owner.id,
+                source_card_id=None,
+                message=message_for_target,
+            ):
+                notified += 1
+    return notified
+
+
 def build_card_date_conflicts(
     visible_cards: list[CosplanCard],
     all_cards: list[CosplanCard],
@@ -681,6 +1124,7 @@ def card_fields_for_sync() -> list[str]:
         "costume_link",
         "costume_buy_price",
         "costume_currency",
+        "costume_notes",
         "shoes_type",
         "shoes_bought",
         "shoes_link",
@@ -721,8 +1165,18 @@ def card_fields_for_sync() -> list[str]:
         "studios_json",
         "photoset_date",
         "photoset_price",
+        "photoset_photographer_price",
+        "photoset_studio_price",
+        "photoset_props_price",
+        "photoset_extra_price",
         "photoset_currency",
+        "photoset_comment",
+        "photoset_props_checklist_json",
         "references_json",
+        "pose_references_json",
+        "unknown_prices_json",
+        "costume_parts_json",
+        "craft_parts_json",
         "coproplayers_json",
         "coproplayer_nicks_json",
         "notes",
@@ -892,6 +1346,7 @@ def get_card_form_values(card: CosplanCard | None = None) -> dict[str, Any]:
             "costume_link": "",
             "costume_buy_price": "",
             "costume_currency": "RUB",
+            "costume_notes": "",
             "shoes_type": "buy",
             "shoes_bought": False,
             "shoes_link": "",
@@ -932,9 +1387,21 @@ def get_card_form_values(card: CosplanCard | None = None) -> dict[str, Any]:
             "studios_json": [],
             "photoset_date": "",
             "photoset_price": "",
+            "photoset_photographer_price": "",
+            "photoset_studio_price": "",
+            "photoset_props_price": "",
+            "photoset_extra_price": "",
             "photoset_currency": "RUB",
+            "photoset_comment": "",
+            "photoset_props_checklist_json": [],
+            "photoset_props_checklist_input": "",
             "references_json": [],
             "references_input": "",
+            "pose_references_json": [],
+            "pose_references_input": "",
+            "unknown_prices_json": [],
+            "costume_parts_json": [],
+            "craft_parts_json": [],
             "coproplayers_json": [],
             "coproplayer_nicks_json": [],
             "coproplayers_input": "",
@@ -964,6 +1431,7 @@ def get_card_form_values(card: CosplanCard | None = None) -> dict[str, Any]:
         "costume_link": card.costume_link or "",
         "costume_buy_price": "" if card.costume_buy_price is None else f"{card.costume_buy_price:g}",
         "costume_currency": card.costume_currency or "RUB",
+        "costume_notes": card.costume_notes or "",
         "shoes_type": card.shoes_type or "buy",
         "shoes_bought": bool(card.shoes_bought),
         "shoes_link": card.shoes_link or "",
@@ -1004,9 +1472,26 @@ def get_card_form_values(card: CosplanCard | None = None) -> dict[str, Any]:
         "studios_json": as_list(card.studios_json),
         "photoset_date": card.photoset_date.isoformat() if card.photoset_date else "",
         "photoset_price": "" if card.photoset_price is None else f"{card.photoset_price:g}",
+        "photoset_photographer_price": (
+            "" if card.photoset_photographer_price is None else f"{card.photoset_photographer_price:g}"
+        ),
+        "photoset_studio_price": "" if card.photoset_studio_price is None else f"{card.photoset_studio_price:g}",
+        "photoset_props_price": "" if card.photoset_props_price is None else f"{card.photoset_props_price:g}",
+        "photoset_extra_price": (
+            ""
+            if card.photoset_extra_price is None and card.photoset_price is None
+            else f"{(card.photoset_extra_price if card.photoset_extra_price is not None else card.photoset_price):g}"
+        ),
         "photoset_currency": card.photoset_currency or "RUB",
+        "photoset_comment": card.photoset_comment or "",
+        "photoset_props_checklist_json": format_checklist_for_form(as_list(card.photoset_props_checklist_json)),
         "references_json": as_list(card.references_json),
         "references_input": "\n".join(as_list(card.references_json)),
+        "pose_references_json": as_list(card.pose_references_json),
+        "pose_references_input": "\n".join(as_list(card.pose_references_json)),
+        "unknown_prices_json": as_list(card.unknown_prices_json),
+        "costume_parts_json": format_parts_for_form(as_list(card.costume_parts_json)),
+        "craft_parts_json": format_parts_for_form(as_list(card.craft_parts_json)),
         "coproplayers_json": as_list(card.coproplayers_json),
         "coproplayer_nicks_json": as_list(card.coproplayer_nicks_json),
         "coproplayers_input": ", ".join(as_list(card.coproplayers_json) or as_list(card.coproplayer_nicks_json)),
@@ -1202,6 +1687,53 @@ def logout(request: Request):
     return redirect("/login")
 
 
+@app.get("/api/users/search")
+def users_search_api(request: Request, q: str = "", limit: int = 8, db: Session = Depends(get_db)) -> dict[str, Any]:
+    user = current_user(request, db)
+    if not user:
+        return {"items": []}
+
+    query = q.strip().casefold()
+    if not query:
+        return {"items": []}
+
+    max_limit = max(1, min(limit, 20))
+    users = db.execute(select(User).order_by(User.username).limit(500)).scalars().all()
+
+    def score(item: User) -> tuple[int, str]:
+        usernames = [normalize_username(item.username).casefold(), normalize_username(item.cosplay_nick).casefold()]
+        best = 0
+        for alias in usernames:
+            if not alias:
+                continue
+            if alias.startswith(query):
+                best = max(best, 3)
+            elif query in alias:
+                best = max(best, 2)
+            elif len(query) >= 3 and SequenceMatcher(None, query, alias).ratio() >= 0.75:
+                best = max(best, 1)
+        return best, normalize_username(item.username).casefold()
+
+    candidates = [item for item in users if score(item)[0] > 0]
+    candidates.sort(key=lambda item: (-score(item)[0], score(item)[1]))
+
+    values: list[str] = []
+    for item in candidates:
+        for alias in user_aliases(item):
+            alias_clean = normalize_username(alias)
+            if not alias_clean:
+                continue
+            if alias_clean in values:
+                continue
+            values.append(alias_clean)
+            if len(values) >= max_limit:
+                break
+        if len(values) >= max_limit:
+            break
+
+    return {"items": values}
+
+
 @app.get("/profile", response_class=HTMLResponse)
 def profile_page(request: Request, db: Session = Depends(get_db)):
     user = current_user(request, db)
@@ -1334,8 +1866,20 @@ def cosplan_list(request: Request, q: str = "", db: Session = Depends(get_db)):
                 card.city or "",
                 card.project_leader or "",
                 card.notes or "",
+                card.costume_notes or "",
+                card.photoset_comment or "",
             ]
             searchable.extend(as_list(card.references_json))
+            searchable.extend(as_list(card.pose_references_json))
+            for item in as_list(card.costume_parts_json):
+                if isinstance(item, dict):
+                    searchable.extend([str(item.get("url", "")), str(item.get("comment", ""))])
+            for item in as_list(card.craft_parts_json):
+                if isinstance(item, dict):
+                    searchable.extend([str(item.get("url", "")), str(item.get("comment", ""))])
+            for item in as_list(card.photoset_props_checklist_json):
+                if isinstance(item, dict):
+                    searchable.append(str(item.get("text", "")))
             coproplayers = as_list(card.coproplayers_json) or as_list(card.coproplayer_nicks_json)
             searchable.extend(coproplayers)
             searchable.extend(
@@ -1509,6 +2053,11 @@ def cosplan_detail(card_id: int, request: Request, db: Session = Depends(get_db)
         card_total=card_total,
         card_total_currency=card_total_currency,
         reference_urls=as_list(card.references_json),
+        pose_reference_urls=as_list(card.pose_references_json),
+        costume_parts=as_list(card.costume_parts_json),
+        craft_parts=as_list(card.craft_parts_json),
+        photoset_props_checklist=format_checklist_for_form(as_list(card.photoset_props_checklist_json)),
+        pinterest_embed_src=pinterest_embed_src,
         card_date_conflicts=card_date_conflicts,
         can_comment=can_comment_on_card(card, user),
         top_level_comments=top_level_comments,
@@ -1594,6 +2143,32 @@ def cosplan_edit(card_id: int, request: Request, db: Session = Depends(get_db)):
 
 def save_card_from_form(form: Any, card: CosplanCard, user: User, db: Session) -> None:
     alias_to_username, _, _ = build_user_alias_lookup(db)
+    raw_unknown_prices = {str(value).strip() for value in form.getlist("unknown_prices") if str(value).strip()}
+    allowed_unknown_price_fields = {
+        "costume_prepayment",
+        "costume_postpayment",
+        "costume_buy_price",
+        "costume_fabric_price",
+        "costume_hardware_price",
+        "shoes_buy_price",
+        "shoes_price",
+        "lenses_price",
+        "wig_price",
+        "wig_buy_price",
+        "craft_price",
+        "craft_material_price",
+        "photoset_price",
+        "photoset_photographer_price",
+        "photoset_studio_price",
+        "photoset_props_price",
+        "photoset_extra_price",
+    }
+    unknown_prices = raw_unknown_prices.intersection(allowed_unknown_price_fields)
+
+    def parse_price_field(field_name: str) -> float | None:
+        if field_name in unknown_prices:
+            return None
+        return parse_float(str(form.get(field_name, "")))
 
     card.character_name = str(form.get("character_name", "")).strip()
     card.fandom = str(form.get("fandom", "")).strip() or None
@@ -1614,7 +2189,7 @@ def save_card_from_form(form: Any, card: CosplanCard, user: User, db: Session) -
         card.costume_hardware_price = None
         card.costume_bought = to_bool(form.get("costume_bought"))
         card.costume_link = str(form.get("costume_link", "")).strip() or None
-        card.costume_buy_price = parse_float(str(form.get("costume_buy_price", "")))
+        card.costume_buy_price = parse_price_field("costume_buy_price")
     else:
         card.sewing_type = str(form.get("sewing_type", "")).strip() or None
         card.sewing_fabric = to_bool(form.get("sewing_fabric"))
@@ -1625,24 +2200,25 @@ def save_card_from_form(form: Any, card: CosplanCard, user: User, db: Session) -
             card.costume_executor = None
             card.costume_prepayment = None
             card.costume_postpayment = None
-            card.costume_fabric_price = parse_float(str(form.get("costume_fabric_price", "")))
-            card.costume_hardware_price = parse_float(str(form.get("costume_hardware_price", "")))
+            card.costume_fabric_price = parse_price_field("costume_fabric_price")
+            card.costume_hardware_price = parse_price_field("costume_hardware_price")
         else:
             card.costume_executor = str(form.get("costume_executor", "")).strip() or None
-            card.costume_prepayment = parse_float(str(form.get("costume_prepayment", "")))
-            card.costume_postpayment = parse_float(str(form.get("costume_postpayment", "")))
+            card.costume_prepayment = parse_price_field("costume_prepayment")
+            card.costume_postpayment = parse_price_field("costume_postpayment")
             card.costume_fabric_price = None
             card.costume_hardware_price = None
         card.costume_bought = False
         card.costume_link = None
         card.costume_buy_price = None
     card.costume_currency = str(form.get("costume_currency", "")).strip() or None
+    card.costume_notes = str(form.get("costume_notes", "")).strip() or None
 
     card.shoes_type = str(form.get("shoes_type", "")).strip() or None
     if card.shoes_type == "buy":
         card.shoes_bought = to_bool(form.get("shoes_bought"))
         card.shoes_link = str(form.get("shoes_link", "")).strip() or None
-        card.shoes_buy_price = parse_float(str(form.get("shoes_buy_price", "")))
+        card.shoes_buy_price = parse_price_field("shoes_buy_price")
         card.shoes_executor = None
         card.shoes_deadline = None
         card.shoes_price = None
@@ -1652,14 +2228,14 @@ def save_card_from_form(form: Any, card: CosplanCard, user: User, db: Session) -
         card.shoes_buy_price = None
         card.shoes_executor = str(form.get("shoes_executor", "")).strip() or None
         card.shoes_deadline = parse_date(str(form.get("shoes_deadline", "")))
-        card.shoes_price = parse_float(str(form.get("shoes_price", "")))
+        card.shoes_price = parse_price_field("shoes_price")
     card.shoes_currency = str(form.get("shoes_currency", "")).strip() or None
 
     card.lenses_enabled = to_bool(form.get("lenses_enabled"))
     if card.lenses_enabled:
         card.lenses_comment = str(form.get("lenses_comment", "")).strip() or None
         card.lenses_color = str(form.get("lenses_color", "")).strip() or None
-        card.lenses_price = parse_float(str(form.get("lenses_price", "")))
+        card.lenses_price = parse_price_field("lenses_price")
         card.lenses_currency = str(form.get("lenses_currency", "")).strip() or None
     else:
         card.lenses_comment = None
@@ -1674,7 +2250,7 @@ def save_card_from_form(form: Any, card: CosplanCard, user: User, db: Session) -
         card.wig_deadline = None
         card.wig_no_buy_from = None
         card.wig_restyle = False
-        card.wig_buy_price = parse_float(str(form.get("wig_buy_price", "")))
+        card.wig_buy_price = parse_price_field("wig_buy_price")
         card.wig_link = str(form.get("wig_link", "")).strip() or None
     elif card.wig_type == "no_buy":
         card.wigmaker_name = None
@@ -1686,7 +2262,7 @@ def save_card_from_form(form: Any, card: CosplanCard, user: User, db: Session) -
         card.wig_restyle = to_bool(form.get("wig_restyle"))
     else:  # wigmaker
         card.wigmaker_name = str(form.get("wigmaker_name", "")).strip() or None
-        card.wig_price = parse_float(str(form.get("wig_price", "")))
+        card.wig_price = parse_price_field("wig_price")
         card.wig_deadline = parse_date(str(form.get("wig_deadline", "")))
         card.wig_buy_price = None
         card.wig_link = None
@@ -1697,14 +2273,14 @@ def save_card_from_form(form: Any, card: CosplanCard, user: User, db: Session) -
     card.craft_type = str(form.get("craft_type", "")).strip() or "self"
     if card.craft_type == "order":
         card.craft_master = str(form.get("craft_master", "")).strip() or None
-        card.craft_price = parse_float(str(form.get("craft_price", "")))
+        card.craft_price = parse_price_field("craft_price")
         card.craft_deadline = parse_date(str(form.get("craft_deadline", "")))
         card.craft_material_price = None
     else:
         card.craft_master = None
         card.craft_price = None
         card.craft_deadline = None
-        card.craft_material_price = parse_float(str(form.get("craft_material_price", "")))
+        card.craft_material_price = parse_price_field("craft_material_price")
     card.craft_currency = str(form.get("craft_currency", "")).strip() or None
 
     card.plan_type = str(form.get("plan_type", "")).strip() or None
@@ -1743,10 +2319,71 @@ def save_card_from_form(form: Any, card: CosplanCard, user: User, db: Session) -
     card.photographers_json = photographers
     card.studios_json = studios
     card.photoset_date = parse_date(str(form.get("photoset_date", "")))
-    card.photoset_price = parse_float(str(form.get("photoset_price", "")))
+    legacy_photoset_price = parse_price_field("photoset_price")
+    card.photoset_photographer_price = parse_price_field("photoset_photographer_price")
+    card.photoset_studio_price = parse_price_field("photoset_studio_price")
+    card.photoset_props_price = parse_price_field("photoset_props_price")
+    card.photoset_extra_price = parse_price_field("photoset_extra_price")
+    if any(
+        value is not None
+        for value in [
+            card.photoset_photographer_price,
+            card.photoset_studio_price,
+            card.photoset_props_price,
+            card.photoset_extra_price,
+        ]
+    ):
+        card.photoset_price = float(
+            (card.photoset_photographer_price or 0.0)
+            + (card.photoset_studio_price or 0.0)
+            + (card.photoset_props_price or 0.0)
+            + (card.photoset_extra_price or 0.0)
+        )
+    else:
+        card.photoset_price = legacy_photoset_price
     card.photoset_currency = str(form.get("photoset_currency", "")).strip() or None
-    references = merge_unique(split_csv(str(form.get("references_input", ""))))
-    card.references_json = [value for value in references if value.lower().startswith(("http://", "https://"))]
+    card.photoset_comment = str(form.get("photoset_comment", "")).strip() or None
+    card.photoset_props_checklist_json = parse_checklist_rows_from_form(form, "photoset_prop")
+    card.references_json = parse_reference_values(str(form.get("references_input", "")))
+    card.pose_references_json = parse_reference_values(str(form.get("pose_references_input", "")))
+    card.costume_parts_json = parse_parts_from_form(form, "costume", card.costume_currency)
+    card.craft_parts_json = parse_parts_from_form(form, "craft", card.craft_currency)
+    active_unknown_fields = {"photoset_price"}
+    if card.costume_type == "buy":
+        active_unknown_fields.add("costume_buy_price")
+    elif card.sewing_type == "self":
+        active_unknown_fields.update({"costume_fabric_price", "costume_hardware_price"})
+    else:
+        active_unknown_fields.update({"costume_prepayment", "costume_postpayment"})
+
+    if card.shoes_type == "buy":
+        active_unknown_fields.add("shoes_buy_price")
+    else:
+        active_unknown_fields.add("shoes_price")
+
+    if card.lenses_enabled:
+        active_unknown_fields.add("lenses_price")
+
+    if card.wig_type == "buy":
+        active_unknown_fields.add("wig_buy_price")
+    elif card.wig_type == "wigmaker":
+        active_unknown_fields.add("wig_price")
+
+    if card.craft_type == "order":
+        active_unknown_fields.add("craft_price")
+    else:
+        active_unknown_fields.add("craft_material_price")
+
+    active_unknown_fields.update(
+        {
+            "photoset_photographer_price",
+            "photoset_studio_price",
+            "photoset_props_price",
+            "photoset_extra_price",
+        }
+    )
+
+    card.unknown_prices_json = sorted(unknown_prices.intersection(active_unknown_fields))
 
     card.coproplayers_json = coproplayer_aliases
     card.coproplayer_nicks_json = coproplayer_nicks
@@ -1793,10 +2430,18 @@ async def cosplan_create(request: Request, db: Session = Depends(get_db)):
 
     db.add(card)
     db.flush()
+    conflict_notifications = notify_coproplayer_conflicts_for_card(db, card=card, owner=user)
     sync_shared_cards_for_nicks(card, user, db)
     db.commit()
 
-    add_flash(request, "Карточка косплана создана.", "success")
+    if conflict_notifications:
+        add_flash(
+            request,
+            f"Карточка косплана создана. Найдены конфликты у сокосплееров: {conflict_notifications}.",
+            "success",
+        )
+    else:
+        add_flash(request, "Карточка косплана создана.", "success")
     return redirect("/cosplan")
 
 
@@ -1821,6 +2466,7 @@ async def cosplan_update(card_id: int, request: Request, db: Session = Depends(g
         return redirect(f"/cosplan/{card_id}/edit")
 
     save_card_from_form(form, card, user, db)
+    conflict_notifications = notify_coproplayer_conflicts_for_card(db, card=card, owner=user)
     sync_shared_cards_for_nicks(card, user, db)
     linked_rehearsal_cards = db.execute(
         select(RehearsalCard).where(RehearsalCard.cosplan_card_id == card.id)
@@ -1829,7 +2475,14 @@ async def cosplan_update(card_id: int, request: Request, db: Session = Depends(g
         rehearsal_card.deadline_date = card.project_deadline
     db.commit()
 
-    add_flash(request, "Карточка косплана обновлена.", "success")
+    if conflict_notifications:
+        add_flash(
+            request,
+            f"Карточка косплана обновлена. Найдены конфликты у сокосплееров: {conflict_notifications}.",
+            "success",
+        )
+    else:
+        add_flash(request, "Карточка косплана обновлена.", "success")
     return redirect("/cosplan")
 
 
@@ -2405,6 +3058,38 @@ async def my_projects_propose_rehearsal(request: Request, db: Session = Depends(
     created = 0
     for card in target_cards:
         rehearsal_card = get_or_create_rehearsal_card(db, user_id=card.user_id, cosplan_card=card)
+        participant_user = db.get(User, card.user_id)
+        if participant_user:
+            busy_items = user_busy_items_on_date(
+                db,
+                user_id=participant_user.id,
+                target_date=rehearsal_date,
+            )
+            if busy_items:
+                readable_date = rehearsal_date.strftime("%d-%m-%Y")
+                leader_alias = preferred_user_alias(user)
+                participant_alias = preferred_user_alias(participant_user)
+                conflicts_text = "; ".join(busy_items)
+                enqueue_notification_if_missing(
+                    db,
+                    user_id=user.id,
+                    from_user_id=participant_user.id,
+                    source_card_id=card.id,
+                    message=(
+                        f"У участника @{participant_alias} конфликт на {readable_date} для предложенной репетиции "
+                        f"по «{card.character_name}»: {conflicts_text}."
+                    ),
+                )
+                enqueue_notification_if_missing(
+                    db,
+                    user_id=participant_user.id,
+                    from_user_id=user.id,
+                    source_card_id=card.id,
+                    message=(
+                        f"@{leader_alias} предложил(а) репетицию по «{card.character_name}» на {readable_date}, "
+                        f"но у вас конфликт: {conflicts_text}."
+                    ),
+                )
         existing_progress = db.execute(
             select(InProgressCard).where(
                 InProgressCard.user_id == card.user_id,
@@ -2477,9 +3162,9 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
             Festival.user_id == user.id,
             Festival.is_going.is_(True),
             Festival.event_date.is_not(None),
-            Festival.event_date >= today,
         )
     ).scalars().all()
+    festivals = [festival for festival in festivals if festival_is_active(festival, today)]
     cards = db.execute(
         select(CosplanCard).where(
             CosplanCard.user_id == user.id,
@@ -2558,6 +3243,16 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
         )
 
     entries.sort(key=lambda item: (item["date"], item.get("time", ""), item["kind"], item["title"]))
+    date_counts: dict[date, int] = defaultdict(int)
+    for entry in entries:
+        entry_date = entry.get("date")
+        if isinstance(entry_date, date):
+            date_counts[entry_date] += 1
+    for entry in entries:
+        entry_date = entry.get("date")
+        entry["same_date_count"] = date_counts.get(entry_date, 0) if isinstance(entry_date, date) else 0
+        entry["same_date_highlight"] = bool(entry.get("same_date_count", 0) > 1)
+
     grouped: list[dict[str, Any]] = []
     by_month: dict[tuple[int, int], list[dict[str, Any]]] = defaultdict(list)
     for entry in entries:
@@ -2772,7 +3467,7 @@ def festivals_list(request: Request, db: Session = Depends(get_db)):
         if only_going and not festival.is_going:
             continue
 
-        if city_filter and city_filter.casefold() not in (festival.city or "").casefold():
+        if city_filter and not city_matches(city_filter, festival.city):
             continue
 
         nominations = [festival.nomination_1 or "", festival.nomination_2 or "", festival.nomination_3 or ""]
@@ -2895,6 +3590,7 @@ def festivals_list(request: Request, db: Session = Depends(get_db)):
         unread_notifications=unread_notifications,
         user_home_city=user.home_city or "",
         home_city_festival_ids=home_city_festival_ids,
+        current_query=request.url.query or "",
     )
 
 
@@ -3011,9 +3707,14 @@ async def festivals_create(request: Request, db: Session = Depends(get_db)):
     save_festival_from_form(form, festival, user, db)
 
     db.add(festival)
+    db.flush()
+    notify_count = notify_coproplayer_conflicts_for_festival(db, festival=festival, owner=user)
     db.commit()
 
-    add_flash(request, "Фестиваль создан.", "success")
+    if notify_count:
+        add_flash(request, f"Фестиваль создан. Конфликтов по сокосплеерам: {notify_count}.", "success")
+    else:
+        add_flash(request, "Фестиваль создан.", "success")
     return redirect("/festivals")
 
 
@@ -3037,10 +3738,43 @@ async def festivals_update(festival_id: int, request: Request, db: Session = Dep
         return redirect(f"/festivals/{festival_id}/edit")
 
     save_festival_from_form(form, festival, user, db)
+    notify_count = notify_coproplayer_conflicts_for_festival(db, festival=festival, owner=user)
     db.commit()
 
-    add_flash(request, "Фестиваль обновлён.", "success")
+    if notify_count:
+        add_flash(request, f"Фестиваль обновлён. Конфликтов по сокосплеерам: {notify_count}.", "success")
+    else:
+        add_flash(request, "Фестиваль обновлён.", "success")
     return redirect("/festivals")
+
+
+@app.post("/festivals/{festival_id}/toggle-going")
+async def festivals_toggle_going(festival_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    festival = db.execute(
+        select(Festival).where(Festival.id == festival_id, Festival.user_id == user.id)
+    ).scalar_one_or_none()
+    if not festival:
+        add_flash(request, "Фестиваль не найден.", "error")
+        return redirect("/festivals")
+
+    form = await request.form()
+    festival.is_going = to_bool(form.get("is_going"))
+    if not festival.is_going:
+        festival.going_coproplayers_json = []
+
+    notify_count = notify_coproplayer_conflicts_for_festival(db, festival=festival, owner=user)
+    db.commit()
+
+    next_url = safe_redirect_target(str(form.get("next", "")).strip(), "/festivals")
+    if notify_count:
+        add_flash(request, f"Отметка «Я иду» обновлена. Конфликтов по сокосплеерам: {notify_count}.", "success")
+    else:
+        add_flash(request, "Отметка «Я иду» обновлена.", "success")
+    return redirect(next_url)
 
 
 @app.post("/festivals/{festival_id}/delete")

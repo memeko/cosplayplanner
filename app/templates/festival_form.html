@@ -5,6 +5,34 @@
   <a href="/festivals" class="btn">Назад к списку</a>
 </section>
 
+<style>
+  .alias-suggest { position: relative; }
+  .alias-suggest-list {
+    position: absolute;
+    z-index: 20;
+    left: 0;
+    right: 0;
+    top: calc(100% + 4px);
+    background: #fff;
+    border: 1px solid #d9d9d9;
+    border-radius: 10px;
+    box-shadow: 0 6px 18px rgba(0,0,0,0.08);
+    max-height: 220px;
+    overflow: auto;
+    display: none;
+  }
+  .alias-suggest-item {
+    display: block;
+    width: 100%;
+    text-align: left;
+    border: 0;
+    background: transparent;
+    padding: 0.5rem 0.7rem;
+    cursor: pointer;
+  }
+  .alias-suggest-item:hover { background: #f2f6ff; }
+</style>
+
 <form method="post" action="{{ '/festivals/' ~ festival_id ~ '/edit' if editing else '/festivals/new' }}" class="grid one-col big-form" id="festival-form">
   <section class="box">
     <div class="grid two-col">
@@ -60,15 +88,18 @@
     </label>
 
     <div id="going_coproplayers_wrap">
-      <label>
+      <label class="alias-suggest">
         Сокосплеер(ы) (через запятую)
         <input
           type="text"
           name="going_coproplayers_input"
+          id="going_coproplayers_input"
           value="{{ form.going_coproplayers_input }}"
           list="festival-coproplayer-options"
           placeholder="username1, cosplay_nick2"
+          autocomplete="off"
         />
+        <div class="alias-suggest-list" id="festival-coproplayer-suggest"></div>
       </label>
       <datalist id="festival-coproplayer-options">
         {% for value in coproplayer_alias_options %}
@@ -89,6 +120,61 @@
   const wrap = document.getElementById("going_coproplayers_wrap");
   const apply = () => { wrap.style.display = isGoing && isGoing.checked ? "" : "none"; };
   if (isGoing) { isGoing.addEventListener("change", apply); }
+  const input = document.getElementById("going_coproplayers_input");
+  const list = document.getElementById("festival-coproplayer-suggest");
+  let pendingRequest = null;
+  const closeSuggest = () => {
+    if (!list) return;
+    list.innerHTML = "";
+    list.style.display = "none";
+  };
+  const setPicked = (picked) => {
+    if (!input) return;
+    const parts = (input.value || "").split(",");
+    parts[parts.length - 1] = ` ${picked}`;
+    input.value = `${parts.map((part) => part.trim()).filter(Boolean).join(", ")}, `;
+    closeSuggest();
+  };
+  if (input && list) {
+    input.addEventListener("input", async () => {
+      const pieces = (input.value || "").split(",");
+      const query = (pieces[pieces.length - 1] || "").trim();
+      if (query.length < 2) {
+        closeSuggest();
+        return;
+      }
+      if (pendingRequest) pendingRequest.abort();
+      pendingRequest = new AbortController();
+      try {
+        const response = await fetch(`/api/users/search?q=${encodeURIComponent(query)}&limit=8`, {
+          signal: pendingRequest.signal,
+        });
+        if (!response.ok) {
+          closeSuggest();
+          return;
+        }
+        const payload = await response.json();
+        const items = Array.isArray(payload.items) ? payload.items : [];
+        list.innerHTML = "";
+        if (!items.length) {
+          closeSuggest();
+          return;
+        }
+        items.forEach((item) => {
+          const btn = document.createElement("button");
+          btn.type = "button";
+          btn.className = "alias-suggest-item";
+          btn.textContent = item;
+          btn.addEventListener("click", () => setPicked(item));
+          list.appendChild(btn);
+        });
+        list.style.display = "";
+      } catch (_err) {
+        closeSuggest();
+      }
+    });
+    input.addEventListener("blur", () => setTimeout(closeSuggest, 120));
+  }
   apply();
 </script>
 {% endblock %}
