@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="community-tabs">
+  <a href="/project-board" class="tab {% if community_tab == 'project-board' %}active{% endif %}">Поиск в проекты</a>
+  <a href="/community/questions" class="tab {% if community_tab == 'questions' %}active{% endif %}">Вопрос-ответ</a>
+  <a href="/community/masters" class="tab {% if community_tab == 'masters' %}active{% endif %}">Мастера</a>
+</section>
+
+<section class="section-head">
+  <h1>Вопрос-ответ</h1>
+  <div class="actions-inline">
+    <form method="get" action="/community/questions" class="search-inline">
+      <input type="text" name="q" value="{{ q }}" placeholder="Поиск по вопросам" />
+      <button type="submit" class="btn">Найти</button>
+      <a href="/community/questions" class="btn">Сброс</a>
+    </form>
+    <a href="/community/questions/new" class="btn btn-accent">Задать вопрос</a>
+  </div>
+</section>
+
+{% if questions %}
+<div class="cards-grid">
+  {% for question in questions %}
+    {% set owner = owners_by_id.get(question.user_id) %}
+    <article class="card {% if question.status == 'resolved' %}card-question-resolved{% endif %}">
+      <div class="row-between">
+        <h3><a href="/community/questions/{{ question.id }}" class="card-title-link">{{ question.title }}</a></h3>
+        <span class="chip">{{ question_status_labels.get(question.status or 'open', question.status or 'open') }}</span>
+      </div>
+      <p class="meta">Автор: @{{ owner.cosplay_nick or owner.username if owner else "unknown" }}</p>
+      <p class="meta">Комментариев: {{ comment_counts.get(question.id, 0) }}</p>
+      <p class="notes-block">{{ question.body[:280] }}{% if question.body|length > 280 %}…{% endif %}</p>
+      <div class="actions-inline">
+        <a href="/community/questions/{{ question.id }}" class="btn">Открыть</a>
+        {% if user and user.id == question.user_id %}
+          <a href="/community/questions/{{ question.id }}/edit" class="btn">Редактировать</a>
+        {% endif %}
+      </div>
+    </article>
+  {% endfor %}
+</div>
+{% else %}
+<section class="box">
+  <p class="muted">Пока нет вопросов. Создайте первый вопрос во вкладке «Вопрос-ответ».</p>
+</section>
+{% endif %}
+{% endblock %}

@@ -1,5 +1,11 @@
 {% extends "base.html" %}
 {% block content %}
+<section class="community-tabs">
+  <a href="/project-board" class="tab {% if community_tab == 'project-board' %}active{% endif %}">Поиск в проекты</a>
+  <a href="/community/questions" class="tab {% if community_tab == 'questions' %}active{% endif %}">Вопрос-ответ</a>
+  <a href="/community/masters" class="tab {% if community_tab == 'masters' %}active{% endif %}">Мастера</a>
+</section>
+
 <section class="section-head">
   <h1>{{ "Редактирование объявления" if editing else "Новое объявление" }}</h1>
   <a href="/project-board" class="btn">Назад к доске</a>
@@ -26,6 +32,17 @@
           <option value="festival" {% if form.event_type == 'festival' %}selected{% endif %}>Фестиваль</option>
         </select>
       </label>
+      <label>
+        Статус
+        <select name="status">
+          <option value="active" {% if form.status == 'active' %}selected{% endif %}>Активно</option>
+          <option value="found" {% if form.status == 'found' %}selected{% endif %}>Найдено!</option>
+          <option value="inactive" {% if form.status == 'inactive' %}selected{% endif %}>Не актуально</option>
+        </select>
+      </label>
+    </div>
+
+    <div class="grid one-col">
       <label>
         Ник человека *
         <input type="text" name="contact_nick" value="{{ form.contact_nick }}" placeholder="@nick" required />

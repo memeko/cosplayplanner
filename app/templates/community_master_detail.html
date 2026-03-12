@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="community-tabs">
+  <a href="/project-board" class="tab {% if community_tab == 'project-board' %}active{% endif %}">Поиск в проекты</a>
+  <a href="/community/questions" class="tab {% if community_tab == 'questions' %}active{% endif %}">Вопрос-ответ</a>
+  <a href="/community/masters" class="tab {% if community_tab == 'masters' %}active{% endif %}">Мастера</a>
+</section>
+
+{% set owner = authors_by_id.get(master.user_id) %}
+<section class="section-head">
+  <h1>@{{ master.nick }}</h1>
+  <div class="actions-inline">
+    <a href="/community/masters" class="btn">Назад к мастерам</a>
+    {% if user and user.id == master.user_id %}
+      <a href="/community/masters/{{ master.id }}/edit" class="btn">Редактировать</a>
+    {% endif %}
+  </div>
+</section>
+
+<section class="box">
+  <div class="row-between">
+    <p class="meta">Добавил: @{{ owner.cosplay_nick or owner.username if owner else 'unknown' }}</p>
+    <span class="chip">{{ master.master_type|capitalize }}</span>
+  </div>
+  <p class="notes-block">{{ master.details }}</p>
+</section>
+
+{% set gallery = master.gallery_json or [] %}
+{% if gallery %}
+<section class="box">
+  <h3>Галерея</h3>
+  <div class="reference-grid top-offset">
+    {% for url in gallery %}
+      <a class="reference-tile" href="{{ url }}" target="_blank" rel="noreferrer">
+        <img src="{{ url }}" alt="Галерея мастера" loading="lazy" />
+      </a>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
+<section class="box">
+  <h3>Прайс-лист</h3>
+  {% if price_rows %}
+  <div class="top-offset">
+    <table class="table">
+      <thead>
+        <tr>
+          <th>Услуга</th>
+          <th>Стоимость (руб)</th>
+          <th>Комментарий</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in price_rows %}
+        <tr>
+          <td>{{ row.service or '—' }}</td>
+          <td>{{ row.cost or '—' }}</td>
+          <td>{{ row.comment or '—' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+    <p class="muted top-offset">Прайс-лист пока не заполнен.</p>
+  {% endif %}
+</section>
+
+<section class="box">
+  <h3>Комментарии</h3>
+  {% if comments %}
+    <div class="comments-list top-offset">
+      {% for comment in comments %}
+        {% set comment_author = authors_by_id.get(comment.user_id) %}
+        <article class="comment-card">
+          <p class="comment-meta">
+            @{{ comment_author.cosplay_nick or comment_author.username if comment_author else 'unknown' }}
+            • {{ comment.created_at.strftime('%d-%m-%Y %H:%M') if comment.created_at else '—' }}
+          </p>
+          <p class="notes-block">{{ comment.body }}</p>
+        </article>
+      {% endfor %}
+    </div>
+  {% else %}
+    <p class="muted top-offset">Комментариев пока нет.</p>
+  {% endif %}
+
+  <form method="post" action="/community/masters/{{ master.id }}/comments" class="comment-form top-offset">
+    <label>
+      Добавить комментарий
+      <textarea name="body" rows="4" required></textarea>
+    </label>
+    <div class="actions-inline">
+      <button type="submit" class="btn btn-accent">Отправить</button>
+    </div>
+  </form>
+</section>
+{% endblock %}

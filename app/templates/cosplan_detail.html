@@ -1,5 +1,16 @@
 {% extends "base.html" %}
+
+{% macro money_line(label, value, currency, field_name, unknown_fields) -%}
+  {% if value is not none %}
+    <p class="meta">{{ label }}: {{ '%.2f'|format(value) }}{% if currency %} {{ currency }}{% endif %}</p>
+  {% elif field_name and field_name in unknown_fields %}
+    <p class="meta">{{ label }}: УТОЧНЯЕТСЯ</p>
+  {% endif %}
+{%- endmacro %}
+
 {% block content %}
+{% set unknown_fields = unknown_price_fields or [] %}
+
 <section class="section-head">
   <h1>{{ card.character_name }}</h1>
   <div class="actions-inline">
@@ -12,34 +23,197 @@
 
 <section class="box">
   {% if card_owner and card_owner.id != user.id %}
-    <p class="meta">Участник: @{{ card_owner.username }}</p>
+    <p class="meta">Участник: {{ card_owner_display }}</p>
   {% endif %}
-  <p class="meta">Фандом: {{ card.fandom or "—" }}</p>
-  <p class="meta">Тип: {{ "Проект" if card.plan_type == "project" else "Личное" }}</p>
-  <p class="meta">Руководитель: {{ "@" ~ card.project_leader if card.project_leader else "—" }}</p>
-  <p class="meta">Город: {{ card.city or "—" }}</p>
-  <p class="meta">Планируемые фестивали: {{ card.planned_festivals_json | join(", ") if card.planned_festivals_json else "—" }}</p>
-  <p class="meta">Ориентировочная цена: {{ '%.2f'|format(card_total or 0) }} {{ card_total_currency }}</p>
+  {% if card.fandom %}<p class="meta">Фандом: {{ card.fandom }}</p>{% endif %}
+  {% if card.plan_type %}
+    <p class="meta">Тип: {{ "Проект" if card.plan_type == "project" else "Личное" }}</p>
+  {% endif %}
+  {% if project_leader_display %}<p class="meta">Руководитель: {{ project_leader_display }}</p>{% endif %}
+  {% if card.city %}<p class="meta">Город: {{ card.city }}</p>{% endif %}
+  {% if card.is_au %}<p class="meta">AU: да</p>{% endif %}
+  {% if card.au_text %}<p class="notes-block">{{ card.au_text }}</p>{% endif %}
+
+  {% if cosbands %}<p class="meta">Cosband: {{ cosbands | join(", ") }}</p>{% endif %}
+  {% if planned_festivals %}<p class="meta">Планируемые фестивали: {{ planned_festivals | join(", ") }}</p>{% endif %}
+  {% if nominations %}<p class="meta">Номинации: {{ nominations | join(", ") }}</p>{% endif %}
+  {% if card.project_deadline %}<p class="meta">Дедлайн проекта: {{ card.project_deadline.strftime('%d-%m-%Y') }}</p>{% endif %}
+  {% if card.submission_date %}<p class="meta">Дата подачи: {{ card.submission_date.strftime('%d-%m-%Y') }}</p>{% endif %}
+
+  {% if card_total > 0 or card_total_currency or unknown_fields %}
+    <p class="meta">Ориентировочная цена: {{ '%.2f'|format(card_total or 0) }}{% if card_total_currency %} {{ card_total_currency }}{% endif %}</p>
+  {% endif %}
 </section>
 
-{% if card.costume_notes %}
+{% set has_costume = card.costume_type or card.sewing_type or card.sewing_fabric or card.sewing_hardware or card.sewing_pattern or card.costume_executor or card.costume_deadline or card.costume_prepayment is not none or card.costume_postpayment is not none or card.costume_fabric_price is not none or card.costume_hardware_price is not none or card.costume_bought or card.costume_link or card.costume_buy_price is not none or card.costume_currency or card.costume_notes or costume_parts or 'costume_prepayment' in unknown_fields or 'costume_postpayment' in unknown_fields or 'costume_buy_price' in unknown_fields or 'costume_fabric_price' in unknown_fields or 'costume_hardware_price' in unknown_fields %}
+{% if has_costume %}
 <section class="box">
-  <h2>Костюм: дополнительно</h2>
-  <p class="notes-block">{{ card.costume_notes }}</p>
+  <h2>Костюм</h2>
+  {% if card.costume_type == "buy" %}
+    <p class="meta">Способ: Покупка</p>
+    <p class="meta">Куплено: {{ "Да" if card.costume_bought else "Нет" }}</p>
+    {% if card.costume_link %}<p class="meta">Ссылка: <a href="{{ card.costume_link }}" target="_blank" rel="noreferrer">{{ card.costume_link }}</a></p>{% endif %}
+    {{ money_line("Цена покупки", card.costume_buy_price, card.costume_currency, "costume_buy_price", unknown_fields) }}
+  {% elif card.costume_type == "sew" %}
+    <p class="meta">Способ: Пошив</p>
+    {% if card.sewing_type == "self" %}
+      <p class="meta">Вариант: Самопошив</p>
+      {% if card.sewing_fabric or card.sewing_hardware or card.sewing_pattern %}
+        <p class="meta">
+          Отмечено:
+          {% set marks = [] %}
+          {% if card.sewing_fabric %}{% set _ = marks.append("Ткань") %}{% endif %}
+          {% if card.sewing_hardware %}{% set _ = marks.append("Фурнитура") %}{% endif %}
+          {% if card.sewing_pattern %}{% set _ = marks.append("Выкройка") %}{% endif %}
+          {{ marks | join(", ") }}
+        </p>
+      {% endif %}
+      {{ money_line("Стоимость ткани", card.costume_fabric_price, card.costume_currency, "costume_fabric_price", unknown_fields) }}
+      {{ money_line("Стоимость фурнитуры", card.costume_hardware_price, card.costume_currency, "costume_hardware_price", unknown_fields) }}
+    {% elif card.sewing_type == "outsourced" %}
+      <p class="meta">Вариант: Исполнитель</p>
+      {% if card.costume_executor %}<p class="meta">Исполнитель: {{ card.costume_executor }}</p>{% endif %}
+      {{ money_line("Предоплата", card.costume_prepayment, card.costume_currency, "costume_prepayment", unknown_fields) }}
+      {{ money_line("Постоплата", card.costume_postpayment, card.costume_currency, "costume_postpayment", unknown_fields) }}
+    {% endif %}
+    {% if card.costume_deadline %}<p class="meta">Срок: {{ card.costume_deadline.strftime('%d-%m-%Y') }}</p>{% endif %}
+  {% endif %}
+
+  {% if card.costume_currency %}<p class="meta">Валюта: {{ card.costume_currency }}</p>{% endif %}
+  {% if card.costume_notes %}
+    <h3>Дополнительно</h3>
+    <p class="notes-block">{{ card.costume_notes }}</p>
+  {% endif %}
+
+  {% if costume_parts %}
+    <h3>Дополнительные ссылки по костюму</h3>
+    <ul class="notes-list">
+      {% for item in costume_parts if item is mapping %}
+        {% set unknown_flag = item.get('unknown') in [True, 1, '1', 'true', 'True', '__YES__'] %}
+        <li>
+          {% if item.get("url") %}<a href="{{ item.get('url') }}" target="_blank" rel="noreferrer">{{ item.get("url") }}</a>{% endif %}
+          {% if unknown_flag %}
+            <span class="chip">Цена неизвестна</span>
+          {% elif item.get("price") is not none %}
+            <span class="chip">{{ '%.2f'|format(item.get("price")) }} {{ item.get("currency", "") }}</span>
+          {% endif %}
+          {% if item.get("comment") %}<span class="muted">{{ item.get("comment") }}</span>{% endif %}
+        </li>
+      {% endfor %}
+    </ul>
+  {% endif %}
 </section>
 {% endif %}
 
-{% if card.photoset_date or card.photoset_comment or photoset_props_checklist or card.photoset_photographer_price is not none or card.photoset_studio_price is not none or card.photoset_props_price is not none or card.photoset_extra_price is not none %}
+{% set has_shoes = card.shoes_type or card.shoes_bought or card.shoes_link or card.shoes_buy_price is not none or card.shoes_executor or card.shoes_deadline or card.shoes_price is not none or card.shoes_currency or 'shoes_buy_price' in unknown_fields or 'shoes_price' in unknown_fields %}
+{% if has_shoes %}
 <section class="box">
-  <h2>Фотосессия</h2>
-  <p class="meta">Дата: {{ card.photoset_date.strftime('%d-%m-%Y') if card.photoset_date else "—" }}</p>
-  <p class="meta">Фотограф: {{ card.photoset_photographer_price if card.photoset_photographer_price is not none else "—" }} {{ card.photoset_currency or "" }}</p>
-  <p class="meta">Студия: {{ card.photoset_studio_price if card.photoset_studio_price is not none else "—" }} {{ card.photoset_currency or "" }}</p>
-  <p class="meta">Реквизит: {{ card.photoset_props_price if card.photoset_props_price is not none else "—" }} {{ card.photoset_currency or "" }}</p>
-  <p class="meta">Дополнительно: {{ card.photoset_extra_price if card.photoset_extra_price is not none else "—" }} {{ card.photoset_currency or "" }}</p>
-  {% if card.photoset_comment %}
-    <p class="notes-block">{{ card.photoset_comment }}</p>
+  <h2>Обувь</h2>
+  {% if card.shoes_type == "buy" %}
+    <p class="meta">Способ: Покупка</p>
+    <p class="meta">Куплено: {{ "Да" if card.shoes_bought else "Нет" }}</p>
+    {% if card.shoes_link %}<p class="meta">Ссылка: <a href="{{ card.shoes_link }}" target="_blank" rel="noreferrer">{{ card.shoes_link }}</a></p>{% endif %}
+    {{ money_line("Цена покупки", card.shoes_buy_price, card.shoes_currency, "shoes_buy_price", unknown_fields) }}
+  {% elif card.shoes_type == "craft" %}
+    <p class="meta">Способ: Крафт</p>
+    {% if card.shoes_executor %}<p class="meta">Исполнитель: {{ card.shoes_executor }}</p>{% endif %}
+    {% if card.shoes_deadline %}<p class="meta">Срок: {{ card.shoes_deadline.strftime('%d-%m-%Y') }}</p>{% endif %}
+    {{ money_line("Цена", card.shoes_price, card.shoes_currency, "shoes_price", unknown_fields) }}
   {% endif %}
+  {% if card.shoes_currency %}<p class="meta">Валюта: {{ card.shoes_currency }}</p>{% endif %}
+</section>
+{% endif %}
+
+{% set has_lenses = card.lenses_enabled or card.lenses_color or card.lenses_comment or card.lenses_price is not none or card.lenses_currency or 'lenses_price' in unknown_fields %}
+{% if has_lenses %}
+<section class="box">
+  <h2>Линзы</h2>
+  {% if card.lenses_enabled %}<p class="meta">Нужны линзы: да</p>{% endif %}
+  {% if card.lenses_color %}<p class="meta">Цвет: {{ card.lenses_color }}</p>{% endif %}
+  {% if card.lenses_comment %}<p class="meta">Комментарий: {{ card.lenses_comment }}</p>{% endif %}
+  {{ money_line("Цена", card.lenses_price, card.lenses_currency, "lenses_price", unknown_fields) }}
+  {% if card.lenses_currency %}<p class="meta">Валюта: {{ card.lenses_currency }}</p>{% endif %}
+</section>
+{% endif %}
+
+{% set has_wig = card.wig_type or card.wigmaker_name or card.wig_price is not none or card.wig_deadline or card.wig_link or card.wig_buy_price is not none or card.wig_no_buy_from or card.wig_restyle or card.wig_currency or 'wig_price' in unknown_fields or 'wig_buy_price' in unknown_fields %}
+{% if has_wig %}
+<section class="box">
+  <h2>Парик</h2>
+  {% if card.wig_type == "wigmaker" %}
+    <p class="meta">Способ: Вигмейкер</p>
+    {% if card.wigmaker_name %}<p class="meta">Имя вигмейкера: {{ card.wigmaker_name }}</p>{% endif %}
+    {{ money_line("Цена", card.wig_price, card.wig_currency, "wig_price", unknown_fields) }}
+    {% if card.wig_deadline %}<p class="meta">Срок: {{ card.wig_deadline.strftime('%d-%m-%Y') }}</p>{% endif %}
+  {% elif card.wig_type == "buy" %}
+    <p class="meta">Способ: Покупка</p>
+    {% if card.wig_link %}<p class="meta">Ссылка: <a href="{{ card.wig_link }}" target="_blank" rel="noreferrer">{{ card.wig_link }}</a></p>{% endif %}
+    {{ money_line("Цена покупки", card.wig_buy_price, card.wig_currency, "wig_buy_price", unknown_fields) }}
+  {% elif card.wig_type == "no_buy" %}
+    <p class="meta">Способ: Не требуется покупка</p>
+    {% if card.wig_no_buy_from %}<p class="meta">Использовать парик от: {{ card.wig_no_buy_from }}</p>{% endif %}
+    {% if card.wig_restyle %}<p class="meta">Переукладка: да</p>{% endif %}
+  {% endif %}
+  {% if card.wig_currency %}<p class="meta">Валюта: {{ card.wig_currency }}</p>{% endif %}
+</section>
+{% endif %}
+
+{% set has_craft = card.craft_type or card.craft_master or card.craft_price is not none or card.craft_material_price is not none or card.craft_deadline or card.craft_currency or craft_parts or 'craft_price' in unknown_fields or 'craft_material_price' in unknown_fields %}
+{% if has_craft %}
+<section class="box">
+  <h2>Крафт</h2>
+  {% if card.craft_type == "order" %}
+    <p class="meta">Вариант: Заказ</p>
+    {% if card.craft_master %}<p class="meta">Мастер: {{ card.craft_master }}</p>{% endif %}
+    {{ money_line("Цена", card.craft_price, card.craft_currency, "craft_price", unknown_fields) }}
+    {% if card.craft_deadline %}<p class="meta">Дедлайн: {{ card.craft_deadline.strftime('%d-%m-%Y') }}</p>{% endif %}
+  {% elif card.craft_type == "self" %}
+    <p class="meta">Вариант: Самодельный</p>
+    {{ money_line("Стоимость материалов", card.craft_material_price, card.craft_currency, "craft_material_price", unknown_fields) }}
+  {% endif %}
+  {% if card.craft_currency %}<p class="meta">Валюта: {{ card.craft_currency }}</p>{% endif %}
+
+  {% if craft_parts %}
+    <h3>Дополнительные ссылки по крафту</h3>
+    <ul class="notes-list">
+      {% for item in craft_parts if item is mapping %}
+        {% set unknown_flag = item.get('unknown') in [True, 1, '1', 'true', 'True', '__YES__'] %}
+        <li>
+          {% if item.get("url") %}<a href="{{ item.get('url') }}" target="_blank" rel="noreferrer">{{ item.get("url") }}</a>{% endif %}
+          {% if unknown_flag %}
+            <span class="chip">Цена неизвестна</span>
+          {% elif item.get("price") is not none %}
+            <span class="chip">{{ '%.2f'|format(item.get("price")) }} {{ item.get("currency", "") }}</span>
+          {% endif %}
+          {% if item.get("comment") %}<span class="muted">{{ item.get("comment") }}</span>{% endif %}
+        </li>
+      {% endfor %}
+    </ul>
+  {% endif %}
+</section>
+{% endif %}
+
+{% set has_photoset_breakdown = card.photoset_photographer_price is not none or card.photoset_studio_price is not none or card.photoset_props_price is not none or card.photoset_extra_price is not none or 'photoset_photographer_price' in unknown_fields or 'photoset_studio_price' in unknown_fields or 'photoset_props_price' in unknown_fields or 'photoset_extra_price' in unknown_fields %}
+{% set has_photoset = photographers or studios or card.photoset_date or has_photoset_breakdown or card.photoset_price is not none or 'photoset_price' in unknown_fields or card.photoset_comment or photoset_props_checklist or coproplayers_display %}
+{% if has_photoset %}
+<section class="box">
+  <h2>Фотосет и сокосплееры</h2>
+  {% if photographers %}<p class="meta">Фотограф(ы): {{ photographers | join(", ") }}</p>{% endif %}
+  {% if studios %}<p class="meta">Студия(и): {{ studios | join(", ") }}</p>{% endif %}
+  {% if card.photoset_date %}<p class="meta">Дата фотосета: {{ card.photoset_date.strftime('%d-%m-%Y') }}</p>{% endif %}
+
+  {% if has_photoset_breakdown %}
+    {{ money_line("Фотограф", card.photoset_photographer_price, card.photoset_currency, "photoset_photographer_price", unknown_fields) }}
+    {{ money_line("Студия", card.photoset_studio_price, card.photoset_currency, "photoset_studio_price", unknown_fields) }}
+    {{ money_line("Реквизит", card.photoset_props_price, card.photoset_currency, "photoset_props_price", unknown_fields) }}
+    {{ money_line("Дополнительно", card.photoset_extra_price, card.photoset_currency, "photoset_extra_price", unknown_fields) }}
+  {% else %}
+    {{ money_line("Стоимость фотосета", card.photoset_price, card.photoset_currency, "photoset_price", unknown_fields) }}
+  {% endif %}
+
+  {% if card.photoset_currency %}<p class="meta">Валюта: {{ card.photoset_currency }}</p>{% endif %}
+  {% if card.photoset_comment %}<p class="notes-block">{{ card.photoset_comment }}</p>{% endif %}
+
   {% if photoset_props_checklist %}
     <h3>Чеклист реквизита</h3>
     <ul class="notes-list">
@@ -47,6 +221,10 @@
         <li>{% if item.done == '__YES__' %}☑{% else %}☐{% endif %} {{ item.text }}</li>
       {% endfor %}
     </ul>
+  {% endif %}
+
+  {% if coproplayers_display %}
+    <p class="meta">Сокосплеер(ы): {{ coproplayers_display | join(", ") }}</p>
   {% endif %}
 </section>
 {% endif %}
@@ -89,44 +267,6 @@
       {% endif %}
     {% endfor %}
   </div>
-</section>
-{% endif %}
-
-{% if costume_parts %}
-<section class="box">
-  <h2>Костюм: дополнительные ссылки</h2>
-  <ul class="notes-list">
-    {% for item in costume_parts if item is mapping %}
-      <li>
-        {% if item.get("url") %}<a href="{{ item.get('url') }}" target="_blank" rel="noreferrer">{{ item.get("url") }}</a>{% endif %}
-        {% if item.get("unknown") %}
-          <span class="chip">Цена неизвестна</span>
-        {% elif item.get("price") is not none %}
-          <span class="chip">{{ item.get("price") }} {{ item.get("currency", "") }}</span>
-        {% endif %}
-        {% if item.get("comment") %}<span class="muted">{{ item.get("comment") }}</span>{% endif %}
-      </li>
-    {% endfor %}
-  </ul>
-</section>
-{% endif %}
-
-{% if craft_parts %}
-<section class="box">
-  <h2>Крафт: дополнительные ссылки</h2>
-  <ul class="notes-list">
-    {% for item in craft_parts if item is mapping %}
-      <li>
-        {% if item.get("url") %}<a href="{{ item.get('url') }}" target="_blank" rel="noreferrer">{{ item.get("url") }}</a>{% endif %}
-        {% if item.get("unknown") %}
-          <span class="chip">Цена неизвестна</span>
-        {% elif item.get("price") is not none %}
-          <span class="chip">{{ item.get("price") }} {{ item.get("currency", "") }}</span>
-        {% endif %}
-        {% if item.get("comment") %}<span class="muted">{{ item.get("comment") }}</span>{% endif %}
-      </li>
-    {% endfor %}
-  </ul>
 </section>
 {% endif %}
 

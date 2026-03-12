@@ -10,6 +10,7 @@
   --planned: #ecfccb;
   --planned-shared: #fff2cc;
   --home-city: #f3e8ff;
+  --nearest-city: #e6f0ff;
 }
 
 * {
@@ -52,6 +53,26 @@ body {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+.community-tabs {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.community-tabs .tab {
+  color: var(--text);
+  border: 1px solid var(--line);
+  background: #ffffff;
+}
+
+.community-tabs .tab.active,
+.community-tabs .tab:hover {
+  color: #ffffff;
+  background: var(--accent);
+  border-color: var(--accent);
 }
 
 .tab {
@@ -234,6 +255,11 @@ textarea {
   border-color: #c4b5fd;
 }
 
+.card.nearest-city-highlight {
+  background: var(--nearest-city);
+  border-color: #93c5fd;
+}
+
 .card.frozen-progress {
   background: #fee2e2;
   border-color: #ef4444;
@@ -292,6 +318,13 @@ textarea {
   gap: 8px;
 }
 
+.search-inline {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
 .inline-group {
   display: flex;
   flex-wrap: wrap;
@@ -336,6 +369,42 @@ textarea {
   align-items: center;
 }
 
+.card-post-found {
+  background: #ecfdf3;
+  border-color: #86efac;
+}
+
+.card-post-inactive {
+  background: #fff1f2;
+  border-color: #fda4af;
+}
+
+.card-question-resolved {
+  background: #ecfdf3;
+  border-color: #86efac;
+}
+
+.master-price-rows {
+  display: grid;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.master-price-row {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #f8fafc;
+  padding: 10px;
+  display: grid;
+  grid-template-columns: 1.3fr 0.9fr 1.3fr auto;
+  gap: 8px;
+  align-items: end;
+}
+
+.master-price-row button {
+  height: 42px;
+}
+
 .checklist {
   list-style: none;
   margin: 8px 0;
@@ -373,6 +442,10 @@ textarea {
 
 .table tr.summary-home-city td {
   background: #f3e8ff;
+}
+
+.table tr.summary-nearest-city td {
+  background: #e6f0ff;
 }
 
 .top-offset {
@@ -477,6 +550,15 @@ textarea {
   margin: 8px 0 0;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.notes-list {
+  margin: 8px 0 0;
+  padding-left: 18px;
+}
+
+.notes-list li {
+  margin-bottom: 6px;
 }
 
 .comments-list {
@@ -698,5 +780,9 @@ textarea {
     padding: 8px 0;
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .master-price-row {
+    grid-template-columns: 1fr;
   }
 }

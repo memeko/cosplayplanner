@@ -19,8 +19,13 @@
 {% if user_home_city %}
 <section class="box compact-box">
   <p class="muted">
-    Лавандовым выделены фестивали из вашего основного города: <strong>{{ user_home_city }}</strong>.
+    Лавандовым выделены фестивали из вашего основного города{% if user_home_cities|length > 1 %}(ов){% endif %}: <strong>{{ user_home_city }}</strong>.
   </p>
+  {% if nearest_city_labels %}
+  <p class="muted">
+    Синим выделены фестивали ближайших крупных городов: <strong>{{ nearest_city_labels | join(', ') }}</strong>.
+  </p>
+  {% endif %}
 </section>
 {% endif %}
 
@@ -99,7 +104,7 @@
     </thead>
     <tbody>
       {% for row in summary_rows %}
-      <tr class="{% if row.is_home_city %}summary-home-city{% endif %}">
+      <tr class="{% if row.is_home_city %}summary-home-city{% endif %} {% if row.is_nearest_city %}summary-nearest-city{% endif %}">
         <td>
           {% if row.kind == "Событие" and row.festival.event_date %}
             {{ row.festival.event_date.strftime('%d-%m-%Y') }}
@@ -128,7 +133,7 @@
   {% for festival in festivals %}
   {% set is_planned = (festival.name|lower) in planned_festival_names %}
   {% set is_shared_planned = (festival.name|lower) in shared_planned_festival_names %}
-  <article class="card {% if is_planned %}planned{% endif %} {% if is_shared_planned %}planned-shared{% endif %} {% if festival.id in home_city_festival_ids %}home-city-highlight{% endif %}">
+  <article class="card {% if is_planned %}planned{% endif %} {% if is_shared_planned %}planned-shared{% endif %} {% if festival.id in home_city_festival_ids %}home-city-highlight{% endif %} {% if festival.id in nearest_city_festival_ids %}nearest-city-highlight{% endif %}">
     <div class="row-between">
       <h3>{{ festival.name }}</h3>
       <form method="post" action="/festivals/{{ festival.id }}/toggle-going" class="going-toggle-form">

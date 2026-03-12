@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="community-tabs">
+  <a href="/project-board" class="tab {% if community_tab == 'project-board' %}active{% endif %}">Поиск в проекты</a>
+  <a href="/community/questions" class="tab {% if community_tab == 'questions' %}active{% endif %}">Вопрос-ответ</a>
+  <a href="/community/masters" class="tab {% if community_tab == 'masters' %}active{% endif %}">Мастера</a>
+</section>
+
+<section class="section-head">
+  <h1>{{ "Редактирование вопроса" if editing else "Новый вопрос" }}</h1>
+  <a href="{{ '/community/questions/' ~ question_id if editing else '/community/questions' }}" class="btn">Назад</a>
+</section>
+
+<form method="post" action="{{ '/community/questions/' ~ question_id ~ '/edit' if editing else '/community/questions/new' }}" class="grid one-col big-form">
+  <section class="box">
+    <label>
+      Заголовок вопроса *
+      <input type="text" name="title" value="{{ form.title }}" maxlength="255" required />
+    </label>
+
+    <label>
+      Текст вопроса *
+      <textarea name="body" rows="10" maxlength="6000" required>{{ form.body }}</textarea>
+    </label>
+
+    {% if editing %}
+    <label>
+      Статус
+      <select name="status">
+        <option value="open" {% if form.status == 'open' %}selected{% endif %}>{{ question_status_labels.get('open', 'Открыт') }}</option>
+        <option value="resolved" {% if form.status == 'resolved' %}selected{% endif %}>{{ question_status_labels.get('resolved', 'Вопрос решен') }}</option>
+      </select>
+    </label>
+    {% endif %}
+  </section>
+
+  <div class="actions-inline">
+    <button type="submit" class="btn btn-accent">{{ "Сохранить" if editing else "Опубликовать" }}</button>
+    <a href="{{ '/community/questions/' ~ question_id if editing else '/community/questions' }}" class="btn">Отмена</a>
+  </div>
+</form>
+{% endblock %}

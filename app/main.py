@@ -28,6 +28,10 @@ from .cosplay2_parser import guess_name_from_url, normalize_url, parse_events_fr
 from .database import Base, engine, get_db
 from .models import (
     CardComment,
+    CommunityMaster,
+    CommunityMasterComment,
+    CommunityQuestion,
+    CommunityQuestionComment,
     CosplanCard,
     Festival,
     FestivalNotification,
@@ -120,6 +124,23 @@ DEFAULT_NOMINATIONS = [
     "караоке",
 ]
 
+NEAREST_BIG_CITY_BY_CITY: dict[str, set[str]] = {
+    "тула": {"москва"},
+    "калуга": {"москва"},
+    "рязань": {"москва"},
+    "владимир": {"москва"},
+    "тверь": {"москва"},
+    "ярославль": {"москва"},
+    "смоленск": {"москва"},
+    "москва": {"санктпетербург"},
+    "санктпетербург": {"москва"},
+}
+
+CANONICAL_CITY_LABELS: dict[str, str] = {
+    "москва": "Москва",
+    "санктпетербург": "Санкт-Петербург",
+}
+
 REHEARSAL_SOURCE_PARTICIPANT = "participant"
 REHEARSAL_SOURCE_LEADER = "leader"
 
@@ -127,6 +148,23 @@ REHEARSAL_STATUS_PROPOSED = "proposed"
 REHEARSAL_STATUS_APPROVED = "approved"
 REHEARSAL_STATUS_ACCEPTED = "accepted"
 REHEARSAL_STATUS_DECLINED = "declined"
+
+PROJECT_BOARD_STATUS_ACTIVE = "active"
+PROJECT_BOARD_STATUS_FOUND = "found"
+PROJECT_BOARD_STATUS_INACTIVE = "inactive"
+
+QUESTION_STATUS_OPEN = "open"
+QUESTION_STATUS_RESOLVED = "resolved"
+
+MASTER_TYPE_OPTIONS = [
+    "фотограф",
+    "швея",
+    "крафтер",
+    "вигмейкер",
+    "художник",
+    "видеограф",
+    "другое",
+]
 
 
 def apply_schema_migrations() -> None:
@@ -183,6 +221,9 @@ def apply_schema_migrations() -> None:
             ("is_read", "BOOLEAN NOT NULL DEFAULT 0"),
             ("created_at", "DATETIME DEFAULT CURRENT_TIMESTAMP"),
         ],
+        "project_search_posts": [
+            ("status", "VARCHAR(32) NOT NULL DEFAULT 'active'"),
+        ],
         "in_progress_cards": [
             ("is_frozen", "BOOLEAN NOT NULL DEFAULT 0"),
         ],
@@ -202,6 +243,14 @@ def apply_schema_migrations() -> None:
             CardComment.__table__.create(bind=conn, checkfirst=True)
         if "project_search_posts" not in existing_tables:
             ProjectSearchPost.__table__.create(bind=conn, checkfirst=True)
+        if "community_questions" not in existing_tables:
+            CommunityQuestion.__table__.create(bind=conn, checkfirst=True)
+        if "community_question_comments" not in existing_tables:
+            CommunityQuestionComment.__table__.create(bind=conn, checkfirst=True)
+        if "community_masters" not in existing_tables:
+            CommunityMaster.__table__.create(bind=conn, checkfirst=True)
+        if "community_master_comments" not in existing_tables:
+            CommunityMasterComment.__table__.create(bind=conn, checkfirst=True)
         if "rehearsal_cards" not in existing_tables:
             RehearsalCard.__table__.create(bind=conn, checkfirst=True)
         if "rehearsal_entries" not in existing_tables:
@@ -451,6 +500,35 @@ def city_matches(base_city: str | None, candidate_city: str | None) -> bool:
     if min_len >= 5 and SequenceMatcher(None, left, right).ratio() >= 0.84:
         return True
     return False
+
+
+def split_city_values(raw_value: str | None) -> list[str]:
+    if not raw_value:
+        return []
+    parts = re.split(r"[,\n;|/]+", raw_value)
+    return merge_unique([part.strip() for part in parts if part and part.strip()])
+
+
+def city_matches_any(base_cities: list[str], candidate_city: str | None) -> bool:
+    return any(city_matches(base, candidate_city) for base in base_cities if base)
+
+
+def nearest_big_city_keys_for_home_cities(home_cities: list[str]) -> set[str]:
+    normalized_home = {normalize_city(city) for city in home_cities if normalize_city(city)}
+    nearest_keys: set[str] = set()
+    for city_key in normalized_home:
+        nearest_candidates = NEAREST_BIG_CITY_BY_CITY.get(city_key, set())
+        for candidate in nearest_candidates:
+            if candidate and candidate not in normalized_home:
+                nearest_keys.add(candidate)
+    return nearest_keys
+
+
+def nearest_big_city_labels(nearest_city_keys: set[str]) -> list[str]:
+    labels: list[str] = []
+    for key in sorted(nearest_city_keys):
+        labels.append(CANONICAL_CITY_LABELS.get(key, key))
+    return labels
 
 
 def can_comment_on_card(card: CosplanCard, user: User) -> bool:
@@ -857,6 +935,69 @@ def format_checklist_for_form(items: list[Any]) -> list[dict[str, str]]:
             continue
         formatted.append({"row_id": f"item-{index}", "text": text_value, "done": done_value})
     return formatted
+
+
+def parse_master_price_rows_from_form(form: Any) -> list[dict[str, Any]]:
+    row_ids = [str(value).strip() for value in form.getlist("price_row_id")]
+    services = [str(value).strip() for value in form.getlist("price_service")]
+    costs = [str(value).strip() for value in form.getlist("price_cost")]
+    comments = [str(value).strip() for value in form.getlist("price_comment")]
+    size = max(len(row_ids), len(services), len(costs), len(comments))
+    if size == 0:
+        return []
+
+    rows: list[dict[str, Any]] = []
+    for index in range(size):
+        row_id = row_ids[index] if index < len(row_ids) and row_ids[index] else str(index)
+        service = services[index] if index < len(services) else ""
+        raw_cost = costs[index] if index < len(costs) else ""
+        comment = comments[index] if index < len(comments) else ""
+        parsed_cost = parse_float(raw_cost)
+        if not (service or raw_cost or comment):
+            continue
+        rows.append(
+            {
+                "row_id": row_id,
+                "service": service,
+                "cost": parsed_cost,
+                "comment": comment,
+            }
+        )
+    return rows
+
+
+def format_master_price_rows_for_form(rows: list[Any]) -> list[dict[str, str]]:
+    formatted: list[dict[str, str]] = []
+    for index, raw_row in enumerate(rows):
+        if not isinstance(raw_row, dict):
+            continue
+        cost_value = raw_row.get("cost")
+        formatted.append(
+            {
+                "row_id": str(raw_row.get("row_id") or f"price-{index}"),
+                "service": str(raw_row.get("service", "") or ""),
+                "cost": "" if cost_value is None else f"{cost_value:g}",
+                "comment": str(raw_row.get("comment", "") or ""),
+            }
+        )
+    return formatted
+
+
+def project_board_status_label(status: str) -> str:
+    mapping = {
+        PROJECT_BOARD_STATUS_ACTIVE: "Активно",
+        PROJECT_BOARD_STATUS_FOUND: "Найдено!",
+        PROJECT_BOARD_STATUS_INACTIVE: "Не актуально",
+    }
+    return mapping.get(status, status)
+
+
+def question_status_label(status: str) -> str:
+    mapping = {
+        QUESTION_STATUS_OPEN: "Открыт",
+        QUESTION_STATUS_RESOLVED: "Вопрос решен",
+    }
+    return mapping.get(status, status)
 
 
 def notify_coproplayer_conflicts_for_card(db: Session, *, card: CosplanCard, owner: User) -> int:
@@ -1580,6 +1721,7 @@ def get_project_search_post_form_values(post: ProjectSearchPost | None = None, u
             "fandom": "",
             "event_date": "",
             "event_type": "photoset",
+            "status": PROJECT_BOARD_STATUS_ACTIVE,
             "comment": "",
             "contact_nick": default_nick,
             "contact_link": "",
@@ -1589,6 +1731,7 @@ def get_project_search_post_form_values(post: ProjectSearchPost | None = None, u
         "fandom": post.fandom or "",
         "event_date": post.event_date.isoformat() if post.event_date else "",
         "event_type": post.event_type or "photoset",
+        "status": post.status or PROJECT_BOARD_STATUS_ACTIVE,
         "comment": post.comment or "",
         "contact_nick": post.contact_nick or default_nick,
         "contact_link": post.contact_link or "",
@@ -2016,6 +2159,18 @@ def cosplan_detail(card_id: int, request: Request, db: Session = Depends(get_db)
         return redirect("/cosplan")
 
     card_owner = db.get(User, card.user_id)
+    alias_to_username, users_by_username, _ = build_user_alias_lookup(db)
+
+    project_leader_display = ""
+    if card.project_leader:
+        leader_value = normalize_username(card.project_leader)
+        canonical_leader = alias_to_username.get(leader_value.casefold(), leader_value)
+        leader_user = users_by_username.get(canonical_leader.casefold())
+        project_leader_display = f"@{preferred_user_alias(leader_user)}" if leader_user else f"@{leader_value}"
+
+    raw_coproplayers = merge_unique(as_list(card.coproplayer_nicks_json), as_list(card.coproplayers_json))
+    coproplayers_display = format_coproplayer_names(raw_coproplayers, alias_to_username, users_by_username)
+
     owner_id = card_owner.id if card_owner else user.id
     all_cards = db.execute(
         select(CosplanCard).where(CosplanCard.user_id == owner_id).order_by(CosplanCard.updated_at.desc())
@@ -2050,6 +2205,15 @@ def cosplan_detail(card_id: int, request: Request, db: Session = Depends(get_db)
         active_tab="cosplan",
         card=card,
         card_owner=card_owner,
+        card_owner_display=(f"@{preferred_user_alias(card_owner)}" if card_owner else ""),
+        project_leader_display=project_leader_display,
+        coproplayers_display=coproplayers_display,
+        cosbands=as_list(card.cosbands_json),
+        planned_festivals=as_list(card.planned_festivals_json),
+        nominations=as_list(card.nominations_json),
+        photographers=as_list(card.photographers_json),
+        studios=as_list(card.studios_json),
+        unknown_price_fields=as_list(card.unknown_prices_json),
         card_total=card_total,
         card_total_currency=card_total_currency,
         reference_urls=as_list(card.references_json),
@@ -3291,6 +3455,7 @@ def save_project_search_post_from_form(form: Any, post: ProjectSearchPost) -> tu
     fandom = str(form.get("fandom", "")).strip()
     event_date = parse_date(str(form.get("event_date", "")))
     event_type = str(form.get("event_type", "")).strip()
+    status = str(form.get("status", PROJECT_BOARD_STATUS_ACTIVE)).strip()
     comment = str(form.get("comment", "")).strip() or None
     contact_nick = normalize_username(str(form.get("contact_nick", "")).strip())
     contact_link = str(form.get("contact_link", "")).strip() or None
@@ -3303,10 +3468,17 @@ def save_project_search_post_from_form(form: Any, post: ProjectSearchPost) -> tu
         return False, "Выберите тип: фотосет или фестиваль."
     if not contact_nick:
         return False, "Укажите ник человека."
+    if status not in {
+        PROJECT_BOARD_STATUS_ACTIVE,
+        PROJECT_BOARD_STATUS_FOUND,
+        PROJECT_BOARD_STATUS_INACTIVE,
+    }:
+        status = PROJECT_BOARD_STATUS_ACTIVE
 
     post.fandom = fandom
     post.event_date = event_date
     post.event_type = event_type
+    post.status = status
     post.comment = comment
     post.contact_nick = contact_nick
     post.contact_link = contact_link
@@ -3319,13 +3491,30 @@ def project_board_list(request: Request, db: Session = Depends(get_db)):
     if not user:
         return redirect("/login")
 
-    posts = db.execute(
+    q = request.query_params.get("q", "").strip()
+    only_mine = to_bool(request.query_params.get("mine", ""))
+
+    all_posts = db.execute(
         select(ProjectSearchPost).order_by(
             ProjectSearchPost.event_date.is_(None),
             ProjectSearchPost.event_date,
             ProjectSearchPost.created_at.desc(),
         )
     ).scalars().all()
+    posts = list(all_posts)
+    if only_mine:
+        posts = [post for post in posts if post.user_id == user.id]
+    if q:
+        needle = q.casefold()
+        posts = [
+            post
+            for post in posts
+            if needle in (post.fandom or "").casefold()
+            or needle in (post.comment or "").casefold()
+            or needle in (post.contact_nick or "").casefold()
+            or needle in (post.contact_link or "").casefold()
+            or needle in ("фотосет" if post.event_type == "photoset" else "фестиваль")
+        ]
 
     owner_ids = {post.user_id for post in posts}
     owners_by_id: dict[int, User] = {}
@@ -3337,9 +3526,17 @@ def project_board_list(request: Request, db: Session = Depends(get_db)):
         request,
         "project_board_list.html",
         user=user,
-        active_tab="project-board",
+        active_tab="community",
+        community_tab="project-board",
         posts=posts,
         owners_by_id=owners_by_id,
+        q=q,
+        only_mine=only_mine,
+        board_status_labels={
+            PROJECT_BOARD_STATUS_ACTIVE: project_board_status_label(PROJECT_BOARD_STATUS_ACTIVE),
+            PROJECT_BOARD_STATUS_FOUND: project_board_status_label(PROJECT_BOARD_STATUS_FOUND),
+            PROJECT_BOARD_STATUS_INACTIVE: project_board_status_label(PROJECT_BOARD_STATUS_INACTIVE),
+        },
     )
 
 
@@ -3353,7 +3550,8 @@ def project_board_new(request: Request, db: Session = Depends(get_db)):
         request,
         "project_board_form.html",
         user=user,
-        active_tab="project-board",
+        active_tab="community",
+        community_tab="project-board",
         editing=False,
         post_id=None,
         form=get_project_search_post_form_values(user=user),
@@ -3399,7 +3597,8 @@ def project_board_edit(post_id: int, request: Request, db: Session = Depends(get
         request,
         "project_board_form.html",
         user=user,
-        active_tab="project-board",
+        active_tab="community",
+        community_tab="project-board",
         editing=True,
         post_id=post.id,
         form=get_project_search_post_form_values(post, user),
@@ -3433,6 +3632,540 @@ async def project_board_update(post_id: int, request: Request, db: Session = Dep
     return redirect("/project-board")
 
 
+@app.post("/project-board/{post_id}/status")
+async def project_board_update_status(post_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    post = db.get(ProjectSearchPost, post_id)
+    if not post:
+        add_flash(request, "Объявление не найдено.", "error")
+        return redirect("/project-board")
+    if post.user_id != user.id:
+        add_flash(request, "Изменять статус может только автор карточки.", "error")
+        return redirect("/project-board")
+
+    form = await request.form()
+    status = str(form.get("status", "")).strip()
+    if status not in {
+        PROJECT_BOARD_STATUS_ACTIVE,
+        PROJECT_BOARD_STATUS_FOUND,
+        PROJECT_BOARD_STATUS_INACTIVE,
+    }:
+        add_flash(request, "Некорректный статус.", "error")
+        return redirect("/project-board")
+
+    post.status = status
+    db.commit()
+    add_flash(request, "Статус объявления обновлен.", "success")
+    return redirect("/project-board")
+
+
+@app.get("/community")
+def community_index(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    return redirect("/project-board")
+
+
+def get_question_form_values(question: CommunityQuestion | None = None) -> dict[str, Any]:
+    if not question:
+        return {
+            "title": "",
+            "body": "",
+            "status": QUESTION_STATUS_OPEN,
+        }
+    return {
+        "title": question.title or "",
+        "body": question.body or "",
+        "status": question.status or QUESTION_STATUS_OPEN,
+    }
+
+
+def save_question_from_form(form: Any, question: CommunityQuestion) -> tuple[bool, str]:
+    title = str(form.get("title", "")).strip()
+    body = str(form.get("body", "")).strip()
+    status = str(form.get("status", QUESTION_STATUS_OPEN)).strip()
+
+    if not title:
+        return False, "Укажите заголовок вопроса."
+    if not body:
+        return False, "Введите текст вопроса."
+    if len(body) > 6000:
+        return False, "Текст вопроса слишком длинный (до 6000 символов)."
+    if status not in {QUESTION_STATUS_OPEN, QUESTION_STATUS_RESOLVED}:
+        status = QUESTION_STATUS_OPEN
+
+    question.title = title
+    question.body = body
+    question.status = status
+    return True, ""
+
+
+@app.get("/community/questions", response_class=HTMLResponse)
+def community_questions_list(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    q = request.query_params.get("q", "").strip()
+    questions = db.execute(
+        select(CommunityQuestion).order_by(CommunityQuestion.updated_at.desc(), CommunityQuestion.id.desc())
+    ).scalars().all()
+    if q:
+        needle = q.casefold()
+        questions = [
+            item
+            for item in questions
+            if needle in (item.title or "").casefold() or needle in (item.body or "").casefold()
+        ]
+
+    owner_ids = {item.user_id for item in questions}
+    owners_by_id: dict[int, User] = {}
+    if owner_ids:
+        owners = db.execute(select(User).where(User.id.in_(owner_ids))).scalars().all()
+        owners_by_id = {item.id: item for item in owners}
+
+    comments_counts_raw = db.execute(
+        select(CommunityQuestionComment.question_id, func.count(CommunityQuestionComment.id))
+        .group_by(CommunityQuestionComment.question_id)
+    ).all()
+    comment_counts = {int(row[0]): int(row[1]) for row in comments_counts_raw}
+
+    return template_response(
+        request,
+        "community_questions_list.html",
+        user=user,
+        active_tab="community",
+        community_tab="questions",
+        questions=questions,
+        owners_by_id=owners_by_id,
+        comment_counts=comment_counts,
+        q=q,
+        question_status_labels={
+            QUESTION_STATUS_OPEN: question_status_label(QUESTION_STATUS_OPEN),
+            QUESTION_STATUS_RESOLVED: question_status_label(QUESTION_STATUS_RESOLVED),
+        },
+    )
+
+
+@app.get("/community/questions/new", response_class=HTMLResponse)
+def community_questions_new(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    return template_response(
+        request,
+        "community_question_form.html",
+        user=user,
+        active_tab="community",
+        community_tab="questions",
+        editing=False,
+        question_id=None,
+        form=get_question_form_values(),
+        question_status_labels={
+            QUESTION_STATUS_OPEN: question_status_label(QUESTION_STATUS_OPEN),
+            QUESTION_STATUS_RESOLVED: question_status_label(QUESTION_STATUS_RESOLVED),
+        },
+    )
+
+
+@app.post("/community/questions/new")
+async def community_questions_create(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    form = await request.form()
+    question = CommunityQuestion(user_id=user.id, title="", body="")
+    ok, error_text = save_question_from_form(form, question)
+    if not ok:
+        add_flash(request, error_text, "error")
+        return redirect("/community/questions/new")
+
+    db.add(question)
+    db.commit()
+    add_flash(request, "Вопрос опубликован.", "success")
+    return redirect("/community/questions")
+
+
+@app.get("/community/questions/{question_id}", response_class=HTMLResponse)
+def community_questions_detail(question_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    question = db.get(CommunityQuestion, question_id)
+    if not question:
+        add_flash(request, "Вопрос не найден.", "error")
+        return redirect("/community/questions")
+
+    comments = db.execute(
+        select(CommunityQuestionComment)
+        .where(CommunityQuestionComment.question_id == question.id)
+        .order_by(CommunityQuestionComment.created_at, CommunityQuestionComment.id)
+    ).scalars().all()
+    author_ids = {question.user_id, *(item.user_id for item in comments)}
+    authors_by_id: dict[int, User] = {}
+    if author_ids:
+        authors = db.execute(select(User).where(User.id.in_(author_ids))).scalars().all()
+        authors_by_id = {item.id: item for item in authors}
+
+    return template_response(
+        request,
+        "community_question_detail.html",
+        user=user,
+        active_tab="community",
+        community_tab="questions",
+        question=question,
+        comments=comments,
+        authors_by_id=authors_by_id,
+        question_status_labels={
+            QUESTION_STATUS_OPEN: question_status_label(QUESTION_STATUS_OPEN),
+            QUESTION_STATUS_RESOLVED: question_status_label(QUESTION_STATUS_RESOLVED),
+        },
+    )
+
+
+@app.get("/community/questions/{question_id}/edit", response_class=HTMLResponse)
+def community_questions_edit(question_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    question = db.get(CommunityQuestion, question_id)
+    if not question:
+        add_flash(request, "Вопрос не найден.", "error")
+        return redirect("/community/questions")
+    if question.user_id != user.id:
+        add_flash(request, "Редактировать можно только свой вопрос.", "error")
+        return redirect(f"/community/questions/{question_id}")
+
+    return template_response(
+        request,
+        "community_question_form.html",
+        user=user,
+        active_tab="community",
+        community_tab="questions",
+        editing=True,
+        question_id=question.id,
+        form=get_question_form_values(question),
+        question_status_labels={
+            QUESTION_STATUS_OPEN: question_status_label(QUESTION_STATUS_OPEN),
+            QUESTION_STATUS_RESOLVED: question_status_label(QUESTION_STATUS_RESOLVED),
+        },
+    )
+
+
+@app.post("/community/questions/{question_id}/edit")
+async def community_questions_update(question_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    question = db.get(CommunityQuestion, question_id)
+    if not question:
+        add_flash(request, "Вопрос не найден.", "error")
+        return redirect("/community/questions")
+    if question.user_id != user.id:
+        add_flash(request, "Редактировать можно только свой вопрос.", "error")
+        return redirect(f"/community/questions/{question_id}")
+
+    form = await request.form()
+    ok, error_text = save_question_from_form(form, question)
+    if not ok:
+        add_flash(request, error_text, "error")
+        return redirect(f"/community/questions/{question_id}/edit")
+
+    db.commit()
+    add_flash(request, "Вопрос обновлен.", "success")
+    return redirect(f"/community/questions/{question_id}")
+
+
+@app.post("/community/questions/{question_id}/status")
+async def community_questions_update_status(question_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    question = db.get(CommunityQuestion, question_id)
+    if not question:
+        add_flash(request, "Вопрос не найден.", "error")
+        return redirect("/community/questions")
+    if question.user_id != user.id:
+        add_flash(request, "Изменять статус может только автор вопроса.", "error")
+        return redirect(f"/community/questions/{question_id}")
+
+    form = await request.form()
+    status = str(form.get("status", "")).strip()
+    if status not in {QUESTION_STATUS_OPEN, QUESTION_STATUS_RESOLVED}:
+        add_flash(request, "Некорректный статус.", "error")
+        return redirect(f"/community/questions/{question_id}")
+
+    question.status = status
+    db.commit()
+    add_flash(request, "Статус вопроса обновлен.", "success")
+    return redirect(f"/community/questions/{question_id}")
+
+
+@app.post("/community/questions/{question_id}/comments")
+async def community_questions_add_comment(question_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    question = db.get(CommunityQuestion, question_id)
+    if not question:
+        add_flash(request, "Вопрос не найден.", "error")
+        return redirect("/community/questions")
+
+    form = await request.form()
+    body = str(form.get("body", "")).strip()
+    if not body:
+        add_flash(request, "Введите текст комментария.", "error")
+        return redirect(f"/community/questions/{question_id}")
+
+    db.add(CommunityQuestionComment(question_id=question.id, user_id=user.id, body=body))
+    db.commit()
+    add_flash(request, "Комментарий добавлен.", "success")
+    return redirect(f"/community/questions/{question_id}")
+
+
+def get_master_form_values(master: CommunityMaster | None = None) -> dict[str, Any]:
+    if not master:
+        return {
+            "nick": "",
+            "master_type": MASTER_TYPE_OPTIONS[0],
+            "details": "",
+            "gallery_input": "",
+            "price_rows": [],
+        }
+
+    return {
+        "nick": master.nick or "",
+        "master_type": master.master_type or MASTER_TYPE_OPTIONS[0],
+        "details": master.details or "",
+        "gallery_input": "\n".join(as_list(master.gallery_json)),
+        "price_rows": format_master_price_rows_for_form(as_list(master.price_list_json)),
+    }
+
+
+def save_master_from_form(form: Any, master: CommunityMaster) -> tuple[bool, str]:
+    nick = normalize_username(str(form.get("nick", "")).strip())
+    master_type = str(form.get("master_type", "")).strip().lower()
+    details = str(form.get("details", "")).strip()
+    gallery_input = str(form.get("gallery_input", ""))
+    price_rows = parse_master_price_rows_from_form(form)
+
+    if not nick:
+        return False, "Укажите ник мастера."
+    if master_type not in MASTER_TYPE_OPTIONS:
+        return False, "Выберите корректный тип мастера."
+    if not details:
+        return False, "Заполните поле «Подробнее»."
+    if len(details) > 2000:
+        return False, "Поле «Подробнее» должно быть не длиннее 2000 символов."
+
+    master.nick = nick
+    master.master_type = master_type
+    master.details = details
+    master.gallery_json = parse_reference_values(gallery_input)
+    master.price_list_json = price_rows
+    return True, ""
+
+
+@app.get("/community/masters", response_class=HTMLResponse)
+def community_masters_list(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    q = request.query_params.get("q", "").strip()
+    master_type = request.query_params.get("type", "").strip().lower()
+    masters = db.execute(
+        select(CommunityMaster).order_by(CommunityMaster.updated_at.desc(), CommunityMaster.id.desc())
+    ).scalars().all()
+
+    if master_type and master_type in MASTER_TYPE_OPTIONS:
+        masters = [item for item in masters if (item.master_type or "").strip().lower() == master_type]
+    if q:
+        needle = q.casefold()
+        masters = [item for item in masters if needle in (item.nick or "").casefold()]
+
+    owner_ids = {item.user_id for item in masters}
+    owners_by_id: dict[int, User] = {}
+    if owner_ids:
+        owners = db.execute(select(User).where(User.id.in_(owner_ids))).scalars().all()
+        owners_by_id = {item.id: item for item in owners}
+
+    comments_counts_raw = db.execute(
+        select(CommunityMasterComment.master_id, func.count(CommunityMasterComment.id))
+        .group_by(CommunityMasterComment.master_id)
+    ).all()
+    comment_counts = {int(row[0]): int(row[1]) for row in comments_counts_raw}
+
+    return template_response(
+        request,
+        "community_masters_list.html",
+        user=user,
+        active_tab="community",
+        community_tab="masters",
+        masters=masters,
+        owners_by_id=owners_by_id,
+        comment_counts=comment_counts,
+        q=q,
+        selected_type=master_type,
+        master_type_options=MASTER_TYPE_OPTIONS,
+    )
+
+
+@app.get("/community/masters/new", response_class=HTMLResponse)
+def community_masters_new(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    return template_response(
+        request,
+        "community_master_form.html",
+        user=user,
+        active_tab="community",
+        community_tab="masters",
+        editing=False,
+        master_id=None,
+        form=get_master_form_values(),
+        master_type_options=MASTER_TYPE_OPTIONS,
+    )
+
+
+@app.post("/community/masters/new")
+async def community_masters_create(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    form = await request.form()
+    master = CommunityMaster(user_id=user.id, nick="", master_type=MASTER_TYPE_OPTIONS[0], details="")
+    ok, error_text = save_master_from_form(form, master)
+    if not ok:
+        add_flash(request, error_text, "error")
+        return redirect("/community/masters/new")
+
+    db.add(master)
+    db.commit()
+    add_flash(request, "Карточка мастера опубликована.", "success")
+    return redirect("/community/masters")
+
+
+@app.get("/community/masters/{master_id}", response_class=HTMLResponse)
+def community_masters_detail(master_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    master = db.get(CommunityMaster, master_id)
+    if not master:
+        add_flash(request, "Карточка мастера не найдена.", "error")
+        return redirect("/community/masters")
+
+    comments = db.execute(
+        select(CommunityMasterComment)
+        .where(CommunityMasterComment.master_id == master.id)
+        .order_by(CommunityMasterComment.created_at, CommunityMasterComment.id)
+    ).scalars().all()
+    author_ids = {master.user_id, *(item.user_id for item in comments)}
+    authors_by_id: dict[int, User] = {}
+    if author_ids:
+        authors = db.execute(select(User).where(User.id.in_(author_ids))).scalars().all()
+        authors_by_id = {item.id: item for item in authors}
+
+    return template_response(
+        request,
+        "community_master_detail.html",
+        user=user,
+        active_tab="community",
+        community_tab="masters",
+        master=master,
+        comments=comments,
+        authors_by_id=authors_by_id,
+        price_rows=format_master_price_rows_for_form(as_list(master.price_list_json)),
+    )
+
+
+@app.get("/community/masters/{master_id}/edit", response_class=HTMLResponse)
+def community_masters_edit(master_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    master = db.get(CommunityMaster, master_id)
+    if not master:
+        add_flash(request, "Карточка мастера не найдена.", "error")
+        return redirect("/community/masters")
+    if master.user_id != user.id:
+        add_flash(request, "Редактировать можно только свою карточку мастера.", "error")
+        return redirect(f"/community/masters/{master_id}")
+
+    return template_response(
+        request,
+        "community_master_form.html",
+        user=user,
+        active_tab="community",
+        community_tab="masters",
+        editing=True,
+        master_id=master.id,
+        form=get_master_form_values(master),
+        master_type_options=MASTER_TYPE_OPTIONS,
+    )
+
+
+@app.post("/community/masters/{master_id}/edit")
+async def community_masters_update(master_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    master = db.get(CommunityMaster, master_id)
+    if not master:
+        add_flash(request, "Карточка мастера не найдена.", "error")
+        return redirect("/community/masters")
+    if master.user_id != user.id:
+        add_flash(request, "Редактировать можно только свою карточку мастера.", "error")
+        return redirect(f"/community/masters/{master_id}")
+
+    form = await request.form()
+    ok, error_text = save_master_from_form(form, master)
+    if not ok:
+        add_flash(request, error_text, "error")
+        return redirect(f"/community/masters/{master_id}/edit")
+
+    db.commit()
+    add_flash(request, "Карточка мастера обновлена.", "success")
+    return redirect(f"/community/masters/{master_id}")
+
+
+@app.post("/community/masters/{master_id}/comments")
+async def community_masters_add_comment(master_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    master = db.get(CommunityMaster, master_id)
+    if not master:
+        add_flash(request, "Карточка мастера не найдена.", "error")
+        return redirect("/community/masters")
+
+    form = await request.form()
+    body = str(form.get("body", "")).strip()
+    if not body:
+        add_flash(request, "Введите текст комментария.", "error")
+        return redirect(f"/community/masters/{master_id}")
+
+    db.add(CommunityMasterComment(master_id=master.id, user_id=user.id, body=body))
+    db.commit()
+    add_flash(request, "Комментарий добавлен.", "success")
+    return redirect(f"/community/masters/{master_id}")
+
+
 @app.get("/festivals", response_class=HTMLResponse)
 def festivals_list(request: Request, db: Session = Depends(get_db)):
     user = current_user(request, db)
@@ -3440,6 +4173,7 @@ def festivals_list(request: Request, db: Session = Depends(get_db)):
         return redirect("/login")
 
     city_filter = request.query_params.get("city", "").strip()
+    city_filter_values = split_city_values(city_filter)
     nomination_filter = request.query_params.get("nomination", "").strip()
     coproplayer_filter = request.query_params.get("coproplayer", "").strip()
     only_going = to_bool(request.query_params.get("only_going", ""))
@@ -3467,7 +4201,7 @@ def festivals_list(request: Request, db: Session = Depends(get_db)):
         if only_going and not festival.is_going:
             continue
 
-        if city_filter and not city_matches(city_filter, festival.city):
+        if city_filter_values and not city_matches_any(city_filter_values, festival.city):
             continue
 
         nominations = [festival.nomination_1 or "", festival.nomination_2 or "", festival.nomination_3 or ""]
@@ -3486,12 +4220,24 @@ def festivals_list(request: Request, db: Session = Depends(get_db)):
         filtered.append(festival)
 
     home_city_value = user.home_city or ""
+    home_city_values = split_city_values(home_city_value)
+    nearest_city_keys = nearest_big_city_keys_for_home_cities(home_city_values)
+    nearest_city_labels = nearest_big_city_labels(nearest_city_keys)
+
     home_city_festival_ids: set[int] = set()
-    if home_city_value:
+    if home_city_values:
         home_city_festival_ids = {
             festival.id
             for festival in filtered
-            if city_matches(home_city_value, festival.city)
+            if city_matches_any(home_city_values, festival.city)
+        }
+    nearest_city_festival_ids: set[int] = set()
+    if nearest_city_keys:
+        nearest_city_festival_ids = {
+            festival.id
+            for festival in filtered
+            if festival.id not in home_city_festival_ids
+            and any(city_matches(city_key, festival.city) for city_key in nearest_city_keys)
         }
 
     own_cards = db.execute(
@@ -3517,7 +4263,10 @@ def festivals_list(request: Request, db: Session = Depends(get_db)):
     month_limit = date.today() + timedelta(days=30)
     summary_rows: list[dict[str, Any]] = []
     for festival in active_festivals:
-        is_home_city = city_matches(home_city_value, festival.city)
+        is_home_city = city_matches_any(home_city_values, festival.city)
+        is_nearest_city = (not is_home_city) and any(
+            city_matches(city_key, festival.city) for city_key in nearest_city_keys
+        )
         festival_end_date = festival_range_end(festival)
         if (
             festival.event_date
@@ -3531,6 +4280,7 @@ def festivals_list(request: Request, db: Session = Depends(get_db)):
                     "festival": festival,
                     "date": festival.event_date if festival.event_date >= today else today,
                     "is_home_city": is_home_city,
+                    "is_nearest_city": is_nearest_city,
                 }
             )
         if festival.submission_deadline and today <= festival.submission_deadline <= month_limit:
@@ -3540,6 +4290,7 @@ def festivals_list(request: Request, db: Session = Depends(get_db)):
                     "festival": festival,
                     "date": festival.submission_deadline,
                     "is_home_city": is_home_city,
+                    "is_nearest_city": is_nearest_city,
                 }
             )
 
@@ -3589,7 +4340,10 @@ def festivals_list(request: Request, db: Session = Depends(get_db)):
         notifications=notifications,
         unread_notifications=unread_notifications,
         user_home_city=user.home_city or "",
+        user_home_cities=home_city_values,
         home_city_festival_ids=home_city_festival_ids,
+        nearest_city_festival_ids=nearest_city_festival_ids,
+        nearest_city_labels=nearest_city_labels,
         current_query=request.url.query or "",
     )
 

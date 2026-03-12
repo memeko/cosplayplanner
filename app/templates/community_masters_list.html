@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="community-tabs">
+  <a href="/project-board" class="tab {% if community_tab == 'project-board' %}active{% endif %}">Поиск в проекты</a>
+  <a href="/community/questions" class="tab {% if community_tab == 'questions' %}active{% endif %}">Вопрос-ответ</a>
+  <a href="/community/masters" class="tab {% if community_tab == 'masters' %}active{% endif %}">Мастера</a>
+</section>
+
+<section class="section-head">
+  <h1>Мастера</h1>
+  <div class="actions-inline">
+    <form method="get" action="/community/masters" class="search-inline">
+      <input type="text" name="q" value="{{ q }}" placeholder="Поиск по нику мастера" />
+      <select name="type">
+        <option value="">Все типы</option>
+        {% for option in master_type_options %}
+          <option value="{{ option }}" {% if selected_type == option %}selected{% endif %}>{{ option|capitalize }}</option>
+        {% endfor %}
+      </select>
+      <button type="submit" class="btn">Найти</button>
+      <a href="/community/masters" class="btn">Сброс</a>
+    </form>
+    <a href="/community/masters/new" class="btn btn-accent">Добавить мастера</a>
+  </div>
+</section>
+
+{% if masters %}
+<div class="cards-grid">
+  {% for master in masters %}
+    {% set owner = owners_by_id.get(master.user_id) %}
+    {% set gallery = master.gallery_json or [] %}
+    <article class="card">
+      <div class="row-between">
+        <h3><a href="/community/masters/{{ master.id }}" class="card-title-link">@{{ master.nick }}</a></h3>
+        <span class="chip">{{ master.master_type|capitalize }}</span>
+      </div>
+      <p class="meta">Добавил: @{{ owner.cosplay_nick or owner.username if owner else 'unknown' }}</p>
+      <p class="meta">Комментариев: {{ comment_counts.get(master.id, 0) }}</p>
+      <p class="notes-block">{{ master.details[:240] }}{% if master.details|length > 240 %}…{% endif %}</p>
+      {% if gallery %}
+      <p class="meta">Галерея: {{ gallery|length }} изображ.</p>
+      {% endif %}
+      <div class="actions-inline">
+        <a href="/community/masters/{{ master.id }}" class="btn">Открыть</a>
+        {% if user and user.id == master.user_id %}
+          <a href="/community/masters/{{ master.id }}/edit" class="btn">Редактировать</a>
+        {% endif %}
+      </div>
+    </article>
+  {% endfor %}
+</div>
+{% else %}
+<section class="box">
+  <p class="muted">Пока нет карточек мастеров. Добавьте первую карточку.</p>
+</section>
+{% endif %}
+{% endblock %}

@@ -43,6 +43,18 @@ class User(Base):
     in_progress_cards = relationship("InProgressCard", back_populates="user", cascade="all, delete-orphan")
     festivals = relationship("Festival", back_populates="user", cascade="all, delete-orphan")
     project_search_posts = relationship("ProjectSearchPost", back_populates="user", cascade="all, delete-orphan")
+    community_questions = relationship("CommunityQuestion", back_populates="user", cascade="all, delete-orphan")
+    community_question_comments = relationship(
+        "CommunityQuestionComment",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+    community_masters = relationship("CommunityMaster", back_populates="user", cascade="all, delete-orphan")
+    community_master_comments = relationship(
+        "CommunityMasterComment",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
     incoming_notifications = relationship(
         "FestivalNotification",
         back_populates="recipient",
@@ -296,6 +308,7 @@ class ProjectSearchPost(Base):
     fandom = Column(String(255), nullable=False, index=True)
     event_date = Column(Date, nullable=True, index=True)
     event_type = Column(String(32), nullable=False, index=True)  # photoset | festival
+    status = Column(String(32), nullable=False, default="active", index=True)  # active | found | inactive
     comment = Column(Text, nullable=True)
     contact_nick = Column(String(100), nullable=False)
     contact_link = Column(String(255), nullable=True)
@@ -319,3 +332,65 @@ class FestivalNotification(Base):
 
     recipient = relationship("User", back_populates="incoming_notifications", foreign_keys=[user_id])
     sender = relationship("User", back_populates="outgoing_notifications", foreign_keys=[from_user_id])
+
+
+class CommunityQuestion(Base):
+    __tablename__ = "community_questions"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+
+    title = Column(String(255), nullable=False, index=True)
+    body = Column(Text, nullable=False)
+    status = Column(String(32), nullable=False, default="open", index=True)  # open | resolved
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    user = relationship("User", back_populates="community_questions")
+    comments = relationship("CommunityQuestionComment", back_populates="question", cascade="all, delete-orphan")
+
+
+class CommunityQuestionComment(Base):
+    __tablename__ = "community_question_comments"
+
+    id = Column(Integer, primary_key=True)
+    question_id = Column(Integer, ForeignKey("community_questions.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    body = Column(Text, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    question = relationship("CommunityQuestion", back_populates="comments")
+    user = relationship("User", back_populates="community_question_comments")
+
+
+class CommunityMaster(Base):
+    __tablename__ = "community_masters"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+
+    nick = Column(String(100), nullable=False, index=True)
+    master_type = Column(String(64), nullable=False, index=True)
+    details = Column(Text, nullable=False)
+    gallery_json = Column(JSON, nullable=False, default=list)
+    price_list_json = Column(JSON, nullable=False, default=list)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    user = relationship("User", back_populates="community_masters")
+    comments = relationship("CommunityMasterComment", back_populates="master", cascade="all, delete-orphan")
+
+
+class CommunityMasterComment(Base):
+    __tablename__ = "community_master_comments"
+
+    id = Column(Integer, primary_key=True)
+    master_id = Column(Integer, ForeignKey("community_masters.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    body = Column(Text, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    master = relationship("CommunityMaster", back_populates="comments")
+    user = relationship("User", back_populates="community_master_comments")

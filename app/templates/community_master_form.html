@@ -1,0 +1,187 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="community-tabs">
+  <a href="/project-board" class="tab {% if community_tab == 'project-board' %}active{% endif %}">Поиск в проекты</a>
+  <a href="/community/questions" class="tab {% if community_tab == 'questions' %}active{% endif %}">Вопрос-ответ</a>
+  <a href="/community/masters" class="tab {% if community_tab == 'masters' %}active{% endif %}">Мастера</a>
+</section>
+
+<section class="section-head">
+  <h1>{{ "Редактирование мастера" if editing else "Новый мастер" }}</h1>
+  <a href="{{ '/community/masters/' ~ master_id if editing else '/community/masters' }}" class="btn">Назад</a>
+</section>
+
+<form method="post" action="{{ '/community/masters/' ~ master_id ~ '/edit' if editing else '/community/masters/new' }}" class="grid one-col big-form">
+  <section class="box">
+    <div class="grid two-col">
+      <label>
+        Ник *
+        <input type="text" name="nick" value="{{ form.nick }}" maxlength="100" required />
+      </label>
+
+      <label>
+        Тип мастера *
+        <select name="master_type" required>
+          {% for option in master_type_options %}
+            <option value="{{ option }}" {% if form.master_type == option %}selected{% endif %}>{{ option|capitalize }}</option>
+          {% endfor %}
+        </select>
+      </label>
+    </div>
+
+    <label>
+      Подробнее *
+      <textarea name="details" rows="8" maxlength="2000" required>{{ form.details }}</textarea>
+    </label>
+
+    <label>
+      Галерея (URL изображений, по одному на строку)
+      <textarea name="gallery_input" id="gallery_input" rows="5" placeholder="https://...">{{ form.gallery_input }}</textarea>
+    </label>
+
+    <div class="reference-grid" id="gallery_preview"></div>
+  </section>
+
+  <section class="box">
+    <div class="row-between">
+      <h3>Прайс-лист</h3>
+      <button type="button" class="btn" id="add-price-row">Добавить строку</button>
+    </div>
+    <div class="master-price-rows" id="price_rows_wrap">
+      {% if form.price_rows %}
+        {% for row in form.price_rows %}
+          <div class="master-price-row">
+            <input type="hidden" name="price_row_id" value="{{ row.row_id }}" />
+            <label>
+              Услуга
+              <input type="text" name="price_service" value="{{ row.service }}" />
+            </label>
+            <label>
+              Стоимость (руб)
+              <input type="number" name="price_cost" step="0.01" min="0" value="{{ row.cost }}" />
+            </label>
+            <label>
+              Комментарий
+              <input type="text" name="price_comment" value="{{ row.comment }}" />
+            </label>
+            <button type="button" class="btn btn-danger remove-price-row">Удалить</button>
+          </div>
+        {% endfor %}
+      {% else %}
+        <div class="master-price-row">
+          <input type="hidden" name="price_row_id" value="price-0" />
+          <label>
+            Услуга
+            <input type="text" name="price_service" value="" />
+          </label>
+          <label>
+            Стоимость (руб)
+            <input type="number" name="price_cost" step="0.01" min="0" value="" />
+          </label>
+          <label>
+            Комментарий
+            <input type="text" name="price_comment" value="" />
+          </label>
+          <button type="button" class="btn btn-danger remove-price-row">Удалить</button>
+        </div>
+      {% endif %}
+    </div>
+  </section>
+
+  <div class="actions-inline">
+    <button type="submit" class="btn btn-accent">{{ "Сохранить" if editing else "Опубликовать" }}</button>
+    <a href="{{ '/community/masters/' ~ master_id if editing else '/community/masters' }}" class="btn">Отмена</a>
+  </div>
+</form>
+
+<script>
+(function () {
+  function parseListEntries(value) {
+    if (!value) return [];
+    return value
+      .split(/\n|,/)
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
+
+  function createImageTile(url) {
+    const link = document.createElement('a');
+    link.className = 'reference-tile';
+    link.href = url;
+    link.target = '_blank';
+    link.rel = 'noreferrer';
+
+    const image = document.createElement('img');
+    image.src = url;
+    image.alt = 'Галерея мастера';
+
+    link.appendChild(image);
+    return link;
+  }
+
+  function updateGalleryPreview() {
+    const input = document.getElementById('gallery_input');
+    const wrap = document.getElementById('gallery_preview');
+    if (!input || !wrap) return;
+
+    wrap.innerHTML = '';
+    const urls = Array.from(new Set(parseListEntries(input.value).filter((value) => /^https?:\/\//i.test(value))));
+    urls.forEach((url) => wrap.appendChild(createImageTile(url)));
+  }
+
+  const galleryInput = document.getElementById('gallery_input');
+  if (galleryInput) {
+    galleryInput.addEventListener('input', updateGalleryPreview);
+    updateGalleryPreview();
+  }
+
+  const rowsWrap = document.getElementById('price_rows_wrap');
+  const addRowBtn = document.getElementById('add-price-row');
+
+  function bindRemoveButtons() {
+    document.querySelectorAll('.remove-price-row').forEach((button) => {
+      if (button.dataset.bound === '1') return;
+      button.dataset.bound = '1';
+      button.addEventListener('click', () => {
+        const row = button.closest('.master-price-row');
+        if (row) {
+          row.remove();
+        }
+      });
+    });
+  }
+
+  function buildPriceRow(rowId) {
+    const row = document.createElement('div');
+    row.className = 'master-price-row';
+    row.innerHTML = `
+      <input type="hidden" name="price_row_id" value="${rowId}" />
+      <label>
+        Услуга
+        <input type="text" name="price_service" value="" />
+      </label>
+      <label>
+        Стоимость (руб)
+        <input type="number" name="price_cost" step="0.01" min="0" value="" />
+      </label>
+      <label>
+        Комментарий
+        <input type="text" name="price_comment" value="" />
+      </label>
+      <button type="button" class="btn btn-danger remove-price-row">Удалить</button>
+    `;
+    return row;
+  }
+
+  if (addRowBtn && rowsWrap) {
+    addRowBtn.addEventListener('click', () => {
+      const rowId = `price-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+      rowsWrap.appendChild(buildPriceRow(rowId));
+      bindRemoveButtons();
+    });
+  }
+
+  bindRemoveButtons();
+})();
+</script>
+{% endblock %}

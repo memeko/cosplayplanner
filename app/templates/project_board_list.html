@@ -1,18 +1,38 @@
 {% extends "base.html" %}
 {% block content %}
+<section class="community-tabs">
+  <a href="/project-board" class="tab {% if community_tab == 'project-board' %}active{% endif %}">Поиск в проекты</a>
+  <a href="/community/questions" class="tab {% if community_tab == 'questions' %}active{% endif %}">Вопрос-ответ</a>
+  <a href="/community/masters" class="tab {% if community_tab == 'masters' %}active{% endif %}">Мастера</a>
+</section>
+
 <section class="section-head">
   <h1>Поиск в проекты</h1>
-  <a href="/project-board/new" class="btn btn-accent">Опубликовать объявление</a>
+  <div class="actions-inline">
+    <form method="get" action="/project-board" class="search-inline">
+      <input type="text" name="q" value="{{ q }}" placeholder="Поиск по тексту объявлений" />
+      <label class="inline-check">
+        <input type="checkbox" name="mine" value="1" {% if only_mine %}checked{% endif %} />
+        Мои запросы
+      </label>
+      <button type="submit" class="btn">Найти</button>
+      <a href="/project-board" class="btn">Сброс</a>
+    </form>
+    <a href="/project-board/new" class="btn btn-accent">Опубликовать объявление</a>
+  </div>
 </section>
 
 {% if posts %}
 <div class="cards-grid">
   {% for post in posts %}
   {% set owner = owners_by_id.get(post.user_id) %}
-  <article class="card">
+  <article class="card {% if post.status == 'found' %}card-post-found{% elif post.status == 'inactive' %}card-post-inactive{% endif %}">
     <div class="row-between">
       <h3>{{ post.fandom }}</h3>
-      <span class="chip">{{ "Фотосет" if post.event_type == "photoset" else "Фестиваль" }}</span>
+      <div class="actions-inline">
+        <span class="chip">{{ "Фотосет" if post.event_type == "photoset" else "Фестиваль" }}</span>
+        <span class="chip">{{ board_status_labels.get(post.status or 'active', post.status or 'active') }}</span>
+      </div>
     </div>
     <p class="meta">Дата: {{ post.event_date.strftime('%d-%m-%Y') if post.event_date else "—" }}</p>
     <p class="meta">
@@ -29,6 +49,18 @@
     {% if user and user.id == post.user_id %}
       <div class="actions-inline">
         <a href="/project-board/{{ post.id }}/edit" class="btn">Редактировать</a>
+        <form method="post" action="/project-board/{{ post.id }}/status" class="actions-inline">
+          <input type="hidden" name="status" value="found" />
+          <button type="submit" class="btn">Найдено!</button>
+        </form>
+        <form method="post" action="/project-board/{{ post.id }}/status" class="actions-inline">
+          <input type="hidden" name="status" value="inactive" />
+          <button type="submit" class="btn btn-danger">Не актуально</button>
+        </form>
+        <form method="post" action="/project-board/{{ post.id }}/status" class="actions-inline">
+          <input type="hidden" name="status" value="active" />
+          <button type="submit" class="btn">Сделать активным</button>
+        </form>
       </div>
     {% endif %}
   </article>
