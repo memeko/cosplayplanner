@@ -37,9 +37,9 @@
     <p class="meta">Дата: {{ post.event_date.strftime('%d-%m-%Y') if post.event_date else "—" }}</p>
     <p class="meta">
       Ник человека:
-      @{{ post.contact_nick }}
+      <span class="{% if nick_is_special(post.contact_nick) %}nick-special{% endif %}">@{{ post.contact_nick }}</span>
       {% if owner %}
-        <span class="muted">(автор: @{{ owner.cosplay_nick or owner.username }})</span>
+        <span class="muted">(автор: <span class="{% if user_is_special(owner) %}nick-special{% endif %}">@{{ owner.cosplay_nick or owner.username }}</span>)</span>
       {% endif %}
     </p>
     <p class="meta">Для связи (тг или вк): {{ post.contact_link or "—" }}</p>

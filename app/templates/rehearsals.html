@@ -59,7 +59,15 @@
             {% endif %}
             <span class="chip rehearsal-status rehearsal-status-{{ entry.status }}">{{ rehearsal_status_labels.get(entry.status, entry.status) }}</span>
             {% if entry.source_type == "leader" %}
-              <span class="muted">предложил(а): @{{ proposers_by_id[entry.proposed_by_user_id].username if entry.proposed_by_user_id in proposers_by_id else "руководитель" }}</span>
+              <span class="muted">
+                предложил(а):
+                {% if entry.proposed_by_user_id in proposers_by_id %}
+                  {% set proposer = proposers_by_id[entry.proposed_by_user_id] %}
+                  <span class="{% if user_is_special(proposer) %}nick-special{% endif %}">@{{ proposer.username }}</span>
+                {% else %}
+                  @руководитель
+                {% endif %}
+              </span>
             {% endif %}
           </div>
           {% if entry.source_type == "leader" and entry.status == "proposed" %}

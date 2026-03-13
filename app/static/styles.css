@@ -290,6 +290,11 @@ textarea {
   color: var(--muted);
 }
 
+.nick-special {
+  color: #38bdf8;
+  font-weight: 600;
+}
+
 .flash {
   padding: 10px 12px;
   border-radius: 10px;

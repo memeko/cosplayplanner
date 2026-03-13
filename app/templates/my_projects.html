@@ -15,7 +15,7 @@
           {% set owner = owners_by_id.get(card.user_id) %}
           <label class="chip-check">
             <input type="checkbox" name="cosplan_card_ids" value="{{ card.id }}" />
-            {{ card.character_name }} {% if owner %}(@{{ owner.username }}){% endif %}
+            {{ card.character_name }} {% if owner %}(<span class="{% if user_is_special(owner) %}nick-special{% endif %}">@{{ owner.username }}</span>){% endif %}
           </label>
         {% endfor %}
       </div>
@@ -42,7 +42,14 @@
   {% set pending_rehearsals = pending_rehearsals_by_card.get(card.id, []) %}
   <article class="card">
     <h3><a href="/cosplan/{{ card.id }}" class="card-title-link">{{ card.character_name }}</a></h3>
-    <p class="meta">Участник: @{{ owner.username if owner else "unknown" }}</p>
+    <p class="meta">
+      Участник:
+      {% if owner %}
+        <span class="{% if user_is_special(owner) %}nick-special{% endif %}">@{{ owner.username }}</span>
+      {% else %}
+        @unknown
+      {% endif %}
+    </p>
     <p class="meta">Фандом: {{ card.fandom or "—" }}</p>
     <p class="meta">Дедлайн проекта: {{ card.project_deadline.strftime('%d-%m-%Y') if card.project_deadline else "—" }}</p>
     <p class="meta">Ориентировочная цена: {{ '%.2f'|format(card_totals.get(card.id, 0.0)) }} {{ card_total_currencies.get(card.id, "") }}</p>

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Iterable
+from typing import Any, Iterable
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -61,9 +61,19 @@ def merge_unique(*groups: Iterable[str]) -> list[str]:
     return result
 
 
-def as_list(value: object) -> list[str]:
+def as_list(value: object) -> list[Any]:
     if isinstance(value, list):
-        return [str(item).strip() for item in value if str(item).strip()]
+        result: list[Any] = []
+        for item in value:
+            if item is None:
+                continue
+            if isinstance(item, str):
+                cleaned = item.strip()
+                if cleaned:
+                    result.append(cleaned)
+                continue
+            result.append(item)
+        return result
     return []
 
 

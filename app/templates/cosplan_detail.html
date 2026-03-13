@@ -297,14 +297,28 @@
       {% for comment in top_level_comments %}
         {% set author = comment_authors.get(comment.author_id) %}
         <article class="comment-card">
-          <div class="comment-meta">@{{ author.username if author else "unknown" }} · {{ comment.created_at.strftime('%d-%m-%Y %H:%M') if comment.created_at else "" }}</div>
+          <div class="comment-meta">
+            {% if author %}
+              <span class="{% if user_is_special(author) %}nick-special{% endif %}">@{{ author.username }}</span>
+            {% else %}
+              @unknown
+            {% endif %}
+            · {{ comment.created_at.strftime('%d-%m-%Y %H:%M') if comment.created_at else "" }}
+          </div>
           <p class="notes-block">{{ comment.body }}</p>
           {% if replies_by_parent.get(comment.id) %}
             <div class="comment-replies">
               {% for reply in replies_by_parent.get(comment.id) %}
                 {% set reply_author = comment_authors.get(reply.author_id) %}
                 <article class="comment-reply">
-                  <div class="comment-meta">@{{ reply_author.username if reply_author else "unknown" }} · {{ reply.created_at.strftime('%d-%m-%Y %H:%M') if reply.created_at else "" }}</div>
+                  <div class="comment-meta">
+                    {% if reply_author %}
+                      <span class="{% if user_is_special(reply_author) %}nick-special{% endif %}">@{{ reply_author.username }}</span>
+                    {% else %}
+                      @unknown
+                    {% endif %}
+                    · {{ reply.created_at.strftime('%d-%m-%Y %H:%M') if reply.created_at else "" }}
+                  </div>
                   <p class="notes-block">{{ reply.body }}</p>
                 </article>
               {% endfor %}

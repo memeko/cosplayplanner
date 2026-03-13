@@ -27,7 +27,14 @@
         <h3><a href="/community/questions/{{ question.id }}" class="card-title-link">{{ question.title }}</a></h3>
         <span class="chip">{{ question_status_labels.get(question.status or 'open', question.status or 'open') }}</span>
       </div>
-      <p class="meta">Автор: @{{ owner.cosplay_nick or owner.username if owner else "unknown" }}</p>
+      <p class="meta">
+        Автор:
+        {% if owner %}
+          <span class="{% if user_is_special(owner) %}nick-special{% endif %}">@{{ owner.cosplay_nick or owner.username }}</span>
+        {% else %}
+          @unknown
+        {% endif %}
+      </p>
       <p class="meta">Комментариев: {{ comment_counts.get(question.id, 0) }}</p>
       <p class="notes-block">{{ question.body[:280] }}{% if question.body|length > 280 %}…{% endif %}</p>
       <div class="actions-inline">

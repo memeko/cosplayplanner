@@ -31,10 +31,17 @@
     {% set gallery = master.gallery_json or [] %}
     <article class="card">
       <div class="row-between">
-        <h3><a href="/community/masters/{{ master.id }}" class="card-title-link">@{{ master.nick }}</a></h3>
+        <h3><a href="/community/masters/{{ master.id }}" class="card-title-link"><span class="{% if nick_is_special(master.nick) %}nick-special{% endif %}">@{{ master.nick }}</span></a></h3>
         <span class="chip">{{ master.master_type|capitalize }}</span>
       </div>
-      <p class="meta">Добавил: @{{ owner.cosplay_nick or owner.username if owner else 'unknown' }}</p>
+      <p class="meta">
+        Добавил:
+        {% if owner %}
+          <span class="{% if user_is_special(owner) %}nick-special{% endif %}">@{{ owner.cosplay_nick or owner.username }}</span>
+        {% else %}
+          @unknown
+        {% endif %}
+      </p>
       <p class="meta">Комментариев: {{ comment_counts.get(master.id, 0) }}</p>
       <p class="notes-block">{{ master.details[:240] }}{% if master.details|length > 240 %}…{% endif %}</p>
       {% if gallery %}

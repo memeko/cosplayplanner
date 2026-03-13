@@ -19,7 +19,14 @@
 
 <section class="box {% if question.status == 'resolved' %}card-question-resolved{% endif %}">
   <div class="row-between">
-    <p class="meta">Автор: @{{ author.cosplay_nick or author.username if author else 'unknown' }}</p>
+    <p class="meta">
+      Автор:
+      {% if author %}
+        <span class="{% if user_is_special(author) %}nick-special{% endif %}">@{{ author.cosplay_nick or author.username }}</span>
+      {% else %}
+        @unknown
+      {% endif %}
+    </p>
     <span class="chip">{{ question_status_labels.get(question.status or 'open', question.status or 'open') }}</span>
   </div>
   <p class="notes-block">{{ question.body }}</p>
@@ -45,7 +52,11 @@
         {% set comment_author = authors_by_id.get(comment.user_id) %}
         <article class="comment-card">
           <p class="comment-meta">
-            @{{ comment_author.cosplay_nick or comment_author.username if comment_author else 'unknown' }}
+            {% if comment_author %}
+              <span class="{% if user_is_special(comment_author) %}nick-special{% endif %}">@{{ comment_author.cosplay_nick or comment_author.username }}</span>
+            {% else %}
+              @unknown
+            {% endif %}
             • {{ comment.created_at.strftime('%d-%m-%Y %H:%M') if comment.created_at else '—' }}
           </p>
           <p class="notes-block">{{ comment.body }}</p>

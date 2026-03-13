@@ -8,7 +8,7 @@
 
 {% set owner = authors_by_id.get(master.user_id) %}
 <section class="section-head">
-  <h1>@{{ master.nick }}</h1>
+  <h1><span class="{% if nick_is_special(master.nick) %}nick-special{% endif %}">@{{ master.nick }}</span></h1>
   <div class="actions-inline">
     <a href="/community/masters" class="btn">Назад к мастерам</a>
     {% if user and user.id == master.user_id %}
@@ -19,7 +19,14 @@
 
 <section class="box">
   <div class="row-between">
-    <p class="meta">Добавил: @{{ owner.cosplay_nick or owner.username if owner else 'unknown' }}</p>
+    <p class="meta">
+      Добавил:
+      {% if owner %}
+        <span class="{% if user_is_special(owner) %}nick-special{% endif %}">@{{ owner.cosplay_nick or owner.username }}</span>
+      {% else %}
+        @unknown
+      {% endif %}
+    </p>
     <span class="chip">{{ master.master_type|capitalize }}</span>
   </div>
   <p class="notes-block">{{ master.details }}</p>
@@ -55,7 +62,7 @@
         {% for row in price_rows %}
         <tr>
           <td>{{ row.service or '—' }}</td>
-          <td>{{ row.cost or '—' }}</td>
+          <td>{% if row.cost != '' and row.cost is not none %}{{ row.cost }}{% else %}—{% endif %}</td>
           <td>{{ row.comment or '—' }}</td>
         </tr>
         {% endfor %}
@@ -75,7 +82,11 @@
         {% set comment_author = authors_by_id.get(comment.user_id) %}
         <article class="comment-card">
           <p class="comment-meta">
-            @{{ comment_author.cosplay_nick or comment_author.username if comment_author else 'unknown' }}
+            {% if comment_author %}
+              <span class="{% if user_is_special(comment_author) %}nick-special{% endif %}">@{{ comment_author.cosplay_nick or comment_author.username }}</span>
+            {% else %}
+              @unknown
+            {% endif %}
             • {{ comment.created_at.strftime('%d-%m-%Y %H:%M') if comment.created_at else '—' }}
           </p>
           <p class="notes-block">{{ comment.body }}</p>

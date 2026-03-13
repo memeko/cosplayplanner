@@ -166,6 +166,9 @@ MASTER_TYPE_OPTIONS = [
     "другое",
 ]
 
+SPECIAL_HIGHLIGHT_USERNAME = "brfox_cosplay"
+SPECIAL_HIGHLIGHT_EMAIL = "angenzel@gmail.com"
+
 
 def apply_schema_migrations() -> None:
     # Lightweight SQLite migration path for local/self-host deployments.
@@ -386,6 +389,18 @@ def normalize_username(value: str | None) -> str:
     if cleaned.startswith("@"):
         cleaned = cleaned[1:]
     return cleaned
+
+
+def nick_is_special(value: str | None) -> bool:
+    return normalize_username(value).casefold() == SPECIAL_HIGHLIGHT_USERNAME
+
+
+def user_is_special(user: User | None) -> bool:
+    if not user:
+        return False
+    if nick_is_special(user.username) or nick_is_special(user.cosplay_nick):
+        return True
+    return (user.email or "").strip().casefold() == SPECIAL_HIGHLIGHT_EMAIL
 
 
 def usernames_match(left: str | None, right: str | None) -> bool:
@@ -1456,6 +1471,8 @@ def template_response(
         "flash": pop_flash(request),
         "today": date.today(),
         "project_name": PROJECT_NAME,
+        "nick_is_special": nick_is_special,
+        "user_is_special": user_is_special,
     }
     payload.update(context)
     return templates.TemplateResponse(name, payload)
