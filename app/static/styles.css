@@ -89,7 +89,7 @@ body {
 }
 
 main {
-  padding: 18px 0 28px;
+  padding: 18px 0 44px;
 }
 
 h1,
@@ -771,6 +771,23 @@ textarea {
 .policy-page p,
 .policy-page li {
   margin: 0 0 8px;
+}
+
+.site-footnote {
+  position: fixed;
+  left: 50%;
+  bottom: 6px;
+  transform: translateX(-50%);
+  font-size: 0.5rem;
+  color: var(--muted);
+  white-space: nowrap;
+  z-index: 900;
+}
+
+.site-footnote a {
+  text-decoration: none;
+  font-weight: 700;
+  color: inherit;
 }
 
 @media (max-width: 900px) {
