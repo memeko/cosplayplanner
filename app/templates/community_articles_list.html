@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block content %}
+{% include "community_tabs.html" %}
+
+<section class="section-head">
+  <h1>Статьи</h1>
+  <div class="actions-inline">
+    <form method="get" action="/community/articles" class="search-inline">
+      <input type="text" name="q" value="{{ q }}" placeholder="Поиск по теме и тегам" />
+      <label class="inline-check">
+        <input type="checkbox" name="favorites" value="1" {% if only_favorites %}checked{% endif %} />
+        Избранное
+      </label>
+      <button type="submit" class="btn">Найти</button>
+      <a href="/community/articles" class="btn">Сброс</a>
+    </form>
+    <a href="/community/articles/new" class="btn btn-accent">Новая статья</a>
+  </div>
+</section>
+
+{% if articles %}
+<div class="cards-grid">
+  {% for article in articles %}
+    {% set owner = owners_by_id.get(article.user_id) %}
+    {% set tags = article.tags_json or [] %}
+    {% set is_favorite = article.id in favorite_article_ids %}
+    {% set owner_is_authority = author_is_authority.get(article.user_id) %}
+    <article class="card">
+      <div class="row-between">
+        <h3><a href="/community/articles/{{ article.id }}" class="card-title-link">{{ article.topic }}</a></h3>
+        <form method="post" action="/community/articles/{{ article.id }}/favorite" class="inline-form">
+          <input type="hidden" name="next" value="{{ request.url.path }}{% if request.url.query %}?{{ request.url.query }}{% endif %}" />
+          <button type="submit" class="btn btn-small">{% if is_favorite %}★ В избранном{% else %}☆ В избранное{% endif %}</button>
+        </form>
+      </div>
+
+      <p class="meta">Автор (в статье): {{ article.author_name }}</p>
+      <p class="meta">
+        Пользователь:
+        {% if owner %}
+          <span class="{% if user_is_special(owner) %}nick-special{% endif %}">@{{ owner.cosplay_nick or owner.username }}</span>
+          {% if owner_is_authority %}<span class="chip chip-authority">авторитет</span>{% endif %}
+        {% else %}
+          @unknown
+        {% endif %}
+      </p>
+
+      {% if tags %}
+      <div class="chips-wrap top-offset">
+        {% for tag in tags %}
+          <span class="chip">#{{ tag }}</span>
+        {% endfor %}
+      </div>
+      {% endif %}
+
+      <p class="notes-block">{{ (article.body_markdown or '')[:320] }}{% if (article.body_markdown or '')|length > 320 %}…{% endif %}</p>
+      <p class="meta">Комментариев: {{ comment_counts.get(article.id, 0) }} · В избранном: {{ favorite_counts.get(article.id, 0) }}</p>
+
+      <div class="actions-inline">
+        <a href="/community/articles/{{ article.id }}" class="btn">Открыть</a>
+        {% if user and user.id == article.user_id %}
+          <a href="/community/articles/{{ article.id }}/edit" class="btn">Редактировать</a>
+        {% endif %}
+      </div>
+    </article>
+  {% endfor %}
+</div>
+{% else %}
+<section class="box">
+  <p class="muted">Статей пока нет. Опубликуйте первую статью.</p>
+</section>
+{% endif %}
+{% endblock %}

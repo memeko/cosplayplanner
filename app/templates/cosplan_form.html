@@ -37,6 +37,9 @@
   .alias-suggest-item:hover { background: #f2f6ff; }
   .unknown-price-mark { display: inline-flex; align-items: center; gap: 0.3rem; margin-top: 0.25rem; font-size: 0.86rem; }
   .pinterest-frame { width: 200px; height: 270px; border: 0; border-radius: 10px; background: #fff; }
+  .coproplayer-row { display: grid; grid-template-columns: 1fr auto; gap: 0.5rem; align-items: end; margin-bottom: 0.5rem; }
+  .festival-spoiler { margin-top: 0.35rem; }
+  .festival-spoiler summary { cursor: pointer; font-weight: 600; margin-bottom: 0.5rem; }
 </style>
 
 <form method="post" action="{{ '/cosplan/' ~ card_id ~ '/edit' if editing else '/cosplan/new' }}" class="grid one-col big-form" id="cosplan-form">
@@ -430,32 +433,35 @@
     </div>
 
     <label>Планируемый фестиваль</label>
-    <div class="grid two-col">
-      <label>
-        Фильтр по городу
-        <input type="text" id="festival_city_filter" placeholder="Например, Москва" list="festival-city-options" />
-        <datalist id="festival-city-options">
-          {% for item in festival_items %}
-            {% if item.city %}<option value="{{ item.city }}"></option>{% endif %}
-          {% endfor %}
-        </datalist>
-      </label>
-    </div>
+    <details class="festival-spoiler" {% if form.planned_festivals_json %}open{% endif %}>
+      <summary>Показать/скрыть список фестивалей</summary>
+      <div class="grid two-col">
+        <label>
+          Фильтр по городу
+          <input type="text" id="festival_city_filter" placeholder="Например, Москва" list="festival-city-options" />
+          <datalist id="festival-city-options">
+            {% for item in festival_items %}
+              {% if item.city %}<option value="{{ item.city }}"></option>{% endif %}
+            {% endfor %}
+          </datalist>
+        </label>
+      </div>
 
-    <div class="chips-wrap" id="festival-chips-db">
-      {% for item in festival_items %}
-      <label class="chip-check festival-chip" data-city="{{ item.city|lower }}" data-name="{{ item.name|lower }}">
-        <input type="checkbox" name="planned_festivals" value="{{ item.name }}" {% if item.name in form.planned_festivals_json %}checked{% endif %} />
-        {{ item.name }}{% if item.city %} ({{ item.city }}){% endif %}
-      </label>
-      {% endfor %}
-      {% for value in festival_custom_options %}
-      <label class="chip-check festival-chip" data-city="" data-name="{{ value|lower }}">
-        <input type="checkbox" name="planned_festivals" value="{{ value }}" {% if value in form.planned_festivals_json %}checked{% endif %} />
-        {{ value }}
-      </label>
-      {% endfor %}
-    </div>
+      <div class="chips-wrap" id="festival-chips-db">
+        {% for item in festival_items %}
+        <label class="chip-check festival-chip" data-city="{{ item.city|lower }}" data-name="{{ item.name|lower }}">
+          <input type="checkbox" name="planned_festivals" value="{{ item.name }}" {% if item.name in form.planned_festivals_json %}checked{% endif %} />
+          {{ item.name }}{% if item.city %} ({{ item.city }}){% endif %}
+        </label>
+        {% endfor %}
+        {% for value in festival_custom_options %}
+        <label class="chip-check festival-chip" data-city="" data-name="{{ value|lower }}">
+          <input type="checkbox" name="planned_festivals" value="{{ value }}" {% if value in form.planned_festivals_json %}checked{% endif %} />
+          {{ value }}
+        </label>
+        {% endfor %}
+      </div>
+    </details>
     <label>
       Добавить фестивали (через запятую)
       <input type="text" name="planned_festivals_new" placeholder="Название фестиваля" />
@@ -554,19 +560,25 @@
     </div>
     <button type="button" class="btn" id="add_photoset_prop_btn">Добавить пункт реквизита</button>
 
-    <label class="alias-suggest">
-      Сокосплеер(ы) (через запятую)
-      <input
-        type="text"
-        name="coproplayers_input"
-        id="coproplayers_input"
-        value="{{ form.coproplayers_input }}"
-        list="coproplayer-alias-options"
-        placeholder="username1, cosplay_nick2"
-        autocomplete="off"
-      />
-      <div class="alias-suggest-list" id="coproplayer-suggest"></div>
-    </label>
+    <label>Сокосплеер(ы)</label>
+    <div id="coproplayer_rows">
+      {% for value in form.coproplayer_alias_rows %}
+      <div class="coproplayer-row alias-suggest">
+        <input
+          type="text"
+          name="coproplayer_alias"
+          value="{{ value }}"
+          list="coproplayer-alias-options"
+          class="coproplayer-alias-input"
+          placeholder="Ник сокосплеера"
+          autocomplete="off"
+        />
+        <button type="button" class="btn btn-danger coproplayer-remove-btn">Удалить</button>
+        <div class="alias-suggest-list"></div>
+      </div>
+      {% endfor %}
+    </div>
+    <button type="button" class="btn" id="add_coproplayer_btn">Добавить ещё</button>
   </section>
 
   <section class="box">
@@ -1010,9 +1022,7 @@
     });
   };
 
-  const bindAliasSuggest = ({ inputId, listId, multi }) => {
-    const input = document.getElementById(inputId);
-    const list = document.getElementById(listId);
+  const bindAliasSuggestForField = ({ input, list, multi }) => {
     if (!input || !list) return;
 
     let pendingRequest = null;
@@ -1085,6 +1095,81 @@
     });
   };
 
+  const bindAliasSuggest = ({ inputId, listId, multi }) => {
+    const input = document.getElementById(inputId);
+    const list = document.getElementById(listId);
+    bindAliasSuggestForField({ input, list, multi });
+  };
+
+  const setupCoproplayerRows = () => {
+    const wrap = document.getElementById("coproplayer_rows");
+    const addButton = document.getElementById("add_coproplayer_btn");
+    if (!wrap || !addButton) return;
+
+    const updateRemoveButtons = () => {
+      const rows = wrap.querySelectorAll(".coproplayer-row");
+      rows.forEach((row) => {
+        const button = row.querySelector(".coproplayer-remove-btn");
+        if (!button) return;
+        button.style.visibility = rows.length > 1 ? "" : "hidden";
+      });
+    };
+
+    const bindRow = (row) => {
+      if (!row || row.dataset.bound === "1") return;
+      row.dataset.bound = "1";
+
+      const input = row.querySelector(".coproplayer-alias-input");
+      const list = row.querySelector(".alias-suggest-list");
+      bindAliasSuggestForField({ input, list, multi: false });
+
+      const removeButton = row.querySelector(".coproplayer-remove-btn");
+      if (removeButton) {
+        removeButton.addEventListener("click", () => {
+          row.remove();
+          updateRemoveButtons();
+        });
+      }
+    };
+
+    const buildRow = () => {
+      const row = document.createElement("div");
+      row.className = "coproplayer-row alias-suggest";
+
+      const input = document.createElement("input");
+      input.type = "text";
+      input.name = "coproplayer_alias";
+      input.className = "coproplayer-alias-input";
+      input.placeholder = "Ник сокосплеера";
+      input.autocomplete = "off";
+      input.setAttribute("list", "coproplayer-alias-options");
+
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "btn btn-danger coproplayer-remove-btn";
+      button.textContent = "Удалить";
+
+      const list = document.createElement("div");
+      list.className = "alias-suggest-list";
+
+      row.appendChild(input);
+      row.appendChild(button);
+      row.appendChild(list);
+      return row;
+    };
+
+    wrap.querySelectorAll(".coproplayer-row").forEach(bindRow);
+    updateRemoveButtons();
+
+    addButton.addEventListener("click", () => {
+      const row = buildRow();
+      wrap.appendChild(row);
+      bindRow(row);
+      updateRemoveButtons();
+      row.querySelector(".coproplayer-alias-input")?.focus();
+    });
+  };
+
   ["is_au", "costume_type", "sewing_type", "shoes_type", "wig_type", "craft_type", "lenses_enabled", "plan_type"].forEach((id) => {
     const el = document.getElementById(id);
     if (el) {
@@ -1119,7 +1204,7 @@
   });
 
   bindAliasSuggest({ inputId: "project_leader", listId: "project-leader-suggest", multi: false });
-  bindAliasSuggest({ inputId: "coproplayers_input", listId: "coproplayer-suggest", multi: true });
+  setupCoproplayerRows();
   attachUnknownPriceCheckboxes();
   setupPartsControls();
   setupChecklistControls();

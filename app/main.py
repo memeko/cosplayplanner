@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import html
 import io
 import os
 import re
@@ -11,6 +12,7 @@ from datetime import date, datetime, timedelta
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs, urlparse
 
 import requests
 from fastapi import Depends, FastAPI, Request
@@ -28,12 +30,16 @@ from .cosplay2_parser import guess_name_from_url, normalize_url, parse_events_fr
 from .database import Base, engine, get_db
 from .models import (
     CardComment,
+    CommunityArticle,
+    CommunityArticleComment,
+    CommunityArticleFavorite,
     CommunityMaster,
     CommunityMasterComment,
     CommunityQuestion,
     CommunityQuestionComment,
     CosplanCard,
     Festival,
+    FestivalAnnouncement,
     FestivalNotification,
     InProgressCard,
     ProjectSearchPost,
@@ -166,6 +172,13 @@ MASTER_TYPE_OPTIONS = [
     "другое",
 ]
 
+ARTICLE_MAX_TAGS = 15
+ARTICLE_MAX_BODY_LENGTH = 15000
+
+ANNOUNCEMENT_STATUS_PENDING = "pending"
+ANNOUNCEMENT_STATUS_APPROVED = "approved"
+ANNOUNCEMENT_STATUS_REJECTED = "rejected"
+
 SPECIAL_HIGHLIGHT_USERNAME = "brfox_cosplay"
 SPECIAL_HIGHLIGHT_EMAIL = "angenzel@gmail.com"
 
@@ -232,6 +245,8 @@ def apply_schema_migrations() -> None:
         ],
         "festivals": [
             ("event_end_date", "DATE"),
+            ("is_global_announcement", "BOOLEAN NOT NULL DEFAULT 0"),
+            ("source_announcement_id", "INTEGER"),
         ],
     }
 
@@ -254,6 +269,14 @@ def apply_schema_migrations() -> None:
             CommunityMaster.__table__.create(bind=conn, checkfirst=True)
         if "community_master_comments" not in existing_tables:
             CommunityMasterComment.__table__.create(bind=conn, checkfirst=True)
+        if "community_articles" not in existing_tables:
+            CommunityArticle.__table__.create(bind=conn, checkfirst=True)
+        if "community_article_comments" not in existing_tables:
+            CommunityArticleComment.__table__.create(bind=conn, checkfirst=True)
+        if "community_article_favorites" not in existing_tables:
+            CommunityArticleFavorite.__table__.create(bind=conn, checkfirst=True)
+        if "festival_announcements" not in existing_tables:
+            FestivalAnnouncement.__table__.create(bind=conn, checkfirst=True)
         if "rehearsal_cards" not in existing_tables:
             RehearsalCard.__table__.create(bind=conn, checkfirst=True)
         if "rehearsal_entries" not in existing_tables:
@@ -401,6 +424,10 @@ def user_is_special(user: User | None) -> bool:
     if nick_is_special(user.username) or nick_is_special(user.cosplay_nick):
         return True
     return (user.email or "").strip().casefold() == SPECIAL_HIGHLIGHT_EMAIL
+
+
+def is_moderator_user(user: User | None) -> bool:
+    return user_is_special(user)
 
 
 def usernames_match(left: str | None, right: str | None) -> bool:
@@ -1015,6 +1042,128 @@ def question_status_label(status: str) -> str:
     return mapping.get(status, status)
 
 
+def announcement_status_label(status: str) -> str:
+    mapping = {
+        ANNOUNCEMENT_STATUS_PENDING: "На модерации",
+        ANNOUNCEMENT_STATUS_APPROVED: "Одобрено",
+        ANNOUNCEMENT_STATUS_REJECTED: "Отклонено",
+    }
+    return mapping.get(status, status)
+
+
+def parse_article_tags(raw_value: str) -> list[str]:
+    tags = merge_unique(split_csv(raw_value))
+    normalized: list[str] = []
+    for tag in tags:
+        cleaned = re.sub(r"\s+", " ", tag.strip())
+        if not cleaned:
+            continue
+        if len(cleaned) > 40:
+            cleaned = cleaned[:40].rstrip()
+        normalized.append(cleaned)
+        if len(normalized) >= ARTICLE_MAX_TAGS:
+            break
+    return normalized
+
+
+def extract_youtube_embed_url(raw_url: str) -> str | None:
+    value = (raw_url or "").strip()
+    if not value.lower().startswith(("http://", "https://")):
+        return None
+
+    try:
+        parsed = urlparse(value)
+    except ValueError:
+        return None
+
+    host = (parsed.netloc or "").lower()
+    video_id = ""
+    if "youtu.be" in host:
+        video_id = parsed.path.lstrip("/")
+    elif "youtube.com" in host:
+        path = parsed.path or ""
+        if path == "/watch":
+            video_id = (parse_qs(parsed.query).get("v") or [""])[0]
+        elif path.startswith("/shorts/"):
+            video_id = path.split("/shorts/", 1)[1].split("/", 1)[0]
+        elif path.startswith("/embed/"):
+            video_id = path.split("/embed/", 1)[1].split("/", 1)[0]
+
+    video_id = (video_id or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]{6,20}", video_id):
+        return None
+    return f"https://www.youtube.com/embed/{video_id}"
+
+
+def _render_article_inline(text: str) -> str:
+    rendered = html.escape(text)
+
+    def color_repl(match: re.Match[str]) -> str:
+        color = match.group(1).strip()
+        if not re.fullmatch(r"(#[0-9a-fA-F]{3,8}|[a-zA-Z]{3,20})", color):
+            return match.group(0)
+        content = match.group(2)
+        return f'<span style="color:{color}">{content}</span>'
+
+    rendered = re.sub(r"\[color=([^\]]+)\](.+?)\[/color\]", color_repl, rendered, flags=re.IGNORECASE)
+    rendered = re.sub(r"\[([^\]]+)\]\((https?://[^\s)]+)\)", r'<a href="\2" target="_blank" rel="noreferrer">\1</a>', rendered)
+    rendered = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", rendered)
+    rendered = re.sub(r"\*(.+?)\*", r"<em>\1</em>", rendered)
+    rendered = re.sub(r"`([^`]+)`", r"<code>\1</code>", rendered)
+    return rendered
+
+
+def render_article_markdown(raw_text: str) -> str:
+    text_value = (raw_text or "").replace("\r\n", "\n").strip()
+    if not text_value:
+        return ""
+
+    lines = text_value.split("\n")
+    parts: list[str] = []
+    in_list = False
+
+    def close_list() -> None:
+        nonlocal in_list
+        if in_list:
+            parts.append("</ul>")
+            in_list = False
+
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            close_list()
+            continue
+
+        youtube_embed = extract_youtube_embed_url(stripped)
+        if youtube_embed:
+            close_list()
+            parts.append(
+                f'<div class="article-video-wrap"><iframe src="{youtube_embed}" '
+                'title="YouTube video" loading="lazy" allowfullscreen></iframe></div>'
+            )
+            continue
+
+        heading_match = re.match(r"^(#{1,3})\s+(.+)$", stripped)
+        if heading_match:
+            close_list()
+            level = len(heading_match.group(1))
+            parts.append(f"<h{level}>{_render_article_inline(heading_match.group(2))}</h{level}>")
+            continue
+
+        if stripped.startswith("- "):
+            if not in_list:
+                parts.append("<ul>")
+                in_list = True
+            parts.append(f"<li>{_render_article_inline(stripped[2:])}</li>")
+            continue
+
+        close_list()
+        parts.append(f"<p>{_render_article_inline(stripped)}</p>")
+
+    close_list()
+    return "\n".join(parts)
+
+
 def notify_coproplayer_conflicts_for_card(db: Session, *, card: CosplanCard, owner: User) -> int:
     coproplayers = as_list(card.coproplayer_nicks_json)
     if not coproplayers:
@@ -1563,12 +1712,16 @@ def get_card_form_values(card: CosplanCard | None = None) -> dict[str, Any]:
             "coproplayers_json": [],
             "coproplayer_nicks_json": [],
             "coproplayers_input": "",
+            "coproplayer_alias_rows": [""],
             "estimated_total": 0.0,
             "estimated_total_currency": "",
             "notes": "",
         }
 
     estimated_total, estimated_currency = estimate_card_total_and_currency(card)
+    coproplayer_alias_rows = as_list(card.coproplayers_json) or as_list(card.coproplayer_nicks_json)
+    if not coproplayer_alias_rows:
+        coproplayer_alias_rows = [""]
     return {
         "character_name": card.character_name or "",
         "fandom": card.fandom or "",
@@ -1653,6 +1806,7 @@ def get_card_form_values(card: CosplanCard | None = None) -> dict[str, Any]:
         "coproplayers_json": as_list(card.coproplayers_json),
         "coproplayer_nicks_json": as_list(card.coproplayer_nicks_json),
         "coproplayers_input": ", ".join(as_list(card.coproplayers_json) or as_list(card.coproplayer_nicks_json)),
+        "coproplayer_alias_rows": coproplayer_alias_rows,
         "estimated_total": estimated_total,
         "estimated_total_currency": estimated_currency,
         "notes": card.notes or "",
@@ -1729,6 +1883,98 @@ def get_festival_form_values(festival: Festival | None = None) -> dict[str, Any]
         "going_coproplayers_json": as_list(festival.going_coproplayers_json),
         "going_coproplayers_input": ", ".join(as_list(festival.going_coproplayers_json)),
     }
+
+
+def get_festival_announcement_form_values(announcement: FestivalAnnouncement | None = None) -> dict[str, Any]:
+    if not announcement:
+        return {
+            "name": "",
+            "url": "",
+            "city": "",
+            "event_date": "",
+            "event_end_date": "",
+            "submission_deadline": "",
+            "nomination_1": "",
+            "nomination_2": "",
+            "nomination_3": "",
+        }
+    return {
+        "name": announcement.name or "",
+        "url": announcement.url or "",
+        "city": announcement.city or "",
+        "event_date": announcement.event_date.isoformat() if announcement.event_date else "",
+        "event_end_date": announcement.event_end_date.isoformat() if announcement.event_end_date else "",
+        "submission_deadline": announcement.submission_deadline.isoformat() if announcement.submission_deadline else "",
+        "nomination_1": announcement.nomination_1 or "",
+        "nomination_2": announcement.nomination_2 or "",
+        "nomination_3": announcement.nomination_3 or "",
+    }
+
+
+def save_festival_announcement_from_form(form: Any, announcement: FestivalAnnouncement) -> tuple[bool, str]:
+    name = str(form.get("name", "")).strip()
+    if not name:
+        return False, "Название фестиваля обязательно."
+
+    event_date = parse_date(str(form.get("event_date", "")))
+    event_end_date = parse_date(str(form.get("event_end_date", "")))
+    if not event_date and event_end_date:
+        event_date = event_end_date
+    if event_date and event_end_date and event_end_date < event_date:
+        event_end_date = event_date
+
+    announcement.name = name
+    announcement.url = str(form.get("url", "")).strip() or None
+    announcement.city = str(form.get("city", "")).strip() or None
+    announcement.event_date = event_date
+    announcement.event_end_date = event_end_date
+    announcement.submission_deadline = parse_date(str(form.get("submission_deadline", "")))
+    announcement.nomination_1 = str(form.get("nomination_1", "")).strip() or None
+    announcement.nomination_2 = str(form.get("nomination_2", "")).strip() or None
+    announcement.nomination_3 = str(form.get("nomination_3", "")).strip() or None
+    return True, ""
+
+
+def propagate_approved_announcement(
+    db: Session,
+    announcement: FestivalAnnouncement,
+    target_user_ids: list[int] | None = None,
+) -> int:
+    if announcement.status != ANNOUNCEMENT_STATUS_APPROVED:
+        return 0
+
+    user_ids = target_user_ids or [int(item) for item in db.execute(select(User.id)).scalars().all()]
+    created = 0
+    for user_id in user_ids:
+        exists = db.execute(
+            select(Festival.id).where(
+                Festival.user_id == int(user_id),
+                Festival.source_announcement_id == announcement.id,
+            )
+        ).scalar_one_or_none()
+        if exists:
+            continue
+
+        db.add(
+            Festival(
+                user_id=int(user_id),
+                name=announcement.name,
+                url=announcement.url,
+                city=announcement.city,
+                event_date=announcement.event_date,
+                event_end_date=announcement.event_end_date,
+                submission_deadline=announcement.submission_deadline,
+                nomination_1=announcement.nomination_1,
+                nomination_2=announcement.nomination_2,
+                nomination_3=announcement.nomination_3,
+                is_going=False,
+                going_coproplayers_json=[],
+                is_global_announcement=True,
+                source_announcement_id=announcement.id,
+            )
+        )
+        created += 1
+    return created
 
 
 def get_project_search_post_form_values(post: ProjectSearchPost | None = None, user: User | None = None) -> dict[str, Any]:
@@ -1808,6 +2054,13 @@ async def register_submit(request: Request, db: Session = Depends(get_db)):
     db.add(user)
     db.commit()
     db.refresh(user)
+
+    approved_announcements = db.execute(
+        select(FestivalAnnouncement).where(FestivalAnnouncement.status == ANNOUNCEMENT_STATUS_APPROVED)
+    ).scalars().all()
+    for announcement in approved_announcements:
+        propagate_approved_announcement(db, announcement, target_user_ids=[user.id])
+    db.commit()
 
     request.session["user_id"] = user.id
     add_flash(request, "welcome", "welcome")
@@ -2483,7 +2736,9 @@ def save_card_from_form(form: Any, card: CosplanCard, user: User, db: Session) -
         split_csv(str(form.get("photographers_new", ""))),
     )
     studios = merge_unique(form.getlist("studios"), split_csv(str(form.get("studios_new", ""))))
+    coproplayer_alias_rows = [str(value).strip() for value in form.getlist("coproplayer_alias") if str(value).strip()]
     coproplayer_aliases = merge_unique(
+        coproplayer_alias_rows,
         split_csv(str(form.get("coproplayers_input", ""))),
         form.getlist("coproplayers"),  # backward compatibility with older forms
         split_csv(str(form.get("coproplayers_new", ""))),  # backward compatibility
@@ -4183,6 +4438,373 @@ async def community_masters_add_comment(master_id: int, request: Request, db: Se
     return redirect(f"/community/masters/{master_id}")
 
 
+@app.post("/community/masters/{master_id}/delete")
+def community_masters_delete(master_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    master = db.get(CommunityMaster, master_id)
+    if not master:
+        add_flash(request, "Карточка мастера не найдена.", "error")
+        return redirect("/community/masters")
+    if master.user_id != user.id:
+        add_flash(request, "Удалять можно только свою карточку мастера.", "error")
+        return redirect(f"/community/masters/{master_id}")
+
+    db.delete(master)
+    db.commit()
+    add_flash(request, "Карточка мастера удалена.", "info")
+    return redirect("/community/masters")
+
+
+def get_article_form_values(article: CommunityArticle | None = None, user: User | None = None) -> dict[str, Any]:
+    if not article:
+        return {
+            "topic": "",
+            "author_name": preferred_user_alias(user) if user else "",
+            "body_markdown": "",
+            "tags_input": "",
+            "tags_json": [],
+        }
+    tags = as_list(article.tags_json)
+    return {
+        "topic": article.topic or "",
+        "author_name": article.author_name or "",
+        "body_markdown": article.body_markdown or "",
+        "tags_input": ", ".join(tags),
+        "tags_json": tags,
+    }
+
+
+def save_article_from_form(form: Any, article: CommunityArticle) -> tuple[bool, str]:
+    topic = str(form.get("topic", "")).strip()
+    author_name = str(form.get("author_name", "")).strip()
+    body_markdown = str(form.get("body_markdown", "")).strip()
+    tags_input = str(form.get("tags_input", "")).strip()
+    raw_tags = merge_unique(split_csv(tags_input))
+    if len(raw_tags) > ARTICLE_MAX_TAGS:
+        return False, f"Можно указать не более {ARTICLE_MAX_TAGS} тегов."
+    tags = parse_article_tags(tags_input)
+
+    if not topic:
+        return False, "Укажите тему статьи."
+    if len(topic) > 255:
+        return False, "Тема статьи слишком длинная (до 255 символов)."
+    if not author_name:
+        return False, "Укажите автора статьи."
+    if len(author_name) > 120:
+        return False, "Поле «Автор» слишком длинное (до 120 символов)."
+    if not body_markdown:
+        return False, "Заполните текст статьи."
+    if len(body_markdown) > ARTICLE_MAX_BODY_LENGTH:
+        return False, f"Статья должна быть не длиннее {ARTICLE_MAX_BODY_LENGTH} символов."
+
+    article.topic = topic
+    article.author_name = author_name
+    article.body_markdown = body_markdown
+    article.tags_json = tags
+    return True, ""
+
+
+def build_authority_map(db: Session) -> dict[int, bool]:
+    rows = db.execute(
+        select(
+            CommunityArticle.user_id,
+            func.count(CommunityArticleFavorite.id),
+        )
+        .select_from(CommunityArticle)
+        .join(CommunityArticleFavorite, CommunityArticleFavorite.article_id == CommunityArticle.id, isouter=True)
+        .group_by(CommunityArticle.user_id)
+    ).all()
+    return {int(user_id): int(count or 0) > 50 for user_id, count in rows}
+
+
+@app.get("/community/articles", response_class=HTMLResponse)
+def community_articles_list(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    q = request.query_params.get("q", "").strip()
+    only_favorites = to_bool(request.query_params.get("favorites", ""))
+
+    articles = db.execute(
+        select(CommunityArticle).order_by(CommunityArticle.updated_at.desc(), CommunityArticle.id.desc())
+    ).scalars().all()
+
+    if q:
+        needle = q.casefold()
+        articles = [
+            item
+            for item in articles
+            if needle in (item.topic or "").casefold()
+            or any(needle in tag.casefold() for tag in as_list(item.tags_json))
+        ]
+
+    favorite_article_ids = set(
+        db.execute(
+            select(CommunityArticleFavorite.article_id).where(CommunityArticleFavorite.user_id == user.id)
+        ).scalars().all()
+    )
+    if only_favorites:
+        articles = [item for item in articles if item.id in favorite_article_ids]
+
+    article_ids = [item.id for item in articles]
+    owner_ids = {item.user_id for item in articles}
+    owners_by_id: dict[int, User] = {}
+    if owner_ids:
+        owners = db.execute(select(User).where(User.id.in_(owner_ids))).scalars().all()
+        owners_by_id = {item.id: item for item in owners}
+
+    comment_counts: dict[int, int] = {}
+    favorite_counts: dict[int, int] = {}
+    if article_ids:
+        comment_counts = {
+            int(article_id): int(count or 0)
+            for article_id, count in db.execute(
+                select(CommunityArticleComment.article_id, func.count(CommunityArticleComment.id))
+                .where(CommunityArticleComment.article_id.in_(article_ids))
+                .group_by(CommunityArticleComment.article_id)
+            ).all()
+        }
+        favorite_counts = {
+            int(article_id): int(count or 0)
+            for article_id, count in db.execute(
+                select(CommunityArticleFavorite.article_id, func.count(CommunityArticleFavorite.id))
+                .where(CommunityArticleFavorite.article_id.in_(article_ids))
+                .group_by(CommunityArticleFavorite.article_id)
+            ).all()
+        }
+
+    return template_response(
+        request,
+        "community_articles_list.html",
+        user=user,
+        active_tab="community",
+        community_tab="articles",
+        articles=articles,
+        owners_by_id=owners_by_id,
+        q=q,
+        only_favorites=only_favorites,
+        favorite_article_ids=favorite_article_ids,
+        favorite_counts=favorite_counts,
+        comment_counts=comment_counts,
+        author_is_authority=build_authority_map(db),
+    )
+
+
+@app.get("/community/articles/new", response_class=HTMLResponse)
+def community_articles_new(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    return template_response(
+        request,
+        "community_article_form.html",
+        user=user,
+        active_tab="community",
+        community_tab="articles",
+        editing=False,
+        article_id=None,
+        form=get_article_form_values(user=user),
+    )
+
+
+@app.post("/community/articles/new")
+async def community_articles_create(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    form = await request.form()
+    article = CommunityArticle(user_id=user.id, topic="", author_name="", body_markdown="")
+    ok, error_text = save_article_from_form(form, article)
+    if not ok:
+        add_flash(request, error_text, "error")
+        return redirect("/community/articles/new")
+
+    db.add(article)
+    db.commit()
+    add_flash(request, "Статья опубликована.", "success")
+    return redirect(f"/community/articles/{article.id}")
+
+
+@app.get("/community/articles/{article_id}", response_class=HTMLResponse)
+def community_articles_detail(article_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    article = db.get(CommunityArticle, article_id)
+    if not article:
+        add_flash(request, "Статья не найдена.", "error")
+        return redirect("/community/articles")
+
+    comments = db.execute(
+        select(CommunityArticleComment)
+        .where(CommunityArticleComment.article_id == article.id)
+        .order_by(CommunityArticleComment.created_at, CommunityArticleComment.id)
+    ).scalars().all()
+    author_ids = {article.user_id, *(item.user_id for item in comments)}
+    authors_by_id: dict[int, User] = {}
+    if author_ids:
+        authors = db.execute(select(User).where(User.id.in_(author_ids))).scalars().all()
+        authors_by_id = {item.id: item for item in authors}
+
+    favorite_count = int(
+        db.execute(
+            select(func.count(CommunityArticleFavorite.id)).where(CommunityArticleFavorite.article_id == article.id)
+        ).scalar()
+        or 0
+    )
+    is_favorite = bool(
+        db.execute(
+            select(CommunityArticleFavorite.id).where(
+                CommunityArticleFavorite.article_id == article.id,
+                CommunityArticleFavorite.user_id == user.id,
+            )
+        ).scalar_one_or_none()
+    )
+
+    return template_response(
+        request,
+        "community_article_detail.html",
+        user=user,
+        active_tab="community",
+        community_tab="articles",
+        article=article,
+        comments=comments,
+        authors_by_id=authors_by_id,
+        article_html=render_article_markdown(article.body_markdown or ""),
+        favorite_count=favorite_count,
+        is_favorite=is_favorite,
+        author_is_authority=build_authority_map(db),
+    )
+
+
+@app.get("/community/articles/{article_id}/edit", response_class=HTMLResponse)
+def community_articles_edit(article_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    article = db.get(CommunityArticle, article_id)
+    if not article:
+        add_flash(request, "Статья не найдена.", "error")
+        return redirect("/community/articles")
+    if article.user_id != user.id:
+        add_flash(request, "Редактировать можно только свою статью.", "error")
+        return redirect(f"/community/articles/{article_id}")
+
+    return template_response(
+        request,
+        "community_article_form.html",
+        user=user,
+        active_tab="community",
+        community_tab="articles",
+        editing=True,
+        article_id=article.id,
+        form=get_article_form_values(article=article),
+    )
+
+
+@app.post("/community/articles/{article_id}/edit")
+async def community_articles_update(article_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    article = db.get(CommunityArticle, article_id)
+    if not article:
+        add_flash(request, "Статья не найдена.", "error")
+        return redirect("/community/articles")
+    if article.user_id != user.id:
+        add_flash(request, "Редактировать можно только свою статью.", "error")
+        return redirect(f"/community/articles/{article_id}")
+
+    form = await request.form()
+    ok, error_text = save_article_from_form(form, article)
+    if not ok:
+        add_flash(request, error_text, "error")
+        return redirect(f"/community/articles/{article_id}/edit")
+
+    db.commit()
+    add_flash(request, "Статья обновлена.", "success")
+    return redirect(f"/community/articles/{article_id}")
+
+
+@app.post("/community/articles/{article_id}/delete")
+def community_articles_delete(article_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    article = db.get(CommunityArticle, article_id)
+    if not article:
+        add_flash(request, "Статья не найдена.", "error")
+        return redirect("/community/articles")
+    if article.user_id != user.id:
+        add_flash(request, "Удалять можно только свою статью.", "error")
+        return redirect(f"/community/articles/{article_id}")
+
+    db.delete(article)
+    db.commit()
+    add_flash(request, "Статья удалена.", "info")
+    return redirect("/community/articles")
+
+
+@app.post("/community/articles/{article_id}/favorite")
+async def community_articles_toggle_favorite(article_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    article = db.get(CommunityArticle, article_id)
+    if not article:
+        add_flash(request, "Статья не найдена.", "error")
+        return redirect("/community/articles")
+
+    existing = db.execute(
+        select(CommunityArticleFavorite).where(
+            CommunityArticleFavorite.article_id == article.id,
+            CommunityArticleFavorite.user_id == user.id,
+        )
+    ).scalar_one_or_none()
+    if existing:
+        db.delete(existing)
+    else:
+        db.add(CommunityArticleFavorite(article_id=article.id, user_id=user.id))
+    db.commit()
+
+    form = await request.form()
+    next_url = safe_redirect_target(str(form.get("next", "")).strip(), f"/community/articles/{article.id}")
+    return redirect(next_url)
+
+
+@app.post("/community/articles/{article_id}/comments")
+async def community_articles_add_comment(article_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    article = db.get(CommunityArticle, article_id)
+    if not article:
+        add_flash(request, "Статья не найдена.", "error")
+        return redirect("/community/articles")
+
+    form = await request.form()
+    body = str(form.get("body", "")).strip()
+    if not body:
+        add_flash(request, "Введите текст комментария.", "error")
+        return redirect(f"/community/articles/{article_id}")
+
+    db.add(CommunityArticleComment(article_id=article.id, user_id=user.id, body=body))
+    db.commit()
+    add_flash(request, "Комментарий добавлен.", "success")
+    return redirect(f"/community/articles/{article_id}")
+
+
 @app.get("/festivals", response_class=HTMLResponse)
 def festivals_list(request: Request, db: Session = Depends(get_db)):
     user = current_user(request, db)
@@ -4336,6 +4958,31 @@ def festivals_list(request: Request, db: Session = Depends(get_db)):
     ).scalars().all()
     unread_notifications = sum(1 for note in notifications if not note.is_read)
 
+    moderator_announcements: list[FestivalAnnouncement] = []
+    if is_moderator_user(user):
+        moderator_announcements = db.execute(
+            select(FestivalAnnouncement)
+            .where(FestivalAnnouncement.status == ANNOUNCEMENT_STATUS_PENDING)
+            .order_by(FestivalAnnouncement.created_at.desc(), FestivalAnnouncement.id.desc())
+        ).scalars().all()
+
+    own_announcements = db.execute(
+        select(FestivalAnnouncement)
+        .where(FestivalAnnouncement.requester_user_id == user.id)
+        .order_by(FestivalAnnouncement.created_at.desc(), FestivalAnnouncement.id.desc())
+        .limit(25)
+    ).scalars().all()
+
+    announcement_user_ids = {
+        int(item.requester_user_id)
+        for item in moderator_announcements + own_announcements
+        if item.requester_user_id
+    }
+    announcement_requesters_by_id: dict[int, User] = {}
+    if announcement_user_ids:
+        requesters = db.execute(select(User).where(User.id.in_(announcement_user_ids))).scalars().all()
+        announcement_requesters_by_id = {item.id: item for item in requesters}
+
     return template_response(
         request,
         "festivals_list.html",
@@ -4362,6 +5009,14 @@ def festivals_list(request: Request, db: Session = Depends(get_db)):
         nearest_city_festival_ids=nearest_city_festival_ids,
         nearest_city_labels=nearest_city_labels,
         current_query=request.url.query or "",
+        moderator_announcements=moderator_announcements,
+        own_announcements=own_announcements,
+        announcement_requesters_by_id=announcement_requesters_by_id,
+        announcement_status_labels={
+            ANNOUNCEMENT_STATUS_PENDING: announcement_status_label(ANNOUNCEMENT_STATUS_PENDING),
+            ANNOUNCEMENT_STATUS_APPROVED: announcement_status_label(ANNOUNCEMENT_STATUS_APPROVED),
+            ANNOUNCEMENT_STATUS_REJECTED: announcement_status_label(ANNOUNCEMENT_STATUS_REJECTED),
+        },
     )
 
 
@@ -4376,6 +5031,129 @@ def festivals_notifications_mark_read(request: Request, db: Session = Depends(ge
     )
     db.commit()
     add_flash(request, "Уведомления отмечены как прочитанные.", "success")
+    return redirect("/festivals")
+
+
+@app.post("/festivals/notifications/clear")
+def festivals_notifications_clear(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    db.execute(
+        text("DELETE FROM festival_notifications WHERE user_id = :user_id"),
+        {"user_id": user.id},
+    )
+    db.commit()
+    add_flash(request, "Список оповещений очищен.", "success")
+    return redirect("/festivals")
+
+
+@app.get("/festivals/announcements/new", response_class=HTMLResponse)
+def festivals_announcements_new(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    return template_response(
+        request,
+        "festival_announcement_form.html",
+        user=user,
+        active_tab="festivals",
+        editing=False,
+        announcement_id=None,
+        form=get_festival_announcement_form_values(),
+    )
+
+
+@app.post("/festivals/announcements/new")
+async def festivals_announcements_create(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    form = await request.form()
+    announcement = FestivalAnnouncement(
+        requester_user_id=user.id,
+        name="",
+        status=ANNOUNCEMENT_STATUS_PENDING,
+    )
+    ok, error_text = save_festival_announcement_from_form(form, announcement)
+    if not ok:
+        add_flash(request, error_text, "error")
+        return redirect("/festivals/announcements/new")
+
+    db.add(announcement)
+    db.commit()
+    add_flash(request, "Заявка на добавление мероприятия отправлена на модерацию.", "success")
+    return redirect("/festivals")
+
+
+@app.post("/festivals/announcements/{announcement_id}/approve")
+def festivals_announcements_approve(announcement_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    if not is_moderator_user(user):
+        add_flash(request, "Одобрять анонсы может только модератор.", "error")
+        return redirect("/festivals")
+
+    announcement = db.get(FestivalAnnouncement, announcement_id)
+    if not announcement:
+        add_flash(request, "Заявка на анонс не найдена.", "error")
+        return redirect("/festivals")
+    if announcement.status != ANNOUNCEMENT_STATUS_PENDING:
+        add_flash(request, "Эта заявка уже обработана.", "error")
+        return redirect("/festivals")
+
+    announcement.status = ANNOUNCEMENT_STATUS_APPROVED
+    announcement.reviewed_by_user_id = user.id
+    announcement.reviewed_at = datetime.utcnow()
+    propagated = propagate_approved_announcement(db, announcement)
+
+    if announcement.requester_user_id != user.id:
+        enqueue_notification_if_missing(
+            db,
+            user_id=announcement.requester_user_id,
+            from_user_id=user.id,
+            source_card_id=None,
+            message=f"Заявка на добавление мероприятия одобрена: «{announcement.name}».",
+        )
+
+    db.commit()
+    add_flash(request, f"Анонс одобрен и опубликован пользователям: {propagated}.", "success")
+    return redirect("/festivals")
+
+
+@app.post("/festivals/announcements/{announcement_id}/reject")
+def festivals_announcements_reject(announcement_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    if not is_moderator_user(user):
+        add_flash(request, "Отклонять анонсы может только модератор.", "error")
+        return redirect("/festivals")
+
+    announcement = db.get(FestivalAnnouncement, announcement_id)
+    if not announcement:
+        add_flash(request, "Заявка на анонс не найдена.", "error")
+        return redirect("/festivals")
+    if announcement.status != ANNOUNCEMENT_STATUS_PENDING:
+        add_flash(request, "Эта заявка уже обработана.", "error")
+        return redirect("/festivals")
+
+    announcement.status = ANNOUNCEMENT_STATUS_REJECTED
+    announcement.reviewed_by_user_id = user.id
+    announcement.reviewed_at = datetime.utcnow()
+
+    enqueue_notification_if_missing(
+        db,
+        user_id=announcement.requester_user_id,
+        from_user_id=user.id,
+        source_card_id=None,
+        message="Заявка на добавление мероприятия отклонена",
+    )
+
+    db.commit()
+    add_flash(request, "Заявка отклонена.", "info")
     return redirect("/festivals")
 
 
@@ -4409,6 +5187,9 @@ def festivals_edit(festival_id: int, request: Request, db: Session = Depends(get
     ).scalar_one_or_none()
     if not festival:
         add_flash(request, "Фестиваль не найден.", "error")
+        return redirect("/festivals")
+    if festival.is_global_announcement:
+        add_flash(request, "Карточка анонса доступна только для просмотра и отметки «Я иду».", "error")
         return redirect("/festivals")
 
     _, _, alias_options = build_user_alias_lookup(db)
@@ -4501,6 +5282,9 @@ async def festivals_update(festival_id: int, request: Request, db: Session = Dep
     if not festival:
         add_flash(request, "Фестиваль не найден.", "error")
         return redirect("/festivals")
+    if festival.is_global_announcement:
+        add_flash(request, "Карточку анонса нельзя редактировать.", "error")
+        return redirect("/festivals")
 
     form = await request.form()
     name = str(form.get("name", "")).strip()
@@ -4559,6 +5343,9 @@ def festivals_delete(festival_id: int, request: Request, db: Session = Depends(g
     ).scalar_one_or_none()
     if not festival:
         add_flash(request, "Фестиваль не найден.", "error")
+        return redirect("/festivals")
+    if festival.is_global_announcement:
+        add_flash(request, "Карточку анонса нельзя удалять.", "error")
         return redirect("/festivals")
 
     db.delete(festival)

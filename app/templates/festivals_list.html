@@ -4,6 +4,7 @@
   <h1>Фестивали</h1>
   <div class="actions-inline wrap">
     <a href="/festivals/new" class="btn btn-accent">Новый фестиваль</a>
+    <a href="/festivals/announcements/new" class="btn">Добавить анонс</a>
     <form method="post" action="/festivals/import-cosplay2">
       <button type="submit" class="btn">Импорт с cosplay2.ru</button>
     </form>
@@ -33,9 +34,14 @@
 <section class="box">
   <div class="row-between">
     <h2>Оповещения {% if unread_notifications %}<span class="chip chip-alert">{{ unread_notifications }}</span>{% endif %}</h2>
-    <form method="post" action="/festivals/notifications/mark-read">
-      <button type="submit" class="btn">Отметить прочитанным</button>
-    </form>
+    <div class="actions-inline">
+      <form method="post" action="/festivals/notifications/mark-read">
+        <button type="submit" class="btn">Отметить прочитанным</button>
+      </form>
+      <form method="post" action="/festivals/notifications/clear" onsubmit="return confirm('Очистить список оповещений?');">
+        <button type="submit" class="btn btn-danger">Очистить список оповещений</button>
+      </form>
+    </div>
   </div>
   <ul class="notifications-list">
     {% for note in notifications %}
@@ -45,6 +51,91 @@
       </li>
     {% endfor %}
   </ul>
+</section>
+{% endif %}
+
+{% if moderator_announcements %}
+<section class="box">
+  <div class="row-between">
+    <h2>Заявки на анонсы (модерация)</h2>
+    <span class="chip chip-alert">{{ moderator_announcements|length }}</span>
+  </div>
+  <div class="cards-grid top-offset">
+    {% for item in moderator_announcements %}
+      {% set requester = announcement_requesters_by_id.get(item.requester_user_id) %}
+      <article class="card">
+        <h3>{{ item.name }}</h3>
+        <p class="meta">
+          Автор заявки:
+          {% if requester %}
+            <span class="{% if user_is_special(requester) %}nick-special{% endif %}">@{{ requester.cosplay_nick or requester.username }}</span>
+          {% else %}
+            @unknown
+          {% endif %}
+        </p>
+        <p class="meta">Город: {{ item.city or "—" }}</p>
+        <p class="meta">
+          Дата:
+          {% if item.event_date %}
+            {{ item.event_date.strftime('%d-%m-%Y') }}
+            {% if item.event_end_date and item.event_end_date != item.event_date %}
+              — {{ item.event_end_date.strftime('%d-%m-%Y') }}
+            {% endif %}
+          {% else %}
+            —
+          {% endif %}
+        </p>
+        <p class="meta">Дедлайн подачи: {{ item.submission_deadline.strftime('%d-%m-%Y') if item.submission_deadline else "—" }}</p>
+        <p class="meta">Номинации: {{ [item.nomination_1, item.nomination_2, item.nomination_3] | reject('equalto', None) | reject('equalto', '') | list | join(', ') or '—' }}</p>
+        {% if item.url %}
+          <p><a href="{{ item.url }}" target="_blank" rel="noreferrer">Ссылка на фестиваль</a></p>
+        {% endif %}
+        <div class="actions-inline">
+          <form method="post" action="/festivals/announcements/{{ item.id }}/approve">
+            <button type="submit" class="btn btn-accent">Одобрить</button>
+          </form>
+          <form method="post" action="/festivals/announcements/{{ item.id }}/reject" onsubmit="return confirm('Отклонить заявку?');">
+            <button type="submit" class="btn btn-danger">Отклонить</button>
+          </form>
+        </div>
+      </article>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
+{% if own_announcements %}
+<section class="box">
+  <h2>Мои заявки на анонсы</h2>
+  <table class="table top-offset">
+    <thead>
+      <tr>
+        <th>Название</th>
+        <th>Город</th>
+        <th>Дата</th>
+        <th>Статус</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for item in own_announcements %}
+      <tr>
+        <td>{{ item.name }}</td>
+        <td>{{ item.city or "—" }}</td>
+        <td>
+          {% if item.event_date %}
+            {{ item.event_date.strftime('%d-%m-%Y') }}
+            {% if item.event_end_date and item.event_end_date != item.event_date %}
+              — {{ item.event_end_date.strftime('%d-%m-%Y') }}
+            {% endif %}
+          {% else %}
+            —
+          {% endif %}
+        </td>
+        <td>{{ announcement_status_labels.get(item.status or 'pending', item.status or 'pending') }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
 </section>
 {% endif %}
 
@@ -133,17 +224,22 @@
   {% for festival in festivals %}
   {% set is_planned = (festival.name|lower) in planned_festival_names %}
   {% set is_shared_planned = (festival.name|lower) in shared_planned_festival_names %}
-  <article class="card {% if is_planned %}planned{% endif %} {% if is_shared_planned %}planned-shared{% endif %} {% if festival.id in home_city_festival_ids %}home-city-highlight{% endif %} {% if festival.id in nearest_city_festival_ids %}nearest-city-highlight{% endif %}">
+  <article class="card {% if is_planned %}planned{% endif %} {% if is_shared_planned %}planned-shared{% endif %} {% if festival.id in home_city_festival_ids %}home-city-highlight{% endif %} {% if festival.id in nearest_city_festival_ids %}nearest-city-highlight{% endif %} {% if festival.is_global_announcement %}announcement-global{% endif %}">
     <div class="row-between">
       <h3>{{ festival.name }}</h3>
-      <form method="post" action="/festivals/{{ festival.id }}/toggle-going" class="going-toggle-form">
-        <input type="hidden" name="next" value="/festivals{% if current_query %}?{{ current_query }}{% endif %}" />
-        <label class="inline-check">
-          <input type="checkbox" name="is_going" value="1" {% if festival.is_going %}checked{% endif %} onchange="this.form.submit()" />
-          Я иду
-        </label>
-        <noscript><button type="submit" class="btn">Сохранить</button></noscript>
-      </form>
+      <div class="actions-inline">
+        {% if festival.is_global_announcement %}
+          <span class="chip">Анонс</span>
+        {% endif %}
+        <form method="post" action="/festivals/{{ festival.id }}/toggle-going" class="going-toggle-form">
+          <input type="hidden" name="next" value="/festivals{% if current_query %}?{{ current_query }}{% endif %}" />
+          <label class="inline-check">
+            <input type="checkbox" name="is_going" value="1" {% if festival.is_going %}checked{% endif %} onchange="this.form.submit()" />
+            Я иду
+          </label>
+          <noscript><button type="submit" class="btn">Сохранить</button></noscript>
+        </form>
+      </div>
     </div>
     <p class="meta">Город: {{ festival.city or "—" }}</p>
     <p class="meta">
@@ -166,10 +262,14 @@
       <p><a href="{{ festival.url }}" target="_blank" rel="noreferrer">Ссылка на фестиваль</a></p>
     {% endif %}
     <div class="actions-inline">
-      <a href="/festivals/{{ festival.id }}/edit" class="btn">Редактировать</a>
-      <form method="post" action="/festivals/{{ festival.id }}/delete" onsubmit="return confirm('Удалить фестиваль?');">
-        <button type="submit" class="btn btn-danger">Удалить</button>
-      </form>
+      {% if not festival.is_global_announcement %}
+        <a href="/festivals/{{ festival.id }}/edit" class="btn">Редактировать</a>
+        <form method="post" action="/festivals/{{ festival.id }}/delete" onsubmit="return confirm('Удалить фестиваль?');">
+          <button type="submit" class="btn btn-danger">Удалить</button>
+        </form>
+      {% else %}
+        <span class="muted">Карточка анонса доступна только для отметки «Я иду».</span>
+      {% endif %}
     </div>
   </article>
   {% endfor %}

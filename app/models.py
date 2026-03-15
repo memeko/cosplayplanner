@@ -55,6 +55,28 @@ class User(Base):
         back_populates="user",
         cascade="all, delete-orphan",
     )
+    community_articles = relationship("CommunityArticle", back_populates="user", cascade="all, delete-orphan")
+    community_article_comments = relationship(
+        "CommunityArticleComment",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+    community_article_favorites = relationship(
+        "CommunityArticleFavorite",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+    festival_announcements_requested = relationship(
+        "FestivalAnnouncement",
+        back_populates="requester",
+        cascade="all, delete-orphan",
+        foreign_keys="FestivalAnnouncement.requester_user_id",
+    )
+    festival_announcements_reviewed = relationship(
+        "FestivalAnnouncement",
+        back_populates="reviewer",
+        foreign_keys="FestivalAnnouncement.reviewed_by_user_id",
+    )
     incoming_notifications = relationship(
         "FestivalNotification",
         back_populates="recipient",
@@ -292,6 +314,8 @@ class Festival(Base):
 
     is_going = Column(Boolean, nullable=False, default=False)
     going_coproplayers_json = Column(JSON, nullable=False, default=list)
+    is_global_announcement = Column(Boolean, nullable=False, default=False)
+    source_announcement_id = Column(Integer, ForeignKey("festival_announcements.id", ondelete="SET NULL"), nullable=True, index=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
@@ -332,6 +356,80 @@ class FestivalNotification(Base):
 
     recipient = relationship("User", back_populates="incoming_notifications", foreign_keys=[user_id])
     sender = relationship("User", back_populates="outgoing_notifications", foreign_keys=[from_user_id])
+
+
+class FestivalAnnouncement(Base):
+    __tablename__ = "festival_announcements"
+
+    id = Column(Integer, primary_key=True)
+    requester_user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    reviewed_by_user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+
+    name = Column(String(255), nullable=False, index=True)
+    url = Column(Text, nullable=True)
+    city = Column(String(255), nullable=True, index=True)
+    event_date = Column(Date, nullable=True)
+    event_end_date = Column(Date, nullable=True)
+    submission_deadline = Column(Date, nullable=True)
+    nomination_1 = Column(String(255), nullable=True)
+    nomination_2 = Column(String(255), nullable=True)
+    nomination_3 = Column(String(255), nullable=True)
+
+    status = Column(String(16), nullable=False, default="pending", index=True)  # pending | approved | rejected
+    reviewed_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    requester = relationship("User", back_populates="festival_announcements_requested", foreign_keys=[requester_user_id])
+    reviewer = relationship("User", back_populates="festival_announcements_reviewed", foreign_keys=[reviewed_by_user_id])
+
+
+class CommunityArticle(Base):
+    __tablename__ = "community_articles"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+
+    topic = Column(String(255), nullable=False, index=True)
+    author_name = Column(String(120), nullable=False)
+    body_markdown = Column(Text, nullable=False)
+    tags_json = Column(JSON, nullable=False, default=list)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    user = relationship("User", back_populates="community_articles")
+    comments = relationship("CommunityArticleComment", back_populates="article", cascade="all, delete-orphan")
+    favorites = relationship("CommunityArticleFavorite", back_populates="article", cascade="all, delete-orphan")
+
+
+class CommunityArticleComment(Base):
+    __tablename__ = "community_article_comments"
+
+    id = Column(Integer, primary_key=True)
+    article_id = Column(Integer, ForeignKey("community_articles.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    body = Column(Text, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    article = relationship("CommunityArticle", back_populates="comments")
+    user = relationship("User", back_populates="community_article_comments")
+
+
+class CommunityArticleFavorite(Base):
+    __tablename__ = "community_article_favorites"
+
+    id = Column(Integer, primary_key=True)
+    article_id = Column(Integer, ForeignKey("community_articles.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    article = relationship("CommunityArticle", back_populates="favorites")
+    user = relationship("User", back_populates="community_article_favorites")
+
+    __table_args__ = (
+        UniqueConstraint("article_id", "user_id", name="uq_community_article_favorite_user"),
+    )
 
 
 class CommunityQuestion(Base):

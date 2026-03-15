@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="section-head">
+  <h1>Добавить анонс фестиваля</h1>
+  <a href="/festivals" class="btn">Назад к фестивалям</a>
+</section>
+
+<form method="post" action="/festivals/announcements/new" class="grid one-col big-form">
+  <section class="box">
+    <div class="grid two-col">
+      <label>
+        Название *
+        <input type="text" name="name" value="{{ form.name }}" required />
+      </label>
+      <label>
+        Ссылка
+        <input type="url" name="url" value="{{ form.url }}" />
+      </label>
+    </div>
+
+    <div class="grid three-col">
+      <label>
+        Город
+        <input type="text" name="city" value="{{ form.city }}" />
+      </label>
+      <label>
+        Дата начала фестиваля
+        <input type="date" name="event_date" value="{{ form.event_date }}" />
+      </label>
+      <label>
+        Дата окончания
+        <input type="date" name="event_end_date" value="{{ form.event_end_date }}" />
+      </label>
+    </div>
+
+    <div class="grid three-col">
+      <label>
+        Дедлайн подачи
+        <input type="date" name="submission_deadline" value="{{ form.submission_deadline }}" />
+      </label>
+      <label>
+        Номинация 1
+        <input type="text" name="nomination_1" value="{{ form.nomination_1 }}" />
+      </label>
+      <label>
+        Номинация 2
+        <input type="text" name="nomination_2" value="{{ form.nomination_2 }}" />
+      </label>
+    </div>
+
+    <label>
+      Номинация 3
+      <input type="text" name="nomination_3" value="{{ form.nomination_3 }}" />
+    </label>
+
+    <p class="muted">После отправки карточка попадёт на модерацию. После одобрения фестиваль появится у всех пользователей.</p>
+  </section>
+
+  <div class="actions-inline">
+    <button type="submit" class="btn btn-accent">Отправить на модерацию</button>
+    <a href="/festivals" class="btn">Отмена</a>
+  </div>
+</form>
+{% endblock %}

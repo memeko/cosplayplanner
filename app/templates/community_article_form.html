@@ -1,0 +1,134 @@
+{% extends "base.html" %}
+{% block content %}
+{% include "community_tabs.html" %}
+
+<section class="section-head">
+  <h1>{{ "Редактирование статьи" if editing else "Новая статья" }}</h1>
+  <a href="{{ '/community/articles/' ~ article_id if editing else '/community/articles' }}" class="btn">Назад</a>
+</section>
+
+<form method="post" action="{{ '/community/articles/' ~ article_id ~ '/edit' if editing else '/community/articles/new' }}" class="grid one-col big-form" id="article-form">
+  <section class="box">
+    <div class="grid two-col">
+      <label>
+        Тема *
+        <input type="text" name="topic" value="{{ form.topic }}" maxlength="255" required />
+      </label>
+      <label>
+        Автор *
+        <input type="text" name="author_name" value="{{ form.author_name }}" maxlength="120" required />
+      </label>
+    </div>
+
+    <label>
+      Теги (до 15, через запятую)
+      <input type="text" name="tags_input" value="{{ form.tags_input }}" placeholder="фотосет, шитье, фестиваль" />
+    </label>
+
+    <div class="article-editor-toolbar" aria-label="Панель форматирования">
+      <button type="button" class="btn btn-small" data-wrap="**" title="Жирный">Жирный</button>
+      <button type="button" class="btn btn-small" data-wrap="*" title="Курсив">Курсив</button>
+      <button type="button" class="btn btn-small" data-prefix="# " title="Заголовок">H1</button>
+      <button type="button" class="btn btn-small" data-prefix="## " title="Подзаголовок">H2</button>
+      <button type="button" class="btn btn-small" data-prefix="- " title="Список">Список</button>
+      <button type="button" class="btn btn-small" id="insert-link">Ссылка</button>
+      <button type="button" class="btn btn-small" id="insert-color">Цвет</button>
+      <button type="button" class="btn btn-small" id="insert-youtube">YouTube</button>
+    </div>
+
+    <label>
+      Текст статьи *
+      <textarea name="body_markdown" id="article_body" rows="18" maxlength="15000" required>{{ form.body_markdown }}</textarea>
+    </label>
+    <p class="muted" id="article-counter">0 / 15000</p>
+    <p class="muted">Поддерживается markdown (заголовки, списки, ссылки), цветной текст через формат: <code>[color=#e180a5]текст[/color]</code>, вставка YouTube ссылкой отдельной строкой.</p>
+  </section>
+
+  <div class="actions-inline">
+    <button type="submit" class="btn btn-accent">{{ "Сохранить" if editing else "Опубликовать" }}</button>
+    <a href="{{ '/community/articles/' ~ article_id if editing else '/community/articles' }}" class="btn">Отмена</a>
+  </div>
+</form>
+
+<script>
+(function () {
+  const textarea = document.getElementById('article_body');
+  const counter = document.getElementById('article-counter');
+  const form = document.getElementById('article-form');
+
+  function updateCounter() {
+    if (!textarea || !counter) return;
+    counter.textContent = `${textarea.value.length} / 15000`;
+  }
+
+  function wrapSelection(marker) {
+    if (!textarea) return;
+    const start = textarea.selectionStart;
+    const end = textarea.selectionEnd;
+    const selected = textarea.value.slice(start, end) || 'текст';
+    const value = `${marker}${selected}${marker}`;
+    textarea.setRangeText(value, start, end, 'end');
+    textarea.focus();
+    updateCounter();
+  }
+
+  function prefixLine(prefix) {
+    if (!textarea) return;
+    const start = textarea.selectionStart;
+    const before = textarea.value.slice(0, start);
+    const lineStart = before.lastIndexOf('\n') + 1;
+    textarea.setRangeText(prefix, lineStart, lineStart, 'end');
+    textarea.focus();
+    updateCounter();
+  }
+
+  form?.querySelectorAll('button[data-wrap]').forEach((button) => {
+    button.addEventListener('click', () => wrapSelection(button.dataset.wrap || '**'));
+  });
+
+  form?.querySelectorAll('button[data-prefix]').forEach((button) => {
+    button.addEventListener('click', () => prefixLine(button.dataset.prefix || ''));
+  });
+
+  document.getElementById('insert-link')?.addEventListener('click', () => {
+    if (!textarea) return;
+    const url = window.prompt('Введите URL ссылки', 'https://');
+    if (!url) return;
+    const start = textarea.selectionStart;
+    const end = textarea.selectionEnd;
+    const selected = textarea.value.slice(start, end) || 'текст ссылки';
+    const value = `[${selected}](${url.trim()})`;
+    textarea.setRangeText(value, start, end, 'end');
+    textarea.focus();
+    updateCounter();
+  });
+
+  document.getElementById('insert-color')?.addEventListener('click', () => {
+    if (!textarea) return;
+    const color = window.prompt('Цвет (например #e180a5 или red)', '#e180a5');
+    if (!color) return;
+    const start = textarea.selectionStart;
+    const end = textarea.selectionEnd;
+    const selected = textarea.value.slice(start, end) || 'цветной текст';
+    const value = `[color=${color.trim()}]${selected}[/color]`;
+    textarea.setRangeText(value, start, end, 'end');
+    textarea.focus();
+    updateCounter();
+  });
+
+  document.getElementById('insert-youtube')?.addEventListener('click', () => {
+    if (!textarea) return;
+    const url = window.prompt('Ссылка на YouTube', 'https://www.youtube.com/watch?v=');
+    if (!url) return;
+    const insert = `${textarea.value.endsWith('\n') || !textarea.value ? '' : '\n'}${url.trim()}\n`;
+    const cursor = textarea.selectionStart;
+    textarea.setRangeText(insert, cursor, cursor, 'end');
+    textarea.focus();
+    updateCounter();
+  });
+
+  textarea?.addEventListener('input', updateCounter);
+  updateCounter();
+})();
+</script>
+{% endblock %}

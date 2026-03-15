@@ -260,6 +260,11 @@ textarea {
   border-color: #93c5fd;
 }
 
+.card.announcement-global {
+  background: #e180a5;
+  border-color: #c9618b;
+}
+
 .card.frozen-progress {
   background: #fee2e2;
   border-color: #ef4444;
@@ -360,6 +365,12 @@ textarea {
   background: #fff1f2;
   border-color: #fecdd3;
   color: #9f1239;
+}
+
+.chip-authority {
+  background: #dcfce7;
+  border-color: #86efac;
+  color: #166534;
 }
 
 .chip-shared {
@@ -647,6 +658,53 @@ textarea {
   height: 100%;
   object-fit: cover;
   display: block;
+}
+
+.article-editor-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 6px 0 10px;
+}
+
+.article-content {
+  line-height: 1.58;
+  word-break: break-word;
+}
+
+.article-content h1,
+.article-content h2,
+.article-content h3 {
+  margin: 10px 0 8px;
+}
+
+.article-content p {
+  margin: 0 0 10px;
+}
+
+.article-content ul {
+  margin: 0 0 10px;
+  padding-left: 20px;
+}
+
+.article-content code {
+  background: #f1f5f9;
+  border: 1px solid #d9e2ec;
+  border-radius: 6px;
+  padding: 1px 4px;
+}
+
+.article-video-wrap {
+  margin: 10px 0;
+  width: min(100%, 760px);
+  aspect-ratio: 16 / 9;
+}
+
+.article-video-wrap iframe {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  border-radius: 10px;
 }
 
 .welcome-overlay {

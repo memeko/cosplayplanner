@@ -1,10 +1,6 @@
 {% extends "base.html" %}
 {% block content %}
-<section class="community-tabs">
-  <a href="/project-board" class="tab {% if community_tab == 'project-board' %}active{% endif %}">Поиск в проекты</a>
-  <a href="/community/questions" class="tab {% if community_tab == 'questions' %}active{% endif %}">Вопрос-ответ</a>
-  <a href="/community/masters" class="tab {% if community_tab == 'masters' %}active{% endif %}">Мастера</a>
-</section>
+{% include "community_tabs.html" %}
 
 {% set owner = authors_by_id.get(master.user_id) %}
 <section class="section-head">
@@ -13,6 +9,9 @@
     <a href="/community/masters" class="btn">Назад к мастерам</a>
     {% if user and user.id == master.user_id %}
       <a href="/community/masters/{{ master.id }}/edit" class="btn">Редактировать</a>
+      <form method="post" action="/community/masters/{{ master.id }}/delete" onsubmit="return confirm('Удалить карточку мастера?');">
+        <button type="submit" class="btn btn-danger">Удалить</button>
+      </form>
     {% endif %}
   </div>
 </section>
