@@ -474,7 +474,16 @@ textarea {
 }
 
 .notifications-list li {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
   margin-bottom: 6px;
+}
+
+.notification-content {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .notification-unread {

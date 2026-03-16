@@ -15,8 +15,8 @@
   <h1>{{ card.character_name }}</h1>
   <div class="actions-inline">
     <a href="/cosplan" class="btn">К списку</a>
-    {% if not card.is_shared_copy and card.user_id == user.id %}
-      <a href="/cosplan/{{ card.id }}/edit" class="btn">Редактировать</a>
+    {% if can_edit_card and edit_card_id %}
+      <a href="/cosplan/{{ edit_card_id }}/edit" class="btn">Редактировать</a>
     {% endif %}
   </div>
 </section>

@@ -581,6 +581,44 @@ def can_comment_on_card(card: CosplanCard, user: User) -> bool:
     return user_matches_alias(user, card.project_leader)
 
 
+def card_coproplayer_aliases(card: CosplanCard) -> list[str]:
+    return merge_unique(as_list(card.coproplayer_nicks_json), as_list(card.coproplayers_json))
+
+
+def user_is_card_coproplayer(user: User, card: CosplanCard) -> bool:
+    return any(user_matches_alias(user, alias) for alias in card_coproplayer_aliases(card))
+
+
+def can_edit_card(user: User, card: CosplanCard) -> bool:
+    if card.is_shared_copy:
+        return False
+    if card.user_id == user.id:
+        return True
+    if user_matches_alias(user, card.project_leader):
+        return True
+    return user_is_card_coproplayer(user, card)
+
+
+def resolve_source_card(db: Session, card: CosplanCard | None) -> CosplanCard | None:
+    if not card:
+        return None
+    if card.is_shared_copy and card.source_card_id:
+        source = db.get(CosplanCard, card.source_card_id)
+        if source:
+            return source
+    return card
+
+
+def get_editable_card(db: Session, card_id: int, user: User) -> CosplanCard | None:
+    requested = db.get(CosplanCard, card_id)
+    source = resolve_source_card(db, requested)
+    if not source:
+        return None
+    if can_edit_card(user, source):
+        return source
+    return None
+
+
 def safe_redirect_target(target: str | None, fallback: str) -> str:
     if not target:
         return fallback
@@ -596,6 +634,7 @@ def get_accessible_card(
     user: User,
     *,
     allow_project_leader: bool = False,
+    allow_coproplayer: bool = False,
 ) -> CosplanCard | None:
     card = db.get(CosplanCard, card_id)
     if not card:
@@ -603,6 +642,8 @@ def get_accessible_card(
     if card.user_id == user.id:
         return card
     if allow_project_leader and not card.is_shared_copy and user_matches_alias(user, card.project_leader):
+        return card
+    if allow_coproplayer and not card.is_shared_copy and user_is_card_coproplayer(user, card):
         return card
     return None
 
@@ -1095,6 +1136,14 @@ def extract_youtube_embed_url(raw_url: str) -> str | None:
     return f"https://www.youtube.com/embed/{video_id}"
 
 
+def conflict_subject_from_message(message: str | None) -> str:
+    text_value = (message or "").strip()
+    if "конфликт" not in text_value.casefold():
+        return ""
+    match = re.search(r"«([^»]+)»", text_value)
+    return (match.group(1).strip() if match else "")
+
+
 def _render_article_inline(text: str) -> str:
     rendered = html.escape(text)
 
@@ -1493,15 +1542,17 @@ def clone_card_data(source: CosplanCard, target: CosplanCard) -> None:
         setattr(target, field, getattr(source, field))
 
 
-def sync_shared_cards_for_nicks(source_card: CosplanCard, owner: User, db: Session) -> None:
+def sync_shared_cards_for_nicks(source_card: CosplanCard, actor: User, db: Session) -> None:
     if source_card.is_shared_copy:
         return
+
+    source_owner = db.get(User, source_card.user_id)
+    source_owner_username = normalize_username(source_owner.username).casefold() if source_owner else ""
 
     alias_to_username, _, _ = build_user_alias_lookup(db)
     raw_nicks = as_list(source_card.coproplayer_nicks_json)
     resolved_nicks = resolve_aliases_to_usernames(raw_nicks, alias_to_username)
-    owner_username = normalize_username(owner.username).casefold()
-    target_nicks = [nick for nick in resolved_nicks if nick and nick.casefold() != owner_username]
+    target_nicks = [nick for nick in resolved_nicks if nick and nick.casefold() != source_owner_username]
 
     if not target_nicks:
         existing_copies = db.execute(
@@ -1519,7 +1570,7 @@ def sync_shared_cards_for_nicks(source_card: CosplanCard, owner: User, db: Sessi
         return
 
     matched_users = db.execute(select(User).where(User.username.in_(target_nicks))).scalars().all()
-    users_by_nick = {normalize_username(user.username).casefold(): user for user in matched_users if user.id != owner.id}
+    users_by_nick = {normalize_username(user.username).casefold(): user for user in matched_users}
     target_ids = {user.id for user in users_by_nick.values()}
 
     existing_copies = db.execute(
@@ -1555,14 +1606,17 @@ def sync_shared_cards_for_nicks(source_card: CosplanCard, owner: User, db: Sessi
                 user_id=target_user.id,
                 is_shared_copy=True,
                 source_card_id=source_card.id,
-                shared_from_user_id=owner.id,
+                shared_from_user_id=actor.id,
                 character_name=source_card.character_name,
             )
             db.add(shared_copy)
         clone_card_data(source_card, shared_copy)
         shared_copy.is_shared_copy = True
         shared_copy.source_card_id = source_card.id
-        shared_copy.shared_from_user_id = owner.id
+        shared_copy.shared_from_user_id = actor.id
+
+        if target_user.id == actor.id:
+            continue
 
         existing_notification = db.execute(
             select(FestivalNotification).where(
@@ -1574,16 +1628,16 @@ def sync_shared_cards_for_nicks(source_card: CosplanCard, owner: User, db: Sessi
             db.add(
                 FestivalNotification(
                     user_id=target_user.id,
-                    from_user_id=owner.id,
+                    from_user_id=actor.id,
                     source_card_id=source_card.id,
-                    message=f"{owner.username} добавил(а) вас как сокосплеера в карточку '{source_card.character_name}'.",
+                    message=f"{actor.username} добавил(а) вас как сокосплеера в карточку '{source_card.character_name}'.",
                     is_read=False,
                 )
             )
         else:
-            existing_notification.from_user_id = owner.id
+            existing_notification.from_user_id = actor.id
             existing_notification.message = (
-                f"{owner.username} обновил(а) карточку '{source_card.character_name}' с вашим ником."
+                f"{actor.username} обновил(а) карточку '{source_card.character_name}' с вашим ником."
             )
             existing_notification.is_read = False
 
@@ -1622,6 +1676,7 @@ def template_response(
         "project_name": PROJECT_NAME,
         "nick_is_special": nick_is_special,
         "user_is_special": user_is_special,
+        "notification_conflict_subject": conflict_subject_from_message,
     }
     payload.update(context)
     return templates.TemplateResponse(name, payload)
@@ -2315,6 +2370,11 @@ def cosplan_list(request: Request, q: str = "", db: Session = Depends(get_db)):
     in_progress_ids = set(
         db.execute(select(InProgressCard.cosplan_card_id).where(InProgressCard.user_id == user.id)).scalars().all()
     )
+    editable_card_links: dict[int, int] = {}
+    for visible_card in cards:
+        source_card = resolve_source_card(db, visible_card)
+        if source_card and can_edit_card(user, source_card):
+            editable_card_links[visible_card.id] = source_card.id
 
     return template_response(
         request,
@@ -2327,6 +2387,7 @@ def cosplan_list(request: Request, q: str = "", db: Session = Depends(get_db)):
         card_date_conflicts=card_date_conflicts,
         q=q,
         in_progress_ids=in_progress_ids,
+        editable_card_links=editable_card_links,
     )
 
 
@@ -2423,10 +2484,11 @@ def cosplan_detail(card_id: int, request: Request, db: Session = Depends(get_db)
     if not user:
         return redirect("/login")
 
-    card = get_accessible_card(db, card_id, user, allow_project_leader=True)
+    card = get_accessible_card(db, card_id, user, allow_project_leader=True, allow_coproplayer=True)
     if not card:
         add_flash(request, "Карточка не найдена.", "error")
         return redirect("/cosplan")
+    editable_card = get_editable_card(db, card.id, user)
 
     card_owner = db.get(User, card.user_id)
     alias_to_username, users_by_username, _ = build_user_alias_lookup(db)
@@ -2494,6 +2556,8 @@ def cosplan_detail(card_id: int, request: Request, db: Session = Depends(get_db)
         pinterest_embed_src=pinterest_embed_src,
         card_date_conflicts=card_date_conflicts,
         can_comment=can_comment_on_card(card, user),
+        can_edit_card=bool(editable_card),
+        edit_card_id=editable_card.id if editable_card else None,
         top_level_comments=top_level_comments,
         replies_by_parent=replies_by_parent,
         comment_authors=authors_by_id,
@@ -2555,13 +2619,11 @@ def cosplan_edit(card_id: int, request: Request, db: Session = Depends(get_db)):
     if not user:
         return redirect("/login")
 
-    card = db.execute(select(CosplanCard).where(CosplanCard.id == card_id, CosplanCard.user_id == user.id)).scalar_one_or_none()
+    card = get_editable_card(db, card_id, user)
     if not card:
-        add_flash(request, "Карточка не найдена.", "error")
+        add_flash(request, "Карточка недоступна для редактирования.", "error")
         return redirect("/cosplan")
-    if card.is_shared_copy:
-        add_flash(request, "Карточка добавлена другим пользователем и доступна только для просмотра.", "info")
-        return redirect("/cosplan")
+    owner_for_options = db.get(User, card.user_id) or user
 
     return template_response(
         request,
@@ -2571,7 +2633,7 @@ def cosplan_edit(card_id: int, request: Request, db: Session = Depends(get_db)):
         editing=True,
         card_id=card.id,
         form=get_card_form_values(card),
-        **card_options(db, user),
+        **card_options(db, owner_for_options),
     )
 
 
@@ -2887,19 +2949,16 @@ async def cosplan_update(card_id: int, request: Request, db: Session = Depends(g
     if not user:
         return redirect("/login")
 
-    card = db.execute(select(CosplanCard).where(CosplanCard.id == card_id, CosplanCard.user_id == user.id)).scalar_one_or_none()
+    card = get_editable_card(db, card_id, user)
     if not card:
-        add_flash(request, "Карточка не найдена.", "error")
-        return redirect("/cosplan")
-    if card.is_shared_copy:
-        add_flash(request, "Карточка, добавленная другим пользователем, редактируется у автора.", "error")
+        add_flash(request, "Карточка недоступна для редактирования.", "error")
         return redirect("/cosplan")
 
     form = await request.form()
     character_name = str(form.get("character_name", "")).strip()
     if not character_name:
         add_flash(request, "Имя персонажа обязательно.", "error")
-        return redirect(f"/cosplan/{card_id}/edit")
+        return redirect(f"/cosplan/{card.id}/edit")
 
     save_card_from_form(form, card, user, db)
     conflict_notifications = notify_coproplayer_conflicts_for_card(db, card=card, owner=user)
@@ -5046,6 +5105,31 @@ def festivals_notifications_clear(request: Request, db: Session = Depends(get_db
     db.commit()
     add_flash(request, "Список оповещений очищен.", "success")
     return redirect("/festivals")
+
+
+@app.post("/festivals/notifications/{notification_id}/ignore")
+async def festivals_notification_ignore(notification_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    notification = db.execute(
+        select(FestivalNotification).where(
+            FestivalNotification.id == notification_id,
+            FestivalNotification.user_id == user.id,
+        )
+    ).scalar_one_or_none()
+    if not notification:
+        add_flash(request, "Оповещение не найдено.", "error")
+        return redirect("/festivals")
+
+    db.delete(notification)
+    db.commit()
+
+    form = await request.form()
+    next_url = safe_redirect_target(str(form.get("next", "")).strip(), "/festivals")
+    add_flash(request, "Оповещение скрыто: конфликт больше не учитывается.", "info")
+    return redirect(next_url)
 
 
 @app.get("/festivals/announcements/new", response_class=HTMLResponse)

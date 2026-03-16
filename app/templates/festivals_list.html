@@ -46,8 +46,18 @@
   <ul class="notifications-list">
     {% for note in notifications %}
       <li class="{% if not note.is_read %}notification-unread{% endif %}">
-        {{ note.message }}
-        <span class="muted">({{ note.created_at }})</span>
+        <div class="notification-content">
+          {% set conflict_subject = notification_conflict_subject(note.message) %}
+          {% if conflict_subject %}
+            <p class="meta">Конфликт: <strong>{{ conflict_subject }}</strong></p>
+          {% endif %}
+          {{ note.message }}
+          <span class="muted">({{ note.created_at }})</span>
+        </div>
+        <form method="post" action="/festivals/notifications/{{ note.id }}/ignore">
+          <input type="hidden" name="next" value="/festivals{% if current_query %}?{{ current_query }}{% endif %}" />
+          <button type="submit" class="btn btn-small">Не учитывать</button>
+        </form>
       </li>
     {% endfor %}
   </ul>
