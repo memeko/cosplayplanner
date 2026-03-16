@@ -227,7 +227,13 @@ class CosplanCard(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
     user = relationship("User", back_populates="cards", foreign_keys=[user_id])
-    in_progress = relationship("InProgressCard", back_populates="cosplan_card", uselist=False)
+    in_progress = relationship(
+        "InProgressCard",
+        back_populates="cosplan_card",
+        uselist=False,
+        cascade="all, delete-orphan",
+        single_parent=True,
+    )
     source_card = relationship("CosplanCard", remote_side=[id], foreign_keys=[source_card_id])
     comments = relationship("CardComment", back_populates="card", cascade="all, delete-orphan")
     rehearsal_cards = relationship("RehearsalCard", back_populates="cosplan_card", cascade="all, delete-orphan")

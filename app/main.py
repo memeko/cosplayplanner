@@ -991,9 +991,11 @@ def enqueue_notification_if_missing(
     else:
         conditions.append(FestivalNotification.source_card_id == source_card_id)
 
-    exists = db.execute(select(FestivalNotification).where(and_(*conditions))).scalar_one_or_none()
-    if exists:
-        exists.is_read = False
+    existing_notes = db.execute(select(FestivalNotification).where(and_(*conditions))).scalars().all()
+    if existing_notes:
+        existing_notes[0].is_read = False
+        for duplicate_note in existing_notes[1:]:
+            db.delete(duplicate_note)
         return False
 
     db.add(
@@ -1006,6 +1008,34 @@ def enqueue_notification_if_missing(
         )
     )
     return True
+
+
+def is_shared_card_notification_message(message: str | None) -> bool:
+    value = (message or "").strip().casefold()
+    if not value:
+        return False
+    legacy_markers = [
+        "добавил(а) вас как сокосплеера в карточку",
+        "обновил(а) карточку",
+        "карточка добавлена по вашему нику другим пользователем",
+        "карточка по вашему нику обновлена другим пользователем",
+    ]
+    return any(marker in value for marker in legacy_markers)
+
+
+def remove_shared_card_notifications(
+    db: Session,
+    *,
+    source_card_id: int,
+    user_id: int | None = None,
+) -> None:
+    stmt = select(FestivalNotification).where(FestivalNotification.source_card_id == source_card_id)
+    if user_id is not None:
+        stmt = stmt.where(FestivalNotification.user_id == user_id)
+    notes = db.execute(stmt).scalars().all()
+    for note in notes:
+        if is_shared_card_notification_message(note.message):
+            db.delete(note)
 
 
 def user_busy_items_on_date(
@@ -1730,6 +1760,17 @@ def clone_card_data(source: CosplanCard, target: CosplanCard) -> None:
         setattr(target, field, getattr(source, field))
 
 
+def delete_card_with_runtime_dependents(db: Session, card: CosplanCard) -> None:
+    # Explicitly remove "В работе" entries before deleting a card.
+    # Without this, SQLAlchemy may try to nullify FK and hit NOT NULL on legacy rows.
+    in_progress_rows = db.execute(
+        select(InProgressCard).where(InProgressCard.cosplan_card_id == card.id)
+    ).scalars().all()
+    for row in in_progress_rows:
+        db.delete(row)
+    db.delete(card)
+
+
 def sync_shared_cards_for_nicks(source_card: CosplanCard, actor: User, db: Session) -> None:
     if source_card.is_shared_copy:
         return
@@ -1750,11 +1791,8 @@ def sync_shared_cards_for_nicks(source_card: CosplanCard, actor: User, db: Sessi
             )
         ).scalars().all()
         for card in existing_copies:
-            db.delete(card)
-        db.execute(
-            text("DELETE FROM festival_notifications WHERE source_card_id = :source_card_id"),
-            {"source_card_id": source_card.id},
-        )
+            delete_card_with_runtime_dependents(db, card)
+        remove_shared_card_notifications(db, source_card_id=source_card.id)
         return
 
     matched_users = db.execute(select(User).where(User.username.in_(target_nicks))).scalars().all()
@@ -1773,14 +1811,8 @@ def sync_shared_cards_for_nicks(source_card: CosplanCard, actor: User, db: Sessi
     for user_id, stale_copy in list(copies_by_user_id.items()):
         if user_id in target_ids:
             continue
-        db.delete(stale_copy)
-        db.execute(
-            text(
-                "DELETE FROM festival_notifications "
-                "WHERE source_card_id = :source_card_id AND user_id = :user_id"
-            ),
-            {"source_card_id": source_card.id, "user_id": user_id},
-        )
+        delete_card_with_runtime_dependents(db, stale_copy)
+        remove_shared_card_notifications(db, source_card_id=source_card.id, user_id=user_id)
 
     # Upsert shared copies and notify recipients.
     for nick in target_nicks:
@@ -1806,13 +1838,20 @@ def sync_shared_cards_for_nicks(source_card: CosplanCard, actor: User, db: Sessi
         if target_user.id == actor.id:
             continue
 
-        existing_notification = db.execute(
+        existing_notifications = db.execute(
             select(FestivalNotification).where(
                 FestivalNotification.user_id == target_user.id,
                 FestivalNotification.source_card_id == source_card.id,
             )
-        ).scalar_one_or_none()
-        if not existing_notification:
+        ).scalars().all()
+        shared_notifications = [
+            item for item in existing_notifications if is_shared_card_notification_message(item.message)
+        ]
+        existing_notification = shared_notifications[0] if shared_notifications else None
+        for duplicate_note in shared_notifications[1:]:
+            db.delete(duplicate_note)
+
+        if existing_notification is None:
             db.add(
                 FestivalNotification(
                     user_id=target_user.id,
@@ -3358,7 +3397,7 @@ def cosplan_delete(card_id: int, request: Request, db: Session = Depends(get_db)
             )
         ).scalars().all()
         for shared_copy in shared_copies:
-            db.delete(shared_copy)
+            delete_card_with_runtime_dependents(db, shared_copy)
 
         notifications = db.execute(
             select(FestivalNotification).where(FestivalNotification.source_card_id == card.id)
@@ -3383,7 +3422,7 @@ def cosplan_delete(card_id: int, request: Request, db: Session = Depends(get_db)
     for rehearsal_card in rehearsal_cards:
         db.delete(rehearsal_card)
 
-    db.delete(card)
+    delete_card_with_runtime_dependents(db, card)
     db.commit()
 
     add_flash(request, "Карточка удалена.", "info")
