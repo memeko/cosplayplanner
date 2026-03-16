@@ -216,6 +216,7 @@ def apply_schema_migrations() -> None:
             ("craft_material_price", "FLOAT"),
             ("craft_deadline", "DATE"),
             ("craft_currency", "VARCHAR(16)"),
+            ("related_cards_json", "JSON NOT NULL DEFAULT '[]'"),
             ("references_json", "JSON NOT NULL DEFAULT '[]'"),
             ("pose_references_json", "JSON NOT NULL DEFAULT '[]'"),
             ("unknown_prices_json", "JSON NOT NULL DEFAULT '[]'"),
@@ -227,6 +228,15 @@ def apply_schema_migrations() -> None:
             ("photoset_extra_price", "FLOAT"),
             ("photoset_comment", "TEXT"),
             ("photoset_props_checklist_json", "JSON NOT NULL DEFAULT '[]'"),
+            ("performance_track", "VARCHAR(255)"),
+            ("performance_video_bg_url", "TEXT"),
+            ("performance_script", "TEXT"),
+            ("performance_light_script", "TEXT"),
+            ("performance_duration", "VARCHAR(8)"),
+            ("performance_rehearsal_point", "VARCHAR(255)"),
+            ("performance_rehearsal_price", "FLOAT"),
+            ("performance_rehearsal_currency", "VARCHAR(16)"),
+            ("performance_rehearsal_count", "INTEGER"),
         ],
         "festival_notifications": [
             ("id", "INTEGER PRIMARY KEY"),
@@ -242,6 +252,7 @@ def apply_schema_migrations() -> None:
         ],
         "in_progress_cards": [
             ("is_frozen", "BOOLEAN NOT NULL DEFAULT 0"),
+            ("task_rows_json", "JSON NOT NULL DEFAULT '[]'"),
         ],
         "festivals": [
             ("event_end_date", "DATE"),
@@ -372,6 +383,7 @@ def estimate_card_total_and_currency(card: CosplanCard) -> tuple[float, str]:
             add(value, card.photoset_currency)
     else:
         add(card.photoset_price, card.photoset_currency)
+    add(performance_rehearsal_total(card), card.performance_rehearsal_currency)
 
     for item in as_list(card.costume_parts_json):
         if not isinstance(item, dict):
@@ -585,6 +597,63 @@ def card_coproplayer_aliases(card: CosplanCard) -> list[str]:
     return merge_unique(as_list(card.coproplayer_nicks_json), as_list(card.coproplayers_json))
 
 
+def card_task_assignee_options(
+    card: CosplanCard,
+    alias_to_username: dict[str, str],
+    users_by_username: dict[str, User],
+) -> list[dict[str, Any]]:
+    options: list[dict[str, Any]] = []
+    seen_usernames: set[str] = set()
+    raw_aliases = merge_unique([card.project_leader], card_coproplayer_aliases(card))
+    for alias in raw_aliases:
+        normalized = normalize_username(alias)
+        if not normalized:
+            continue
+        canonical_username = alias_to_username.get(normalized.casefold(), normalized)
+        username_key = canonical_username.casefold()
+        if username_key in seen_usernames:
+            continue
+        seen_usernames.add(username_key)
+        matched_user = users_by_username.get(username_key)
+        display_value = f"@{preferred_user_alias(matched_user)}" if matched_user else f"@{canonical_username}"
+        options.append(
+            {
+                "value": canonical_username,
+                "label": display_value,
+                "user_id": matched_user.id if matched_user else None,
+            }
+        )
+    return options
+
+
+def format_in_progress_tasks(
+    raw_items: list[Any],
+    alias_to_username: dict[str, str],
+    users_by_username: dict[str, User],
+) -> list[dict[str, Any]]:
+    tasks: list[dict[str, Any]] = []
+    for item in raw_items:
+        if not isinstance(item, dict):
+            continue
+        assignee_raw = normalize_username(item.get("assignee") or item.get("responsible"))
+        canonical_username = alias_to_username.get(assignee_raw.casefold(), assignee_raw) if assignee_raw else ""
+        matched_user = users_by_username.get(canonical_username.casefold()) if canonical_username else None
+        assignee_label = (
+            f"@{preferred_user_alias(matched_user)}"
+            if matched_user
+            else (f"@{canonical_username}" if canonical_username else "—")
+        )
+        tasks.append(
+            {
+                "assignee": canonical_username,
+                "assignee_label": assignee_label,
+                "task": str(item.get("task") or item.get("text") or "").strip(),
+                "done": bool(item.get("done")),
+            }
+        )
+    return tasks
+
+
 def user_is_card_coproplayer(user: User, card: CosplanCard) -> bool:
     return any(user_matches_alias(user, alias) for alias in card_coproplayer_aliases(card))
 
@@ -626,6 +695,19 @@ def safe_redirect_target(target: str | None, fallback: str) -> str:
     if cleaned.startswith("/"):
         return cleaned
     return fallback
+
+
+def parse_id_list(values: list[Any]) -> list[int]:
+    parsed: list[int] = []
+    for value in values:
+        try:
+            parsed_value = int(str(value).strip())
+        except (TypeError, ValueError):
+            continue
+        if parsed_value <= 0 or parsed_value in parsed:
+            continue
+        parsed.append(parsed_value)
+    return parsed
 
 
 def get_accessible_card(
@@ -681,6 +763,52 @@ def parse_time_hhmm(raw: str) -> str | None:
     if not (0 <= hh <= 23 and 0 <= mm <= 59):
         return None
     return f"{hh:02d}:{mm:02d}"
+
+
+def normalize_duration_mmss(raw: str | None) -> str | None:
+    value = (raw or "").strip()
+    if not value:
+        return None
+    match = re.fullmatch(r"(\d{1,3}):([0-5]\d)", value)
+    if not match:
+        return None
+    minutes = int(match.group(1))
+    seconds = int(match.group(2))
+    return f"{minutes:02d}:{seconds:02d}"
+
+
+def parse_positive_int(raw: str | None) -> int | None:
+    value = (raw or "").strip()
+    if not value:
+        return None
+    if not re.fullmatch(r"\d+", value):
+        return None
+    parsed = int(value)
+    return parsed if parsed > 0 else None
+
+
+def looks_like_url(value: str | None) -> bool:
+    raw = (value or "").strip().lower()
+    return raw.startswith("http://") or raw.startswith("https://")
+
+
+def is_mp3_url(value: str | None) -> bool:
+    if not looks_like_url(value):
+        return False
+    try:
+        parsed = urlparse((value or "").strip())
+    except ValueError:
+        return False
+    return (parsed.path or "").lower().endswith(".mp3")
+
+
+def performance_rehearsal_total(card: CosplanCard) -> float | None:
+    if card.performance_rehearsal_price is None:
+        return None
+    count = card.performance_rehearsal_count or 0
+    if count <= 0:
+        return None
+    return float(card.performance_rehearsal_price) * float(count)
 
 
 def rehearsal_status_label(status: str) -> str:
@@ -1511,6 +1639,7 @@ def card_fields_for_sync() -> list[str]:
         "project_leader",
         "cosbands_json",
         "project_deadline",
+        "related_cards_json",
         "planned_festivals_json",
         "submission_date",
         "nominations_json",
@@ -1526,6 +1655,15 @@ def card_fields_for_sync() -> list[str]:
         "photoset_currency",
         "photoset_comment",
         "photoset_props_checklist_json",
+        "performance_track",
+        "performance_video_bg_url",
+        "performance_script",
+        "performance_light_script",
+        "performance_duration",
+        "performance_rehearsal_point",
+        "performance_rehearsal_price",
+        "performance_rehearsal_currency",
+        "performance_rehearsal_count",
         "references_json",
         "pose_references_json",
         "unknown_prices_json",
@@ -1741,6 +1879,7 @@ def get_card_form_values(card: CosplanCard | None = None) -> dict[str, Any]:
             "project_leader": "",
             "cosbands_json": [],
             "project_deadline": "",
+            "related_card_ids": [],
             "planned_festivals_json": [],
             "submission_date": "",
             "nominations_json": [],
@@ -1757,6 +1896,15 @@ def get_card_form_values(card: CosplanCard | None = None) -> dict[str, Any]:
             "photoset_comment": "",
             "photoset_props_checklist_json": [],
             "photoset_props_checklist_input": "",
+            "performance_track": "",
+            "performance_video_bg_url": "",
+            "performance_script": "",
+            "performance_light_script": "",
+            "performance_duration": "",
+            "performance_rehearsal_point": "",
+            "performance_rehearsal_price": "",
+            "performance_rehearsal_currency": "RUB",
+            "performance_rehearsal_count": "",
             "references_json": [],
             "references_input": "",
             "pose_references_json": [],
@@ -1830,6 +1978,7 @@ def get_card_form_values(card: CosplanCard | None = None) -> dict[str, Any]:
         "project_leader": card.project_leader or "",
         "cosbands_json": as_list(card.cosbands_json),
         "project_deadline": card.project_deadline.isoformat() if card.project_deadline else "",
+        "related_card_ids": parse_id_list(as_list(card.related_cards_json)),
         "planned_festivals_json": as_list(card.planned_festivals_json),
         "submission_date": card.submission_date.isoformat() if card.submission_date else "",
         "nominations_json": as_list(card.nominations_json),
@@ -1851,6 +2000,19 @@ def get_card_form_values(card: CosplanCard | None = None) -> dict[str, Any]:
         "photoset_currency": card.photoset_currency or "RUB",
         "photoset_comment": card.photoset_comment or "",
         "photoset_props_checklist_json": format_checklist_for_form(as_list(card.photoset_props_checklist_json)),
+        "performance_track": card.performance_track or "",
+        "performance_video_bg_url": card.performance_video_bg_url or "",
+        "performance_script": card.performance_script or "",
+        "performance_light_script": card.performance_light_script or "",
+        "performance_duration": card.performance_duration or "",
+        "performance_rehearsal_point": card.performance_rehearsal_point or "",
+        "performance_rehearsal_price": (
+            "" if card.performance_rehearsal_price is None else f"{card.performance_rehearsal_price:g}"
+        ),
+        "performance_rehearsal_currency": card.performance_rehearsal_currency or "RUB",
+        "performance_rehearsal_count": (
+            "" if card.performance_rehearsal_count is None else str(card.performance_rehearsal_count)
+        ),
         "references_json": as_list(card.references_json),
         "references_input": "\n".join(as_list(card.references_json)),
         "pose_references_json": as_list(card.pose_references_json),
@@ -1868,7 +2030,7 @@ def get_card_form_values(card: CosplanCard | None = None) -> dict[str, Any]:
     }
 
 
-def card_options(db: Session, user: User) -> dict[str, Any]:
+def card_options(db: Session, user: User, current_card_id: int | None = None) -> dict[str, Any]:
     festival_rows = db.execute(
         select(Festival.name, Festival.city).where(Festival.user_id == user.id).order_by(Festival.city, Festival.name)
     ).all()
@@ -1888,6 +2050,23 @@ def card_options(db: Session, user: User) -> dict[str, Any]:
 
     all_festival_options = merge_unique(festival_names, get_options(db, user.id, "festival"))
     festival_custom_options = [value for value in all_festival_options if value not in set(festival_names)]
+    author_alias = preferred_user_alias(user)
+    own_cards = db.execute(
+        select(CosplanCard)
+        .where(
+            CosplanCard.user_id == user.id,
+            CosplanCard.is_shared_copy.is_(False),
+        )
+        .order_by(CosplanCard.updated_at.desc(), CosplanCard.id.desc())
+    ).scalars().all()
+    related_card_options = [
+        {
+            "id": int(card.id),
+            "label": f"{card.character_name}, @{author_alias}",
+        }
+        for card in own_cards
+        if card.character_name and (not current_card_id or card.id != current_card_id)
+    ]
 
     return {
         "fandom_options": get_options(db, user.id, "fandom"),
@@ -1900,6 +2079,7 @@ def card_options(db: Session, user: User) -> dict[str, Any]:
         "studio_options": get_options(db, user.id, "studio"),
         "coproplayer_alias_options": coproplayer_alias_options,
         "project_leader_options": project_leader_options,
+        "related_card_options": related_card_options,
         "currency_options": merge_unique(
             ["RUB", "USD", "EUR"],
             get_options(db, user.id, "currency"),
@@ -2413,6 +2593,7 @@ def cosplan_export_csv(request: Request, db: Session = Depends(get_db)):
             "plan_type",
             "city",
             "planned_festivals",
+            "related_cards",
             "nominations",
             "coproplayers",
             "coproplayer_nicks",
@@ -2420,6 +2601,14 @@ def cosplan_export_csv(request: Request, db: Session = Depends(get_db)):
             "costume_type",
             "shoes_type",
             "wig_type",
+            "performance_track",
+            "performance_video_bg_url",
+            "performance_duration",
+            "performance_rehearsal_point",
+            "performance_rehearsal_price",
+            "performance_rehearsal_currency",
+            "performance_rehearsal_count",
+            "performance_rehearsal_total",
             "estimated_total",
             "currency_hint",
             "updated_at",
@@ -2438,6 +2627,7 @@ def cosplan_export_csv(request: Request, db: Session = Depends(get_db)):
                 card.plan_type or "",
                 card.city or "",
                 ", ".join(as_list(card.planned_festivals_json)),
+                ", ".join(str(value) for value in parse_id_list(as_list(card.related_cards_json))),
                 ", ".join(as_list(card.nominations_json)),
                 ", ".join(as_list(card.coproplayers_json)),
                 ", ".join(as_list(card.coproplayer_nicks_json)),
@@ -2445,6 +2635,14 @@ def cosplan_export_csv(request: Request, db: Session = Depends(get_db)):
                 card.costume_type or "",
                 card.shoes_type or "",
                 card.wig_type or "",
+                card.performance_track or "",
+                card.performance_video_bg_url or "",
+                card.performance_duration or "",
+                card.performance_rehearsal_point or "",
+                "" if card.performance_rehearsal_price is None else f"{card.performance_rehearsal_price:g}",
+                card.performance_rehearsal_currency or "",
+                card.performance_rehearsal_count or "",
+                "" if performance_rehearsal_total(card) is None else f"{performance_rehearsal_total(card):g}",
                 f"{total:.2f}",
                 currency,
                 card.updated_at.isoformat() if card.updated_at else "",
@@ -2474,7 +2672,7 @@ def cosplan_new(request: Request, db: Session = Depends(get_db)):
         editing=False,
         card_id=None,
         form=get_card_form_values(),
-        **card_options(db, user),
+        **card_options(db, user, current_card_id=None),
     )
 
 
@@ -2530,6 +2728,29 @@ def cosplan_detail(card_id: int, request: Request, db: Session = Depends(get_db)
             top_level_comments.append(comment)
 
     card_total, card_total_currency = estimate_card_total_and_currency(card)
+    performance_total = performance_rehearsal_total(card)
+    related_cards: list[dict[str, Any]] = []
+    related_ids = parse_id_list(as_list(card.related_cards_json))
+    if related_ids:
+        linked_cards_rows = db.execute(
+            select(CosplanCard).where(
+                CosplanCard.id.in_(related_ids),
+                CosplanCard.user_id == card.user_id,
+                CosplanCard.is_shared_copy.is_(False),
+            )
+        ).scalars().all()
+        linked_cards_by_id = {item.id: item for item in linked_cards_rows}
+        default_author = f"@{preferred_user_alias(card_owner)}" if card_owner else ""
+        for related_id in related_ids:
+            linked = linked_cards_by_id.get(related_id)
+            if not linked or linked.id == card.id:
+                continue
+            related_cards.append(
+                {
+                    "id": linked.id,
+                    "label": f"{linked.character_name or f'Карточка #{linked.id}'}, {default_author}".strip(", "),
+                }
+            )
     return template_response(
         request,
         "cosplan_detail.html",
@@ -2546,6 +2767,7 @@ def cosplan_detail(card_id: int, request: Request, db: Session = Depends(get_db)
         photographers=as_list(card.photographers_json),
         studios=as_list(card.studios_json),
         unknown_price_fields=as_list(card.unknown_prices_json),
+        related_cards=related_cards,
         card_total=card_total,
         card_total_currency=card_total_currency,
         reference_urls=as_list(card.references_json),
@@ -2554,6 +2776,9 @@ def cosplan_detail(card_id: int, request: Request, db: Session = Depends(get_db)
         craft_parts=as_list(card.craft_parts_json),
         photoset_props_checklist=format_checklist_for_form(as_list(card.photoset_props_checklist_json)),
         pinterest_embed_src=pinterest_embed_src,
+        looks_like_url=looks_like_url,
+        is_mp3_url=is_mp3_url,
+        performance_total=performance_total,
         card_date_conflicts=card_date_conflicts,
         can_comment=can_comment_on_card(card, user),
         can_edit_card=bool(editable_card),
@@ -2633,7 +2858,7 @@ def cosplan_edit(card_id: int, request: Request, db: Session = Depends(get_db)):
         editing=True,
         card_id=card.id,
         form=get_card_form_values(card),
-        **card_options(db, owner_for_options),
+        **card_options(db, owner_for_options, current_card_id=card.id),
     )
 
 
@@ -2658,6 +2883,7 @@ def save_card_from_form(form: Any, card: CosplanCard, user: User, db: Session) -
         "photoset_studio_price",
         "photoset_props_price",
         "photoset_extra_price",
+        "performance_rehearsal_price",
     }
     unknown_prices = raw_unknown_prices.intersection(allowed_unknown_price_fields)
 
@@ -2786,6 +3012,20 @@ def save_card_from_form(form: Any, card: CosplanCard, user: User, db: Session) -
     else:
         card.project_leader = None
     card.project_deadline = parse_date(str(form.get("project_deadline", "")))
+    selected_related_ids = parse_id_list(list(form.getlist("related_card_ids")))
+    valid_related_ids: list[int] = []
+    if card.plan_type == "project" and selected_related_ids:
+        valid_ids = set(
+            db.execute(
+                select(CosplanCard.id).where(
+                    CosplanCard.id.in_(selected_related_ids),
+                    CosplanCard.user_id == card.user_id,
+                    CosplanCard.is_shared_copy.is_(False),
+                )
+            ).scalars().all()
+        )
+        valid_related_ids = [card_id for card_id in selected_related_ids if card_id in valid_ids and card_id != card.id]
+    card.related_cards_json = valid_related_ids
 
     cosbands = merge_unique(form.getlist("cosbands"), split_csv(str(form.get("cosbands_new", ""))))
     festivals = merge_unique(
@@ -2842,6 +3082,17 @@ def save_card_from_form(form: Any, card: CosplanCard, user: User, db: Session) -
     card.photoset_currency = str(form.get("photoset_currency", "")).strip() or None
     card.photoset_comment = str(form.get("photoset_comment", "")).strip() or None
     card.photoset_props_checklist_json = parse_checklist_rows_from_form(form, "photoset_prop")
+
+    card.performance_track = str(form.get("performance_track", "")).strip() or None
+    card.performance_video_bg_url = str(form.get("performance_video_bg_url", "")).strip() or None
+    card.performance_script = str(form.get("performance_script", "")).strip() or None
+    card.performance_light_script = str(form.get("performance_light_script", "")).strip() or None
+    card.performance_duration = normalize_duration_mmss(str(form.get("performance_duration", "")))
+    card.performance_rehearsal_point = str(form.get("performance_rehearsal_point", "")).strip() or None
+    card.performance_rehearsal_price = parse_price_field("performance_rehearsal_price")
+    card.performance_rehearsal_currency = str(form.get("performance_rehearsal_currency", "")).strip() or None
+    card.performance_rehearsal_count = parse_positive_int(str(form.get("performance_rehearsal_count", "")))
+
     card.references_json = parse_reference_values(str(form.get("references_input", "")))
     card.pose_references_json = parse_reference_values(str(form.get("pose_references_input", "")))
     card.costume_parts_json = parse_parts_from_form(form, "costume", card.costume_currency)
@@ -2878,6 +3129,7 @@ def save_card_from_form(form: Any, card: CosplanCard, user: User, db: Session) -
             "photoset_studio_price",
             "photoset_props_price",
             "photoset_extra_price",
+            "performance_rehearsal_price",
         }
     )
 
@@ -2907,6 +3159,7 @@ def save_card_from_form(form: Any, card: CosplanCard, user: User, db: Session) -
             card.wig_currency or "",
             card.craft_currency or "",
             card.photoset_currency or "",
+            card.performance_rehearsal_currency or "",
         ],
     )
 
@@ -3047,14 +3300,14 @@ def in_progress_add(card_id: int, request: Request, db: Session = Depends(get_db
         select(InProgressCard).where(InProgressCard.user_id == user.id, InProgressCard.cosplan_card_id == card.id)
     ).scalar_one_or_none()
     if existing:
-        add_flash(request, "Карточка уже в In Progress.", "info")
+        add_flash(request, "Карточка уже в разделе «В работе».", "info")
         return redirect("/in-progress")
 
-    progress = InProgressCard(user_id=user.id, cosplan_card_id=card.id, checklist_json=[])
+    progress = InProgressCard(user_id=user.id, cosplan_card_id=card.id, checklist_json=[], task_rows_json=[])
     db.add(progress)
     db.commit()
 
-    add_flash(request, "Карточка добавлена в In Progress.", "success")
+    add_flash(request, "Карточка добавлена в раздел «В работе».", "success")
     return redirect("/in-progress")
 
 
@@ -3081,6 +3334,21 @@ def in_progress_list(request: Request, db: Session = Depends(get_db)):
     }
     progress_card_ids = [row.cosplan_card_id for row in progress_items if row.cosplan_card_id]
     leader_rehearsals_by_card: dict[int, list[RehearsalEntry]] = defaultdict(list)
+    task_assignees_by_progress: dict[int, list[dict[str, Any]]] = {}
+    task_rows_by_progress: dict[int, list[dict[str, Any]]] = {}
+    alias_to_username, users_by_username, _ = build_user_alias_lookup(db)
+
+    for row in progress_items:
+        card = row.cosplan_card
+        if not card or not card.is_shared_copy:
+            continue
+        task_assignees_by_progress[row.id] = card_task_assignee_options(card, alias_to_username, users_by_username)
+        task_rows_by_progress[row.id] = format_in_progress_tasks(
+            as_list(row.task_rows_json),
+            alias_to_username,
+            users_by_username,
+        )
+
     if progress_card_ids:
         leader_entries = db.execute(
             select(RehearsalEntry)
@@ -3102,6 +3370,8 @@ def in_progress_list(request: Request, db: Session = Depends(get_db)):
         progress_items=progress_items,
         urgent_progress_ids=urgent_progress_ids,
         leader_rehearsals_by_card=leader_rehearsals_by_card,
+        task_assignees_by_progress=task_assignees_by_progress,
+        task_rows_by_progress=task_rows_by_progress,
         rehearsal_status_labels={
             REHEARSAL_STATUS_PROPOSED: rehearsal_status_label(REHEARSAL_STATUS_PROPOSED),
             REHEARSAL_STATUS_ACCEPTED: rehearsal_status_label(REHEARSAL_STATUS_ACCEPTED),
@@ -3120,7 +3390,7 @@ async def in_progress_checklist_add(progress_id: int, request: Request, db: Sess
         select(InProgressCard).where(InProgressCard.id == progress_id, InProgressCard.user_id == user.id)
     ).scalar_one_or_none()
     if not progress:
-        add_flash(request, "Карточка In Progress не найдена.", "error")
+        add_flash(request, "Карточка «В работе» не найдена.", "error")
         return redirect("/in-progress")
 
     form = await request.form()
@@ -3145,7 +3415,7 @@ def in_progress_checklist_toggle(progress_id: int, item_index: int, request: Req
         select(InProgressCard).where(InProgressCard.id == progress_id, InProgressCard.user_id == user.id)
     ).scalar_one_or_none()
     if not progress:
-        add_flash(request, "Карточка In Progress не найдена.", "error")
+        add_flash(request, "Карточка «В работе» не найдена.", "error")
         return redirect("/in-progress")
 
     items = list(progress.checklist_json or [])
@@ -3169,13 +3439,160 @@ def in_progress_checklist_delete(progress_id: int, item_index: int, request: Req
         select(InProgressCard).where(InProgressCard.id == progress_id, InProgressCard.user_id == user.id)
     ).scalar_one_or_none()
     if not progress:
-        add_flash(request, "Карточка In Progress не найдена.", "error")
+        add_flash(request, "Карточка «В работе» не найдена.", "error")
         return redirect("/in-progress")
 
     items = list(progress.checklist_json or [])
     if 0 <= item_index < len(items):
         items.pop(item_index)
         progress.checklist_json = items
+        db.commit()
+
+    return redirect("/in-progress")
+
+
+@app.post("/in-progress/{progress_id}/tasks/add")
+async def in_progress_task_add(progress_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    progress = db.execute(
+        select(InProgressCard).where(InProgressCard.id == progress_id, InProgressCard.user_id == user.id)
+    ).scalar_one_or_none()
+    if not progress:
+        add_flash(request, "Карточка «В работе» не найдена.", "error")
+        return redirect("/in-progress")
+
+    card = progress.cosplan_card
+    if not card or not card.is_shared_copy:
+        add_flash(request, "Блок «Задания» доступен только для карточек «Общий доступ».", "error")
+        return redirect("/in-progress")
+
+    form = await request.form()
+    task_text = str(form.get("task_text", "")).strip()
+    assignee_raw = str(form.get("task_assignee", "")).strip()
+    if not task_text:
+        add_flash(request, "Введите текст задания.", "error")
+        return redirect("/in-progress")
+    if not assignee_raw:
+        add_flash(request, "Выберите ответственного.", "error")
+        return redirect("/in-progress")
+
+    alias_to_username, users_by_username, _ = build_user_alias_lookup(db)
+    canonical_assignee = resolve_alias_to_username(assignee_raw, alias_to_username)
+    allowed_assignees = {
+        (item.get("value") or "").casefold()
+        for item in card_task_assignee_options(card, alias_to_username, users_by_username)
+    }
+    if not canonical_assignee or canonical_assignee.casefold() not in allowed_assignees:
+        add_flash(request, "Выберите ответственного из списка участников карточки.", "error")
+        return redirect("/in-progress")
+
+    existing_rows = format_in_progress_tasks(
+        as_list(progress.task_rows_json),
+        alias_to_username,
+        users_by_username,
+    )
+    existing_rows.append(
+        {
+            "assignee": canonical_assignee,
+            "task": task_text,
+            "done": False,
+        }
+    )
+    progress.task_rows_json = [
+        {
+            "assignee": row.get("assignee"),
+            "task": row.get("task"),
+            "done": bool(row.get("done")),
+        }
+        for row in existing_rows
+        if row.get("task")
+    ]
+
+    assignee_user = users_by_username.get(canonical_assignee.casefold())
+    if assignee_user and assignee_user.id != user.id:
+        enqueue_notification_if_missing(
+            db,
+            user_id=assignee_user.id,
+            from_user_id=user.id,
+            source_card_id=card.id,
+            message=f"Вам назначено задание по «{card.character_name}»: {task_text}",
+        )
+
+    db.commit()
+    add_flash(request, "Задание добавлено.", "success")
+    return redirect("/in-progress")
+
+
+@app.post("/in-progress/{progress_id}/tasks/toggle/{task_index}")
+def in_progress_task_toggle(progress_id: int, task_index: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    progress = db.execute(
+        select(InProgressCard).where(InProgressCard.id == progress_id, InProgressCard.user_id == user.id)
+    ).scalar_one_or_none()
+    if not progress:
+        add_flash(request, "Карточка «В работе» не найдена.", "error")
+        return redirect("/in-progress")
+
+    card = progress.cosplan_card
+    if not card or not card.is_shared_copy:
+        add_flash(request, "Блок «Задания» доступен только для карточек «Общий доступ».", "error")
+        return redirect("/in-progress")
+
+    alias_to_username, users_by_username, _ = build_user_alias_lookup(db)
+    rows = format_in_progress_tasks(as_list(progress.task_rows_json), alias_to_username, users_by_username)
+    if 0 <= task_index < len(rows):
+        rows[task_index]["done"] = not bool(rows[task_index].get("done"))
+        progress.task_rows_json = [
+            {
+                "assignee": row.get("assignee"),
+                "task": row.get("task"),
+                "done": bool(row.get("done")),
+            }
+            for row in rows
+            if row.get("task")
+        ]
+        db.commit()
+
+    return redirect("/in-progress")
+
+
+@app.post("/in-progress/{progress_id}/tasks/delete/{task_index}")
+def in_progress_task_delete(progress_id: int, task_index: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    progress = db.execute(
+        select(InProgressCard).where(InProgressCard.id == progress_id, InProgressCard.user_id == user.id)
+    ).scalar_one_or_none()
+    if not progress:
+        add_flash(request, "Карточка «В работе» не найдена.", "error")
+        return redirect("/in-progress")
+
+    card = progress.cosplan_card
+    if not card or not card.is_shared_copy:
+        add_flash(request, "Блок «Задания» доступен только для карточек «Общий доступ».", "error")
+        return redirect("/in-progress")
+
+    alias_to_username, users_by_username, _ = build_user_alias_lookup(db)
+    rows = format_in_progress_tasks(as_list(progress.task_rows_json), alias_to_username, users_by_username)
+    if 0 <= task_index < len(rows):
+        rows.pop(task_index)
+        progress.task_rows_json = [
+            {
+                "assignee": row.get("assignee"),
+                "task": row.get("task"),
+                "done": bool(row.get("done")),
+            }
+            for row in rows
+            if row.get("task")
+        ]
         db.commit()
 
     return redirect("/in-progress")
@@ -3191,13 +3608,13 @@ def in_progress_remove(progress_id: int, request: Request, db: Session = Depends
         select(InProgressCard).where(InProgressCard.id == progress_id, InProgressCard.user_id == user.id)
     ).scalar_one_or_none()
     if not progress:
-        add_flash(request, "Карточка In Progress не найдена.", "error")
+        add_flash(request, "Карточка «В работе» не найдена.", "error")
         return redirect("/in-progress")
 
     db.delete(progress)
     db.commit()
 
-    add_flash(request, "Карточка удалена из In Progress.", "info")
+    add_flash(request, "Карточка удалена из раздела «В работе».", "info")
     return redirect("/in-progress")
 
 
@@ -3211,7 +3628,7 @@ def in_progress_toggle_freeze(progress_id: int, request: Request, db: Session = 
         select(InProgressCard).where(InProgressCard.id == progress_id, InProgressCard.user_id == user.id)
     ).scalar_one_or_none()
     if not progress:
-        add_flash(request, "Карточка In Progress не найдена.", "error")
+        add_flash(request, "Карточка «В работе» не найдена.", "error")
         return redirect("/in-progress")
 
     progress.is_frozen = not bool(progress.is_frozen)
@@ -3592,7 +4009,14 @@ async def my_projects_propose_rehearsal(request: Request, db: Session = Depends(
             )
         ).scalar_one_or_none()
         if not existing_progress:
-            db.add(InProgressCard(user_id=card.user_id, cosplan_card_id=card.id, checklist_json=[]))
+            db.add(
+                InProgressCard(
+                    user_id=card.user_id,
+                    cosplan_card_id=card.id,
+                    checklist_json=[],
+                    task_rows_json=[],
+                )
+            )
         db.add(
             RehearsalEntry(
                 rehearsal_card_id=rehearsal_card.id,

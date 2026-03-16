@@ -36,6 +36,14 @@
 
   {% if cosbands %}<p class="meta">Cosband: {{ cosbands | join(", ") }}</p>{% endif %}
   {% if planned_festivals %}<p class="meta">Планируемые фестивали: {{ planned_festivals | join(", ") }}</p>{% endif %}
+  {% if related_cards %}
+    <p class="meta">Связанные карточки:</p>
+    <ul class="notes-list">
+      {% for item in related_cards %}
+        <li><a href="/cosplan/{{ item.id }}">{{ item.label }}</a></li>
+      {% endfor %}
+    </ul>
+  {% endif %}
   {% if nominations %}<p class="meta">Номинации: {{ nominations | join(", ") }}</p>{% endif %}
   {% if card.project_deadline %}<p class="meta">Дедлайн проекта: {{ card.project_deadline.strftime('%d-%m-%Y') }}</p>{% endif %}
   {% if card.submission_date %}<p class="meta">Дата подачи: {{ card.submission_date.strftime('%d-%m-%Y') }}</p>{% endif %}
@@ -225,6 +233,43 @@
 
   {% if coproplayers_display %}
     <p class="meta">Сокосплеер(ы): {{ coproplayers_display | join(", ") }}</p>
+  {% endif %}
+</section>
+{% endif %}
+
+{% set has_performance = card.performance_track or card.performance_video_bg_url or card.performance_script or card.performance_light_script or card.performance_duration or card.performance_rehearsal_point or card.performance_rehearsal_price is not none or card.performance_rehearsal_count or card.performance_rehearsal_currency or performance_total is not none or 'performance_rehearsal_price' in unknown_fields %}
+{% if has_performance %}
+<section class="box">
+  <h2>Выступление</h2>
+  {% if card.performance_track %}
+    {% if looks_like_url(card.performance_track) %}
+      <p class="meta">Трек: <a href="{{ card.performance_track }}" target="_blank" rel="noreferrer">{{ card.performance_track }}</a></p>
+      {% if is_mp3_url(card.performance_track) %}
+        <audio controls preload="none" src="{{ card.performance_track }}" style="width: 100%; max-width: 460px;"></audio>
+      {% endif %}
+    {% else %}
+      <p class="meta">Название трека: {{ card.performance_track }}</p>
+    {% endif %}
+  {% endif %}
+  {% if card.performance_video_bg_url %}
+    <p class="meta">Видеофон: <a href="{{ card.performance_video_bg_url }}" target="_blank" rel="noreferrer">{{ card.performance_video_bg_url }}</a></p>
+  {% endif %}
+  {% if card.performance_duration %}<p class="meta">Длительность: {{ card.performance_duration }}</p>{% endif %}
+  {% if card.performance_rehearsal_point %}<p class="meta">Репетиционная точка: {{ card.performance_rehearsal_point }}</p>{% endif %}
+  {% if card.performance_rehearsal_count %}<p class="meta">Планируемое количество репетиций: {{ card.performance_rehearsal_count }}</p>{% endif %}
+  {{ money_line("Цена одной репетиции", card.performance_rehearsal_price, card.performance_rehearsal_currency, "performance_rehearsal_price", unknown_fields) }}
+  {% if performance_total is not none %}
+    <p class="meta">Общая стоимость репетиций: {{ '%.2f'|format(performance_total) }}{% if card.performance_rehearsal_currency %} {{ card.performance_rehearsal_currency }}{% endif %}</p>
+  {% elif 'performance_rehearsal_price' in unknown_fields %}
+    <p class="meta">Общая стоимость репетиций: УТОЧНЯЕТСЯ</p>
+  {% endif %}
+  {% if card.performance_script %}
+    <h3>Сценарий</h3>
+    <p class="notes-block">{{ card.performance_script }}</p>
+  {% endif %}
+  {% if card.performance_light_script %}
+    <h3>Светосценарий</h3>
+    <p class="notes-block">{{ card.performance_light_script }}</p>
   {% endif %}
 </section>
 {% endif %}

@@ -1,9 +1,29 @@
 {% extends "base.html" %}
 {% block content %}
 <section class="section-head">
-  <h1>In Progress</h1>
+  <h1>В работе</h1>
   <a href="/cosplan" class="btn">Добавить из косплана</a>
 </section>
+
+<style>
+  .tasks-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 0.45rem;
+  }
+  .tasks-table th,
+  .tasks-table td {
+    border-bottom: 1px solid #ececec;
+    padding: 0.4rem 0.45rem;
+    text-align: left;
+    vertical-align: middle;
+  }
+  .tasks-table th:last-child,
+  .tasks-table td:last-child {
+    width: 44px;
+    text-align: right;
+  }
+</style>
 
 {% if progress_items %}
 <div class="cards-grid">
@@ -23,7 +43,7 @@
             {{ "Разморозить" if row.is_frozen else "Заморозить" }}
           </button>
         </form>
-        <form method="post" action="/in-progress/{{ row.id }}/remove" onsubmit="return confirm('Убрать из In Progress?');">
+        <form method="post" action="/in-progress/{{ row.id }}/remove" onsubmit="return confirm('Убрать из «В работе»?');">
           <button type="submit" class="btn btn-danger">Убрать</button>
         </form>
       </div>
@@ -97,6 +117,67 @@
       <input type="text" name="item_text" placeholder="Новый пункт чеклиста" required />
       <button type="submit" class="btn">Добавить</button>
     </form>
+
+    {% if row.cosplan_card and row.cosplan_card.is_shared_copy %}
+      <h4>Задания</h4>
+      {% set task_items = task_rows_by_progress.get(row.id, []) %}
+      {% if task_items %}
+        <table class="tasks-table">
+          <thead>
+            <tr>
+              <th>Ответственный</th>
+              <th>Задание</th>
+              <th>Выполнил(а)</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for item in task_items %}
+            <tr>
+              <td>{{ item.assignee_label }}</td>
+              <td class="{% if item.done %}done{% endif %}">{{ item.task }}</td>
+              <td>
+                <form method="post" action="/in-progress/{{ row.id }}/tasks/toggle/{{ loop.index0 }}" class="inline-form">
+                  <button type="submit" class="btn btn-small">{{ "☑" if item.done else "☐" }}</button>
+                </form>
+              </td>
+              <td>
+                <form method="post" action="/in-progress/{{ row.id }}/tasks/delete/{{ loop.index0 }}" class="inline-form">
+                  <button type="submit" class="btn btn-small btn-danger">✕</button>
+                </form>
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% else %}
+        <p class="muted">Пока нет назначенных заданий.</p>
+      {% endif %}
+
+      {% set assignee_options = task_assignees_by_progress.get(row.id, []) %}
+      {% if assignee_options %}
+        <form method="post" action="/in-progress/{{ row.id }}/tasks/add" class="grid three-col">
+          <label>
+            Ответственный
+            <select name="task_assignee" required>
+              <option value="">Выберите участника</option>
+              {% for option in assignee_options %}
+                <option value="{{ option.value }}">{{ option.label }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>
+            Задание
+            <input type="text" name="task_text" placeholder="Что нужно сделать" required />
+          </label>
+          <div class="actions-inline">
+            <button type="submit" class="btn">Добавить задание</button>
+          </div>
+        </form>
+      {% else %}
+        <p class="muted">В карточке не указаны сокосплееры или руководитель для назначения заданий.</p>
+      {% endif %}
+    {% endif %}
   </article>
   {% endfor %}
 </div>

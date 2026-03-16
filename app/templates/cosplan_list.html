@@ -19,7 +19,7 @@
         <h3>
           <a href="/cosplan/{{ card.id }}" class="card-title-link">{{ card.character_name }}</a>
           {% if card.is_shared_copy %}
-            <span class="chip chip-shared">Shared</span>
+            <span class="chip chip-shared">Общий доступ</span>
           {% endif %}
         </h3>
         <p class="meta">Фандом: {{ card.fandom or "—" }}</p>
@@ -48,7 +48,7 @@
           {% endif %}
           {% if card.id not in in_progress_ids %}
           <form method="post" action="/in-progress/add/{{ card.id }}">
-            <button type="submit" class="btn">В In Progress</button>
+            <button type="submit" class="btn">В работу</button>
           </form>
           {% else %}
           <span class="chip">Уже в работе</span>

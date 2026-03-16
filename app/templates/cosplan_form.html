@@ -403,6 +403,27 @@
       {% endfor %}
     </datalist>
 
+    <div id="related_cards_wrap">
+      <label>Связи с другими карточками (ссылки)</label>
+      {% if related_card_options %}
+      <div class="chips-wrap">
+        {% for item in related_card_options %}
+        <label class="chip-check">
+          <input
+            type="checkbox"
+            name="related_card_ids"
+            value="{{ item.id }}"
+            {% if item.id in form.related_card_ids %}checked{% endif %}
+          />
+          {{ item.label }}
+        </label>
+        {% endfor %}
+      </div>
+      {% else %}
+      <p class="muted">Нет других карточек для связи.</p>
+      {% endif %}
+    </div>
+
     <label>Cosband</label>
     <div class="chips-wrap">
       {% for value in cosband_options %}
@@ -579,6 +600,62 @@
       {% endfor %}
     </div>
     <button type="button" class="btn" id="add_coproplayer_btn">Добавить ещё</button>
+  </section>
+
+  <section class="box">
+    <h2>Выступление</h2>
+    <div class="grid two-col">
+      <label>
+        Название трека / ссылка на трек
+        <input type="text" name="performance_track" value="{{ form.performance_track }}" placeholder="Название или https://...mp3" />
+      </label>
+      <label>
+        Ссылка на видеофон
+        <input type="url" name="performance_video_bg_url" value="{{ form.performance_video_bg_url }}" />
+      </label>
+    </div>
+
+    <div class="grid two-col">
+      <label>
+        Сценарий (или ссылка на документ)
+        <textarea name="performance_script" rows="4">{{ form.performance_script }}</textarea>
+      </label>
+      <label>
+        Светосценарий
+        <textarea name="performance_light_script" rows="4">{{ form.performance_light_script }}</textarea>
+      </label>
+    </div>
+
+    <div class="grid four-col">
+      <label>
+        Длительность (MM:SS)
+        <input
+          type="text"
+          name="performance_duration"
+          value="{{ form.performance_duration }}"
+          placeholder="00:50"
+          pattern="\d{1,3}:[0-5]\d"
+          title="Формат: минуты:секунды, например 00:50"
+        />
+      </label>
+      <label>
+        Репетиционная точка
+        <input type="text" name="performance_rehearsal_point" value="{{ form.performance_rehearsal_point }}" />
+      </label>
+      <label>
+        Цена одной репетиции
+        <input type="text" name="performance_rehearsal_price" value="{{ form.performance_rehearsal_price }}" class="price-field" />
+      </label>
+      <label>
+        Валюта
+        <input type="text" list="currency-options" name="performance_rehearsal_currency" value="{{ form.performance_rehearsal_currency }}" />
+      </label>
+    </div>
+
+    <label>
+      Планируемое количество репетиций
+      <input type="number" min="1" step="1" name="performance_rehearsal_count" value="{{ form.performance_rehearsal_count }}" />
+    </label>
   </section>
 
   <section class="box">
@@ -794,6 +871,7 @@
 
     const planType = document.getElementById("plan_type")?.value;
     toggleVisibility("project_leader_wrap", planType === "project");
+    toggleVisibility("related_cards_wrap", planType === "project");
   };
 
   const applyFestivalCityFilter = () => {
@@ -843,6 +921,7 @@
       "photoset_studio_price": "photoset_currency",
       "photoset_props_price": "photoset_currency",
       "photoset_extra_price": "photoset_currency",
+      "performance_rehearsal_price": "performance_rehearsal_currency",
       "costume_part_price": "costume_currency",
       "craft_part_price": "craft_currency",
     };
@@ -860,7 +939,16 @@
       if (!value) return;
       const parsed = Number(value);
       if (!Number.isNaN(parsed)) {
-        total += parsed;
+        const multiplierField = input.name === "performance_rehearsal_price"
+          ? document.querySelector('[name="performance_rehearsal_count"]')
+          : null;
+        const multiplierValue = Number((multiplierField?.value || "").trim());
+        const multiplier = Number.isFinite(multiplierValue) && multiplierValue > 0 ? multiplierValue : 0;
+        const appliedValue = input.name === "performance_rehearsal_price" ? parsed * multiplier : parsed;
+        if (input.name === "performance_rehearsal_price" && multiplier <= 0) {
+          return;
+        }
+        total += appliedValue;
         const currencyName = currencyByPriceField[input.name];
         if (currencyName) {
           const currencyInput = document.querySelector(`[name="${currencyName}"]`);
@@ -1195,13 +1283,19 @@
     input.addEventListener("input", updateEstimatedTotal);
     input.addEventListener("change", updateEstimatedTotal);
   });
-  ["costume_currency", "shoes_currency", "lenses_currency", "wig_currency", "craft_currency", "photoset_currency"].forEach((name) => {
+  ["costume_currency", "shoes_currency", "lenses_currency", "wig_currency", "craft_currency", "photoset_currency", "performance_rehearsal_currency"].forEach((name) => {
     const input = document.querySelector(`[name="${name}"]`);
     if (input) {
       input.addEventListener("input", updateEstimatedTotal);
       input.addEventListener("change", updateEstimatedTotal);
     }
   });
+
+  const performanceCountInput = document.querySelector('[name="performance_rehearsal_count"]');
+  if (performanceCountInput) {
+    performanceCountInput.addEventListener("input", updateEstimatedTotal);
+    performanceCountInput.addEventListener("change", updateEstimatedTotal);
+  }
 
   bindAliasSuggest({ inputId: "project_leader", listId: "project-leader-suggest", multi: false });
   setupCoproplayerRows();
