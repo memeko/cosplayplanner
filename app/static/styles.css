@@ -473,6 +473,34 @@ textarea {
   padding-left: 18px;
 }
 
+.pigeon-inbox {
+  border-color: #9ec5ff;
+  background: #eaf4ff;
+}
+
+.pigeon-list {
+  display: grid;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.pigeon-item {
+  border: 1px solid #8cb6ff;
+  background: #dbeafe;
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+
+.pigeon-item h3 {
+  margin: 0 0 6px;
+  font-size: 16px;
+}
+
+.pigeon-item p {
+  margin: 0 0 6px;
+  white-space: pre-wrap;
+}
+
 .notifications-list li {
   display: flex;
   align-items: flex-start;

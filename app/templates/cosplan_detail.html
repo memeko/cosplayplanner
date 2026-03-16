@@ -53,6 +53,30 @@
   {% endif %}
 </section>
 
+{% if rehearsal_rows %}
+<section class="box">
+  <h2>Репетиции</h2>
+  <ul class="rehearsal-list">
+    {% for row in rehearsal_rows %}
+      <li class="rehearsal-item">
+        <div>
+          <strong>{{ row.entry_date.strftime('%d-%m-%Y') if row.entry_date else "—" }}</strong>
+          {% if row.entry_time %}<span class="muted">{{ row.entry_time }}</span>{% endif %}
+          <span class="chip rehearsal-status rehearsal-status-{{ row.status }}">
+            {{ rehearsal_status_labels.get(row.status, row.status) }}
+          </span>
+          <p class="meta">Участник: {{ row.participant_alias }}</p>
+          <p class="meta">
+            Источник: {{ "От руководителя" if row.source_type == "leader" else "От участника" }}
+            {% if row.proposer_alias %} · инициатор: {{ row.proposer_alias }}{% endif %}
+          </p>
+        </div>
+      </li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
+
 {% set has_costume = card.costume_type or card.sewing_type or card.sewing_fabric or card.sewing_hardware or card.sewing_pattern or card.costume_executor or card.costume_deadline or card.costume_prepayment is not none or card.costume_postpayment is not none or card.costume_fabric_price is not none or card.costume_hardware_price is not none or card.costume_bought or card.costume_link or card.costume_buy_price is not none or card.costume_currency or card.costume_notes or costume_parts or 'costume_prepayment' in unknown_fields or 'costume_postpayment' in unknown_fields or 'costume_buy_price' in unknown_fields or 'costume_fabric_price' in unknown_fields or 'costume_hardware_price' in unknown_fields %}
 {% if has_costume %}
 <section class="box">

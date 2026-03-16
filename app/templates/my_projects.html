@@ -40,6 +40,7 @@
   {% for card in cards %}
   {% set owner = owners_by_id.get(card.user_id) %}
   {% set pending_rehearsals = pending_rehearsals_by_card.get(card.id, []) %}
+  {% set rehearsal_history = leader_rehearsal_history_by_card.get(card.id, []) %}
   <article class="card">
     <h3><a href="/cosplan/{{ card.id }}" class="card-title-link">{{ card.character_name }}</a></h3>
     <p class="meta">
@@ -84,6 +85,36 @@
       </ul>
     {% else %}
       <p class="muted">Новых предложений от участника нет.</p>
+    {% endif %}
+
+    <h4>История ответов на ваши предложения</h4>
+    {% if rehearsal_history %}
+      <ul class="rehearsal-list">
+        {% for entry in rehearsal_history %}
+          <li class="rehearsal-item">
+            <div>
+              <strong>{{ entry.entry_date.strftime('%d-%m-%Y') if entry.entry_date else "—" }}</strong>
+              {% if entry.entry_time %}<span class="muted">{{ entry.entry_time }}</span>{% endif %}
+              <span class="chip rehearsal-status rehearsal-status-{{ entry.status }}">
+                {{ rehearsal_status_labels.get(entry.status, entry.status) }}
+              </span>
+              <p class="meta">
+                Участник:
+                {% if owner %}
+                  <span class="{% if user_is_special(owner) %}nick-special{% endif %}">@{{ owner.username }}</span>
+                {% else %}
+                  @unknown
+                {% endif %}
+              </p>
+              {% if entry.updated_at %}
+                <p class="meta">Изменено: {{ entry.updated_at.strftime('%d-%m-%Y %H:%M') }}</p>
+              {% endif %}
+            </div>
+          </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p class="muted">Пока нет ответов по предложениям руководителя.</p>
     {% endif %}
 
     <form method="post" action="/my-projects/{{ card.id }}/comment">

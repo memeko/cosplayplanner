@@ -1352,6 +1352,24 @@ def conflict_subject_from_message(message: str | None) -> str:
     return (match.group(1).strip() if match else "")
 
 
+def parse_pigeon_message(message: str | None) -> tuple[str, str] | None:
+    text_value = (message or "").strip()
+    if not text_value:
+        return None
+    match = re.match(r"^Курлык!\s*\(@([^)]+)\)\s*(.*)$", text_value, flags=re.IGNORECASE | re.DOTALL)
+    if not match:
+        return None
+    sender_alias = normalize_username(match.group(1))
+    body = (match.group(2) or "").strip()
+    if not sender_alias:
+        return None
+    return sender_alias, body
+
+
+def is_pigeon_message(message: str | None) -> bool:
+    return parse_pigeon_message(message) is not None
+
+
 def _render_article_inline(text: str) -> str:
     rendered = html.escape(text)
 
@@ -2353,13 +2371,38 @@ def index(request: Request, db: Session = Depends(get_db)):
             .order_by(FestivalNotification.created_at.desc())
             .limit(50)
         ).scalars().all()
+        pigeon_notifications: list[dict[str, Any]] = []
+        regular_notifications: list[FestivalNotification] = []
+        for note in notifications:
+            pigeon_payload = parse_pigeon_message(note.message)
+            if pigeon_payload and not note.is_read:
+                sender_alias, body = pigeon_payload
+                pigeon_notifications.append(
+                    {
+                        "id": note.id,
+                        "sender_alias": sender_alias,
+                        "body": body,
+                        "created_at": note.created_at,
+                    }
+                )
+            else:
+                regular_notifications.append(note)
+
+        _, _, alias_options = build_user_alias_lookup(db)
+        own_aliases = {item.casefold() for item in user_aliases(user)}
+        pigeon_alias_options = sorted(
+            [alias for alias in alias_options if alias and alias.casefold() not in own_aliases],
+            key=lambda value: value.casefold(),
+        )
         unread_notifications = sum(1 for note in notifications if not note.is_read)
         return template_response(
             request,
             "news.html",
             user=user,
             active_tab=None,
-            notifications=notifications,
+            notifications=regular_notifications,
+            pigeon_notifications=pigeon_notifications,
+            pigeon_alias_options=pigeon_alias_options,
             unread_notifications=unread_notifications,
         )
     return template_response(request, "landing.html", user=None, active_tab=None)
@@ -2671,6 +2714,33 @@ def cosplan_list(request: Request, q: str = "", db: Session = Depends(get_db)):
     in_progress_ids = set(
         db.execute(select(InProgressCard.cosplan_card_id).where(InProgressCard.user_id == user.id)).scalars().all()
     )
+    rehearsal_stats_by_card: dict[int, dict[str, Any]] = {}
+    card_ids = [card.id for card in cards]
+    if card_ids:
+        rehearsal_entries = db.execute(
+            select(RehearsalEntry)
+            .where(RehearsalEntry.cosplan_card_id.in_(card_ids))
+            .order_by(RehearsalEntry.entry_date, RehearsalEntry.entry_time, RehearsalEntry.id)
+        ).scalars().all()
+        active_statuses = {REHEARSAL_STATUS_PROPOSED, REHEARSAL_STATUS_APPROVED, REHEARSAL_STATUS_ACCEPTED}
+        today = date.today()
+        for entry in rehearsal_entries:
+            stat = rehearsal_stats_by_card.setdefault(
+                entry.cosplan_card_id,
+                {
+                    "total": 0,
+                    "active": 0,
+                    "upcoming_date": None,
+                },
+            )
+            stat["total"] += 1
+            if entry.status in active_statuses:
+                stat["active"] += 1
+            if entry.entry_date and entry.entry_date >= today:
+                upcoming_date = stat.get("upcoming_date")
+                if upcoming_date is None or entry.entry_date < upcoming_date:
+                    stat["upcoming_date"] = entry.entry_date
+
     editable_card_links: dict[int, int] = {}
     for visible_card in cards:
         source_card = resolve_source_card(db, visible_card)
@@ -2688,6 +2758,7 @@ def cosplan_list(request: Request, q: str = "", db: Session = Depends(get_db)):
         card_date_conflicts=card_date_conflicts,
         q=q,
         in_progress_ids=in_progress_ids,
+        rehearsal_stats_by_card=rehearsal_stats_by_card,
         editable_card_links=editable_card_links,
     )
 
@@ -2851,6 +2922,42 @@ def cosplan_detail(card_id: int, request: Request, db: Session = Depends(get_db)
         else:
             top_level_comments.append(comment)
 
+    rehearsal_entries = db.execute(
+        select(RehearsalEntry)
+        .where(RehearsalEntry.cosplan_card_id == card.id)
+        .order_by(RehearsalEntry.entry_date, RehearsalEntry.entry_time, RehearsalEntry.id)
+    ).scalars().all()
+    rehearsal_user_ids = {
+        user_id
+        for user_id in [entry.user_id for entry in rehearsal_entries]
+        + [entry.proposed_by_user_id for entry in rehearsal_entries]
+        if user_id
+    }
+    rehearsal_users_by_id: dict[int, User] = {}
+    if rehearsal_user_ids:
+        rehearsal_users = db.execute(select(User).where(User.id.in_(rehearsal_user_ids))).scalars().all()
+        rehearsal_users_by_id = {item.id: item for item in rehearsal_users}
+
+    rehearsal_rows: list[dict[str, Any]] = []
+    for entry in rehearsal_entries:
+        participant_user = rehearsal_users_by_id.get(entry.user_id)
+        proposer_user = rehearsal_users_by_id.get(entry.proposed_by_user_id) if entry.proposed_by_user_id else None
+        rehearsal_rows.append(
+            {
+                "id": entry.id,
+                "entry_date": entry.entry_date,
+                "entry_time": entry.entry_time,
+                "status": entry.status,
+                "source_type": entry.source_type,
+                "participant_alias": (
+                    f"@{preferred_user_alias(participant_user)}"
+                    if participant_user
+                    else f"@user-{entry.user_id}"
+                ),
+                "proposer_alias": f"@{preferred_user_alias(proposer_user)}" if proposer_user else "",
+            }
+        )
+
     card_total, card_total_currency = estimate_card_total_and_currency(card)
     performance_total = performance_rehearsal_total(card)
     related_cards: list[dict[str, Any]] = []
@@ -2919,6 +3026,13 @@ def cosplan_detail(card_id: int, request: Request, db: Session = Depends(get_db)
         top_level_comments=top_level_comments,
         replies_by_parent=replies_by_parent,
         comment_authors=authors_by_id,
+        rehearsal_rows=rehearsal_rows,
+        rehearsal_status_labels={
+            REHEARSAL_STATUS_PROPOSED: rehearsal_status_label(REHEARSAL_STATUS_PROPOSED),
+            REHEARSAL_STATUS_APPROVED: rehearsal_status_label(REHEARSAL_STATUS_APPROVED),
+            REHEARSAL_STATUS_ACCEPTED: rehearsal_status_label(REHEARSAL_STATUS_ACCEPTED),
+            REHEARSAL_STATUS_DECLINED: rehearsal_status_label(REHEARSAL_STATUS_DECLINED),
+        },
     )
 
 
@@ -4016,6 +4130,7 @@ def my_projects_list(request: Request, db: Session = Depends(get_db)):
         card_total_currencies[card.id] = currency
 
     pending_rehearsals_by_card: dict[int, list[RehearsalEntry]] = defaultdict(list)
+    leader_rehearsal_history_by_card: dict[int, list[RehearsalEntry]] = defaultdict(list)
     card_ids = [card.id for card in cards]
     if card_ids:
         pending_entries = db.execute(
@@ -4030,6 +4145,18 @@ def my_projects_list(request: Request, db: Session = Depends(get_db)):
         for entry in pending_entries:
             pending_rehearsals_by_card[entry.cosplan_card_id].append(entry)
 
+        history_entries = db.execute(
+            select(RehearsalEntry)
+            .where(
+                RehearsalEntry.cosplan_card_id.in_(card_ids),
+                RehearsalEntry.source_type == REHEARSAL_SOURCE_LEADER,
+                RehearsalEntry.status.in_([REHEARSAL_STATUS_ACCEPTED, REHEARSAL_STATUS_DECLINED]),
+            )
+            .order_by(RehearsalEntry.updated_at.desc(), RehearsalEntry.id.desc())
+        ).scalars().all()
+        for entry in history_entries:
+            leader_rehearsal_history_by_card[entry.cosplan_card_id].append(entry)
+
     return template_response(
         request,
         "my_projects.html",
@@ -4040,6 +4167,7 @@ def my_projects_list(request: Request, db: Session = Depends(get_db)):
         card_totals=card_totals,
         card_total_currencies=card_total_currencies,
         pending_rehearsals_by_card=pending_rehearsals_by_card,
+        leader_rehearsal_history_by_card=leader_rehearsal_history_by_card,
         rehearsal_status_labels={
             REHEARSAL_STATUS_PROPOSED: rehearsal_status_label(REHEARSAL_STATUS_PROPOSED),
             REHEARSAL_STATUS_APPROVED: rehearsal_status_label(REHEARSAL_STATUS_APPROVED),
@@ -4116,14 +4244,25 @@ async def my_projects_propose_rehearsal(request: Request, db: Session = Depends(
         rehearsal_card = get_or_create_rehearsal_card(db, user_id=card.user_id, cosplan_card=card)
         participant_user = db.get(User, card.user_id)
         if participant_user:
+            readable_date = rehearsal_date.strftime("%d-%m-%Y")
+            readable_time = f" {rehearsal_time}" if rehearsal_time else ""
+            leader_alias = preferred_user_alias(user)
+            enqueue_notification_if_missing(
+                db,
+                user_id=participant_user.id,
+                from_user_id=user.id,
+                source_card_id=card.id,
+                message=(
+                    f"Руководитель @{leader_alias} предложил репетицию по «{card.character_name}» "
+                    f"на {readable_date}{readable_time}."
+                ),
+            )
             busy_items = user_busy_items_on_date(
                 db,
                 user_id=participant_user.id,
                 target_date=rehearsal_date,
             )
             if busy_items:
-                readable_date = rehearsal_date.strftime("%d-%m-%Y")
-                leader_alias = preferred_user_alias(user)
                 participant_alias = preferred_user_alias(participant_user)
                 conflicts_text = "; ".join(busy_items)
                 enqueue_notification_if_missing(
@@ -5651,6 +5790,52 @@ async def festivals_notifications_mark_read(request: Request, db: Session = Depe
     )
     db.commit()
     add_flash(request, "Уведомления отмечены как прочитанные.", "success")
+    return redirect(next_url)
+
+
+@app.post("/notifications/pigeon")
+async def notifications_send_pigeon(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    form = await request.form()
+    recipient_alias_raw = str(form.get("recipient_alias", "")).strip()
+    message_body = str(form.get("message", "")).strip()
+    next_url = safe_redirect_target(str(form.get("next", "")).strip(), "/")
+
+    if not recipient_alias_raw:
+        add_flash(request, "Укажите ник получателя.", "error")
+        return redirect(next_url)
+    if not message_body:
+        add_flash(request, "Введите текст сообщения.", "error")
+        return redirect(next_url)
+    if len(message_body) > 1500:
+        add_flash(request, "Сообщение слишком длинное (максимум 1500 символов).", "error")
+        return redirect(next_url)
+
+    alias_to_username, users_by_username, _ = build_user_alias_lookup(db)
+    canonical_username = resolve_alias_to_username(recipient_alias_raw, alias_to_username)
+    recipient = users_by_username.get(canonical_username.casefold())
+    if not recipient:
+        add_flash(request, "Пользователь с таким ником не найден.", "error")
+        return redirect(next_url)
+    if recipient.id == user.id:
+        add_flash(request, "Нельзя отправить голубя самому себе.", "error")
+        return redirect(next_url)
+
+    sender_alias = preferred_user_alias(user)
+    payload = f"Курлык! (@{sender_alias}) {message_body}"
+    enqueue_notification_if_missing(
+        db,
+        user_id=recipient.id,
+        from_user_id=user.id,
+        source_card_id=None,
+        message=payload,
+    )
+    db.commit()
+
+    add_flash(request, f"Птица отправлена пользователю @{preferred_user_alias(recipient)}.", "success")
     return redirect(next_url)
 
 

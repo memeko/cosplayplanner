@@ -15,6 +15,7 @@
 {% if cards %}
   <div class="cards-grid">
     {% for card in cards %}
+      {% set rehearsal_stat = rehearsal_stats_by_card.get(card.id) %}
       <article class="card">
         <h3>
           <a href="/cosplan/{{ card.id }}" class="card-title-link">{{ card.character_name }}</a>
@@ -26,6 +27,12 @@
         <p class="meta">Тип: {{ "Проект" if card.plan_type == "project" else "Личное" }}</p>
         <p class="meta">Дедлайн: {{ card.project_deadline or "—" }}</p>
         <p class="meta">Ориентировочная цена: {{ '%.2f'|format(card_totals.get(card.id, 0.0)) }} {{ card_total_currencies.get(card.id, "") }}</p>
+        {% if rehearsal_stat and rehearsal_stat.total %}
+          <p class="meta">
+            Репетиции: {{ rehearsal_stat.total }} (активные: {{ rehearsal_stat.active }})
+            {% if rehearsal_stat.upcoming_date %}· ближайшая: {{ rehearsal_stat.upcoming_date.strftime('%d-%m-%Y') }}{% endif %}
+          </p>
+        {% endif %}
         {% if card.is_shared_copy %}
           <p class="meta">Карточка добавлена по вашему нику другим пользователем.</p>
         {% endif %}
