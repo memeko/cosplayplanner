@@ -23,6 +23,37 @@
     width: 44px;
     text-align: right;
   }
+  .task-add-form {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 0.6rem;
+    align-items: end;
+    margin-top: 0.5rem;
+  }
+  .task-add-form label {
+    min-width: 0;
+  }
+  .task-add-form input,
+  .task-add-form select {
+    width: 100%;
+    min-width: 0;
+  }
+  .task-add-actions {
+    grid-column: 1 / -1;
+    display: flex;
+    justify-content: flex-end;
+  }
+  @media (max-width: 780px) {
+    .task-add-form {
+      grid-template-columns: 1fr;
+    }
+    .task-add-actions {
+      justify-content: stretch;
+    }
+    .task-add-actions .btn {
+      width: 100%;
+    }
+  }
 </style>
 
 {% if progress_items %}
@@ -156,7 +187,7 @@
 
       {% set assignee_options = task_assignees_by_progress.get(row.id, []) %}
       {% if assignee_options %}
-        <form method="post" action="/in-progress/{{ row.id }}/tasks/add" class="grid three-col">
+        <form method="post" action="/in-progress/{{ row.id }}/tasks/add" class="task-add-form">
           <label>
             Ответственный
             <select name="task_assignee" required>
@@ -170,7 +201,7 @@
             Задание
             <input type="text" name="task_text" placeholder="Что нужно сделать" required />
           </label>
-          <div class="actions-inline">
+          <div class="task-add-actions">
             <button type="submit" class="btn">Добавить задание</button>
           </div>
         </form>

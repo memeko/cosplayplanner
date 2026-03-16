@@ -710,6 +710,56 @@ def parse_id_list(values: list[Any]) -> list[int]:
     return parsed
 
 
+def parse_related_card_links(raw_values: list[Any], *, legacy_user_id: int | None = None) -> list[dict[str, int]]:
+    links: list[dict[str, int]] = []
+    seen: set[tuple[int, int]] = set()
+
+    def parse_int(value: Any) -> int | None:
+        try:
+            parsed = int(str(value).strip())
+        except (TypeError, ValueError):
+            return None
+        return parsed if parsed > 0 else None
+
+    for raw in raw_values:
+        card_id: int | None = None
+        user_id: int | None = None
+
+        if isinstance(raw, dict):
+            card_id = parse_int(raw.get("card_id") or raw.get("id"))
+            user_id = parse_int(raw.get("user_id"))
+        else:
+            card_id = parse_int(raw)
+            user_id = legacy_user_id if legacy_user_id and legacy_user_id > 0 else None
+
+        if not card_id:
+            continue
+        if not user_id and legacy_user_id and legacy_user_id > 0:
+            user_id = legacy_user_id
+        if not user_id:
+            continue
+
+        key = (card_id, user_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        links.append({"card_id": card_id, "user_id": user_id})
+
+    return links
+
+
+def related_card_ids_for_user(
+    raw_values: list[Any],
+    *,
+    target_user_id: int,
+    legacy_user_id: int | None = None,
+) -> list[int]:
+    if target_user_id <= 0:
+        return []
+    related_links = parse_related_card_links(raw_values, legacy_user_id=legacy_user_id)
+    return [item["card_id"] for item in related_links if item["user_id"] == target_user_id]
+
+
 def get_accessible_card(
     db: Session,
     card_id: int,
@@ -1768,14 +1818,18 @@ def sync_shared_cards_for_nicks(source_card: CosplanCard, actor: User, db: Sessi
                     user_id=target_user.id,
                     from_user_id=actor.id,
                     source_card_id=source_card.id,
-                    message=f"{actor.username} добавил(а) вас как сокосплеера в карточку '{source_card.character_name}'.",
+                    message=(
+                        "Карточка добавлена по вашему нику другим пользователем. "
+                        f"Проект: «{source_card.character_name}» (инициатор: @{preferred_user_alias(actor)})."
+                    ),
                     is_read=False,
                 )
             )
         else:
             existing_notification.from_user_id = actor.id
             existing_notification.message = (
-                f"{actor.username} обновил(а) карточку '{source_card.character_name}' с вашим ником."
+                "Карточка по вашему нику обновлена другим пользователем. "
+                f"Проект: «{source_card.character_name}» (инициатор: @{preferred_user_alias(actor)})."
             )
             existing_notification.is_read = False
 
@@ -1824,7 +1878,7 @@ def redirect(url: str) -> RedirectResponse:
     return RedirectResponse(url=url, status_code=303)
 
 
-def get_card_form_values(card: CosplanCard | None = None) -> dict[str, Any]:
+def get_card_form_values(card: CosplanCard | None = None, *, actor_user_id: int | None = None) -> dict[str, Any]:
     if not card:
         return {
             "character_name": "",
@@ -1925,6 +1979,12 @@ def get_card_form_values(card: CosplanCard | None = None) -> dict[str, Any]:
     coproplayer_alias_rows = as_list(card.coproplayers_json) or as_list(card.coproplayer_nicks_json)
     if not coproplayer_alias_rows:
         coproplayer_alias_rows = [""]
+    related_links_user_id = actor_user_id if actor_user_id and actor_user_id > 0 else card.user_id
+    related_ids_for_editor = related_card_ids_for_user(
+        as_list(card.related_cards_json),
+        target_user_id=related_links_user_id,
+        legacy_user_id=card.user_id,
+    )
     return {
         "character_name": card.character_name or "",
         "fandom": card.fandom or "",
@@ -1978,7 +2038,7 @@ def get_card_form_values(card: CosplanCard | None = None) -> dict[str, Any]:
         "project_leader": card.project_leader or "",
         "cosbands_json": as_list(card.cosbands_json),
         "project_deadline": card.project_deadline.isoformat() if card.project_deadline else "",
-        "related_card_ids": parse_id_list(as_list(card.related_cards_json)),
+        "related_card_ids": related_ids_for_editor,
         "planned_festivals_json": as_list(card.planned_festivals_json),
         "submission_date": card.submission_date.isoformat() if card.submission_date else "",
         "nominations_json": as_list(card.nominations_json),
@@ -2030,7 +2090,12 @@ def get_card_form_values(card: CosplanCard | None = None) -> dict[str, Any]:
     }
 
 
-def card_options(db: Session, user: User, current_card_id: int | None = None) -> dict[str, Any]:
+def card_options(
+    db: Session,
+    user: User,
+    current_card_id: int | None = None,
+    related_cards_user_id: int | None = None,
+) -> dict[str, Any]:
     festival_rows = db.execute(
         select(Festival.name, Festival.city).where(Festival.user_id == user.id).order_by(Festival.city, Festival.name)
     ).all()
@@ -2050,11 +2115,14 @@ def card_options(db: Session, user: User, current_card_id: int | None = None) ->
 
     all_festival_options = merge_unique(festival_names, get_options(db, user.id, "festival"))
     festival_custom_options = [value for value in all_festival_options if value not in set(festival_names)]
-    author_alias = preferred_user_alias(user)
+    related_user = db.get(User, related_cards_user_id) if related_cards_user_id else user
+    if not related_user:
+        related_user = user
+    author_alias = preferred_user_alias(related_user)
     own_cards = db.execute(
         select(CosplanCard)
         .where(
-            CosplanCard.user_id == user.id,
+            CosplanCard.user_id == related_user.id,
             CosplanCard.is_shared_copy.is_(False),
         )
         .order_by(CosplanCard.updated_at.desc(), CosplanCard.id.desc())
@@ -2240,7 +2308,21 @@ def get_project_search_post_form_values(post: ProjectSearchPost | None = None, u
 def index(request: Request, db: Session = Depends(get_db)):
     user = current_user(request, db)
     if user:
-        return redirect("/cosplan")
+        notifications = db.execute(
+            select(FestivalNotification)
+            .where(FestivalNotification.user_id == user.id)
+            .order_by(FestivalNotification.created_at.desc())
+            .limit(50)
+        ).scalars().all()
+        unread_notifications = sum(1 for note in notifications if not note.is_read)
+        return template_response(
+            request,
+            "news.html",
+            user=user,
+            active_tab=None,
+            notifications=notifications,
+            unread_notifications=unread_notifications,
+        )
     return template_response(request, "landing.html", user=None, active_tab=None)
 
 
@@ -2627,7 +2709,10 @@ def cosplan_export_csv(request: Request, db: Session = Depends(get_db)):
                 card.plan_type or "",
                 card.city or "",
                 ", ".join(as_list(card.planned_festivals_json)),
-                ", ".join(str(value) for value in parse_id_list(as_list(card.related_cards_json))),
+                ", ".join(
+                    str(item["card_id"])
+                    for item in parse_related_card_links(as_list(card.related_cards_json), legacy_user_id=card.user_id)
+                ),
                 ", ".join(as_list(card.nominations_json)),
                 ", ".join(as_list(card.coproplayers_json)),
                 ", ".join(as_list(card.coproplayer_nicks_json)),
@@ -2672,7 +2757,7 @@ def cosplan_new(request: Request, db: Session = Depends(get_db)):
         editing=False,
         card_id=None,
         form=get_card_form_values(),
-        **card_options(db, user, current_card_id=None),
+        **card_options(db, user, current_card_id=None, related_cards_user_id=user.id),
     )
 
 
@@ -2730,25 +2815,34 @@ def cosplan_detail(card_id: int, request: Request, db: Session = Depends(get_db)
     card_total, card_total_currency = estimate_card_total_and_currency(card)
     performance_total = performance_rehearsal_total(card)
     related_cards: list[dict[str, Any]] = []
-    related_ids = parse_id_list(as_list(card.related_cards_json))
-    if related_ids:
+    related_links = parse_related_card_links(as_list(card.related_cards_json), legacy_user_id=card.user_id)
+    if related_links:
+        related_ids = [item["card_id"] for item in related_links]
         linked_cards_rows = db.execute(
             select(CosplanCard).where(
                 CosplanCard.id.in_(related_ids),
-                CosplanCard.user_id == card.user_id,
                 CosplanCard.is_shared_copy.is_(False),
             )
         ).scalars().all()
         linked_cards_by_id = {item.id: item for item in linked_cards_rows}
-        default_author = f"@{preferred_user_alias(card_owner)}" if card_owner else ""
-        for related_id in related_ids:
+        related_owner_ids = {item.user_id for item in linked_cards_rows}
+        related_owner_ids.update(item["user_id"] for item in related_links)
+        related_owners: dict[int, User] = {}
+        if related_owner_ids:
+            related_owner_rows = db.execute(select(User).where(User.id.in_(related_owner_ids))).scalars().all()
+            related_owners = {item.id: item for item in related_owner_rows}
+        for related_link in related_links:
+            related_id = related_link["card_id"]
             linked = linked_cards_by_id.get(related_id)
             if not linked or linked.id == card.id:
                 continue
+            link_author = related_owners.get(related_link["user_id"]) or related_owners.get(linked.user_id)
+            author_label = f"@{preferred_user_alias(link_author)}" if link_author else ""
+            card_label = linked.character_name or f"Карточка #{linked.id}"
             related_cards.append(
                 {
                     "id": linked.id,
-                    "label": f"{linked.character_name or f'Карточка #{linked.id}'}, {default_author}".strip(", "),
+                    "label": f"{card_label}, {author_label}".strip(", "),
                 }
             )
     return template_response(
@@ -2857,8 +2951,13 @@ def cosplan_edit(card_id: int, request: Request, db: Session = Depends(get_db)):
         active_tab="cosplan",
         editing=True,
         card_id=card.id,
-        form=get_card_form_values(card),
-        **card_options(db, owner_for_options, current_card_id=card.id),
+        form=get_card_form_values(card, actor_user_id=user.id),
+        **card_options(
+            db,
+            owner_for_options,
+            current_card_id=card.id,
+            related_cards_user_id=user.id,
+        ),
     )
 
 
@@ -3013,19 +3112,25 @@ def save_card_from_form(form: Any, card: CosplanCard, user: User, db: Session) -
         card.project_leader = None
     card.project_deadline = parse_date(str(form.get("project_deadline", "")))
     selected_related_ids = parse_id_list(list(form.getlist("related_card_ids")))
-    valid_related_ids: list[int] = []
-    if card.plan_type == "project" and selected_related_ids:
-        valid_ids = set(
-            db.execute(
-                select(CosplanCard.id).where(
-                    CosplanCard.id.in_(selected_related_ids),
-                    CosplanCard.user_id == card.user_id,
-                    CosplanCard.is_shared_copy.is_(False),
-                )
-            ).scalars().all()
-        )
-        valid_related_ids = [card_id for card_id in selected_related_ids if card_id in valid_ids and card_id != card.id]
-    card.related_cards_json = valid_related_ids
+    existing_related_links = parse_related_card_links(as_list(card.related_cards_json), legacy_user_id=card.user_id)
+    if card.plan_type == "project":
+        valid_related_ids: list[int] = []
+        if selected_related_ids:
+            valid_ids = set(
+                db.execute(
+                    select(CosplanCard.id).where(
+                        CosplanCard.id.in_(selected_related_ids),
+                        CosplanCard.user_id == user.id,
+                        CosplanCard.is_shared_copy.is_(False),
+                    )
+                ).scalars().all()
+            )
+            valid_related_ids = [card_id for card_id in selected_related_ids if card_id in valid_ids and card_id != card.id]
+        preserved_links = [item for item in existing_related_links if item["user_id"] != user.id]
+        editor_links = [{"card_id": card_id, "user_id": user.id} for card_id in valid_related_ids]
+        card.related_cards_json = preserved_links + editor_links
+    else:
+        card.related_cards_json = []
 
     cosbands = merge_unique(form.getlist("cosbands"), split_csv(str(form.get("cosbands_new", ""))))
     festivals = merge_unique(
@@ -5433,13 +5538,6 @@ def festivals_list(request: Request, db: Session = Depends(get_db)):
     )
 
     show_summary = not any([city_filter, nomination_filter, coproplayer_filter, only_going])
-    notifications = db.execute(
-        select(FestivalNotification)
-        .where(FestivalNotification.user_id == user.id)
-        .order_by(FestivalNotification.created_at.desc())
-        .limit(30)
-    ).scalars().all()
-    unread_notifications = sum(1 for note in notifications if not note.is_read)
 
     moderator_announcements: list[FestivalAnnouncement] = []
     if is_moderator_user(user):
@@ -5484,8 +5582,6 @@ def festivals_list(request: Request, db: Session = Depends(get_db)):
         festival_coproplayers_display=festival_coproplayers_display,
         show_summary=show_summary,
         summary_rows=summary_rows,
-        notifications=notifications,
-        unread_notifications=unread_notifications,
         user_home_city=user.home_city or "",
         user_home_cities=home_city_values,
         home_city_festival_ids=home_city_festival_ids,
@@ -5504,31 +5600,35 @@ def festivals_list(request: Request, db: Session = Depends(get_db)):
 
 
 @app.post("/festivals/notifications/mark-read")
-def festivals_notifications_mark_read(request: Request, db: Session = Depends(get_db)):
+async def festivals_notifications_mark_read(request: Request, db: Session = Depends(get_db)):
     user = current_user(request, db)
     if not user:
         return redirect("/login")
+    form = await request.form()
+    next_url = safe_redirect_target(str(form.get("next", "")).strip(), "/festivals")
     db.execute(
         text("UPDATE festival_notifications SET is_read = 1 WHERE user_id = :user_id"),
         {"user_id": user.id},
     )
     db.commit()
     add_flash(request, "Уведомления отмечены как прочитанные.", "success")
-    return redirect("/festivals")
+    return redirect(next_url)
 
 
 @app.post("/festivals/notifications/clear")
-def festivals_notifications_clear(request: Request, db: Session = Depends(get_db)):
+async def festivals_notifications_clear(request: Request, db: Session = Depends(get_db)):
     user = current_user(request, db)
     if not user:
         return redirect("/login")
+    form = await request.form()
+    next_url = safe_redirect_target(str(form.get("next", "")).strip(), "/festivals")
     db.execute(
         text("DELETE FROM festival_notifications WHERE user_id = :user_id"),
         {"user_id": user.id},
     )
     db.commit()
     add_flash(request, "Список оповещений очищен.", "success")
-    return redirect("/festivals")
+    return redirect(next_url)
 
 
 @app.post("/festivals/notifications/{notification_id}/ignore")
