@@ -16,11 +16,12 @@ from typing import Any, Callable
 from urllib.parse import parse_qs, urlparse
 
 import requests
-from fastapi import Depends, FastAPI, Request
-from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, StreamingResponse
+from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from passlib.context import CryptContext
+from PIL import Image, ImageOps, UnidentifiedImageError
 from sqlalchemy import and_, func, inspect, or_, select, text
 from sqlalchemy.orm import Session
 from starlette.middleware.gzip import GZipMiddleware
@@ -38,6 +39,7 @@ from .models import (
     CommunityMasterComment,
     CommunityQuestion,
     CommunityQuestionComment,
+    CommunityStudio,
     CosplanCard,
     Festival,
     FestivalAnnouncement,
@@ -174,6 +176,22 @@ MASTER_TYPE_OPTIONS = [
     "другое",
 ]
 
+STUDIO_TAG_OPTIONS = [
+    "Китай",
+    "Япония",
+    "современная",
+    "лофт",
+    "Средневековье",
+    "романтика",
+    "повседневная",
+    "закусочная",
+    "кибер",
+    "циклорама",
+    "природа",
+    "уличная",
+    "частная",
+]
+
 ARTICLE_MAX_TAGS = 15
 ARTICLE_MAX_BODY_LENGTH = 15000
 
@@ -196,6 +214,9 @@ ANISEARCH_BIRTHDAYS_MONTH_URL = "https://www.anisearch.com/character/birthdays?m
 HTTP_TIMEOUT_SECONDS = 8
 NETWORK_CACHE_TTL_SECONDS = 60 * 60 * 6
 NETWORK_CACHE: dict[str, tuple[datetime, Any]] = {}
+MAX_UPLOAD_INPUT_BYTES = 20 * 1024 * 1024
+MAX_GALLERY_IMAGE_BYTES = 30 * 1024
+MAX_GALLERY_IMAGE_WIDTH = 512
 
 RU_MONTH_WORDS_TO_NUM = {
     "января": 1,
@@ -459,6 +480,8 @@ def apply_schema_migrations() -> None:
             CommunityMaster.__table__.create(bind=conn, checkfirst=True)
         if "community_master_comments" not in existing_tables:
             CommunityMasterComment.__table__.create(bind=conn, checkfirst=True)
+        if "community_studios" not in existing_tables:
+            CommunityStudio.__table__.create(bind=conn, checkfirst=True)
         if "community_articles" not in existing_tables:
             CommunityArticle.__table__.create(bind=conn, checkfirst=True)
         if "community_article_comments" not in existing_tables:
@@ -525,6 +548,61 @@ def healthz() -> dict[str, str]:
 def readyz(db: Session = Depends(get_db)) -> dict[str, str]:
     db.execute(text("SELECT 1"))
     return {"status": "ready"}
+
+
+@app.get("/media/{filename}", include_in_schema=False)
+def media_file(filename: str):
+    safe_name = safe_media_filename(filename)
+    file_path = media_storage_path() / safe_name
+    if not file_path.exists() or not file_path.is_file():
+        raise HTTPException(status_code=404, detail="Файл не найден.")
+    return FileResponse(str(file_path), media_type="image/webp")
+
+
+@app.post("/media/upload-image")
+async def media_upload_image(
+    request: Request,
+    image: UploadFile = File(...),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    user = current_user(request, db)
+    if not user:
+        raise HTTPException(status_code=401, detail="Требуется авторизация.")
+
+    if not image.filename:
+        raise HTTPException(status_code=400, detail="Файл не передан.")
+    content_type = (image.content_type or "").lower()
+    if not content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="Нужен файл изображения.")
+
+    raw_bytes = await image.read(MAX_UPLOAD_INPUT_BYTES + 1)
+    if len(raw_bytes) > MAX_UPLOAD_INPUT_BYTES:
+        raise HTTPException(status_code=400, detail="Изображение слишком большое (до 20 МБ).")
+
+    try:
+        webp_bytes, width, height = compress_image_to_webp(
+            raw_bytes,
+            max_output_bytes=MAX_GALLERY_IMAGE_BYTES,
+            max_width=MAX_GALLERY_IMAGE_WIDTH,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    file_name = f"{datetime.utcnow().strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:14]}.webp"
+    destination = media_storage_path() / file_name
+    destination.write_bytes(webp_bytes)
+
+    public_path = f"/media/{file_name}"
+    base_url = str(request.base_url).rstrip("/")
+    return {
+        "ok": True,
+        "url": f"{base_url}{public_path}",
+        "path": public_path,
+        "size_bytes": len(webp_bytes),
+        "width": width,
+        "height": height,
+        "format": "webp",
+    }
 
 
 def estimate_card_total_and_currency(card: CosplanCard) -> tuple[float, str]:
@@ -1538,6 +1616,96 @@ def backup_storage_path() -> Path:
     return Path("./backups").resolve()
 
 
+def media_storage_path() -> Path:
+    custom_path = os.getenv("MEDIA_DIR", "").strip()
+    if custom_path:
+        path = Path(custom_path).expanduser().resolve()
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    data_dir = Path("/data")
+    if data_dir.exists() and os.access(data_dir, os.W_OK):
+        path = (data_dir / "media").resolve()
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    path = Path("./app/static/media").resolve()
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def safe_media_filename(value: str) -> str:
+    name = (value or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", name):
+        raise HTTPException(status_code=404, detail="Файл не найден.")
+    return name
+
+
+def _resize_to_width(image: Image.Image, width: int) -> Image.Image:
+    if image.width <= width:
+        return image.copy()
+    ratio = width / float(image.width)
+    new_height = max(1, int(round(image.height * ratio)))
+    return image.resize((width, new_height), Image.Resampling.LANCZOS)
+
+
+def compress_image_to_webp(
+    raw_bytes: bytes,
+    *,
+    max_output_bytes: int = MAX_GALLERY_IMAGE_BYTES,
+    max_width: int = MAX_GALLERY_IMAGE_WIDTH,
+) -> tuple[bytes, int, int]:
+    if not raw_bytes:
+        raise ValueError("Файл пуст.")
+
+    try:
+        with Image.open(io.BytesIO(raw_bytes)) as source:
+            prepared = ImageOps.exif_transpose(source)
+            if prepared.mode in {"P", "L", "CMYK"}:
+                prepared = prepared.convert("RGB")
+            elif prepared.mode not in {"RGB", "RGBA"}:
+                prepared = prepared.convert("RGB")
+    except UnidentifiedImageError as exc:
+        raise ValueError("Неподдерживаемый формат изображения.") from exc
+    except OSError as exc:
+        raise ValueError("Не удалось прочитать изображение.") from exc
+
+    start_width = min(prepared.width, max_width)
+    widths: list[int] = []
+    cursor = start_width
+    while cursor >= 32:
+        widths.append(cursor)
+        if cursor <= 64:
+            break
+        cursor = max(32, int(cursor * 0.85))
+    widths = list(dict.fromkeys(widths))
+
+    qualities = [82, 74, 66, 58, 50, 42, 34, 28, 22, 16, 10, 6]
+    best_blob: bytes | None = None
+    best_dims = (prepared.width, prepared.height)
+
+    for width in widths:
+        resized = _resize_to_width(prepared, width)
+        for quality in qualities:
+            buffer = io.BytesIO()
+            resized.save(
+                buffer,
+                format="WEBP",
+                quality=quality,
+                method=6,
+            )
+            blob = buffer.getvalue()
+            if best_blob is None or len(blob) < len(best_blob):
+                best_blob = blob
+                best_dims = (resized.width, resized.height)
+            if len(blob) <= max_output_bytes:
+                return blob, resized.width, resized.height
+
+    if best_blob is not None and len(best_blob) <= max_output_bytes:
+        return best_blob, best_dims[0], best_dims[1]
+    raise ValueError("Не удалось сжать изображение до 30 КБ. Попробуйте другое изображение.")
+
+
 def create_sqlite_backup_file(prefix: str = "cosplay-backup") -> Path:
     db_path = sqlite_database_path()
     if not db_path or not db_path.exists():
@@ -1988,6 +2156,30 @@ def parse_pigeon_message(message: str | None) -> tuple[str, str] | None:
 
 def is_pigeon_message(message: str | None) -> bool:
     return parse_pigeon_message(message) is not None
+
+
+def get_latest_unread_pigeon(db: Session, user_id: int) -> dict[str, Any] | None:
+    notifications = db.execute(
+        select(FestivalNotification)
+        .where(
+            FestivalNotification.user_id == user_id,
+            FestivalNotification.is_read.is_(False),
+        )
+        .order_by(FestivalNotification.created_at.desc(), FestivalNotification.id.desc())
+        .limit(50)
+    ).scalars().all()
+    for note in notifications:
+        parsed = parse_pigeon_message(note.message)
+        if not parsed:
+            continue
+        sender_alias, body = parsed
+        return {
+            "id": note.id,
+            "sender_alias": sender_alias,
+            "body": body or "Без текста",
+            "created_at": (note.created_at.isoformat() if note.created_at else ""),
+        }
+    return None
 
 
 def _render_article_inline(text: str) -> str:
@@ -5976,6 +6168,270 @@ def community_masters_delete(master_id: int, request: Request, db: Session = Dep
     return redirect("/community/masters")
 
 
+def normalize_studio_tags(raw_tags: list[str]) -> list[str]:
+    normalized_map = {value.casefold(): value for value in STUDIO_TAG_OPTIONS}
+    result: list[str] = []
+    for raw_value in raw_tags:
+        key = str(raw_value or "").strip().casefold()
+        if not key:
+            continue
+        tag_value = normalized_map.get(key)
+        if tag_value and tag_value not in result:
+            result.append(tag_value)
+    return result
+
+
+def get_studio_form_values(studio: CommunityStudio | None = None) -> dict[str, Any]:
+    if not studio:
+        return {
+            "name": "",
+            "city": "",
+            "address": "",
+            "gallery_input": "",
+            "contact": "",
+            "price_rows": [],
+            "tags_json": [],
+        }
+    return {
+        "name": studio.name or "",
+        "city": studio.city or "",
+        "address": studio.address or "",
+        "gallery_input": "\n".join(as_list(studio.gallery_json)),
+        "contact": studio.contact or "",
+        "price_rows": format_master_price_rows_for_form(as_list(studio.price_list_json)),
+        "tags_json": normalize_studio_tags(as_list(studio.tags_json)),
+    }
+
+
+def save_studio_from_form(form: Any, studio: CommunityStudio) -> tuple[bool, str]:
+    name = str(form.get("name", "")).strip()
+    city = str(form.get("city", "")).strip()
+    address = str(form.get("address", "")).strip()
+    gallery_input = str(form.get("gallery_input", ""))
+    contact = str(form.get("contact", "")).strip()
+    price_rows = parse_master_price_rows_from_form(form)
+    tags = normalize_studio_tags([str(item) for item in form.getlist("tags")])
+
+    if not name:
+        return False, "Укажите название студии."
+    if len(name) > 255:
+        return False, "Название студии слишком длинное (до 255 символов)."
+    if not city:
+        return False, "Укажите город."
+    if len(city) > 255:
+        return False, "Название города слишком длинное (до 255 символов)."
+    if len(address) > 255:
+        return False, "Адрес слишком длинный (до 255 символов)."
+    if len(contact) > 255:
+        return False, "Контакт слишком длинный (до 255 символов)."
+
+    studio.name = name
+    studio.city = city
+    studio.address = address or None
+    studio.gallery_json = parse_reference_values(gallery_input)
+    studio.contact = contact or None
+    studio.price_list_json = price_rows
+    studio.tags_json = tags
+    return True, ""
+
+
+@app.get("/community/studios", response_class=HTMLResponse)
+def community_studios_list(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    q = request.query_params.get("q", "").strip()
+    city_filter = request.query_params.get("city", "").strip()
+    selected_tags = normalize_studio_tags([str(item) for item in request.query_params.getlist("tag")])
+
+    studios = db.execute(
+        select(CommunityStudio).order_by(CommunityStudio.updated_at.desc(), CommunityStudio.id.desc())
+    ).scalars().all()
+
+    if q:
+        needle = q.casefold()
+        studios = [
+            item
+            for item in studios
+            if needle in (item.name or "").casefold()
+            or needle in (item.city or "").casefold()
+            or needle in (item.address or "").casefold()
+            or needle in (item.contact or "").casefold()
+        ]
+    if city_filter:
+        city_filter_values = split_city_values(city_filter)
+        studios = [item for item in studios if city_matches_any(city_filter_values, item.city)]
+    if selected_tags:
+        selected_keys = {value.casefold() for value in selected_tags}
+        filtered: list[CommunityStudio] = []
+        for item in studios:
+            item_keys = {str(tag).strip().casefold() for tag in as_list(item.tags_json) if str(tag).strip()}
+            if selected_keys & item_keys:
+                filtered.append(item)
+        studios = filtered
+
+    owner_ids = {item.user_id for item in studios}
+    owners_by_id: dict[int, User] = {}
+    if owner_ids:
+        owners = db.execute(select(User).where(User.id.in_(owner_ids))).scalars().all()
+        owners_by_id = {item.id: item for item in owners}
+
+    city_options = sorted(
+        merge_unique([item.city for item in studios if item.city]),
+        key=lambda value: value.casefold(),
+    )
+
+    return template_response(
+        request,
+        "community_studios_list.html",
+        user=user,
+        active_tab="community",
+        community_tab="studios",
+        studios=studios,
+        owners_by_id=owners_by_id,
+        q=q,
+        city_filter=city_filter,
+        selected_tags=selected_tags,
+        studio_tag_options=STUDIO_TAG_OPTIONS,
+        city_options=city_options,
+    )
+
+
+@app.get("/community/studios/new", response_class=HTMLResponse)
+def community_studios_new(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    return template_response(
+        request,
+        "community_studio_form.html",
+        user=user,
+        active_tab="community",
+        community_tab="studios",
+        editing=False,
+        studio_id=None,
+        form=get_studio_form_values(),
+        studio_tag_options=STUDIO_TAG_OPTIONS,
+    )
+
+
+@app.post("/community/studios/new")
+async def community_studios_create(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    form = await request.form()
+    studio = CommunityStudio(user_id=user.id, name="", city="")
+    ok, error_text = save_studio_from_form(form, studio)
+    if not ok:
+        add_flash(request, error_text, "error")
+        return redirect("/community/studios/new")
+
+    db.add(studio)
+    db.commit()
+    add_flash(request, "Карточка студии опубликована.", "success")
+    return redirect(f"/community/studios/{studio.id}")
+
+
+@app.get("/community/studios/{studio_id}", response_class=HTMLResponse)
+def community_studios_detail(studio_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    studio = db.get(CommunityStudio, studio_id)
+    if not studio:
+        add_flash(request, "Карточка студии не найдена.", "error")
+        return redirect("/community/studios")
+
+    owner = db.get(User, studio.user_id)
+    return template_response(
+        request,
+        "community_studio_detail.html",
+        user=user,
+        active_tab="community",
+        community_tab="studios",
+        studio=studio,
+        owner=owner,
+        price_rows=format_master_price_rows_for_form(as_list(studio.price_list_json)),
+        studio_tags=normalize_studio_tags(as_list(studio.tags_json)),
+    )
+
+
+@app.get("/community/studios/{studio_id}/edit", response_class=HTMLResponse)
+def community_studios_edit(studio_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    studio = db.get(CommunityStudio, studio_id)
+    if not studio:
+        add_flash(request, "Карточка студии не найдена.", "error")
+        return redirect("/community/studios")
+    if studio.user_id != user.id:
+        add_flash(request, "Редактировать можно только свою карточку студии.", "error")
+        return redirect(f"/community/studios/{studio_id}")
+
+    return template_response(
+        request,
+        "community_studio_form.html",
+        user=user,
+        active_tab="community",
+        community_tab="studios",
+        editing=True,
+        studio_id=studio.id,
+        form=get_studio_form_values(studio),
+        studio_tag_options=STUDIO_TAG_OPTIONS,
+    )
+
+
+@app.post("/community/studios/{studio_id}/edit")
+async def community_studios_update(studio_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    studio = db.get(CommunityStudio, studio_id)
+    if not studio:
+        add_flash(request, "Карточка студии не найдена.", "error")
+        return redirect("/community/studios")
+    if studio.user_id != user.id:
+        add_flash(request, "Редактировать можно только свою карточку студии.", "error")
+        return redirect(f"/community/studios/{studio_id}")
+
+    form = await request.form()
+    ok, error_text = save_studio_from_form(form, studio)
+    if not ok:
+        add_flash(request, error_text, "error")
+        return redirect(f"/community/studios/{studio_id}/edit")
+
+    db.commit()
+    add_flash(request, "Карточка студии обновлена.", "success")
+    return redirect(f"/community/studios/{studio_id}")
+
+
+@app.post("/community/studios/{studio_id}/delete")
+def community_studios_delete(studio_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    studio = db.get(CommunityStudio, studio_id)
+    if not studio:
+        add_flash(request, "Карточка студии не найдена.", "error")
+        return redirect("/community/studios")
+    if studio.user_id != user.id:
+        add_flash(request, "Удалять можно только свою карточку студии.", "error")
+        return redirect(f"/community/studios/{studio_id}")
+
+    db.delete(studio)
+    db.commit()
+    add_flash(request, "Карточка студии удалена.", "info")
+    return redirect("/community/studios")
+
+
 def get_article_form_values(article: CommunityArticle | None = None, user: User | None = None) -> dict[str, Any]:
     if not article:
         return {
@@ -6543,6 +6999,36 @@ async def festivals_notifications_mark_read(request: Request, db: Session = Depe
     db.commit()
     add_flash(request, "Уведомления отмечены как прочитанные.", "success")
     return redirect(next_url)
+
+
+@app.get("/notifications/pigeon/pending")
+def notifications_pigeon_pending(request: Request, db: Session = Depends(get_db)) -> dict[str, Any]:
+    user = current_user(request, db)
+    if not user:
+        return {"ok": False, "notification": None}
+    return {"ok": True, "notification": get_latest_unread_pigeon(db, user.id)}
+
+
+@app.post("/notifications/pigeon/{notification_id}/seen")
+def notifications_pigeon_seen(notification_id: int, request: Request, db: Session = Depends(get_db)) -> dict[str, Any]:
+    user = current_user(request, db)
+    if not user:
+        return {"ok": False}
+
+    notification = db.execute(
+        select(FestivalNotification).where(
+            FestivalNotification.id == notification_id,
+            FestivalNotification.user_id == user.id,
+        )
+    ).scalar_one_or_none()
+    if not notification:
+        return {"ok": False}
+    if not is_pigeon_message(notification.message):
+        return {"ok": False}
+
+    notification.is_read = True
+    db.commit()
+    return {"ok": True}
 
 
 @app.post("/notifications/pigeon")

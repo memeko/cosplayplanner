@@ -3,35 +3,45 @@
 {% include "community_tabs.html" %}
 
 <section class="section-head">
-  <h1>{{ "Редактирование мастера" if editing else "Новый мастер" }}</h1>
-  <a href="{{ '/community/masters/' ~ master_id if editing else '/community/masters' }}" class="btn">Назад</a>
+  <h1>{{ "Редактирование студии" if editing else "Новая студия" }}</h1>
+  <a href="{{ '/community/studios/' ~ studio_id if editing else '/community/studios' }}" class="btn">Назад</a>
 </section>
 
-<form method="post" action="{{ '/community/masters/' ~ master_id ~ '/edit' if editing else '/community/masters/new' }}" class="grid one-col big-form">
+<form method="post" action="{{ '/community/studios/' ~ studio_id ~ '/edit' if editing else '/community/studios/new' }}" class="grid one-col big-form">
   <section class="box">
     <div class="grid two-col">
       <label>
-        Ник *
-        <input type="text" name="nick" value="{{ form.nick }}" maxlength="100" required />
+        Название *
+        <input type="text" name="name" value="{{ form.name }}" maxlength="255" required />
       </label>
-
       <label>
-        Тип мастера *
-        <select name="master_type" required>
-          {% for option in master_type_options %}
-            <option value="{{ option }}" {% if form.master_type == option %}selected{% endif %}>{{ option|capitalize }}</option>
-          {% endfor %}
-        </select>
+        Город *
+        <input type="text" name="city" value="{{ form.city }}" maxlength="255" required />
+      </label>
+      <label>
+        Адрес
+        <input type="text" name="address" value="{{ form.address }}" maxlength="255" />
+      </label>
+      <label>
+        Контакт
+        <input type="text" name="contact" value="{{ form.contact }}" maxlength="255" placeholder="Телеграм, VK, телефон..." />
       </label>
     </div>
 
     <label>
-      Подробнее *
-      <textarea name="details" rows="8" maxlength="2000" required>{{ form.details }}</textarea>
+      Теги
+      <div class="chips-wrap top-offset">
+        {% for tag in studio_tag_options %}
+          <label class="chip-check">
+            <input type="checkbox" name="tags" value="{{ tag }}" {% if tag in (form.tags_json or []) %}checked{% endif %} />
+            {{ tag }}
+          </label>
+        {% endfor %}
+      </div>
     </label>
 
     <label>
-      Галерея (URL изображений, по одному на строку)
+      Фотографии (URL изображений, по одному на строку)
       <textarea name="gallery_input" id="gallery_input" rows="5" placeholder="https://...">{{ form.gallery_input }}</textarea>
     </label>
     <div class="gallery-upload-row">
@@ -39,7 +49,6 @@
       <button type="button" class="btn" id="gallery_upload_btn">Загрузить фото</button>
       <span class="muted" id="gallery_upload_status"></span>
     </div>
-
     <div class="reference-grid" id="gallery_preview"></div>
   </section>
 
@@ -91,7 +100,7 @@
 
   <div class="actions-inline">
     <button type="submit" class="btn btn-accent">{{ "Сохранить" if editing else "Опубликовать" }}</button>
-    <a href="{{ '/community/masters/' ~ master_id if editing else '/community/masters' }}" class="btn">Отмена</a>
+    <a href="{{ '/community/studios/' ~ studio_id if editing else '/community/studios' }}" class="btn">Отмена</a>
   </div>
 </form>
 
@@ -114,7 +123,7 @@
 
     const image = document.createElement('img');
     image.src = url;
-    image.alt = 'Галерея мастера';
+    image.alt = 'Фото студии';
 
     link.appendChild(image);
     return link;

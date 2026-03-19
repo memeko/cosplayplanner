@@ -85,22 +85,6 @@
   </form>
 </section>
 
-{% if pigeon_notifications %}
-<section class="box pigeon-inbox">
-  <h2>Курлык!</h2>
-  <div class="pigeon-list">
-    {% for note in pigeon_notifications %}
-      <article class="pigeon-item">
-        <h3>Курлык! (@{{ note.sender_alias }})</h3>
-        <p>{{ note.body or "Без текста" }}</p>
-        <span class="muted">({{ note.created_at }})</span>
-      </article>
-    {% endfor %}
-  </div>
-  <p class="muted">После отметки как прочитанное сообщения перейдут в обычный список оповещений.</p>
-</section>
-{% endif %}
-
 <section class="box">
   <div class="row-between">
     <h2>Оповещения {% if unread_notifications %}<span class="chip chip-alert">{{ unread_notifications }}</span>{% endif %}</h2>

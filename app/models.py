@@ -56,6 +56,7 @@ class User(Base):
         back_populates="user",
         cascade="all, delete-orphan",
     )
+    community_studios = relationship("CommunityStudio", back_populates="user", cascade="all, delete-orphan")
     community_articles = relationship("CommunityArticle", back_populates="user", cascade="all, delete-orphan")
     community_article_comments = relationship(
         "CommunityArticleComment",
@@ -530,3 +531,23 @@ class CommunityMasterComment(Base):
 
     master = relationship("CommunityMaster", back_populates="comments")
     user = relationship("User", back_populates="community_master_comments")
+
+
+class CommunityStudio(Base):
+    __tablename__ = "community_studios"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+
+    name = Column(String(255), nullable=False, index=True)
+    city = Column(String(255), nullable=False, index=True)
+    address = Column(String(255), nullable=True)
+    gallery_json = Column(JSON, nullable=False, default=list)
+    contact = Column(String(255), nullable=True)
+    price_list_json = Column(JSON, nullable=False, default=list)
+    tags_json = Column(JSON, nullable=False, default=list)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    user = relationship("User", back_populates="community_studios")

@@ -664,7 +664,12 @@
       URL изображений (через запятую, ; или с новой строки)
       <textarea name="references_input" id="references_input" rows="5" placeholder="https://...">{{ form.references_input }}</textarea>
     </label>
-    <p class="muted">Файлы не загружаются на сервер: используются только внешние ссылки.</p>
+    <div class="gallery-upload-row">
+      <input type="file" id="references_upload_files" accept="image/*" multiple />
+      <button type="button" class="btn" id="references_upload_btn">Загрузить фото</button>
+      <span class="muted" id="references_upload_status"></span>
+    </div>
+    <p class="muted">Можно вставить ссылки вручную или загрузить изображения: они будут конвертированы в WebP (до 30 КБ, ширина до 512 px).</p>
     <div class="reference-grid" id="references_preview">
       {% for url in form.references_json %}
         <a class="reference-tile" href="{{ url }}" target="_blank" rel="noreferrer">
@@ -680,7 +685,12 @@
       Ссылки на Pinterest или iframe (через запятую, ; или с новой строки)
       <textarea name="pose_references_input" id="pose_references_input" rows="5" placeholder="https://www.pinterest.com/pin/...">{{ form.pose_references_input }}</textarea>
     </label>
-    <p class="muted">Можно вставить ссылку на Pinterest-пин или iframe Pinterest. Ссылки сохраняются без загрузки файлов на сервер.</p>
+    <div class="gallery-upload-row">
+      <input type="file" id="pose_upload_files" accept="image/*" multiple />
+      <button type="button" class="btn" id="pose_upload_btn">Загрузить фото</button>
+      <span class="muted" id="pose_upload_status"></span>
+    </div>
+    <p class="muted">Можно вставить ссылку на Pinterest-пин или iframe Pinterest, а также загрузить изображения (конвертация в WebP до 30 КБ).</p>
     <div class="reference-grid" id="pose_references_preview">
       {% for url in form.pose_references_json %}
         {% if url.startswith('iframe:') %}
@@ -805,6 +815,56 @@
     image.onerror = () => link.remove();
     link.appendChild(image);
     return link;
+  };
+
+  const appendUrlsToTextarea = (textarea, urls) => {
+    if (!textarea || !urls.length) return;
+    const existing = textarea.value ? `${textarea.value}\n` : "";
+    textarea.value = `${existing}${urls.join("\n")}`.trim();
+  };
+
+  const uploadImagesToTextarea = async ({
+    fileInputId,
+    targetTextareaId,
+    statusId,
+    afterUpload,
+  }) => {
+    const fileInput = document.getElementById(fileInputId);
+    const targetTextarea = document.getElementById(targetTextareaId);
+    const statusNode = document.getElementById(statusId);
+    if (!fileInput || !targetTextarea || !fileInput.files?.length) {
+      if (statusNode) statusNode.textContent = "Выберите изображение.";
+      return;
+    }
+
+    if (statusNode) statusNode.textContent = "Загрузка...";
+    const uploadedUrls = [];
+    for (const file of Array.from(fileInput.files)) {
+      const formData = new FormData();
+      formData.append("image", file);
+      try {
+        const response = await fetch("/media/upload-image", {
+          method: "POST",
+          body: formData,
+          credentials: "same-origin",
+        });
+        const payload = await response.json();
+        if (!response.ok || !payload?.ok || !payload?.url) {
+          throw new Error(payload?.detail || "Ошибка загрузки");
+        }
+        uploadedUrls.push(payload.url);
+      } catch (error) {
+        if (statusNode) statusNode.textContent = `Ошибка: ${error.message || "не удалось загрузить файл"}`;
+        return;
+      }
+    }
+
+    appendUrlsToTextarea(targetTextarea, uploadedUrls);
+    fileInput.value = "";
+    if (typeof afterUpload === "function") {
+      afterUpload();
+    }
+    if (statusNode) statusNode.textContent = `Загружено: ${uploadedUrls.length}`;
   };
 
   const updateReferencesPreview = () => {
@@ -1277,6 +1337,28 @@
   const poseReferencesInput = document.getElementById("pose_references_input");
   if (poseReferencesInput) {
     poseReferencesInput.addEventListener("input", updateReferencesPreview);
+  }
+  const referencesUploadBtn = document.getElementById("references_upload_btn");
+  if (referencesUploadBtn) {
+    referencesUploadBtn.addEventListener("click", () =>
+      uploadImagesToTextarea({
+        fileInputId: "references_upload_files",
+        targetTextareaId: "references_input",
+        statusId: "references_upload_status",
+        afterUpload: updateReferencesPreview,
+      })
+    );
+  }
+  const poseUploadBtn = document.getElementById("pose_upload_btn");
+  if (poseUploadBtn) {
+    poseUploadBtn.addEventListener("click", () =>
+      uploadImagesToTextarea({
+        fileInputId: "pose_upload_files",
+        targetTextareaId: "pose_references_input",
+        statusId: "pose_upload_status",
+        afterUpload: updateReferencesPreview,
+      })
+    );
   }
 
   document.querySelectorAll(".price-field").forEach((input) => {

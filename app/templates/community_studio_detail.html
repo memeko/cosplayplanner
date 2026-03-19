@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% block content %}
+{% include "community_tabs.html" %}
+
+<section class="section-head">
+  <h1>{{ studio.name }}</h1>
+  <div class="actions-inline">
+    <a href="/community/studios" class="btn">Назад к студиям</a>
+    {% if user and user.id == studio.user_id %}
+      <a href="/community/studios/{{ studio.id }}/edit" class="btn">Редактировать</a>
+      <form method="post" action="/community/studios/{{ studio.id }}/delete" onsubmit="return confirm('Удалить карточку студии?');">
+        <button type="submit" class="btn btn-danger">Удалить</button>
+      </form>
+    {% endif %}
+  </div>
+</section>
+
+<section class="box">
+  <div class="row-between">
+    <p class="meta">Город: {{ studio.city }}</p>
+    {% if owner %}
+      <p class="meta">Добавил(а): <span class="{% if user_is_special(owner) %}nick-special{% endif %}">@{{ owner.cosplay_nick or owner.username }}</span></p>
+    {% endif %}
+  </div>
+  {% if studio.address %}
+    <p class="meta">Адрес: {{ studio.address }}</p>
+  {% endif %}
+  {% if studio.contact %}
+    <p class="meta">Контакт: {{ studio.contact }}</p>
+  {% endif %}
+  {% if studio_tags %}
+    <p class="meta">Теги:</p>
+    <div class="chips-wrap">
+      {% for tag in studio_tags %}
+        <span class="chip">{{ tag }}</span>
+      {% endfor %}
+    </div>
+  {% endif %}
+</section>
+
+{% set gallery = studio.gallery_json or [] %}
+{% if gallery %}
+<section class="box">
+  <h3>Фотографии</h3>
+  <div class="reference-grid top-offset">
+    {% for url in gallery %}
+      <a class="reference-tile" href="{{ url }}" target="_blank" rel="noreferrer">
+        <img src="{{ url }}" alt="Фото студии" loading="lazy" />
+      </a>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
+<section class="box">
+  <h3>Прайс-лист</h3>
+  {% if price_rows %}
+    <div class="top-offset">
+      <table class="table">
+        <thead>
+          <tr>
+            <th>Услуга</th>
+            <th>Стоимость (руб)</th>
+            <th>Комментарий</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in price_rows %}
+            <tr>
+              <td>{{ row.service or "—" }}</td>
+              <td>{% if row.cost != '' and row.cost is not none %}{{ row.cost }}{% else %}—{% endif %}</td>
+              <td>{{ row.comment or "—" }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <p class="muted top-offset">Прайс-лист пока не заполнен.</p>
+  {% endif %}
+</section>
+{% endblock %}
