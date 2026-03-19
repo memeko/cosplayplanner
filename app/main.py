@@ -460,6 +460,9 @@ def apply_schema_migrations() -> None:
             ("is_global_announcement", "BOOLEAN NOT NULL DEFAULT 0"),
             ("source_announcement_id", "INTEGER"),
         ],
+        "work_shift_days": [
+            ("is_half_day", "BOOLEAN NOT NULL DEFAULT 0"),
+        ],
     }
 
     with engine.begin() as conn:
@@ -1449,11 +1452,13 @@ def month_calendar_grid(
     month: int,
     entries: list[dict[str, Any]],
     shift_days: set[int] | None = None,
+    shift_half_days: set[int] | None = None,
 ) -> list[list[dict[str, Any]]]:
     calendar_builder = calendar.Calendar(firstweekday=0)
     matrix = calendar_builder.monthdayscalendar(year, month)
     day_types: dict[int, set[str]] = defaultdict(set)
     normalized_shift_days = {int(day) for day in (shift_days or set()) if isinstance(day, int) and day > 0}
+    normalized_shift_half_days = {int(day) for day in (shift_half_days or set()) if isinstance(day, int) and day > 0}
     for entry in entries:
         entry_date = entry.get("date")
         if not isinstance(entry_date, date) or entry_date.year != year or entry_date.month != month:
@@ -1476,6 +1481,7 @@ def month_calendar_grid(
                 continue
             types = sorted([value for value in day_types.get(day_value, set()) if value])
             has_shift = day_value in normalized_shift_days
+            has_shift_half_day = day_value in normalized_shift_half_days
             week_cells.append(
                 {
                     "day": day_value,
@@ -1484,6 +1490,7 @@ def month_calendar_grid(
                     "is_multi": len(types) > 1,
                     "has_work_shift": has_shift,
                     "is_work_shift_only": has_shift and not types,
+                    "has_half_day_shift": has_shift_half_day,
                 }
             )
         weeks.append(week_cells)
@@ -5264,17 +5271,15 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
         )
         .order_by(PersonalCalendarEvent.event_date, PersonalCalendarEvent.event_time, PersonalCalendarEvent.id)
     ).scalars().all()
-    work_shift_dates = set(
-        db.execute(
-            select(WorkShiftDay.shift_date)
-            .where(
-                WorkShiftDay.user_id == user.id,
-                WorkShiftDay.shift_date.is_not(None),
-                WorkShiftDay.shift_date >= today,
-            )
-            .order_by(WorkShiftDay.shift_date)
-        ).scalars().all()
-    )
+    work_shifts = db.execute(
+        select(WorkShiftDay)
+        .where(
+            WorkShiftDay.user_id == user.id,
+            WorkShiftDay.shift_date.is_not(None),
+            WorkShiftDay.shift_date >= today,
+        )
+        .order_by(WorkShiftDay.shift_date, WorkShiftDay.id)
+    ).scalars().all()
     alias_to_username, users_by_username, _ = build_user_alias_lookup(db)
 
     entries: list[dict[str, Any]] = []
@@ -5370,10 +5375,14 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
         by_month[(event_date.year, event_date.month)].append(entry)
 
     shift_days_by_month: dict[tuple[int, int], set[int]] = defaultdict(set)
-    for shift_date in work_shift_dates:
+    shift_half_days_by_month: dict[tuple[int, int], set[int]] = defaultdict(set)
+    for shift_item in work_shifts:
+        shift_date = shift_item.shift_date
         if not isinstance(shift_date, date):
             continue
         shift_days_by_month[(shift_date.year, shift_date.month)].add(shift_date.day)
+        if bool(shift_item.is_half_day):
+            shift_half_days_by_month[(shift_date.year, shift_date.month)].add(shift_date.day)
 
     month_keys = set(by_month.keys()) | set(shift_days_by_month.keys())
 
@@ -5390,6 +5399,7 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
                     month,
                     month_rows,
                     shift_days=shift_days_by_month.get(year_month, set()),
+                    shift_half_days=shift_half_days_by_month.get(year_month, set()),
                 ),
             }
         )
@@ -5400,7 +5410,7 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
         user=user,
         active_tab="my-calendar",
         month_groups=grouped,
-        work_shift_count=len(work_shift_dates),
+        work_shift_count=len(work_shifts),
         month_weekday_labels=["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"],
     )
 
@@ -5451,6 +5461,9 @@ async def my_calendar_work_shift_add(request: Request, db: Session = Depends(get
     end_date = parse_date(str(form.get("shift_end_date", "")).strip())
     repeat_every_days_raw = str(form.get("shift_repeat_every_days", "7")).strip()
     repeat_weekdays_raw = form.getlist("shift_repeat_weekdays")
+    custom_work_days_raw = str(form.get("shift_custom_work_days", "2")).strip()
+    custom_rest_days_raw = str(form.get("shift_custom_rest_days", "2")).strip()
+    shift_is_half_day = to_bool(form.get("shift_is_half_day"))
 
     if shift_mode not in {"block", "repeat"}:
         add_flash(request, "Неверный режим добавления смен.", "error")
@@ -5468,8 +5481,10 @@ async def my_calendar_work_shift_add(request: Request, db: Session = Depends(get
 
     repeat_every_days = 1
     repeat_weekdays: set[int] = set()
+    custom_work_days = 2
+    custom_rest_days = 2
     if shift_mode == "repeat":
-        if shift_repeat_kind not in {"interval", "weekdays", "two_by_two"}:
+        if shift_repeat_kind not in {"interval", "weekdays", "two_by_two", "three_by_three", "five_by_two", "custom"}:
             add_flash(request, "Неверный тип повтора смен.", "error")
             return redirect("/my-calendar")
         if shift_repeat_kind == "interval":
@@ -5494,8 +5509,32 @@ async def my_calendar_work_shift_add(request: Request, db: Session = Depends(get
             if not repeat_weekdays:
                 add_flash(request, "Для повтора по дням недели выберите хотя бы один день.", "error")
                 return redirect("/my-calendar")
+        elif shift_repeat_kind == "custom":
+            try:
+                custom_work_days = int(custom_work_days_raw)
+                custom_rest_days = int(custom_rest_days_raw)
+            except (TypeError, ValueError):
+                custom_work_days = 0
+                custom_rest_days = 0
+            if custom_work_days <= 0 or custom_rest_days <= 0:
+                add_flash(request, "Для пользовательского графика укажите рабочие и выходные дни больше нуля.", "error")
+                return redirect("/my-calendar")
+            if custom_work_days > 31 or custom_rest_days > 31:
+                add_flash(request, "Для пользовательского графика укажите значения до 31 дня.", "error")
+                return redirect("/my-calendar")
 
     target_dates: set[date] = set()
+
+    def append_cycle_dates(work_days: int, rest_days: int) -> None:
+        cycle_len = work_days + rest_days
+        current_date = start_date
+        day_offset = 0
+        while current_date <= end_date:
+            if day_offset % cycle_len < work_days:
+                target_dates.add(current_date)
+            current_date += timedelta(days=1)
+            day_offset += 1
+
     if shift_mode == "block":
         current_date = start_date
         while current_date <= end_date:
@@ -5512,41 +5551,49 @@ async def my_calendar_work_shift_add(request: Request, db: Session = Depends(get
             if current_date.weekday() in repeat_weekdays:
                 target_dates.add(current_date)
             current_date += timedelta(days=1)
-    else:  # two_by_two
-        current_date = start_date
-        day_offset = 0
-        while current_date <= end_date:
-            if day_offset % 4 in {0, 1}:
-                target_dates.add(current_date)
-            current_date += timedelta(days=1)
-            day_offset += 1
+    elif shift_repeat_kind == "two_by_two":
+        append_cycle_dates(2, 2)
+    elif shift_repeat_kind == "three_by_three":
+        append_cycle_dates(3, 3)
+    elif shift_repeat_kind == "five_by_two":
+        append_cycle_dates(5, 2)
+    else:  # custom
+        append_cycle_dates(custom_work_days, custom_rest_days)
 
     if not target_dates:
         add_flash(request, "Не удалось сформировать даты смен.", "error")
         return redirect("/my-calendar")
 
-    existing_dates = set(
-        db.execute(
-            select(WorkShiftDay.shift_date).where(
-                WorkShiftDay.user_id == user.id,
-                WorkShiftDay.shift_date.in_(sorted(target_dates)),
-            )
-        ).scalars().all()
-    )
+    existing_rows = db.execute(
+        select(WorkShiftDay).where(
+            WorkShiftDay.user_id == user.id,
+            WorkShiftDay.shift_date >= start_date,
+            WorkShiftDay.shift_date <= end_date,
+        )
+    ).scalars().all()
+    existing_by_date: dict[date, WorkShiftDay] = {
+        item.shift_date: item for item in existing_rows if item.shift_date and item.shift_date in target_dates
+    }
     added_count = 0
+    updated_count = 0
     for shift_date in sorted(target_dates):
-        if shift_date in existing_dates:
+        existing_row = existing_by_date.get(shift_date)
+        if existing_row:
+            if bool(existing_row.is_half_day) != bool(shift_is_half_day):
+                existing_row.is_half_day = bool(shift_is_half_day)
+                updated_count += 1
             continue
         db.add(
             WorkShiftDay(
                 user_id=user.id,
                 shift_date=shift_date,
+                is_half_day=bool(shift_is_half_day),
             )
         )
         added_count += 1
 
     db.commit()
-    if added_count <= 0:
+    if added_count <= 0 and updated_count <= 0:
         add_flash(request, "Все выбранные рабочие смены уже были отмечены.", "info")
     else:
         if shift_mode == "block":
@@ -5555,9 +5602,21 @@ async def my_calendar_work_shift_add(request: Request, db: Session = Depends(get
             mode_label = f"повтором каждые {repeat_every_days} дн."
         elif shift_repeat_kind == "weekdays":
             mode_label = "повтором по дням недели"
-        else:
+        elif shift_repeat_kind == "two_by_two":
             mode_label = "повтором 2/2"
-        add_flash(request, f"Добавлено смен: {added_count} ({mode_label}).", "success")
+        elif shift_repeat_kind == "three_by_three":
+            mode_label = "повтором 3/3"
+        elif shift_repeat_kind == "five_by_two":
+            mode_label = "повтором 5/2"
+        else:
+            mode_label = f"повтором {custom_work_days}/{custom_rest_days}"
+        half_day_label = " (половина дня)" if shift_is_half_day else ""
+        details: list[str] = []
+        if added_count > 0:
+            details.append(f"добавлено: {added_count}")
+        if updated_count > 0:
+            details.append(f"обновлено: {updated_count}")
+        add_flash(request, f"Смены сохранены ({mode_label}{half_day_label}) — {', '.join(details)}.", "success")
     return redirect("/my-calendar")
 
 

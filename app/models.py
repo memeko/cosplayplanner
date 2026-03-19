@@ -345,6 +345,7 @@ class WorkShiftDay(Base):
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     shift_date = Column(Date, nullable=False, index=True)
+    is_half_day = Column(Boolean, nullable=False, default=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     user = relationship("User", back_populates="work_shift_days")

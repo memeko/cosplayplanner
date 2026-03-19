@@ -48,6 +48,9 @@
           <option value="interval">Каждые N дней</option>
           <option value="weekdays">По дням недели</option>
           <option value="two_by_two">График 2/2</option>
+          <option value="three_by_three">График 3/3</option>
+          <option value="five_by_two">График 5/2</option>
+          <option value="custom">Пользовательский X/Y</option>
         </select>
       </label>
       <label>
@@ -63,6 +66,16 @@
         <input type="number" name="shift_repeat_every_days" min="1" max="60" value="7" />
       </label>
     </div>
+    <div id="shift_custom_cycle_wrap" class="grid two-col">
+      <label>
+        Рабочих дней подряд (X)
+        <input type="number" name="shift_custom_work_days" min="1" max="31" value="2" />
+      </label>
+      <label>
+        Выходных дней подряд (Y)
+        <input type="number" name="shift_custom_rest_days" min="1" max="31" value="2" />
+      </label>
+    </div>
     <div id="shift_repeat_weekdays_wrap">
       <p class="muted">Дни недели для повтора:</p>
       <div class="chips-wrap">
@@ -75,7 +88,11 @@
         <label class="chip-check"><input type="checkbox" name="shift_repeat_weekdays" value="6" /> Вс</label>
       </div>
     </div>
-    <p class="muted">Для режима «Блок дат» шаг повтора игнорируется. Смены отображаются только в сетке календаря серой штриховкой.</p>
+    <label class="inline-check">
+      <input type="checkbox" name="shift_is_half_day" value="1" />
+      Отметить как половина дня
+    </label>
+    <p class="muted">Смены отображаются только в сетке календаря серой штриховкой и не попадают в текстовый список событий.</p>
     <div class="actions-inline">
       <button type="submit" class="btn">Добавить смены</button>
     </div>
@@ -96,6 +113,7 @@
     <span class="chip calendar-chip personal">Личное событие</span>
     <span class="chip calendar-chip multi">Несколько типов в один день</span>
     <span class="chip calendar-chip work-shift">Рабочая смена (только сетка)</span>
+    <span class="chip calendar-chip work-shift-half">Половина дня</span>
   </div>
 </section>
 
@@ -118,7 +136,10 @@
               <tr>
                 {% for cell in week %}
                   {% if cell.day %}
-                    <td class="calendar-grid-cell {% if cell.is_multi %}calendar-day-multi{% elif cell.single_type %}calendar-day-{{ cell.single_type }}{% endif %} {% if cell.has_work_shift %}calendar-day-work-shift{% endif %} {% if cell.is_work_shift_only %}calendar-day-shift-only{% endif %}">
+                    <td class="calendar-grid-cell {% if cell.is_multi %}calendar-day-multi{% elif cell.single_type %}calendar-day-{{ cell.single_type }}{% endif %} {% if cell.has_work_shift %}calendar-day-work-shift{% endif %} {% if cell.is_work_shift_only %}calendar-day-shift-only{% endif %} {% if cell.has_half_day_shift %}calendar-day-work-shift-half{% endif %}">
+                      {% if cell.has_half_day_shift %}
+                        <span class="half-day-badge">1/2</span>
+                      {% endif %}
                       <span class="day-number">{{ cell.day }}</span>
                     </td>
                   {% else %}
@@ -176,7 +197,8 @@
     const repeatKindWrap = document.getElementById("shift_repeat_kind_wrap");
     const intervalWrap = document.getElementById("shift_repeat_interval_wrap");
     const weekdaysWrap = document.getElementById("shift_repeat_weekdays_wrap");
-    if (!mode || !repeatKind || !repeatKindWrap || !intervalWrap || !weekdaysWrap) {
+    const customCycleWrap = document.getElementById("shift_custom_cycle_wrap");
+    if (!mode || !repeatKind || !repeatKindWrap || !intervalWrap || !weekdaysWrap || !customCycleWrap) {
       return;
     }
 
@@ -189,6 +211,7 @@
 
       intervalWrap.style.display = isRepeat && kind === "interval" ? "" : "none";
       weekdaysWrap.style.display = isRepeat && kind === "weekdays" ? "" : "none";
+      customCycleWrap.style.display = isRepeat && kind === "custom" ? "" : "none";
     };
 
     mode.addEventListener("change", syncShiftControls);
