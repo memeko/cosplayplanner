@@ -136,9 +136,12 @@
               <tr>
                 {% for cell in week %}
                   {% if cell.day %}
-                    <td class="calendar-grid-cell {% if cell.is_multi %}calendar-day-multi{% elif cell.single_type %}calendar-day-{{ cell.single_type }}{% endif %} {% if cell.has_work_shift %}calendar-day-work-shift{% endif %} {% if cell.is_work_shift_only %}calendar-day-shift-only{% endif %} {% if cell.has_half_day_shift %}calendar-day-work-shift-half{% endif %}">
+                    <td class="calendar-grid-cell {% if cell.has_half_day_shift %}calendar-day-half-split{% elif cell.is_multi %}calendar-day-multi{% elif cell.single_type %}calendar-day-{{ cell.single_type }}{% endif %} {% if cell.has_full_day_shift %}calendar-day-work-shift{% endif %} {% if cell.is_work_shift_only %}calendar-day-shift-only{% endif %}">
                       {% if cell.has_half_day_shift %}
-                        <span class="half-day-badge">1/2</span>
+                        <div class="calendar-split-bg" aria-hidden="true">
+                          <span class="calendar-split-half split-shift"></span>
+                          <span class="calendar-split-half split-event {% if cell.is_multi %}event-multi{% elif cell.single_type %}event-{{ cell.single_type }}{% endif %}"></span>
+                        </div>
                       {% endif %}
                       <span class="day-number">{{ cell.day }}</span>
                     </td>

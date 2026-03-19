@@ -1482,6 +1482,7 @@ def month_calendar_grid(
             types = sorted([value for value in day_types.get(day_value, set()) if value])
             has_shift = day_value in normalized_shift_days
             has_shift_half_day = day_value in normalized_shift_half_days
+            has_shift_full_day = has_shift and not has_shift_half_day
             week_cells.append(
                 {
                     "day": day_value,
@@ -1489,7 +1490,8 @@ def month_calendar_grid(
                     "single_type": (types[0] if len(types) == 1 else ""),
                     "is_multi": len(types) > 1,
                     "has_work_shift": has_shift,
-                    "is_work_shift_only": has_shift and not types,
+                    "has_full_day_shift": has_shift_full_day,
+                    "is_work_shift_only": has_shift_full_day and not types,
                     "has_half_day_shift": has_shift_half_day,
                 }
             )
