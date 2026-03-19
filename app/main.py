@@ -1255,18 +1255,27 @@ def fetch_character_birthdays_from_anisearch(month: int) -> list[dict[str, Any]]
             flags=re.IGNORECASE | re.DOTALL,
         )
         payload: list[dict[str, Any]] = []
-        seen: set[tuple[str, int]] = set()
+        seen: set[tuple[str, int, str]] = set()
         for day_raw, section_html in sections:
             try:
                 day_num = int(day_raw)
             except ValueError:
                 continue
-            names = re.findall(r'<img[^>]+alt="([^"]+)"', section_html, flags=re.IGNORECASE)
-            for raw_name in names:
-                name = html.unescape(raw_name).strip()
+
+            cards = re.findall(r"<li>(.*?)</li>", section_html, flags=re.IGNORECASE | re.DOTALL)
+            for card_html in cards:
+                name_match = re.search(r'<img[^>]+alt="([^"]+)"', card_html, flags=re.IGNORECASE)
+                if not name_match:
+                    continue
+                name = html.unescape(name_match.group(1)).strip()
                 if not name:
                     continue
-                key = (name.casefold(), day_num)
+                character_url_match = re.search(r'<a[^>]+href="([^"]*character/[^"]+)"', card_html, flags=re.IGNORECASE)
+                character_url = html.unescape(character_url_match.group(1)).strip() if character_url_match else ""
+                anime_match = re.search(r'<span class="company">([^<]+)</span>', card_html, flags=re.IGNORECASE)
+                anime_title = html.unescape(anime_match.group(1)).strip() if anime_match else ""
+
+                key = (name.casefold(), day_num, character_url.casefold() or anime_title.casefold())
                 if key in seen:
                     continue
                 seen.add(key)
@@ -1275,6 +1284,8 @@ def fetch_character_birthdays_from_anisearch(month: int) -> list[dict[str, Any]]
                         "day": day_num,
                         "name": name,
                         "source": "aniSearch",
+                        "character_url": character_url,
+                        "anime_title": anime_title,
                     }
                 )
         return payload
@@ -1310,9 +1321,70 @@ def clean_character_birthday_name(raw_name: str) -> str:
     return re.sub(r"\s+", " ", value).strip(" -")
 
 
+def normalize_anisearch_character_url(raw_url: str | None) -> str:
+    value = (raw_url or "").strip()
+    if not value:
+        return ""
+    if value.startswith("http://") or value.startswith("https://"):
+        return value
+    return f"https://www.anisearch.com/{value.lstrip('/')}"
+
+
+def fetch_anisearch_anime_title(character_url: str | None, fallback_title: str | None = None) -> str:
+    fallback = re.sub(r"\s+", " ", (fallback_title or "").strip())
+    normalized_url = normalize_anisearch_character_url(character_url)
+    if not normalized_url:
+        return fallback
+
+    def _load() -> str:
+        try:
+            response = requests.get(
+                normalized_url,
+                timeout=HTTP_TIMEOUT_SECONDS,
+                headers={"User-Agent": "Mozilla/5.0"},
+            )
+            response.raise_for_status()
+            html_text = response.text
+        except requests.RequestException:
+            return fallback
+
+        anime_block_match = re.search(
+            r'<div class="anime">\s*<span class="header">\s*Anime:\s*</span>(.*?)</div>',
+            html_text,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        if not anime_block_match:
+            return fallback
+
+        anime_block = anime_block_match.group(1)
+        anime_title_match = re.search(r"<a[^>]*>(.*?)</a>", anime_block, flags=re.IGNORECASE | re.DOTALL)
+        if anime_title_match:
+            anime_title_raw = anime_title_match.group(1)
+        else:
+            anime_title_raw = anime_block
+
+        anime_title = html.unescape(re.sub(r"<[^>]+>", " ", anime_title_raw))
+        anime_title = re.sub(r"\s+", " ", anime_title).strip(" -")
+        return anime_title or fallback
+
+    return cache_get_or_load(f"anisearch_character_anime:{normalized_url}", _load)
+
+
+def character_display_name(name: str, anime_title: str | None = None) -> str:
+    base_name = clean_character_birthday_name(name)
+    title = re.sub(r"\s+", " ", (anime_title or "").strip())
+    if not base_name:
+        return ""
+    if not title:
+        return base_name
+    if re.search(rf"\(\s*{re.escape(title)}\s*\)$", base_name, flags=re.IGNORECASE):
+        return base_name
+    return f"{base_name} ({title})"
+
+
 def character_birthdays_today(today: date) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
-    seen: set[tuple[str, str]] = set()
+    seen: set[str] = set()
     for producer in [
         fetch_character_birthdays_from_genshin,
         fetch_character_birthdays_from_sheet,
@@ -1326,19 +1398,24 @@ def character_birthdays_today(today: date) -> list[dict[str, Any]]:
             day_num = int(row.get("day") or 0)
             if day_num != today.day:
                 continue
-            name = clean_character_birthday_name(str(row.get("name", "")))
             source = str(row.get("source", "")).strip()
-            if not name:
+            anime_title = str(row.get("anime_title", "")).strip()
+            if source.casefold() == "anisearch":
+                anime_title = fetch_anisearch_anime_title(
+                    str(row.get("character_url", "")).strip(),
+                    fallback_title=anime_title,
+                )
+            display_name = character_display_name(str(row.get("name", "")), anime_title)
+            if not display_name:
                 continue
-            key = (name.casefold(), source.casefold())
+            key = display_name.casefold()
             if key in seen:
                 continue
             seen.add(key)
             items.append(
                 {
                     "day": day_num,
-                    "name": name,
-                    "source": source or "источник не указан",
+                    "name": display_name,
                 }
             )
     items.sort(key=lambda item: str(item.get("name", "")).casefold())

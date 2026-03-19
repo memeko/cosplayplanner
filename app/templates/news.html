@@ -44,15 +44,16 @@
   {% else %}
     <p class="muted">На ближайшую неделю особых инфоповодов не найдено.</p>
   {% endif %}
+</section>
 
-  <h3>Дни рождения персонажей на сегодня</h3>
+<section class="box top-offset">
+  <h2>Дни рождения персонажей на сегодня</h2>
   {% if character_birthdays_today %}
     <ul class="notifications-list">
       {% for item in character_birthdays_today %}
         <li>
           <div class="notification-content">
             <span>{{ item.name }}</span>
-            <span class="muted">({{ item.source }})</span>
           </div>
         </li>
       {% endfor %}
