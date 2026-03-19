@@ -657,6 +657,13 @@ textarea {
   gap: 8px;
 }
 
+.calendar-same-date {
+  border-left: 4px solid #c62828;
+  background: #fff1f1;
+  padding-left: 0.6rem;
+  border-radius: 8px;
+}
+
 .calendar-list li {
   display: flex;
   flex-wrap: wrap;
@@ -671,6 +678,98 @@ textarea {
 .calendar-date {
   font-weight: 700;
   min-width: 92px;
+}
+
+.calendar-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.calendar-chip.festival {
+  background: #f3e8ff;
+  border-color: #d8b4fe;
+  color: #6b21a8;
+}
+
+.calendar-chip.photoset {
+  background: #dcfce7;
+  border-color: #86efac;
+  color: #166534;
+}
+
+.calendar-chip.rehearsal {
+  background: #ffedd5;
+  border-color: #fdba74;
+  color: #9a3412;
+}
+
+.calendar-chip.personal {
+  background: #dbeafe;
+  border-color: #93c5fd;
+  color: #1d4ed8;
+}
+
+.calendar-chip.multi {
+  background: #ede9fe;
+  border-color: #c4b5fd;
+  color: #5b21b6;
+}
+
+.calendar-grid-wrap {
+  overflow-x: auto;
+  margin-top: 8px;
+}
+
+.calendar-grid {
+  width: 100%;
+  min-width: 520px;
+  border-collapse: collapse;
+}
+
+.calendar-grid th {
+  font-weight: 600;
+  color: var(--muted);
+  padding: 6px;
+  text-align: center;
+}
+
+.calendar-grid-cell {
+  border: 1px solid var(--line);
+  height: 46px;
+  text-align: right;
+  vertical-align: top;
+  padding: 4px 6px;
+  background: #f8fafc;
+}
+
+.calendar-grid-cell .day-number {
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.calendar-grid-cell.is-empty {
+  background: #f1f5f9;
+}
+
+.calendar-day-festival {
+  background: #f3e8ff;
+}
+
+.calendar-day-photoset {
+  background: #dcfce7;
+}
+
+.calendar-day-rehearsal {
+  background: #ffedd5;
+}
+
+.calendar-day-personal {
+  background: #dbeafe;
+}
+
+.calendar-day-multi {
+  background: linear-gradient(135deg, #f3e8ff 0%, #dcfce7 33%, #ffedd5 66%, #dbeafe 100%);
 }
 
 .reference-grid {

@@ -82,6 +82,17 @@
               <input type="hidden" name="next" value="/rehearsals" />
               <button type="submit" class="btn btn-decline">Отклонить</button>
             </form>
+            <form method="post" action="/rehearsals/entries/{{ entry.id }}/delete" onsubmit="return confirm('Удалить эту репетицию?');">
+              <input type="hidden" name="next" value="/rehearsals" />
+              <button type="submit" class="btn btn-danger">Удалить</button>
+            </form>
+          </div>
+          {% else %}
+          <div class="actions-inline">
+            <form method="post" action="/rehearsals/entries/{{ entry.id }}/delete" onsubmit="return confirm('Удалить эту репетицию?');">
+              <input type="hidden" name="next" value="/rehearsals" />
+              <button type="submit" class="btn btn-danger">Удалить</button>
+            </form>
           </div>
           {% endif %}
         </li>

@@ -25,6 +25,7 @@ class User(Base):
     cosplay_nick = Column(String(100), nullable=True, unique=True, index=True)
     email = Column(String(255), nullable=False, unique=True, index=True)
     home_city = Column(String(255), nullable=True, index=True)
+    birth_date = Column(Date, nullable=True, index=True)
     password_hash = Column(String(255), nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
@@ -101,6 +102,11 @@ class User(Base):
         "RehearsalEntry",
         back_populates="proposer",
         foreign_keys="RehearsalEntry.proposed_by_user_id",
+    )
+    personal_calendar_events = relationship(
+        "PersonalCalendarEvent",
+        back_populates="user",
+        cascade="all, delete-orphan",
     )
 
 
@@ -310,6 +316,21 @@ class RehearsalEntry(Base):
     participant = relationship("User", back_populates="rehearsal_entries", foreign_keys=[user_id])
     proposer = relationship("User", back_populates="rehearsal_entries_created", foreign_keys=[proposed_by_user_id])
     cosplan_card = relationship("CosplanCard", back_populates="rehearsal_entries")
+
+
+class PersonalCalendarEvent(Base):
+    __tablename__ = "personal_calendar_events"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    event_date = Column(Date, nullable=False, index=True)
+    event_time = Column(String(8), nullable=True)
+    title = Column(String(255), nullable=False)
+    details = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    user = relationship("User", back_populates="personal_calendar_events")
 
 
 class Festival(Base):

@@ -79,6 +79,10 @@
                 <input type="hidden" name="decision" value="reject" />
                 <button type="submit" class="btn btn-decline">Отклонить</button>
               </form>
+              <form method="post" action="/rehearsals/entries/{{ entry.id }}/delete" onsubmit="return confirm('Удалить эту репетицию?');">
+                <input type="hidden" name="next" value="/my-projects" />
+                <button type="submit" class="btn btn-danger">Удалить</button>
+              </form>
             </div>
           </li>
         {% endfor %}
@@ -109,6 +113,12 @@
               {% if entry.updated_at %}
                 <p class="meta">Изменено: {{ entry.updated_at.strftime('%d-%m-%Y %H:%M') }}</p>
               {% endif %}
+            </div>
+            <div class="actions-inline">
+              <form method="post" action="/rehearsals/entries/{{ entry.id }}/delete" onsubmit="return confirm('Удалить эту репетицию из истории?');">
+                <input type="hidden" name="next" value="/my-projects" />
+                <button type="submit" class="btn btn-danger">Удалить</button>
+              </form>
             </div>
           </li>
         {% endfor %}

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import calendar
 import html
 import io
 import os
@@ -11,7 +12,7 @@ from collections import defaultdict
 from datetime import date, datetime, timedelta
 from difflib import SequenceMatcher
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import parse_qs, urlparse
 
 import requests
@@ -43,6 +44,7 @@ from .models import (
     FestivalNotification,
     InProgressCard,
     ProjectSearchPost,
+    PersonalCalendarEvent,
     RehearsalCard,
     RehearsalEntry,
     User,
@@ -182,6 +184,182 @@ ANNOUNCEMENT_STATUS_REJECTED = "rejected"
 SPECIAL_HIGHLIGHT_USERNAME = "brfox_cosplay"
 SPECIAL_HIGHLIGHT_EMAIL = "angenzel@gmail.com"
 
+CHARACTER_BIRTHDAYS_SHEET_CSV_URL = (
+    "https://docs.google.com/spreadsheets/d/1lUJd6q8k1jt2zIrs66Ebf1lZxvckBioVmtY0FI7rfFw/export?format=csv"
+)
+GENSHIN_BIRTHDAYS_API_URL = (
+    "https://genshin-impact.fandom.com/ru/api.php"
+    "?action=parse&page=%D0%94%D0%B5%D0%BD%D1%8C_%D1%80%D0%BE%D0%B6%D0%B4%D0%B5%D0%BD%D0%B8%D1%8F&format=json"
+)
+ANISEARCH_BIRTHDAYS_MONTH_URL = "https://www.anisearch.com/character/birthdays?month={month}"
+
+HTTP_TIMEOUT_SECONDS = 8
+NETWORK_CACHE_TTL_SECONDS = 60 * 60 * 6
+NETWORK_CACHE: dict[str, tuple[datetime, Any]] = {}
+
+RU_MONTH_WORDS_TO_NUM = {
+    "января": 1,
+    "февраля": 2,
+    "марта": 3,
+    "апреля": 4,
+    "мая": 5,
+    "июня": 6,
+    "июля": 7,
+    "августа": 8,
+    "сентября": 9,
+    "октября": 10,
+    "ноября": 11,
+    "декабря": 12,
+    "january": 1,
+    "february": 2,
+    "march": 3,
+    "april": 4,
+    "may": 5,
+    "june": 6,
+    "july": 7,
+    "august": 8,
+    "september": 9,
+    "october": 10,
+    "november": 11,
+    "december": 12,
+}
+
+RUSSIA_FIXED_HOLIDAYS = [
+    (1, 1, "Новогодние каникулы"),
+    (1, 2, "Новогодние каникулы"),
+    (1, 3, "Новогодние каникулы"),
+    (1, 4, "Новогодние каникулы"),
+    (1, 5, "Новогодние каникулы"),
+    (1, 6, "Новогодние каникулы"),
+    (1, 7, "Рождество Христово"),
+    (1, 8, "Новогодние каникулы"),
+    (2, 23, "День защитника Отечества"),
+    (3, 8, "Международный женский день"),
+    (5, 1, "Праздник Весны и Труда"),
+    (5, 9, "День Победы"),
+    (6, 12, "День России"),
+    (11, 4, "День народного единства"),
+]
+
+SEASONAL_INFO_EVENTS = [
+    {
+        "country": "Япония",
+        "name": "О-сёгацу (японский Новый год)",
+        "kind": "fixed",
+        "month": 1,
+        "day": 1,
+    },
+    {
+        "country": "Япония",
+        "name": "Сэцубун",
+        "kind": "fixed",
+        "month": 2,
+        "day": 3,
+    },
+    {
+        "country": "Япония",
+        "name": "Хина-мацури",
+        "kind": "fixed",
+        "month": 3,
+        "day": 3,
+    },
+    {
+        "country": "Япония",
+        "name": "Ханами (сезон цветения сакуры)",
+        "kind": "range",
+        "start_month": 3,
+        "start_day": 20,
+        "end_month": 4,
+        "end_day": 20,
+    },
+    {
+        "country": "Япония",
+        "name": "Golden Week",
+        "kind": "range",
+        "start_month": 4,
+        "start_day": 29,
+        "end_month": 5,
+        "end_day": 5,
+    },
+    {
+        "country": "Япония",
+        "name": "Танабата",
+        "kind": "fixed",
+        "month": 7,
+        "day": 7,
+    },
+    {
+        "country": "Япония",
+        "name": "Обон",
+        "kind": "range",
+        "start_month": 8,
+        "start_day": 13,
+        "end_month": 8,
+        "end_day": 16,
+    },
+    {
+        "country": "Япония",
+        "name": "Момидзигари (сезон клёнов)",
+        "kind": "range",
+        "start_month": 10,
+        "start_day": 15,
+        "end_month": 11,
+        "end_day": 30,
+    },
+    {
+        "country": "Китай",
+        "name": "Праздник Весны (китайский Новый год, ориентировочно)",
+        "kind": "range",
+        "start_month": 1,
+        "start_day": 20,
+        "end_month": 2,
+        "end_day": 20,
+    },
+    {
+        "country": "Китай",
+        "name": "Праздник фонарей (ориентировочно)",
+        "kind": "range",
+        "start_month": 2,
+        "start_day": 10,
+        "end_month": 2,
+        "end_day": 20,
+    },
+    {
+        "country": "Китай",
+        "name": "Цинмин",
+        "kind": "fixed",
+        "month": 4,
+        "day": 4,
+    },
+    {
+        "country": "Китай",
+        "name": "Праздник драконьих лодок (ориентировочно)",
+        "kind": "range",
+        "start_month": 5,
+        "start_day": 25,
+        "end_month": 6,
+        "end_day": 25,
+    },
+    {
+        "country": "Китай",
+        "name": "Праздник середины осени (ориентировочно)",
+        "kind": "range",
+        "start_month": 9,
+        "start_day": 10,
+        "end_month": 10,
+        "end_day": 10,
+    },
+    {
+        "country": "Китай",
+        "name": "Национальный день Китая",
+        "kind": "range",
+        "start_month": 10,
+        "start_day": 1,
+        "end_month": 10,
+        "end_day": 7,
+    },
+]
+
 
 def apply_schema_migrations() -> None:
     # Lightweight SQLite migration path for local/self-host deployments.
@@ -192,6 +370,7 @@ def apply_schema_migrations() -> None:
         "users": [
             ("home_city", "VARCHAR(255)"),
             ("cosplay_nick", "VARCHAR(100)"),
+            ("birth_date", "DATE"),
         ],
         "cosplan_cards": [
             ("costume_bought", "BOOLEAN NOT NULL DEFAULT 0"),
@@ -292,6 +471,8 @@ def apply_schema_migrations() -> None:
             RehearsalCard.__table__.create(bind=conn, checkfirst=True)
         if "rehearsal_entries" not in existing_tables:
             RehearsalEntry.__table__.create(bind=conn, checkfirst=True)
+        if "personal_calendar_events" not in existing_tables:
+            PersonalCalendarEvent.__table__.create(bind=conn, checkfirst=True)
 
         for table_name, columns in required_columns.items():
             if table_name not in existing_tables and table_name != "festival_notifications":
@@ -782,6 +963,399 @@ def get_accessible_card(
 
 def month_label_ru(value: date) -> str:
     return f"{RU_MONTH_NAMES[value.month]} {value.year}"
+
+
+def cache_get_or_load(key: str, loader: Callable[[], Any], ttl_seconds: int = NETWORK_CACHE_TTL_SECONDS) -> Any:
+    now = datetime.utcnow()
+    cached = NETWORK_CACHE.get(key)
+    if cached:
+        cached_at, payload = cached
+        if (now - cached_at).total_seconds() < ttl_seconds:
+            return payload
+    payload = loader()
+    NETWORK_CACHE[key] = (now, payload)
+    return payload
+
+
+def safe_date_with_leap_support(year: int, month: int, day: int) -> date | None:
+    try:
+        return date(year, month, day)
+    except ValueError:
+        # 29 февраля в невисокосный год отображаем 28 февраля.
+        if month == 2 and day == 29:
+            return date(year, 2, 28)
+        return None
+
+
+def upcoming_user_birthdays_this_week(users: list[User], today: date) -> list[dict[str, Any]]:
+    week_end = today + timedelta(days=6)
+    result: list[dict[str, Any]] = []
+
+    for item in users:
+        if not item.birth_date:
+            continue
+        candidate = safe_date_with_leap_support(today.year, item.birth_date.month, item.birth_date.day)
+        if not candidate:
+            continue
+        if candidate < today:
+            candidate = safe_date_with_leap_support(today.year + 1, item.birth_date.month, item.birth_date.day)
+        if not candidate or candidate < today or candidate > week_end:
+            continue
+        display_nick = normalize_username(item.cosplay_nick)
+        if not display_nick:
+            continue
+        result.append(
+            {
+                "date": candidate,
+                "display_nick": display_nick,
+                "user": item,
+            }
+        )
+
+    result.sort(key=lambda row: (row["date"], row["display_nick"].casefold()))
+    return result
+
+
+def parse_day_month_from_text(raw_text: str) -> tuple[int, int] | tuple[None, None]:
+    value = (raw_text or "").strip().lower()
+    if not value:
+        return None, None
+
+    numeric_match = re.search(r"\b(\d{1,2})\s*[./-]\s*(\d{1,2})\b", value)
+    if numeric_match:
+        day = int(numeric_match.group(1))
+        month = int(numeric_match.group(2))
+        if 1 <= month <= 12 and 1 <= day <= 31:
+            return day, month
+
+    word_match = re.search(
+        r"\b(\d{1,2})\s+([а-яa-z]+)",
+        value,
+        flags=re.IGNORECASE,
+    )
+    if word_match:
+        day = int(word_match.group(1))
+        month_word = word_match.group(2).casefold()
+        month = RU_MONTH_WORDS_TO_NUM.get(month_word)
+        if month and 1 <= day <= 31:
+            return day, month
+
+    return None, None
+
+
+def fetch_character_birthdays_from_sheet(month: int) -> list[dict[str, Any]]:
+    def _load() -> list[dict[str, Any]]:
+        try:
+            response = requests.get(
+                CHARACTER_BIRTHDAYS_SHEET_CSV_URL,
+                timeout=HTTP_TIMEOUT_SECONDS,
+                headers={"User-Agent": "Mozilla/5.0"},
+            )
+            response.raise_for_status()
+        except requests.RequestException:
+            return []
+
+        text_value = response.content.decode("utf-8", errors="replace")
+        rows = list(csv.reader(io.StringIO(text_value)))
+        if not rows:
+            return []
+
+        header = [str(item or "").strip().casefold() for item in rows[0]]
+        name_index = next((idx for idx, value in enumerate(header) if "имя" in value), 0)
+        birthday_index = next((idx for idx, value in enumerate(header) if "рож" in value or "birth" in value), -1)
+        if birthday_index < 0:
+            return []
+
+        payload: list[dict[str, Any]] = []
+        seen: set[tuple[str, int]] = set()
+        for row in rows[1:]:
+            if birthday_index >= len(row):
+                continue
+            name = str(row[name_index]).strip() if name_index < len(row) else ""
+            birthday_text = str(row[birthday_index]).strip()
+            if not name or not birthday_text:
+                continue
+            day, parsed_month = parse_day_month_from_text(birthday_text)
+            if parsed_month != month or not day:
+                continue
+            key = (name.casefold(), day)
+            if key in seen:
+                continue
+            seen.add(key)
+            payload.append(
+                {
+                    "day": day,
+                    "name": name,
+                    "source": "Google таблица (персонажи)",
+                }
+            )
+        return payload
+
+    return cache_get_or_load(f"character_birthdays_sheet:{month}", _load)
+
+
+def fetch_character_birthdays_from_genshin(month: int) -> list[dict[str, Any]]:
+    def _load() -> list[dict[str, Any]]:
+        try:
+            response = requests.get(
+                GENSHIN_BIRTHDAYS_API_URL,
+                timeout=HTTP_TIMEOUT_SECONDS,
+                headers={"User-Agent": "Mozilla/5.0"},
+            )
+            response.raise_for_status()
+            parsed = response.json()
+            html_text = (
+                parsed.get("parse", {})
+                .get("text", {})
+                .get("*", "")
+            )
+        except (requests.RequestException, ValueError):
+            return []
+        if not html_text:
+            return []
+
+        rows = re.findall(r"<tr[^>]*>(.*?)</tr>", html_text, flags=re.IGNORECASE | re.DOTALL)
+        payload: list[dict[str, Any]] = []
+        seen: set[tuple[str, int]] = set()
+        for row_html in rows:
+            date_match = re.search(r"\b(\d{2})-(\d{2})\b", row_html)
+            if not date_match:
+                continue
+            month_num = int(date_match.group(1))
+            day_num = int(date_match.group(2))
+            if month_num != month or day_num <= 0:
+                continue
+
+            name_match = re.search(r'<img[^>]+alt="([^"]+)"', row_html)
+            if name_match:
+                name = html.unescape(name_match.group(1)).strip()
+            else:
+                plain_row = html.unescape(re.sub(r"<[^>]+>", " ", row_html))
+                plain_row = re.sub(r"\s+", " ", plain_row).strip()
+                name = plain_row.split(date_match.group(0), 1)[0].strip()
+            if not name:
+                continue
+
+            key = (name.casefold(), day_num)
+            if key in seen:
+                continue
+            seen.add(key)
+            payload.append(
+                {
+                    "day": day_num,
+                    "name": name,
+                    "source": "Genshin Impact Wiki",
+                }
+            )
+        return payload
+
+    return cache_get_or_load(f"character_birthdays_genshin:{month}", _load)
+
+
+def fetch_character_birthdays_from_anisearch(month: int) -> list[dict[str, Any]]:
+    def _load() -> list[dict[str, Any]]:
+        try:
+            response = requests.get(
+                ANISEARCH_BIRTHDAYS_MONTH_URL.format(month=month),
+                timeout=HTTP_TIMEOUT_SECONDS,
+                headers={"User-Agent": "Mozilla/5.0"},
+            )
+            response.raise_for_status()
+            html_text = response.text
+        except requests.RequestException:
+            return []
+
+        sections = re.findall(
+            r'<section id="day-(\d{1,2})"[^>]*>(.*?)</section>',
+            html_text,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        payload: list[dict[str, Any]] = []
+        seen: set[tuple[str, int]] = set()
+        for day_raw, section_html in sections:
+            try:
+                day_num = int(day_raw)
+            except ValueError:
+                continue
+            names = re.findall(r'<img[^>]+alt="([^"]+)"', section_html, flags=re.IGNORECASE)
+            for raw_name in names:
+                name = html.unescape(raw_name).strip()
+                if not name:
+                    continue
+                key = (name.casefold(), day_num)
+                if key in seen:
+                    continue
+                seen.add(key)
+                payload.append(
+                    {
+                        "day": day_num,
+                        "name": name,
+                        "source": "aniSearch",
+                    }
+                )
+        return payload
+
+    return cache_get_or_load(f"character_birthdays_anisearch:{month}", _load)
+
+
+def character_birthdays_this_month(month: int) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    for producer in [
+        fetch_character_birthdays_from_genshin,
+        fetch_character_birthdays_from_sheet,
+        fetch_character_birthdays_from_anisearch,
+    ]:
+        try:
+            merged.extend(producer(month))
+        except Exception:
+            continue
+
+    # Keep the list practical for page rendering.
+    merged.sort(key=lambda item: (int(item.get("day") or 99), str(item.get("name", "")).casefold()))
+    return merged[:220]
+
+
+def event_matches_day(day_value: date, event: dict[str, Any]) -> bool:
+    kind = event.get("kind")
+    if kind == "fixed":
+        return day_value.month == int(event.get("month", 0)) and day_value.day == int(event.get("day", 0))
+    if kind == "range":
+        start = safe_date_with_leap_support(
+            day_value.year,
+            int(event.get("start_month", 1)),
+            int(event.get("start_day", 1)),
+        )
+        end = safe_date_with_leap_support(
+            day_value.year,
+            int(event.get("end_month", 12)),
+            int(event.get("end_day", 31)),
+        )
+        if not start or not end:
+            return False
+        return start <= day_value <= end
+    return False
+
+
+def weekly_infopovods(today: date) -> list[dict[str, Any]]:
+    week_end = today + timedelta(days=6)
+    items: list[dict[str, Any]] = []
+
+    for offset in range(7):
+        day_value = today + timedelta(days=offset)
+        for month_num, day_num, title in RUSSIA_FIXED_HOLIDAYS:
+            if day_value.month == month_num and day_value.day == day_num:
+                items.append(
+                    {
+                        "date": day_value,
+                        "date_label": day_value.strftime("%d-%m-%Y"),
+                        "country": "Россия",
+                        "title": title,
+                        "note": "Могут не работать студии!",
+                    }
+                )
+
+    for event in SEASONAL_INFO_EVENTS:
+        if event.get("kind") == "fixed":
+            event_day = safe_date_with_leap_support(
+                today.year,
+                int(event.get("month", 0)),
+                int(event.get("day", 0)),
+            )
+            if event_day and today <= event_day <= week_end:
+                items.append(
+                    {
+                        "date": event_day,
+                        "date_label": event_day.strftime("%d-%m-%Y"),
+                        "country": str(event.get("country", "")),
+                        "title": str(event.get("name", "")),
+                        "note": "",
+                    }
+                )
+            continue
+
+        if event.get("kind") == "range":
+            start = safe_date_with_leap_support(
+                today.year,
+                int(event.get("start_month", 1)),
+                int(event.get("start_day", 1)),
+            )
+            end = safe_date_with_leap_support(
+                today.year,
+                int(event.get("end_month", 12)),
+                int(event.get("end_day", 31)),
+            )
+            if not start or not end:
+                continue
+            overlap_start = max(start, today)
+            overlap_end = min(end, week_end)
+            if overlap_start > overlap_end:
+                continue
+            date_label = (
+                overlap_start.strftime("%d-%m-%Y")
+                if overlap_start == overlap_end
+                else f"{overlap_start.strftime('%d-%m-%Y')} — {overlap_end.strftime('%d-%m-%Y')}"
+            )
+            items.append(
+                {
+                    "date": overlap_start,
+                    "date_label": date_label,
+                    "country": str(event.get("country", "")),
+                    "title": str(event.get("name", "")),
+                    "note": "",
+                }
+            )
+
+    # Preserve order by date and remove duplicates.
+    seen: set[tuple[str, str, str]] = set()
+    deduped: list[dict[str, Any]] = []
+    for item in sorted(items, key=lambda row: (row["date"], row["country"], row["title"])):
+        key = (str(item.get("date_label", "")), item["country"], item["title"])
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+    return deduped
+
+
+def month_calendar_grid(
+    year: int,
+    month: int,
+    entries: list[dict[str, Any]],
+) -> list[list[dict[str, Any]]]:
+    calendar_builder = calendar.Calendar(firstweekday=0)
+    matrix = calendar_builder.monthdayscalendar(year, month)
+    day_types: dict[int, set[str]] = defaultdict(set)
+    for entry in entries:
+        entry_date = entry.get("date")
+        if not isinstance(entry_date, date) or entry_date.year != year or entry_date.month != month:
+            continue
+        day_types[entry_date.day].add(str(entry.get("type_key") or ""))
+
+    weeks: list[list[dict[str, Any]]] = []
+    for week in matrix:
+        week_cells: list[dict[str, Any]] = []
+        for day_value in week:
+            if day_value <= 0:
+                week_cells.append(
+                    {
+                        "day": 0,
+                        "type_keys": [],
+                        "single_type": "",
+                        "is_multi": False,
+                    }
+                )
+                continue
+            types = sorted([value for value in day_types.get(day_value, set()) if value])
+            week_cells.append(
+                {
+                    "day": day_value,
+                    "type_keys": types,
+                    "single_type": (types[0] if len(types) == 1 else ""),
+                    "is_multi": len(types) > 1,
+                }
+            )
+        weeks.append(week_cells)
+    return weeks
 
 
 def festival_range_end(festival: Festival) -> date | None:
@@ -2365,6 +2939,7 @@ def get_project_search_post_form_values(post: ProjectSearchPost | None = None, u
 def index(request: Request, db: Session = Depends(get_db)):
     user = current_user(request, db)
     if user:
+        today = date.today()
         notifications = db.execute(
             select(FestivalNotification)
             .where(FestivalNotification.user_id == user.id)
@@ -2394,6 +2969,12 @@ def index(request: Request, db: Session = Depends(get_db)):
             [alias for alias in alias_options if alias and alias.casefold() not in own_aliases],
             key=lambda value: value.casefold(),
         )
+        users_with_birthdays = db.execute(
+            select(User).where(User.birth_date.is_not(None))
+        ).scalars().all()
+        birthdays_this_week = upcoming_user_birthdays_this_week(users_with_birthdays, today)
+        info_events_week = weekly_infopovods(today)
+        character_birthdays_month = character_birthdays_this_month(today.month)
         unread_notifications = sum(1 for note in notifications if not note.is_read)
         return template_response(
             request,
@@ -2403,6 +2984,10 @@ def index(request: Request, db: Session = Depends(get_db)):
             notifications=regular_notifications,
             pigeon_notifications=pigeon_notifications,
             pigeon_alias_options=pigeon_alias_options,
+            birthdays_this_week=birthdays_this_week,
+            info_events_week=info_events_week,
+            character_birthdays_month=character_birthdays_month,
+            character_birthdays_month_label=RU_MONTH_NAMES[today.month],
             unread_notifications=unread_notifications,
         )
     return template_response(request, "landing.html", user=None, active_tab=None)
@@ -2607,6 +3192,7 @@ async def profile_update(request: Request, db: Session = Depends(get_db)):
     cosplay_nick = normalize_username(str(form.get("cosplay_nick", "")).strip())
     email = str(form.get("email", "")).strip().lower()
     home_city = str(form.get("home_city", "")).strip()
+    birth_date = parse_date(str(form.get("birth_date", "")).strip())
     new_password = str(form.get("new_password", "")).strip()
     new_password_confirm = str(form.get("new_password_confirm", "")).strip()
 
@@ -2644,6 +3230,7 @@ async def profile_update(request: Request, db: Session = Depends(get_db)):
         user.email = email
 
     user.home_city = home_city or None
+    user.birth_date = birth_date
 
     if new_password:
         if new_password != new_password_confirm:
@@ -4100,6 +4687,36 @@ async def rehearsals_respond(entry_id: int, request: Request, db: Session = Depe
     return redirect(next_url)
 
 
+@app.post("/rehearsals/entries/{entry_id}/delete")
+async def rehearsals_entry_delete(entry_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    form = await request.form()
+    next_url = safe_redirect_target(str(form.get("next", "")).strip(), "/rehearsals")
+
+    entry = db.get(RehearsalEntry, entry_id)
+    if not entry:
+        add_flash(request, "Запись репетиции не найдена.", "error")
+        return redirect(next_url)
+
+    card = db.get(CosplanCard, entry.cosplan_card_id)
+    can_delete = (
+        entry.user_id == user.id
+        or (entry.proposed_by_user_id == user.id)
+        or (card is not None and can_manage_project_card(user, card))
+    )
+    if not can_delete:
+        add_flash(request, "Недостаточно прав для удаления репетиции.", "error")
+        return redirect(next_url)
+
+    db.delete(entry)
+    db.commit()
+    add_flash(request, "Репетиция удалена.", "info")
+    return redirect(next_url)
+
+
 @app.get("/my-projects", response_class=HTMLResponse)
 def my_projects_list(request: Request, db: Session = Depends(get_db)):
     user = current_user(request, db)
@@ -4393,6 +5010,15 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
         )
         .order_by(RehearsalEntry.entry_date, RehearsalEntry.entry_time, RehearsalEntry.id)
     ).scalars().all()
+    personal_events = db.execute(
+        select(PersonalCalendarEvent)
+        .where(
+            PersonalCalendarEvent.user_id == user.id,
+            PersonalCalendarEvent.event_date.is_not(None),
+            PersonalCalendarEvent.event_date >= today,
+        )
+        .order_by(PersonalCalendarEvent.event_date, PersonalCalendarEvent.event_time, PersonalCalendarEvent.id)
+    ).scalars().all()
     alias_to_username, users_by_username, _ = build_user_alias_lookup(db)
 
     entries: list[dict[str, Any]] = []
@@ -4402,16 +5028,20 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
             alias_to_username,
             users_by_username,
         )
-        entries.append(
-            {
-                "date": festival.event_date,
-                "time": "",
-                "kind": "Фестиваль (Я иду)",
-                "title": festival.name or "Без названия",
-                "city": festival.city or "—",
-                "coproplayers": ", ".join(coproplayers_display),
-            }
-        )
+        for festival_day in iter_date_range(festival.event_date, festival.event_end_date):
+            entries.append(
+                {
+                    "date": festival_day,
+                    "time": "",
+                    "kind": "Фестиваль (Я иду)",
+                    "type_key": "festival",
+                    "title": festival.name or "Без названия",
+                    "city": festival.city or "—",
+                    "coproplayers": ", ".join(coproplayers_display),
+                    "details": "",
+                    "personal_event_id": None,
+                }
+            )
     for card in cards:
         card_coproplayers = as_list(card.coproplayers_json) or as_list(card.coproplayer_nicks_json)
         coproplayers_display = format_coproplayer_names(
@@ -4424,9 +5054,12 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
                 "date": card.photoset_date,
                 "time": "",
                 "kind": "Фотосет",
+                "type_key": "photoset",
                 "title": card.character_name or "Без карточки",
                 "city": card.city or "—",
                 "coproplayers": ", ".join(coproplayers_display),
+                "details": "",
+                "personal_event_id": None,
             }
         )
     for entry in rehearsal_entries:
@@ -4438,9 +5071,26 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
                 "date": entry.entry_date,
                 "time": entry.entry_time or "",
                 "kind": "Репетиция",
+                "type_key": "rehearsal",
                 "title": card.character_name or "Без карточки",
                 "city": card.city or "—",
                 "coproplayers": "",
+                "details": "",
+                "personal_event_id": None,
+            }
+        )
+    for event in personal_events:
+        entries.append(
+            {
+                "date": event.event_date,
+                "time": event.event_time or "",
+                "kind": "Личное событие",
+                "type_key": "personal",
+                "title": event.title or "Без названия",
+                "city": "—",
+                "coproplayers": "",
+                "details": event.details or "",
+                "personal_event_id": event.id,
             }
         )
 
@@ -4470,6 +5120,7 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
             {
                 "title": month_label_ru(month_date),
                 "rows": by_month[year_month],
+                "grid_weeks": month_calendar_grid(year, month, by_month[year_month]),
             }
         )
 
@@ -4479,7 +5130,63 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
         user=user,
         active_tab="my-calendar",
         month_groups=grouped,
+        month_weekday_labels=["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"],
     )
+
+
+@app.post("/my-calendar/events/new")
+async def my_calendar_event_create(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    form = await request.form()
+    event_date = parse_date(str(form.get("event_date", "")).strip())
+    event_time = parse_time_hhmm(str(form.get("event_time", "")))
+    event_title = str(form.get("event_title", "")).strip()
+    event_details = str(form.get("event_details", "")).strip()
+
+    if not event_date:
+        add_flash(request, "Укажите дату события.", "error")
+        return redirect("/my-calendar")
+    if not event_title:
+        add_flash(request, "Укажите название события.", "error")
+        return redirect("/my-calendar")
+
+    db.add(
+        PersonalCalendarEvent(
+            user_id=user.id,
+            event_date=event_date,
+            event_time=event_time,
+            title=event_title,
+            details=event_details or None,
+        )
+    )
+    db.commit()
+    add_flash(request, "Событие добавлено в календарь.", "success")
+    return redirect("/my-calendar")
+
+
+@app.post("/my-calendar/events/{event_id}/delete")
+def my_calendar_event_delete(event_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    event = db.execute(
+        select(PersonalCalendarEvent).where(
+            PersonalCalendarEvent.id == event_id,
+            PersonalCalendarEvent.user_id == user.id,
+        )
+    ).scalar_one_or_none()
+    if not event:
+        add_flash(request, "Событие не найдено.", "error")
+        return redirect("/my-calendar")
+
+    db.delete(event)
+    db.commit()
+    add_flash(request, "Событие удалено из календаря.", "info")
+    return redirect("/my-calendar")
 
 
 def project_board_fandom_options(db: Session, user: User) -> list[str]:

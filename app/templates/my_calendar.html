@@ -4,19 +4,76 @@
   <h1>Мой календарь</h1>
 </section>
 
-<style>
-  .calendar-same-date {
-    border-left: 4px solid #c62828;
-    background: #fff1f1;
-    padding-left: 0.6rem;
-    border-radius: 8px;
-  }
-</style>
+<section class="box">
+  <h2>Добавить личное событие</h2>
+  <form method="post" action="/my-calendar/events/new" class="grid one-col">
+    <div class="grid three-col">
+      <label>
+        Дата
+        <input type="date" name="event_date" required />
+      </label>
+      <label>
+        Время
+        <input type="time" name="event_time" />
+      </label>
+      <label>
+        Название
+        <input type="text" name="event_title" maxlength="255" placeholder="Например, примерка костюма" required />
+      </label>
+    </div>
+    <label>
+      Пояснение
+      <textarea name="event_details" rows="2" placeholder="Необязательно"></textarea>
+    </label>
+    <div class="actions-inline">
+      <button type="submit" class="btn btn-accent">Добавить в календарь</button>
+    </div>
+  </form>
+</section>
+
+<section class="box top-offset">
+  <h2>Легенда календаря</h2>
+  <div class="calendar-legend">
+    <span class="chip calendar-chip festival">Фестиваль</span>
+    <span class="chip calendar-chip photoset">Фотосет</span>
+    <span class="chip calendar-chip rehearsal">Репетиция</span>
+    <span class="chip calendar-chip personal">Личное событие</span>
+    <span class="chip calendar-chip multi">Несколько типов в один день</span>
+  </div>
+</section>
 
 {% if month_groups %}
   {% for group in month_groups %}
-    <section class="box">
+    <section class="box top-offset">
       <h2>{{ group.title }}</h2>
+
+      <div class="calendar-grid-wrap">
+        <table class="calendar-grid">
+          <thead>
+            <tr>
+              {% for label in month_weekday_labels %}
+                <th>{{ label }}</th>
+              {% endfor %}
+            </tr>
+          </thead>
+          <tbody>
+            {% for week in group.grid_weeks %}
+              <tr>
+                {% for cell in week %}
+                  {% if cell.day %}
+                    <td class="calendar-grid-cell {% if cell.is_multi %}calendar-day-multi{% elif cell.single_type %}calendar-day-{{ cell.single_type }}{% endif %}">
+                      <span class="day-number">{{ cell.day }}</span>
+                    </td>
+                  {% else %}
+                    <td class="calendar-grid-cell is-empty"></td>
+                  {% endif %}
+                {% endfor %}
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+
       <ul class="calendar-list">
         {% for item in group.rows %}
           <li class="{% if item.same_date_highlight %}calendar-same-date{% endif %}">
@@ -24,7 +81,7 @@
             {% if item.time %}
               <span class="chip">{{ item.time }}</span>
             {% endif %}
-            <span class="chip">{{ item.kind }}</span>
+            <span class="chip calendar-chip {{ item.type_key }}">{{ item.kind }}</span>
             {% if item.same_date_highlight %}
               <span class="chip chip-alert">Совпадает по дате ({{ item.same_date_count }})</span>
             {% endif %}
@@ -33,6 +90,14 @@
             {% if item.coproplayers %}
               <span class="muted">Сокосплеер: {{ item.coproplayers }}</span>
             {% endif %}
+            {% if item.details %}
+              <span class="muted">{{ item.details }}</span>
+            {% endif %}
+            {% if item.personal_event_id %}
+              <form method="post" action="/my-calendar/events/{{ item.personal_event_id }}/delete" onsubmit="return confirm('Удалить личное событие?');">
+                <button type="submit" class="btn btn-danger btn-small">Удалить</button>
+              </form>
+            {% endif %}
           </li>
         {% endfor %}
       </ul>
@@ -40,7 +105,7 @@
   {% endfor %}
 {% else %}
   <section class="box">
-    <p class="muted">Занятых дат пока нет. Даты появятся, когда добавите фотосеты или фестивали с отметкой «Я иду».</p>
+    <p class="muted">Занятых дат пока нет. Даты появятся, когда добавите фотосеты, фестивали, репетиции или личные события.</p>
   </section>
 {% endif %}
 {% endblock %}

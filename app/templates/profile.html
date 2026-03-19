@@ -23,6 +23,10 @@
       <input type="text" name="home_city" value="{{ user.home_city or '' }}" placeholder="Например, Москва, Тула" />
     </label>
     <label>
+      День рождения
+      <input type="date" name="birth_date" value="{{ user.birth_date.isoformat() if user.birth_date else '' }}" />
+    </label>
+    <label>
       Новый пароль
       <input type="password" name="new_password" placeholder="Оставьте пустым, чтобы не менять" />
     </label>

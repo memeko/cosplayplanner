@@ -8,6 +8,62 @@
 </section>
 
 <section class="box top-offset">
+  <h2>Дни рождения</h2>
+  {% if birthdays_this_week %}
+    <ul class="notifications-list">
+      {% for row in birthdays_this_week %}
+        <li>
+          <div class="notification-content">
+            <strong>{{ row.display_nick }}</strong>
+            <span class="muted">— {{ row.date.strftime('%d-%m-%Y') }}</span>
+          </div>
+        </li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <p class="muted">На этой неделе дней рождения участников нет.</p>
+  {% endif %}
+</section>
+
+<section class="box top-offset">
+  <h2>Инфоповоды на ближайшую неделю</h2>
+  {% if info_events_week %}
+    <ul class="notifications-list">
+      {% for event in info_events_week %}
+        <li>
+          <div class="notification-content">
+            <strong>{{ event.date_label or event.date.strftime('%d-%m-%Y') }}</strong>
+            <span>{{ event.country }}: {{ event.title }}</span>
+            {% if event.note %}
+              <span class="chip chip-alert">{{ event.note }}</span>
+            {% endif %}
+          </div>
+        </li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <p class="muted">На ближайшую неделю особых инфоповодов не найдено.</p>
+  {% endif %}
+
+  <h3>Дни рождения персонажей в {{ character_birthdays_month_label }}</h3>
+  {% if character_birthdays_month %}
+    <ul class="notifications-list">
+      {% for item in character_birthdays_month %}
+        <li>
+          <div class="notification-content">
+            <strong>{{ "%02d"|format(item.day) if item.day else "??" }}.{{ "%02d"|format(today.month) }}</strong>
+            <span>{{ item.name }}</span>
+            <span class="muted">({{ item.source }})</span>
+          </div>
+        </li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <p class="muted">Не удалось получить список дней рождения персонажей за текущий месяц.</p>
+  {% endif %}
+</section>
+
+<section class="box top-offset">
   <h2>Отправить голубя!</h2>
   <form method="post" action="/notifications/pigeon" class="grid one-col">
     <input type="hidden" name="next" value="/" />
