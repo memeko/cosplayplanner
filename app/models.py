@@ -109,6 +109,11 @@ class User(Base):
         back_populates="user",
         cascade="all, delete-orphan",
     )
+    work_shift_days = relationship(
+        "WorkShiftDay",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
 
 
 class UserOption(Base):
@@ -332,6 +337,21 @@ class PersonalCalendarEvent(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
     user = relationship("User", back_populates="personal_calendar_events")
+
+
+class WorkShiftDay(Base):
+    __tablename__ = "work_shift_days"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    shift_date = Column(Date, nullable=False, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    user = relationship("User", back_populates="work_shift_days")
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "shift_date", name="uq_work_shift_day_user_date"),
+    )
 
 
 class Festival(Base):

@@ -50,6 +50,7 @@ from .models import (
     RehearsalCard,
     RehearsalEntry,
     User,
+    WorkShiftDay,
 )
 from .services import (
     as_list,
@@ -496,6 +497,8 @@ def apply_schema_migrations() -> None:
             RehearsalEntry.__table__.create(bind=conn, checkfirst=True)
         if "personal_calendar_events" not in existing_tables:
             PersonalCalendarEvent.__table__.create(bind=conn, checkfirst=True)
+        if "work_shift_days" not in existing_tables:
+            WorkShiftDay.__table__.create(bind=conn, checkfirst=True)
 
         for table_name, columns in required_columns.items():
             if table_name not in existing_tables and table_name != "festival_notifications":
@@ -1445,10 +1448,12 @@ def month_calendar_grid(
     year: int,
     month: int,
     entries: list[dict[str, Any]],
+    shift_days: set[int] | None = None,
 ) -> list[list[dict[str, Any]]]:
     calendar_builder = calendar.Calendar(firstweekday=0)
     matrix = calendar_builder.monthdayscalendar(year, month)
     day_types: dict[int, set[str]] = defaultdict(set)
+    normalized_shift_days = {int(day) for day in (shift_days or set()) if isinstance(day, int) and day > 0}
     for entry in entries:
         entry_date = entry.get("date")
         if not isinstance(entry_date, date) or entry_date.year != year or entry_date.month != month:
@@ -1470,12 +1475,15 @@ def month_calendar_grid(
                 )
                 continue
             types = sorted([value for value in day_types.get(day_value, set()) if value])
+            has_shift = day_value in normalized_shift_days
             week_cells.append(
                 {
                     "day": day_value,
                     "type_keys": types,
                     "single_type": (types[0] if len(types) == 1 else ""),
                     "is_multi": len(types) > 1,
+                    "has_work_shift": has_shift,
+                    "is_work_shift_only": has_shift and not types,
                 }
             )
         weeks.append(week_cells)
@@ -5256,6 +5264,17 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
         )
         .order_by(PersonalCalendarEvent.event_date, PersonalCalendarEvent.event_time, PersonalCalendarEvent.id)
     ).scalars().all()
+    work_shift_dates = set(
+        db.execute(
+            select(WorkShiftDay.shift_date)
+            .where(
+                WorkShiftDay.user_id == user.id,
+                WorkShiftDay.shift_date.is_not(None),
+                WorkShiftDay.shift_date >= today,
+            )
+            .order_by(WorkShiftDay.shift_date)
+        ).scalars().all()
+    )
     alias_to_username, users_by_username, _ = build_user_alias_lookup(db)
 
     entries: list[dict[str, Any]] = []
@@ -5350,14 +5369,28 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
             continue
         by_month[(event_date.year, event_date.month)].append(entry)
 
-    for year_month in sorted(by_month.keys()):
+    shift_days_by_month: dict[tuple[int, int], set[int]] = defaultdict(set)
+    for shift_date in work_shift_dates:
+        if not isinstance(shift_date, date):
+            continue
+        shift_days_by_month[(shift_date.year, shift_date.month)].add(shift_date.day)
+
+    month_keys = set(by_month.keys()) | set(shift_days_by_month.keys())
+
+    for year_month in sorted(month_keys):
         year, month = year_month
         month_date = date(year, month, 1)
+        month_rows = by_month.get(year_month, [])
         grouped.append(
             {
                 "title": month_label_ru(month_date),
-                "rows": by_month[year_month],
-                "grid_weeks": month_calendar_grid(year, month, by_month[year_month]),
+                "rows": month_rows,
+                "grid_weeks": month_calendar_grid(
+                    year,
+                    month,
+                    month_rows,
+                    shift_days=shift_days_by_month.get(year_month, set()),
+                ),
             }
         )
 
@@ -5367,6 +5400,7 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
         user=user,
         active_tab="my-calendar",
         month_groups=grouped,
+        work_shift_count=len(work_shift_dates),
         month_weekday_labels=["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"],
     )
 
@@ -5401,6 +5435,150 @@ async def my_calendar_event_create(request: Request, db: Session = Depends(get_d
     )
     db.commit()
     add_flash(request, "Событие добавлено в календарь.", "success")
+    return redirect("/my-calendar")
+
+
+@app.post("/my-calendar/work-shifts/add")
+async def my_calendar_work_shift_add(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    form = await request.form()
+    shift_mode = str(form.get("shift_mode", "block")).strip().lower()
+    shift_repeat_kind = str(form.get("shift_repeat_kind", "interval")).strip().lower()
+    start_date = parse_date(str(form.get("shift_start_date", "")).strip())
+    end_date = parse_date(str(form.get("shift_end_date", "")).strip())
+    repeat_every_days_raw = str(form.get("shift_repeat_every_days", "7")).strip()
+    repeat_weekdays_raw = form.getlist("shift_repeat_weekdays")
+
+    if shift_mode not in {"block", "repeat"}:
+        add_flash(request, "Неверный режим добавления смен.", "error")
+        return redirect("/my-calendar")
+    if not start_date or not end_date:
+        add_flash(request, "Укажите дату начала и дату конца смен.", "error")
+        return redirect("/my-calendar")
+    if end_date < start_date:
+        start_date, end_date = end_date, start_date
+
+    day_span = (end_date - start_date).days
+    if day_span > 3650:
+        add_flash(request, "Слишком большой диапазон дат. Укажите не более 10 лет.", "error")
+        return redirect("/my-calendar")
+
+    repeat_every_days = 1
+    repeat_weekdays: set[int] = set()
+    if shift_mode == "repeat":
+        if shift_repeat_kind not in {"interval", "weekdays", "two_by_two"}:
+            add_flash(request, "Неверный тип повтора смен.", "error")
+            return redirect("/my-calendar")
+        if shift_repeat_kind == "interval":
+            try:
+                repeat_every_days = int(repeat_every_days_raw)
+            except (TypeError, ValueError):
+                repeat_every_days = 0
+            if repeat_every_days <= 0:
+                add_flash(request, "Для повтора укажите шаг в днях больше нуля.", "error")
+                return redirect("/my-calendar")
+            if repeat_every_days > 60:
+                add_flash(request, "Шаг повтора слишком большой. Укажите до 60 дней.", "error")
+                return redirect("/my-calendar")
+        elif shift_repeat_kind == "weekdays":
+            for value in repeat_weekdays_raw:
+                try:
+                    weekday = int(str(value).strip())
+                except (TypeError, ValueError):
+                    continue
+                if 0 <= weekday <= 6:
+                    repeat_weekdays.add(weekday)
+            if not repeat_weekdays:
+                add_flash(request, "Для повтора по дням недели выберите хотя бы один день.", "error")
+                return redirect("/my-calendar")
+
+    target_dates: set[date] = set()
+    if shift_mode == "block":
+        current_date = start_date
+        while current_date <= end_date:
+            target_dates.add(current_date)
+            current_date += timedelta(days=1)
+    elif shift_repeat_kind == "interval":
+        current_date = start_date
+        while current_date <= end_date:
+            target_dates.add(current_date)
+            current_date += timedelta(days=repeat_every_days)
+    elif shift_repeat_kind == "weekdays":
+        current_date = start_date
+        while current_date <= end_date:
+            if current_date.weekday() in repeat_weekdays:
+                target_dates.add(current_date)
+            current_date += timedelta(days=1)
+    else:  # two_by_two
+        current_date = start_date
+        day_offset = 0
+        while current_date <= end_date:
+            if day_offset % 4 in {0, 1}:
+                target_dates.add(current_date)
+            current_date += timedelta(days=1)
+            day_offset += 1
+
+    if not target_dates:
+        add_flash(request, "Не удалось сформировать даты смен.", "error")
+        return redirect("/my-calendar")
+
+    existing_dates = set(
+        db.execute(
+            select(WorkShiftDay.shift_date).where(
+                WorkShiftDay.user_id == user.id,
+                WorkShiftDay.shift_date.in_(sorted(target_dates)),
+            )
+        ).scalars().all()
+    )
+    added_count = 0
+    for shift_date in sorted(target_dates):
+        if shift_date in existing_dates:
+            continue
+        db.add(
+            WorkShiftDay(
+                user_id=user.id,
+                shift_date=shift_date,
+            )
+        )
+        added_count += 1
+
+    db.commit()
+    if added_count <= 0:
+        add_flash(request, "Все выбранные рабочие смены уже были отмечены.", "info")
+    else:
+        if shift_mode == "block":
+            mode_label = "блоком"
+        elif shift_repeat_kind == "interval":
+            mode_label = f"повтором каждые {repeat_every_days} дн."
+        elif shift_repeat_kind == "weekdays":
+            mode_label = "повтором по дням недели"
+        else:
+            mode_label = "повтором 2/2"
+        add_flash(request, f"Добавлено смен: {added_count} ({mode_label}).", "success")
+    return redirect("/my-calendar")
+
+
+@app.post("/my-calendar/work-shifts/clear")
+def my_calendar_work_shift_clear(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    removed_count = db.execute(
+        select(func.count(WorkShiftDay.id)).where(WorkShiftDay.user_id == user.id)
+    ).scalar_one()
+    db.execute(
+        text("DELETE FROM work_shift_days WHERE user_id = :user_id"),
+        {"user_id": user.id},
+    )
+    db.commit()
+    if removed_count:
+        add_flash(request, f"Удалено рабочих смен: {int(removed_count)}.", "info")
+    else:
+        add_flash(request, "Рабочих смен для удаления нет.", "info")
     return redirect("/my-calendar")
 
 

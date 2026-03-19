@@ -32,6 +32,62 @@
 </section>
 
 <section class="box top-offset">
+  <h2>Рабочие смены</h2>
+  <form method="post" action="/my-calendar/work-shifts/add" class="grid one-col">
+    <div class="grid four-col">
+      <label>
+        Режим
+        <select name="shift_mode" id="shift_mode">
+          <option value="block">Блок дат</option>
+          <option value="repeat">Повтор</option>
+        </select>
+      </label>
+      <label id="shift_repeat_kind_wrap">
+        Тип повтора
+        <select name="shift_repeat_kind" id="shift_repeat_kind">
+          <option value="interval">Каждые N дней</option>
+          <option value="weekdays">По дням недели</option>
+          <option value="two_by_two">График 2/2</option>
+        </select>
+      </label>
+      <label>
+        Дата начала
+        <input type="date" name="shift_start_date" required />
+      </label>
+      <label>
+        Дата конца
+        <input type="date" name="shift_end_date" required />
+      </label>
+      <label id="shift_repeat_interval_wrap">
+        Шаг повтора (дней)
+        <input type="number" name="shift_repeat_every_days" min="1" max="60" value="7" />
+      </label>
+    </div>
+    <div id="shift_repeat_weekdays_wrap">
+      <p class="muted">Дни недели для повтора:</p>
+      <div class="chips-wrap">
+        <label class="chip-check"><input type="checkbox" name="shift_repeat_weekdays" value="0" /> Пн</label>
+        <label class="chip-check"><input type="checkbox" name="shift_repeat_weekdays" value="1" /> Вт</label>
+        <label class="chip-check"><input type="checkbox" name="shift_repeat_weekdays" value="2" /> Ср</label>
+        <label class="chip-check"><input type="checkbox" name="shift_repeat_weekdays" value="3" /> Чт</label>
+        <label class="chip-check"><input type="checkbox" name="shift_repeat_weekdays" value="4" /> Пт</label>
+        <label class="chip-check"><input type="checkbox" name="shift_repeat_weekdays" value="5" /> Сб</label>
+        <label class="chip-check"><input type="checkbox" name="shift_repeat_weekdays" value="6" /> Вс</label>
+      </div>
+    </div>
+    <p class="muted">Для режима «Блок дат» шаг повтора игнорируется. Смены отображаются только в сетке календаря серой штриховкой.</p>
+    <div class="actions-inline">
+      <button type="submit" class="btn">Добавить смены</button>
+    </div>
+  </form>
+  {% if work_shift_count %}
+    <form method="post" action="/my-calendar/work-shifts/clear" onsubmit="return confirm('Удалить все отмеченные рабочие смены?');">
+      <button type="submit" class="btn btn-danger">Очистить все смены</button>
+    </form>
+  {% endif %}
+</section>
+
+<section class="box top-offset">
   <h2>Легенда календаря</h2>
   <div class="calendar-legend">
     <span class="chip calendar-chip festival">Фестиваль</span>
@@ -39,6 +95,7 @@
     <span class="chip calendar-chip rehearsal">Репетиция</span>
     <span class="chip calendar-chip personal">Личное событие</span>
     <span class="chip calendar-chip multi">Несколько типов в один день</span>
+    <span class="chip calendar-chip work-shift">Рабочая смена (только сетка)</span>
   </div>
 </section>
 
@@ -61,7 +118,7 @@
               <tr>
                 {% for cell in week %}
                   {% if cell.day %}
-                    <td class="calendar-grid-cell {% if cell.is_multi %}calendar-day-multi{% elif cell.single_type %}calendar-day-{{ cell.single_type }}{% endif %}">
+                    <td class="calendar-grid-cell {% if cell.is_multi %}calendar-day-multi{% elif cell.single_type %}calendar-day-{{ cell.single_type }}{% endif %} {% if cell.has_work_shift %}calendar-day-work-shift{% endif %} {% if cell.is_work_shift_only %}calendar-day-shift-only{% endif %}">
                       <span class="day-number">{{ cell.day }}</span>
                     </td>
                   {% else %}
@@ -74,33 +131,37 @@
         </table>
       </div>
 
-      <ul class="calendar-list">
-        {% for item in group.rows %}
-          <li class="{% if item.same_date_highlight %}calendar-same-date{% endif %}">
-            <span class="calendar-date">{{ item.date.strftime('%d-%m-%Y') if item.date else "—" }}</span>
-            {% if item.time %}
-              <span class="chip">{{ item.time }}</span>
-            {% endif %}
-            <span class="chip calendar-chip {{ item.type_key }}">{{ item.kind }}</span>
-            {% if item.same_date_highlight %}
-              <span class="chip chip-alert">Совпадает по дате ({{ item.same_date_count }})</span>
-            {% endif %}
-            <strong>{{ item.title }}</strong>
-            <span class="muted">Город: {{ item.city or "—" }}</span>
-            {% if item.coproplayers %}
-              <span class="muted">Сокосплеер: {{ item.coproplayers }}</span>
-            {% endif %}
-            {% if item.details %}
-              <span class="muted">{{ item.details }}</span>
-            {% endif %}
-            {% if item.personal_event_id %}
-              <form method="post" action="/my-calendar/events/{{ item.personal_event_id }}/delete" onsubmit="return confirm('Удалить личное событие?');">
-                <button type="submit" class="btn btn-danger btn-small">Удалить</button>
-              </form>
-            {% endif %}
-          </li>
-        {% endfor %}
-      </ul>
+      {% if group.rows %}
+        <ul class="calendar-list">
+          {% for item in group.rows %}
+            <li class="{% if item.same_date_highlight %}calendar-same-date{% endif %}">
+              <span class="calendar-date">{{ item.date.strftime('%d-%m-%Y') if item.date else "—" }}</span>
+              {% if item.time %}
+                <span class="chip">{{ item.time }}</span>
+              {% endif %}
+              <span class="chip calendar-chip {{ item.type_key }}">{{ item.kind }}</span>
+              {% if item.same_date_highlight %}
+                <span class="chip chip-alert">Совпадает по дате ({{ item.same_date_count }})</span>
+              {% endif %}
+              <strong>{{ item.title }}</strong>
+              <span class="muted">Город: {{ item.city or "—" }}</span>
+              {% if item.coproplayers %}
+                <span class="muted">Сокосплеер: {{ item.coproplayers }}</span>
+              {% endif %}
+              {% if item.details %}
+                <span class="muted">{{ item.details }}</span>
+              {% endif %}
+              {% if item.personal_event_id %}
+                <form method="post" action="/my-calendar/events/{{ item.personal_event_id }}/delete" onsubmit="return confirm('Удалить личное событие?');">
+                  <button type="submit" class="btn btn-danger btn-small">Удалить</button>
+                </form>
+              {% endif %}
+            </li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <p class="muted">Текстовых событий в этом месяце нет.</p>
+      {% endif %}
     </section>
   {% endfor %}
 {% else %}
@@ -108,4 +169,31 @@
     <p class="muted">Занятых дат пока нет. Даты появятся, когда добавите фотосеты, фестивали, репетиции или личные события.</p>
   </section>
 {% endif %}
+<script>
+  (function () {
+    const mode = document.getElementById("shift_mode");
+    const repeatKind = document.getElementById("shift_repeat_kind");
+    const repeatKindWrap = document.getElementById("shift_repeat_kind_wrap");
+    const intervalWrap = document.getElementById("shift_repeat_interval_wrap");
+    const weekdaysWrap = document.getElementById("shift_repeat_weekdays_wrap");
+    if (!mode || !repeatKind || !repeatKindWrap || !intervalWrap || !weekdaysWrap) {
+      return;
+    }
+
+    const syncShiftControls = () => {
+      const isRepeat = mode.value === "repeat";
+      const kind = repeatKind.value;
+
+      repeatKindWrap.style.display = isRepeat ? "" : "none";
+      repeatKind.disabled = !isRepeat;
+
+      intervalWrap.style.display = isRepeat && kind === "interval" ? "" : "none";
+      weekdaysWrap.style.display = isRepeat && kind === "weekdays" ? "" : "none";
+    };
+
+    mode.addEventListener("change", syncShiftControls);
+    repeatKind.addEventListener("change", syncShiftControls);
+    syncShiftControls();
+  })();
+</script>
 {% endblock %}

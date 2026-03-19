@@ -758,6 +758,12 @@ textarea {
   color: #854d0e;
 }
 
+.calendar-chip.work-shift {
+  background: #e5e7eb;
+  border-color: #9ca3af;
+  color: #334155;
+}
+
 .calendar-grid-wrap {
   overflow-x: auto;
   margin-top: 8px;
@@ -823,6 +829,34 @@ textarea {
 
 .calendar-day-multi .day-number {
   color: #854d0e;
+}
+
+.calendar-day-work-shift {
+  position: relative;
+  overflow: hidden;
+}
+
+.calendar-day-work-shift::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(
+    135deg,
+    rgba(100, 116, 139, 0.35) 0px,
+    rgba(100, 116, 139, 0.35) 2px,
+    rgba(100, 116, 139, 0) 2px,
+    rgba(100, 116, 139, 0) 8px
+  );
+  pointer-events: none;
+}
+
+.calendar-day-shift-only {
+  background: #e5e7eb;
+}
+
+.calendar-grid-cell .day-number {
+  position: relative;
+  z-index: 1;
 }
 
 .reference-grid {
