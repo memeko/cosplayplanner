@@ -1227,28 +1227,36 @@ def clean_character_birthday_name(raw_name: str) -> str:
 
 
 def character_birthdays_today(today: date) -> list[dict[str, Any]]:
-    monthly_rows = character_birthdays_this_month(today.month)
     items: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
-    for row in monthly_rows:
-        day_num = int(row.get("day") or 0)
-        if day_num != today.day:
+    for producer in [
+        fetch_character_birthdays_from_genshin,
+        fetch_character_birthdays_from_sheet,
+        fetch_character_birthdays_from_anisearch,
+    ]:
+        try:
+            rows = producer(today.month)
+        except Exception:
             continue
-        name = clean_character_birthday_name(str(row.get("name", "")))
-        source = str(row.get("source", "")).strip()
-        if not name:
-            continue
-        key = (name.casefold(), source.casefold())
-        if key in seen:
-            continue
-        seen.add(key)
-        items.append(
-            {
-                "day": day_num,
-                "name": name,
-                "source": source or "источник не указан",
-            }
-        )
+        for row in rows:
+            day_num = int(row.get("day") or 0)
+            if day_num != today.day:
+                continue
+            name = clean_character_birthday_name(str(row.get("name", "")))
+            source = str(row.get("source", "")).strip()
+            if not name:
+                continue
+            key = (name.casefold(), source.casefold())
+            if key in seen:
+                continue
+            seen.add(key)
+            items.append(
+                {
+                    "day": day_num,
+                    "name": name,
+                    "source": source or "источник не указан",
+                }
+            )
     items.sort(key=lambda item: str(item.get("name", "")).casefold())
     return items
 
