@@ -18,10 +18,14 @@
     text-align: left;
     vertical-align: middle;
   }
-  .tasks-table th:last-child,
-  .tasks-table td:last-child {
-    width: 44px;
-    text-align: right;
+  .task-done-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.2rem;
+    flex-wrap: nowrap;
+  }
+  .task-done-actions .inline-form {
+    margin: 0;
   }
   .task-add-form {
     display: grid;
@@ -170,7 +174,6 @@
               <th>Ответственный</th>
               <th>Задание</th>
               <th>Выполнил(а)</th>
-              <th></th>
             </tr>
           </thead>
           <tbody>
@@ -179,14 +182,14 @@
               <td>{{ item.assignee_label }}</td>
               <td class="{% if item.done %}done{% endif %}">{{ item.task }}</td>
               <td>
-                <form method="post" action="/in-progress/{{ row.id }}/tasks/toggle/{{ loop.index0 }}" class="inline-form">
-                  <button type="submit" class="btn btn-small">{{ "☑" if item.done else "☐" }}</button>
-                </form>
-              </td>
-              <td>
-                <form method="post" action="/in-progress/{{ row.id }}/tasks/delete/{{ loop.index0 }}" class="inline-form">
-                  <button type="submit" class="btn btn-small btn-danger">✕</button>
-                </form>
+                <div class="task-done-actions">
+                  <form method="post" action="/in-progress/{{ row.id }}/tasks/toggle/{{ loop.index0 }}" class="inline-form">
+                    <button type="submit" class="btn btn-small">{{ "☑" if item.done else "☐" }}</button>
+                  </form>
+                  <form method="post" action="/in-progress/{{ row.id }}/tasks/delete/{{ loop.index0 }}" class="inline-form">
+                    <button type="submit" class="btn btn-small btn-danger">✕</button>
+                  </form>
+                </div>
               </td>
             </tr>
             {% endfor %}

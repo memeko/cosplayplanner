@@ -1215,6 +1215,44 @@ def character_birthdays_this_month(month: int) -> list[dict[str, Any]]:
     return merged[:220]
 
 
+def clean_character_birthday_name(raw_name: str) -> str:
+    value = (raw_name or "").strip()
+    if not value:
+        return ""
+    # Убираем служебные подписи из alt/описаний вроде "Иконка X".
+    value = re.sub(r"^\s*(иконка|icon)\s+", "", value, flags=re.IGNORECASE)
+    value = re.sub(r"\s*[-:]\s*(иконка|icon)\s*$", "", value, flags=re.IGNORECASE)
+    value = value.replace("Иконка", "").replace("icon", "").replace("Icon", "")
+    return re.sub(r"\s+", " ", value).strip(" -")
+
+
+def character_birthdays_today(today: date) -> list[dict[str, Any]]:
+    monthly_rows = character_birthdays_this_month(today.month)
+    items: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for row in monthly_rows:
+        day_num = int(row.get("day") or 0)
+        if day_num != today.day:
+            continue
+        name = clean_character_birthday_name(str(row.get("name", "")))
+        source = str(row.get("source", "")).strip()
+        if not name:
+            continue
+        key = (name.casefold(), source.casefold())
+        if key in seen:
+            continue
+        seen.add(key)
+        items.append(
+            {
+                "day": day_num,
+                "name": name,
+                "source": source or "источник не указан",
+            }
+        )
+    items.sort(key=lambda item: str(item.get("name", "")).casefold())
+    return items
+
+
 def event_matches_day(day_value: date, event: dict[str, Any]) -> bool:
     kind = event.get("kind")
     if kind == "fixed":
@@ -2974,7 +3012,7 @@ def index(request: Request, db: Session = Depends(get_db)):
         ).scalars().all()
         birthdays_this_week = upcoming_user_birthdays_this_week(users_with_birthdays, today)
         info_events_week = weekly_infopovods(today)
-        character_birthdays_month = character_birthdays_this_month(today.month)
+        character_birthdays_today_rows = character_birthdays_today(today)
         unread_notifications = sum(1 for note in notifications if not note.is_read)
         return template_response(
             request,
@@ -2986,8 +3024,7 @@ def index(request: Request, db: Session = Depends(get_db)):
             pigeon_alias_options=pigeon_alias_options,
             birthdays_this_week=birthdays_this_week,
             info_events_week=info_events_week,
-            character_birthdays_month=character_birthdays_month,
-            character_birthdays_month_label=RU_MONTH_NAMES[today.month],
+            character_birthdays_today=character_birthdays_today_rows,
             unread_notifications=unread_notifications,
         )
     return template_response(request, "landing.html", user=None, active_tab=None)

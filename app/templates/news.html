@@ -45,13 +45,12 @@
     <p class="muted">На ближайшую неделю особых инфоповодов не найдено.</p>
   {% endif %}
 
-  <h3>Дни рождения персонажей в {{ character_birthdays_month_label }}</h3>
-  {% if character_birthdays_month %}
+  <h3>Дни рождения персонажей на сегодня</h3>
+  {% if character_birthdays_today %}
     <ul class="notifications-list">
-      {% for item in character_birthdays_month %}
+      {% for item in character_birthdays_today %}
         <li>
           <div class="notification-content">
-            <strong>{{ "%02d"|format(item.day) if item.day else "??" }}.{{ "%02d"|format(today.month) }}</strong>
             <span>{{ item.name }}</span>
             <span class="muted">({{ item.source }})</span>
           </div>
@@ -59,7 +58,7 @@
       {% endfor %}
     </ul>
   {% else %}
-    <p class="muted">Не удалось получить список дней рождения персонажей за текущий месяц.</p>
+    <p class="muted">Сегодня нет данных о днях рождения персонажей.</p>
   {% endif %}
 </section>
 
