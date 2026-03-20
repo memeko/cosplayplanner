@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import calendar
+import colorsys
 import html
 import io
 import os
@@ -40,6 +41,7 @@ from .models import (
     CommunityQuestion,
     CommunityQuestionComment,
     CommunityStudio,
+    ContentPlanPost,
     CosplanCard,
     Festival,
     FestivalAnnouncement,
@@ -166,6 +168,34 @@ PROJECT_BOARD_STATUS_INACTIVE = "inactive"
 
 QUESTION_STATUS_OPEN = "open"
 QUESTION_STATUS_RESOLVED = "resolved"
+
+CALENDAR_VIEW_MY = "my"
+CALENDAR_VIEW_BUDGET = "budget"
+CALENDAR_VIEW_CONTENT = "content"
+CALENDAR_VIEW_OPTIONS = {CALENDAR_VIEW_MY, CALENDAR_VIEW_BUDGET, CALENDAR_VIEW_CONTENT}
+
+CONTENT_SOCIAL_OPTIONS = ["ТГ", "IT", "VK", "tw", "rednote", "boosty", "другое"]
+CONTENT_STATUS_OPTIONS = ["plan", "draft", "published"]
+CONTENT_STATUS_LABELS = {
+    "plan": "План",
+    "draft": "Черновик",
+    "published": "Опубликовано",
+}
+
+CONTENT_RUBRIC_PALETTE = [
+    "#8ecae6",
+    "#ffb703",
+    "#fb8500",
+    "#90be6d",
+    "#577590",
+    "#ff7f51",
+    "#b8c0ff",
+    "#f28482",
+    "#84a59d",
+    "#6d597a",
+    "#43aa8b",
+    "#f9c74f",
+]
 
 MASTER_TYPE_OPTIONS = [
     "фотограф",
@@ -463,6 +493,17 @@ def apply_schema_migrations() -> None:
         "work_shift_days": [
             ("is_half_day", "BOOLEAN NOT NULL DEFAULT 0"),
         ],
+        "community_master_comments": [
+            ("is_client", "BOOLEAN NOT NULL DEFAULT 0"),
+            ("images_json", "JSON NOT NULL DEFAULT '[]'"),
+        ],
+        "content_plan_posts": [
+            ("description", "TEXT"),
+            ("publish_time", "VARCHAR(8)"),
+            ("socials_json", "JSON NOT NULL DEFAULT '[]'"),
+            ("rubric", "VARCHAR(120) NOT NULL DEFAULT 'Общее'"),
+            ("status", "VARCHAR(32) NOT NULL DEFAULT 'plan'"),
+        ],
     }
 
     with engine.begin() as conn:
@@ -502,6 +543,8 @@ def apply_schema_migrations() -> None:
             PersonalCalendarEvent.__table__.create(bind=conn, checkfirst=True)
         if "work_shift_days" not in existing_tables:
             WorkShiftDay.__table__.create(bind=conn, checkfirst=True)
+        if "content_plan_posts" not in existing_tables:
+            ContentPlanPost.__table__.create(bind=conn, checkfirst=True)
 
         for table_name, columns in required_columns.items():
             if table_name not in existing_tables and table_name != "festival_notifications":
@@ -900,6 +943,9 @@ def format_in_progress_tasks(
     for item in raw_items:
         if not isinstance(item, dict):
             continue
+        task_text = str(item.get("task") or item.get("text") or "").strip()
+        if not task_text:
+            continue
         assignee_raw = normalize_username(item.get("assignee") or item.get("responsible"))
         canonical_username = alias_to_username.get(assignee_raw.casefold(), assignee_raw) if assignee_raw else ""
         matched_user = users_by_username.get(canonical_username.casefold()) if canonical_username else None
@@ -912,11 +958,78 @@ def format_in_progress_tasks(
             {
                 "assignee": canonical_username,
                 "assignee_label": assignee_label,
-                "task": str(item.get("task") or item.get("text") or "").strip(),
+                "task": task_text,
                 "done": bool(item.get("done")),
             }
         )
     return tasks
+
+
+def task_scope_card_ids(db: Session, card: CosplanCard | None) -> list[int]:
+    source_card = resolve_source_card(db, card)
+    if not source_card:
+        return []
+
+    ids: list[int] = [source_card.id]
+    shared_ids = db.execute(
+        select(CosplanCard.id).where(
+            CosplanCard.source_card_id == source_card.id,
+            CosplanCard.is_shared_copy.is_(True),
+        )
+    ).scalars().all()
+    for item_id in shared_ids:
+        if item_id not in ids:
+            ids.append(item_id)
+    return ids
+
+
+def task_scope_progress_rows(db: Session, card: CosplanCard | None) -> list[InProgressCard]:
+    scope_ids = task_scope_card_ids(db, card)
+    if not scope_ids:
+        return []
+    return db.execute(
+        select(InProgressCard)
+        .where(InProgressCard.cosplan_card_id.in_(scope_ids))
+        .order_by(InProgressCard.updated_at.desc(), InProgressCard.id.desc())
+    ).scalars().all()
+
+
+def task_rows_to_storage(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "assignee": str(row.get("assignee") or "").strip(),
+            "task": str(row.get("task") or "").strip(),
+            "done": bool(row.get("done")),
+        }
+        for row in rows
+        if str(row.get("task") or "").strip()
+    ]
+
+
+def load_scoped_task_rows(
+    db: Session,
+    card: CosplanCard | None,
+    alias_to_username: dict[str, str],
+    users_by_username: dict[str, User],
+) -> list[dict[str, Any]]:
+    for progress_row in task_scope_progress_rows(db, card):
+        formatted = format_in_progress_tasks(
+            as_list(progress_row.task_rows_json),
+            alias_to_username,
+            users_by_username,
+        )
+        if formatted:
+            return formatted
+    return []
+
+
+def store_scoped_task_rows(db: Session, card: CosplanCard | None, rows: list[dict[str, Any]]) -> None:
+    progress_rows = task_scope_progress_rows(db, card)
+    if not progress_rows:
+        return
+    payload = task_rows_to_storage(rows)
+    for progress_row in progress_rows:
+        progress_row.task_rows_json = payload
 
 
 def user_is_card_coproplayer(user: User, card: CosplanCard) -> bool:
@@ -1607,6 +1720,272 @@ def parse_time_hhmm(raw: str) -> str | None:
     return f"{hh:02d}:{mm:02d}"
 
 
+def normalize_calendar_view(raw: str | None) -> str:
+    value = (raw or "").strip().lower()
+    if value in CALENDAR_VIEW_OPTIONS:
+        return value
+    return CALENDAR_VIEW_MY
+
+
+def calendar_redirect_for_view(raw_view: str | None = None) -> RedirectResponse:
+    view = normalize_calendar_view(raw_view)
+    if view == CALENDAR_VIEW_MY:
+        return redirect("/my-calendar")
+    return redirect(f"/my-calendar?view={view}")
+
+
+def shift_months_safe(base_date: date, month_delta: int) -> date:
+    month_index = (base_date.month - 1) + month_delta
+    year = base_date.year + (month_index // 12)
+    month = (month_index % 12) + 1
+    day = min(base_date.day, calendar.monthrange(year, month)[1])
+    return date(year, month, day)
+
+
+def card_anchor_date_for_budget(card: CosplanCard, festival_start_by_name: dict[str, date]) -> date | None:
+    if card.photoset_date:
+        return card.photoset_date
+
+    planned_dates: list[date] = []
+    for festival_name in as_list(card.planned_festivals_json):
+        festival_date = festival_start_by_name.get(str(festival_name).strip().casefold())
+        if festival_date:
+            planned_dates.append(festival_date)
+    if planned_dates:
+        return min(planned_dates)
+    if card.project_deadline:
+        return card.project_deadline
+    return None
+
+
+def build_budget_month_groups(user: User, db: Session) -> list[dict[str, Any]]:
+    cards = db.execute(
+        select(CosplanCard).where(
+            CosplanCard.user_id == user.id,
+            CosplanCard.is_shared_copy.is_(False),
+        )
+    ).scalars().all()
+    festivals = db.execute(
+        select(Festival).where(
+            Festival.user_id == user.id,
+            Festival.event_date.is_not(None),
+        )
+    ).scalars().all()
+
+    festival_start_by_name: dict[str, date] = {}
+    for festival in festivals:
+        festival_name_key = (festival.name or "").strip().casefold()
+        if not festival_name_key or not festival.event_date:
+            continue
+        existing = festival_start_by_name.get(festival_name_key)
+        if existing is None or festival.event_date < existing:
+            festival_start_by_name[festival_name_key] = festival.event_date
+
+    month_card_totals: dict[tuple[int, int], dict[int, float]] = defaultdict(lambda: defaultdict(float))
+    card_titles: dict[int, str] = {}
+
+    def add_budget_cost(card: CosplanCard, target_date: date | None, amount: float | None) -> None:
+        if not target_date or amount is None:
+            return
+        normalized = float(amount)
+        if normalized <= 0:
+            return
+        month_card_totals[(target_date.year, target_date.month)][card.id] += normalized
+        card_titles[card.id] = card.character_name or f"Карточка #{card.id}"
+
+    for card in cards:
+        # Дедлайновые траты.
+        if card.costume_deadline:
+            add_budget_cost(card, card.costume_deadline, card.costume_prepayment)
+            add_budget_cost(card, card.costume_deadline, card.costume_postpayment)
+        if card.craft_deadline:
+            add_budget_cost(card, card.craft_deadline, card.craft_price)
+            add_budget_cost(card, card.craft_deadline, card.craft_material_price)
+        if card.wig_deadline and (card.wig_type or "").strip().lower() == "wigmaker":
+            add_budget_cost(card, card.wig_deadline, card.wig_price)
+        if card.photoset_date:
+            has_split_photoset = (
+                card.photoset_photographer_price is not None
+                or card.photoset_studio_price is not None
+            )
+            if has_split_photoset:
+                add_budget_cost(card, card.photoset_date, card.photoset_photographer_price)
+                add_budget_cost(card, card.photoset_date, card.photoset_studio_price)
+            else:
+                # Legacy fallback for cards created before split price fields.
+                add_budget_cost(card, card.photoset_date, card.photoset_price)
+
+        # Покупки заранее: за 2 месяца до даты фотосета/фестиваля.
+        anchor_date = card_anchor_date_for_budget(card, festival_start_by_name)
+        if anchor_date:
+            purchase_date = shift_months_safe(anchor_date, -2)
+            add_budget_cost(card, purchase_date, card.costume_buy_price)
+            add_budget_cost(card, purchase_date, card.wig_buy_price)
+            if not card.craft_deadline:
+                if (card.craft_type or "").strip().lower() == "order":
+                    add_budget_cost(card, purchase_date, card.craft_price)
+                else:
+                    add_budget_cost(card, purchase_date, card.craft_material_price)
+
+    groups: list[dict[str, Any]] = []
+    for year_month in sorted(month_card_totals.keys()):
+        year, month = year_month
+        card_map = month_card_totals[year_month]
+        rows = [
+            {
+                "card_id": card_id,
+                "card_title": card_titles.get(card_id, f"Карточка #{card_id}"),
+                "amount": amount,
+            }
+            for card_id, amount in card_map.items()
+            if amount > 0
+        ]
+        rows.sort(key=lambda item: (item["card_title"].casefold(), item["card_id"]))
+        month_total = sum(item["amount"] for item in rows)
+        groups.append(
+            {
+                "title": month_label_ru(date(year, month, 1)),
+                "rows": rows,
+                "month_total": month_total,
+                "is_over_limit": month_total > 100000,
+            }
+        )
+    return groups
+
+
+def normalize_content_status(raw_status: str | None) -> str:
+    value = (raw_status or "").strip().lower()
+    if value in CONTENT_STATUS_OPTIONS:
+        return value
+    return "plan"
+
+
+def get_content_plan_form_values(post: ContentPlanPost | None = None) -> dict[str, Any]:
+    if not post:
+        return {
+            "title": "",
+            "description": "",
+            "publish_date": "",
+            "publish_time": "",
+            "socials_json": [],
+            "socials_other": "",
+            "rubric_existing": "",
+            "rubric_new": "",
+            "status": "plan",
+        }
+
+    socials = as_list(post.socials_json)
+    socials_other_values = [value for value in socials if value not in CONTENT_SOCIAL_OPTIONS]
+    return {
+        "title": post.title or "",
+        "description": post.description or "",
+        "publish_date": post.publish_date.isoformat() if post.publish_date else "",
+        "publish_time": post.publish_time or "",
+        "socials_json": [value for value in socials if value in CONTENT_SOCIAL_OPTIONS],
+        "socials_other": ", ".join(socials_other_values),
+        "rubric_existing": post.rubric or "",
+        "rubric_new": "",
+        "status": normalize_content_status(post.status),
+    }
+
+
+def save_content_plan_post_from_form(form: Any, post: ContentPlanPost, user: User, db: Session) -> tuple[bool, str]:
+    title = str(form.get("title", "")).strip()
+    description = str(form.get("description", "")).strip()
+    publish_date = parse_date(str(form.get("publish_date", "")).strip())
+    publish_time = parse_time_hhmm(str(form.get("publish_time", "")).strip())
+    status = normalize_content_status(str(form.get("status", "")).strip())
+    rubric_existing = str(form.get("rubric_existing", "")).strip()
+    rubric_new = str(form.get("rubric_new", "")).strip()
+    rubric = rubric_new or rubric_existing
+    socials = merge_unique(form.getlist("socials"), split_csv(str(form.get("socials_other", "")).strip()))
+
+    if not title:
+        return False, "Укажите название публикации."
+    if not publish_date:
+        return False, "Укажите дату публикации."
+    if not rubric:
+        return False, "Укажите рубрику (выберите или создайте новую)."
+    if len(title) > 255:
+        return False, "Название публикации должно быть не длиннее 255 символов."
+    if len(rubric) > 120:
+        return False, "Название рубрики должно быть не длиннее 120 символов."
+    if len(description) > 4000:
+        return False, "Краткое описание должно быть не длиннее 4000 символов."
+
+    post.title = title
+    post.description = description or None
+    post.publish_date = publish_date
+    post.publish_time = publish_time
+    post.socials_json = socials
+    post.rubric = rubric
+    post.status = status
+
+    remember_options(db, user.id, "content_rubric", [rubric])
+    return True, ""
+
+
+def hsl_to_hex(hue: float, saturation: float, lightness: float) -> str:
+    r, g, b = colorsys.hls_to_rgb(hue / 360.0, lightness, saturation)
+    return f"#{int(r * 255):02x}{int(g * 255):02x}{int(b * 255):02x}"
+
+
+def rubric_color_map(rubrics: list[str]) -> dict[str, str]:
+    color_map: dict[str, str] = {}
+    for index, rubric in enumerate(rubrics):
+        if index < len(CONTENT_RUBRIC_PALETTE):
+            color_map[rubric] = CONTENT_RUBRIC_PALETTE[index]
+            continue
+        hue = abs(hash(rubric.casefold())) % 360
+        color_map[rubric] = hsl_to_hex(hue, 0.58, 0.66)
+    return color_map
+
+
+def content_calendar_grid(
+    year: int,
+    month: int,
+    content_rows: list[dict[str, Any]],
+) -> list[list[dict[str, Any]]]:
+    calendar_builder = calendar.Calendar(firstweekday=0)
+    matrix = calendar_builder.monthdayscalendar(year, month)
+
+    day_colors: dict[int, list[str]] = defaultdict(list)
+    for row in content_rows:
+        publish_date = row.get("date")
+        if not isinstance(publish_date, date):
+            continue
+        if publish_date.year != year or publish_date.month != month:
+            continue
+        color = str(row.get("rubric_color") or "").strip()
+        if color and color not in day_colors[publish_date.day]:
+            day_colors[publish_date.day].append(color)
+
+    weeks: list[list[dict[str, Any]]] = []
+    for week in matrix:
+        week_cells: list[dict[str, Any]] = []
+        for day_value in week:
+            if day_value <= 0:
+                week_cells.append({"day": 0, "bg_style": ""})
+                continue
+            colors = day_colors.get(day_value, [])
+            bg_style = ""
+            if len(colors) == 1:
+                color = colors[0]
+                bg_style = f"background: linear-gradient(0deg, {color}44, {color}44), #f8fafc;"
+            elif len(colors) > 1:
+                gradient_parts: list[str] = []
+                color_count = len(colors)
+                for idx, color in enumerate(colors):
+                    start = (idx * 100.0) / color_count
+                    end = ((idx + 1) * 100.0) / color_count
+                    gradient_parts.append(f"{color}66 {start:.2f}%")
+                    gradient_parts.append(f"{color}66 {end:.2f}%")
+                bg_style = "background: linear-gradient(90deg, " + ", ".join(gradient_parts) + ");"
+            week_cells.append({"day": day_value, "bg_style": bg_style})
+        weeks.append(week_cells)
+    return weeks
+
+
 def normalize_duration_mmss(raw: str | None) -> str | None:
     value = (raw or "").strip()
     if not value:
@@ -2286,8 +2665,24 @@ def _render_article_inline(text: str) -> str:
         content = match.group(2)
         return f'<span style="color:{color}">{content}</span>'
 
+    def image_repl(match: re.Match[str]) -> str:
+        alt_text = (match.group(1) or "").strip()
+        image_url = (match.group(2) or "").strip()
+        if not image_url:
+            return match.group(0)
+        return (
+            '<span class="article-inline-image">'
+            f'<img src="{image_url}" alt="{alt_text}" loading="lazy" />'
+            "</span>"
+        )
+
     rendered = re.sub(r"\[color=([^\]]+)\](.+?)\[/color\]", color_repl, rendered, flags=re.IGNORECASE)
-    rendered = re.sub(r"\[([^\]]+)\]\((https?://[^\s)]+)\)", r'<a href="\2" target="_blank" rel="noreferrer">\1</a>', rendered)
+    rendered = re.sub(r"!\[([^\]]*)\]\(((?:https?://|/)[^\s)]+)\)", image_repl, rendered)
+    rendered = re.sub(
+        r"(?<!!)\[([^\]]+)\]\((https?://[^\s)]+)\)",
+        r'<a href="\2" target="_blank" rel="noreferrer">\1</a>',
+        rendered,
+    )
     rendered = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", rendered)
     rendered = re.sub(r"\*(.+?)\*", r"<em>\1</em>", rendered)
     rendered = re.sub(r"`([^`]+)`", r"<code>\1</code>", rendered)
@@ -4516,11 +4911,17 @@ def in_progress_list(request: Request, db: Session = Depends(get_db)):
 
     for row in progress_items:
         card = row.cosplan_card
-        if not card or not card.is_shared_copy:
+        source_card = resolve_source_card(db, card)
+        if not source_card or source_card.plan_type != "project":
             continue
-        task_assignees_by_progress[row.id] = card_task_assignee_options(card, alias_to_username, users_by_username)
-        task_rows_by_progress[row.id] = format_in_progress_tasks(
-            as_list(row.task_rows_json),
+        task_assignees_by_progress[row.id] = card_task_assignee_options(
+            source_card,
+            alias_to_username,
+            users_by_username,
+        )
+        task_rows_by_progress[row.id] = load_scoped_task_rows(
+            db,
+            source_card,
             alias_to_username,
             users_by_username,
         )
@@ -4641,8 +5042,9 @@ async def in_progress_task_add(progress_id: int, request: Request, db: Session =
         return redirect("/in-progress")
 
     card = progress.cosplan_card
-    if not card or not card.is_shared_copy:
-        add_flash(request, "Блок «Задания» доступен только для карточек «Общий доступ».", "error")
+    source_card = resolve_source_card(db, card)
+    if not source_card or source_card.plan_type != "project":
+        add_flash(request, "Блок «Задания» доступен только для проектных карточек.", "error")
         return redirect("/in-progress")
 
     form = await request.form()
@@ -4659,14 +5061,15 @@ async def in_progress_task_add(progress_id: int, request: Request, db: Session =
     canonical_assignee = resolve_alias_to_username(assignee_raw, alias_to_username)
     allowed_assignees = {
         (item.get("value") or "").casefold()
-        for item in card_task_assignee_options(card, alias_to_username, users_by_username)
+        for item in card_task_assignee_options(source_card, alias_to_username, users_by_username)
     }
     if not canonical_assignee or canonical_assignee.casefold() not in allowed_assignees:
         add_flash(request, "Выберите ответственного из списка участников карточки.", "error")
         return redirect("/in-progress")
 
-    existing_rows = format_in_progress_tasks(
-        as_list(progress.task_rows_json),
+    existing_rows = load_scoped_task_rows(
+        db,
+        source_card,
         alias_to_username,
         users_by_username,
     )
@@ -4677,15 +5080,7 @@ async def in_progress_task_add(progress_id: int, request: Request, db: Session =
             "done": False,
         }
     )
-    progress.task_rows_json = [
-        {
-            "assignee": row.get("assignee"),
-            "task": row.get("task"),
-            "done": bool(row.get("done")),
-        }
-        for row in existing_rows
-        if row.get("task")
-    ]
+    store_scoped_task_rows(db, source_card, existing_rows)
 
     assignee_user = users_by_username.get(canonical_assignee.casefold())
     if assignee_user and assignee_user.id != user.id:
@@ -4693,8 +5088,8 @@ async def in_progress_task_add(progress_id: int, request: Request, db: Session =
             db,
             user_id=assignee_user.id,
             from_user_id=user.id,
-            source_card_id=card.id,
-            message=f"Вам назначено задание по «{card.character_name}»: {task_text}",
+            source_card_id=source_card.id,
+            message=f"Вам назначено задание по «{source_card.character_name}»: {task_text}",
         )
 
     db.commit()
@@ -4716,23 +5111,21 @@ def in_progress_task_toggle(progress_id: int, task_index: int, request: Request,
         return redirect("/in-progress")
 
     card = progress.cosplan_card
-    if not card or not card.is_shared_copy:
-        add_flash(request, "Блок «Задания» доступен только для карточек «Общий доступ».", "error")
+    source_card = resolve_source_card(db, card)
+    if not source_card or source_card.plan_type != "project":
+        add_flash(request, "Блок «Задания» доступен только для проектных карточек.", "error")
         return redirect("/in-progress")
 
     alias_to_username, users_by_username, _ = build_user_alias_lookup(db)
-    rows = format_in_progress_tasks(as_list(progress.task_rows_json), alias_to_username, users_by_username)
+    rows = load_scoped_task_rows(
+        db,
+        source_card,
+        alias_to_username,
+        users_by_username,
+    )
     if 0 <= task_index < len(rows):
         rows[task_index]["done"] = not bool(rows[task_index].get("done"))
-        progress.task_rows_json = [
-            {
-                "assignee": row.get("assignee"),
-                "task": row.get("task"),
-                "done": bool(row.get("done")),
-            }
-            for row in rows
-            if row.get("task")
-        ]
+        store_scoped_task_rows(db, source_card, rows)
         db.commit()
 
     return redirect("/in-progress")
@@ -4752,23 +5145,21 @@ def in_progress_task_delete(progress_id: int, task_index: int, request: Request,
         return redirect("/in-progress")
 
     card = progress.cosplan_card
-    if not card or not card.is_shared_copy:
-        add_flash(request, "Блок «Задания» доступен только для карточек «Общий доступ».", "error")
+    source_card = resolve_source_card(db, card)
+    if not source_card or source_card.plan_type != "project":
+        add_flash(request, "Блок «Задания» доступен только для проектных карточек.", "error")
         return redirect("/in-progress")
 
     alias_to_username, users_by_username, _ = build_user_alias_lookup(db)
-    rows = format_in_progress_tasks(as_list(progress.task_rows_json), alias_to_username, users_by_username)
+    rows = load_scoped_task_rows(
+        db,
+        source_card,
+        alias_to_username,
+        users_by_username,
+    )
     if 0 <= task_index < len(rows):
         rows.pop(task_index)
-        progress.task_rows_json = [
-            {
-                "assignee": row.get("assignee"),
-                "task": row.get("task"),
-                "done": bool(row.get("done")),
-            }
-            for row in rows
-            if row.get("task")
-        ]
+        store_scoped_task_rows(db, source_card, rows)
         db.commit()
 
     return redirect("/in-progress")
@@ -5306,6 +5697,13 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
     if not user:
         return redirect("/login")
 
+    active_view = normalize_calendar_view(request.query_params.get("view"))
+    edit_post_id_raw = str(request.query_params.get("edit_post_id", "")).strip()
+    try:
+        edit_post_id = int(edit_post_id_raw) if edit_post_id_raw else None
+    except ValueError:
+        edit_post_id = None
+
     today = date.today()
     festivals = db.execute(
         select(Festival).where(
@@ -5318,6 +5716,7 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
     cards = db.execute(
         select(CosplanCard).where(
             CosplanCard.user_id == user.id,
+            CosplanCard.is_shared_copy.is_(False),
             CosplanCard.photoset_date.is_not(None),
             CosplanCard.photoset_date >= today,
         )
@@ -5483,13 +5882,86 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
             }
         )
 
+    budget_month_groups = build_budget_month_groups(user, db)
+
+    content_posts = db.execute(
+        select(ContentPlanPost)
+        .where(ContentPlanPost.user_id == user.id)
+        .order_by(ContentPlanPost.publish_date, ContentPlanPost.publish_time, ContentPlanPost.id)
+    ).scalars().all()
+    rubric_options = merge_unique(
+        get_options(db, user.id, "content_rubric"),
+        [post.rubric for post in content_posts if post.rubric],
+    )
+    rubric_colors = rubric_color_map(rubric_options)
+    content_rows: list[dict[str, Any]] = []
+    for post in content_posts:
+        row_rubric = post.rubric or "Общее"
+        row_color = rubric_colors.get(row_rubric, CONTENT_RUBRIC_PALETTE[0])
+        content_rows.append(
+            {
+                "post_id": post.id,
+                "date": post.publish_date,
+                "time": post.publish_time or "",
+                "title": post.title or "Без названия",
+                "description": post.description or "",
+                "socials_text": ", ".join(as_list(post.socials_json)) or "—",
+                "rubric": row_rubric,
+                "rubric_color": row_color,
+                "status": normalize_content_status(post.status),
+                "status_label": CONTENT_STATUS_LABELS.get(normalize_content_status(post.status), "План"),
+            }
+        )
+
+    content_by_month: dict[tuple[int, int], list[dict[str, Any]]] = defaultdict(list)
+    for row in content_rows:
+        publish_date = row.get("date")
+        if not isinstance(publish_date, date):
+            continue
+        content_by_month[(publish_date.year, publish_date.month)].append(row)
+
+    content_month_groups: list[dict[str, Any]] = []
+    for year_month in sorted(content_by_month.keys()):
+        year, month = year_month
+        month_date = date(year, month, 1)
+        month_rows = sorted(
+            content_by_month[year_month],
+            key=lambda item: (item.get("date"), item.get("time") or "", item.get("title") or ""),
+        )
+        content_month_groups.append(
+            {
+                "title": month_label_ru(month_date),
+                "rows": month_rows,
+                "grid_weeks": content_calendar_grid(year, month, month_rows),
+            }
+        )
+
+    editing_content_post = None
+    if edit_post_id:
+        editing_content_post = db.execute(
+            select(ContentPlanPost).where(
+                ContentPlanPost.id == edit_post_id,
+                ContentPlanPost.user_id == user.id,
+            )
+        ).scalar_one_or_none()
+
     return template_response(
         request,
         "my_calendar.html",
         user=user,
-        active_tab="my-calendar",
+        active_tab="calendars",
+        active_calendar_view=active_view,
         month_groups=grouped,
         work_shift_count=len(work_shifts),
+        budget_month_groups=budget_month_groups,
+        content_month_groups=content_month_groups,
+        content_social_options=CONTENT_SOCIAL_OPTIONS,
+        content_status_options=CONTENT_STATUS_OPTIONS,
+        content_status_labels=CONTENT_STATUS_LABELS,
+        content_rubric_options=rubric_options,
+        content_rubric_colors=rubric_colors,
+        content_form=get_content_plan_form_values(editing_content_post),
+        editing_content_post=editing_content_post,
         month_weekday_labels=["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"],
     )
 
@@ -5501,6 +5973,7 @@ async def my_calendar_event_create(request: Request, db: Session = Depends(get_d
         return redirect("/login")
 
     form = await request.form()
+    next_view = normalize_calendar_view(str(form.get("next_view", CALENDAR_VIEW_MY)))
     event_date = parse_date(str(form.get("event_date", "")).strip())
     event_time = parse_time_hhmm(str(form.get("event_time", "")))
     event_title = str(form.get("event_title", "")).strip()
@@ -5508,10 +5981,10 @@ async def my_calendar_event_create(request: Request, db: Session = Depends(get_d
 
     if not event_date:
         add_flash(request, "Укажите дату события.", "error")
-        return redirect("/my-calendar")
+        return calendar_redirect_for_view(next_view)
     if not event_title:
         add_flash(request, "Укажите название события.", "error")
-        return redirect("/my-calendar")
+        return calendar_redirect_for_view(next_view)
 
     db.add(
         PersonalCalendarEvent(
@@ -5524,7 +5997,7 @@ async def my_calendar_event_create(request: Request, db: Session = Depends(get_d
     )
     db.commit()
     add_flash(request, "Событие добавлено в календарь.", "success")
-    return redirect("/my-calendar")
+    return calendar_redirect_for_view(next_view)
 
 
 @app.post("/my-calendar/work-shifts/add")
@@ -5534,6 +6007,7 @@ async def my_calendar_work_shift_add(request: Request, db: Session = Depends(get
         return redirect("/login")
 
     form = await request.form()
+    next_view = normalize_calendar_view(str(form.get("next_view", CALENDAR_VIEW_MY)))
     shift_mode = str(form.get("shift_mode", "block")).strip().lower()
     shift_repeat_kind = str(form.get("shift_repeat_kind", "interval")).strip().lower()
     start_date = parse_date(str(form.get("shift_start_date", "")).strip())
@@ -5546,17 +6020,17 @@ async def my_calendar_work_shift_add(request: Request, db: Session = Depends(get
 
     if shift_mode not in {"block", "repeat"}:
         add_flash(request, "Неверный режим добавления смен.", "error")
-        return redirect("/my-calendar")
+        return calendar_redirect_for_view(next_view)
     if not start_date or not end_date:
         add_flash(request, "Укажите дату начала и дату конца смен.", "error")
-        return redirect("/my-calendar")
+        return calendar_redirect_for_view(next_view)
     if end_date < start_date:
         start_date, end_date = end_date, start_date
 
     day_span = (end_date - start_date).days
     if day_span > 3650:
         add_flash(request, "Слишком большой диапазон дат. Укажите не более 10 лет.", "error")
-        return redirect("/my-calendar")
+        return calendar_redirect_for_view(next_view)
 
     repeat_every_days = 1
     repeat_weekdays: set[int] = set()
@@ -5565,7 +6039,7 @@ async def my_calendar_work_shift_add(request: Request, db: Session = Depends(get
     if shift_mode == "repeat":
         if shift_repeat_kind not in {"interval", "weekdays", "two_by_two", "three_by_three", "five_by_two", "custom"}:
             add_flash(request, "Неверный тип повтора смен.", "error")
-            return redirect("/my-calendar")
+            return calendar_redirect_for_view(next_view)
         if shift_repeat_kind == "interval":
             try:
                 repeat_every_days = int(repeat_every_days_raw)
@@ -5573,10 +6047,10 @@ async def my_calendar_work_shift_add(request: Request, db: Session = Depends(get
                 repeat_every_days = 0
             if repeat_every_days <= 0:
                 add_flash(request, "Для повтора укажите шаг в днях больше нуля.", "error")
-                return redirect("/my-calendar")
+                return calendar_redirect_for_view(next_view)
             if repeat_every_days > 60:
                 add_flash(request, "Шаг повтора слишком большой. Укажите до 60 дней.", "error")
-                return redirect("/my-calendar")
+                return calendar_redirect_for_view(next_view)
         elif shift_repeat_kind == "weekdays":
             for value in repeat_weekdays_raw:
                 try:
@@ -5587,7 +6061,7 @@ async def my_calendar_work_shift_add(request: Request, db: Session = Depends(get
                     repeat_weekdays.add(weekday)
             if not repeat_weekdays:
                 add_flash(request, "Для повтора по дням недели выберите хотя бы один день.", "error")
-                return redirect("/my-calendar")
+                return calendar_redirect_for_view(next_view)
         elif shift_repeat_kind == "custom":
             try:
                 custom_work_days = int(custom_work_days_raw)
@@ -5597,10 +6071,10 @@ async def my_calendar_work_shift_add(request: Request, db: Session = Depends(get
                 custom_rest_days = 0
             if custom_work_days <= 0 or custom_rest_days <= 0:
                 add_flash(request, "Для пользовательского графика укажите рабочие и выходные дни больше нуля.", "error")
-                return redirect("/my-calendar")
+                return calendar_redirect_for_view(next_view)
             if custom_work_days > 31 or custom_rest_days > 31:
                 add_flash(request, "Для пользовательского графика укажите значения до 31 дня.", "error")
-                return redirect("/my-calendar")
+                return calendar_redirect_for_view(next_view)
 
     target_dates: set[date] = set()
 
@@ -5641,7 +6115,7 @@ async def my_calendar_work_shift_add(request: Request, db: Session = Depends(get
 
     if not target_dates:
         add_flash(request, "Не удалось сформировать даты смен.", "error")
-        return redirect("/my-calendar")
+        return calendar_redirect_for_view(next_view)
 
     existing_rows = db.execute(
         select(WorkShiftDay).where(
@@ -5696,7 +6170,7 @@ async def my_calendar_work_shift_add(request: Request, db: Session = Depends(get
         if updated_count > 0:
             details.append(f"обновлено: {updated_count}")
         add_flash(request, f"Смены сохранены ({mode_label}{half_day_label}) — {', '.join(details)}.", "success")
-    return redirect("/my-calendar")
+    return calendar_redirect_for_view(next_view)
 
 
 @app.post("/my-calendar/work-shifts/clear")
@@ -5704,6 +6178,7 @@ def my_calendar_work_shift_clear(request: Request, db: Session = Depends(get_db)
     user = current_user(request, db)
     if not user:
         return redirect("/login")
+    next_view = normalize_calendar_view(str(request.query_params.get("view", CALENDAR_VIEW_MY)))
 
     removed_count = db.execute(
         select(func.count(WorkShiftDay.id)).where(WorkShiftDay.user_id == user.id)
@@ -5717,7 +6192,7 @@ def my_calendar_work_shift_clear(request: Request, db: Session = Depends(get_db)
         add_flash(request, f"Удалено рабочих смен: {int(removed_count)}.", "info")
     else:
         add_flash(request, "Рабочих смен для удаления нет.", "info")
-    return redirect("/my-calendar")
+    return calendar_redirect_for_view(next_view)
 
 
 @app.post("/my-calendar/events/{event_id}/delete")
@@ -5725,6 +6200,7 @@ def my_calendar_event_delete(event_id: int, request: Request, db: Session = Depe
     user = current_user(request, db)
     if not user:
         return redirect("/login")
+    next_view = normalize_calendar_view(str(request.query_params.get("view", CALENDAR_VIEW_MY)))
 
     event = db.execute(
         select(PersonalCalendarEvent).where(
@@ -5734,12 +6210,83 @@ def my_calendar_event_delete(event_id: int, request: Request, db: Session = Depe
     ).scalar_one_or_none()
     if not event:
         add_flash(request, "Событие не найдено.", "error")
-        return redirect("/my-calendar")
+        return calendar_redirect_for_view(next_view)
 
     db.delete(event)
     db.commit()
     add_flash(request, "Событие удалено из календаря.", "info")
-    return redirect("/my-calendar")
+    return calendar_redirect_for_view(next_view)
+
+
+@app.post("/my-calendar/content/new")
+async def my_calendar_content_create(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    form = await request.form()
+    next_view = normalize_calendar_view(str(form.get("next_view", CALENDAR_VIEW_CONTENT)))
+    post = ContentPlanPost(user_id=user.id, title="", publish_date=date.today(), rubric="Общее")
+    ok, error_text = save_content_plan_post_from_form(form, post, user, db)
+    if not ok:
+        add_flash(request, error_text, "error")
+        return calendar_redirect_for_view(next_view)
+
+    db.add(post)
+    db.commit()
+    add_flash(request, "Пост добавлен в контент-план.", "success")
+    return calendar_redirect_for_view(next_view)
+
+
+@app.post("/my-calendar/content/{post_id}/edit")
+async def my_calendar_content_update(post_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    post = db.execute(
+        select(ContentPlanPost).where(
+            ContentPlanPost.id == post_id,
+            ContentPlanPost.user_id == user.id,
+        )
+    ).scalar_one_or_none()
+    if not post:
+        add_flash(request, "Пост контент-плана не найден.", "error")
+        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+
+    form = await request.form()
+    next_view = normalize_calendar_view(str(form.get("next_view", CALENDAR_VIEW_CONTENT)))
+    ok, error_text = save_content_plan_post_from_form(form, post, user, db)
+    if not ok:
+        add_flash(request, error_text, "error")
+        return calendar_redirect_for_view(next_view)
+
+    db.commit()
+    add_flash(request, "Пост контент-плана обновлен.", "success")
+    return calendar_redirect_for_view(next_view)
+
+
+@app.post("/my-calendar/content/{post_id}/delete")
+def my_calendar_content_delete(post_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    next_view = normalize_calendar_view(str(request.query_params.get("view", CALENDAR_VIEW_CONTENT)))
+    post = db.execute(
+        select(ContentPlanPost).where(
+            ContentPlanPost.id == post_id,
+            ContentPlanPost.user_id == user.id,
+        )
+    ).scalar_one_or_none()
+    if not post:
+        add_flash(request, "Пост контент-плана не найден.", "error")
+        return calendar_redirect_for_view(next_view)
+
+    db.delete(post)
+    db.commit()
+    add_flash(request, "Пост удален из контент-плана.", "info")
+    return calendar_redirect_for_view(next_view)
 
 
 def project_board_fandom_options(db: Session, user: User) -> list[str]:
@@ -6454,11 +7001,23 @@ async def community_masters_add_comment(master_id: int, request: Request, db: Se
 
     form = await request.form()
     body = str(form.get("body", "")).strip()
-    if not body:
-        add_flash(request, "Введите текст комментария.", "error")
+    images_input = str(form.get("images_input", ""))
+    images = parse_reference_values(images_input)
+    is_client = to_bool(form.get("is_client"))
+
+    if not body and not images:
+        add_flash(request, "Добавьте текст комментария или хотя бы одну картинку.", "error")
         return redirect(f"/community/masters/{master_id}")
 
-    db.add(CommunityMasterComment(master_id=master.id, user_id=user.id, body=body))
+    db.add(
+        CommunityMasterComment(
+            master_id=master.id,
+            user_id=user.id,
+            body=body or "",
+            is_client=is_client,
+            images_json=images,
+        )
+    )
     db.commit()
     add_flash(request, "Комментарий добавлен.", "success")
     return redirect(f"/community/masters/{master_id}")

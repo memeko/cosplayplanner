@@ -62,7 +62,20 @@ body {
   margin-bottom: 12px;
 }
 
+.calendar-tabs {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
 .community-tabs .tab {
+  color: var(--text);
+  border: 1px solid var(--line);
+  background: #ffffff;
+}
+
+.calendar-tabs .tab {
   color: var(--text);
   border: 1px solid var(--line);
   background: #ffffff;
@@ -70,6 +83,13 @@ body {
 
 .community-tabs .tab.active,
 .community-tabs .tab:hover {
+  color: #ffffff;
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.calendar-tabs .tab.active,
+.calendar-tabs .tab:hover {
   color: #ffffff;
   background: var(--accent);
   border-color: var(--accent);
@@ -656,6 +676,37 @@ textarea {
   margin-bottom: 6px;
 }
 
+.budget-list {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.budget-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #f8fafc;
+  padding: 8px 10px;
+}
+
+.budget-month-total {
+  margin-top: 10px;
+  font-weight: 600;
+}
+
+.budget-over-limit {
+  color: #b91c1c;
+}
+
+.content-rubric-chip {
+  font-weight: 600;
+}
+
 .comments-list {
   display: grid;
   gap: 10px;
@@ -669,9 +720,18 @@ textarea {
   background: #ffffff;
 }
 
+.comment-card.comment-client {
+  border-color: #93c5fd;
+  background: #eaf4ff;
+}
+
 .comment-meta {
   color: var(--muted);
   font-size: 12px;
+}
+
+.comment-images {
+  margin-top: 8px;
 }
 
 .comment-replies {
@@ -991,6 +1051,19 @@ textarea {
   border: 1px solid #d9e2ec;
   border-radius: 6px;
   padding: 1px 4px;
+}
+
+.article-inline-image {
+  display: block;
+  margin: 10px 0;
+}
+
+.article-inline-image img {
+  max-width: min(100%, 640px);
+  width: auto;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  display: block;
 }
 
 .article-video-wrap {

@@ -57,6 +57,47 @@
     .task-add-actions .btn {
       width: 100%;
     }
+    .tasks-table {
+      border-collapse: separate;
+      border-spacing: 0 0.45rem;
+    }
+    .tasks-table thead {
+      display: none;
+    }
+    .tasks-table tbody,
+    .tasks-table tr,
+    .tasks-table td {
+      display: block;
+      width: 100%;
+    }
+    .tasks-table tr {
+      border: 1px solid #ececec;
+      border-radius: 10px;
+      padding: 0.35rem 0.45rem;
+      background: #fff;
+    }
+    .tasks-table td {
+      border: 0;
+      padding: 0.25rem 0;
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 0.5rem;
+    }
+    .tasks-table td::before {
+      content: attr(data-label);
+      color: var(--muted);
+      font-weight: 600;
+      font-size: 0.88rem;
+      min-width: 42%;
+    }
+    .tasks-table td.task-cell-actions::before {
+      content: "Действия";
+    }
+    .task-done-actions {
+      width: 100%;
+      justify-content: flex-end;
+    }
   }
 </style>
 
@@ -164,7 +205,7 @@
       <button type="submit" class="btn">Добавить</button>
     </form>
 
-    {% if row.cosplan_card and row.cosplan_card.is_shared_copy %}
+    {% if row.cosplan_card and row.cosplan_card.plan_type == "project" %}
       <h4>Задания</h4>
       {% set task_items = task_rows_by_progress.get(row.id, []) %}
       {% if task_items %}
@@ -179,9 +220,9 @@
           <tbody>
             {% for item in task_items %}
             <tr>
-              <td>{{ item.assignee_label }}</td>
-              <td class="{% if item.done %}done{% endif %}">{{ item.task }}</td>
-              <td>
+              <td data-label="Ответственный">{{ item.assignee_label }}</td>
+              <td data-label="Задание" class="{% if item.done %}done{% endif %}">{{ item.task }}</td>
+              <td data-label="Действия" class="task-cell-actions">
                 <div class="task-done-actions">
                   <form method="post" action="/in-progress/{{ row.id }}/tasks/toggle/{{ loop.index0 }}" class="inline-form">
                     <button type="submit" class="btn btn-small">{{ "☑" if item.done else "☐" }}</button>

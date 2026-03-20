@@ -79,16 +79,31 @@
     <div class="comments-list top-offset">
       {% for comment in comments %}
         {% set comment_author = authors_by_id.get(comment.user_id) %}
-        <article class="comment-card">
+        <article class="comment-card {% if comment.is_client %}comment-client{% endif %}">
           <p class="comment-meta">
             {% if comment_author %}
               <span class="{% if user_is_special(comment_author) %}nick-special{% endif %}">@{{ comment_author.cosplay_nick or comment_author.username }}</span>
             {% else %}
               @unknown
             {% endif %}
+            {% if comment.is_client %}
+              <span class="chip">Я клиент</span>
+            {% endif %}
             • {{ comment.created_at.strftime('%d-%m-%Y %H:%M') if comment.created_at else '—' }}
           </p>
-          <p class="notes-block">{{ comment.body }}</p>
+          {% if comment.body %}
+            <p class="notes-block">{{ comment.body }}</p>
+          {% endif %}
+          {% set comment_images = comment.images_json or [] %}
+          {% if comment_images %}
+            <div class="reference-grid top-offset comment-images">
+              {% for url in comment_images %}
+                <a class="reference-tile" href="{{ url }}" target="_blank" rel="noreferrer">
+                  <img src="{{ url }}" alt="Изображение в комментарии" loading="lazy" />
+                </a>
+              {% endfor %}
+            </div>
+          {% endif %}
         </article>
       {% endfor %}
     </div>
@@ -99,11 +114,113 @@
   <form method="post" action="/community/masters/{{ master.id }}/comments" class="comment-form top-offset">
     <label>
       Добавить комментарий
-      <textarea name="body" rows="4" required></textarea>
+      <textarea name="body" rows="4" placeholder="Текст отзыва (можно оставить пустым, если добавляете только фото)"></textarea>
+    </label>
+    <label class="top-offset">
+      Картинки (URL, по одной на строку)
+      <textarea name="images_input" id="comment_images_input" rows="3" placeholder="https://..."></textarea>
+    </label>
+    <div class="gallery-upload-row">
+      <input type="file" id="comment_upload_files" accept="image/*" multiple />
+      <button type="button" class="btn" id="comment_upload_btn">Загрузить фото</button>
+      <span class="muted" id="comment_upload_status"></span>
+    </div>
+    <div class="reference-grid comment-images" id="comment_images_preview"></div>
+    <label class="inline-check top-offset">
+      <input type="checkbox" name="is_client" value="1" />
+      Я клиент
     </label>
     <div class="actions-inline">
       <button type="submit" class="btn btn-accent">Отправить</button>
     </div>
   </form>
 </section>
+<script>
+(function () {
+  function parseListEntries(value) {
+    if (!value) return [];
+    return value
+      .split(/\n|,/)
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
+
+  function createImageTile(url) {
+    const link = document.createElement('a');
+    link.className = 'reference-tile';
+    link.href = url;
+    link.target = '_blank';
+    link.rel = 'noreferrer';
+
+    const image = document.createElement('img');
+    image.src = url;
+    image.alt = 'Изображение комментария';
+    link.appendChild(image);
+    return link;
+  }
+
+  function appendUrlsToTextarea(textarea, urls) {
+    if (!textarea || !urls.length) return;
+    const existing = textarea.value ? `${textarea.value}\n` : '';
+    textarea.value = `${existing}${urls.join('\n')}`.trim();
+  }
+
+  function updatePreview() {
+    const input = document.getElementById('comment_images_input');
+    const wrap = document.getElementById('comment_images_preview');
+    if (!input || !wrap) return;
+
+    wrap.innerHTML = '';
+    const urls = Array.from(new Set(parseListEntries(input.value).filter((value) => /^https?:\/\//i.test(value))));
+    urls.forEach((url) => wrap.appendChild(createImageTile(url)));
+  }
+
+  async function uploadImages() {
+    const filesInput = document.getElementById('comment_upload_files');
+    const status = document.getElementById('comment_upload_status');
+    const textarea = document.getElementById('comment_images_input');
+    if (!filesInput || !textarea || !filesInput.files?.length) {
+      if (status) status.textContent = 'Выберите изображение.';
+      return;
+    }
+
+    if (status) status.textContent = 'Загрузка...';
+    const uploadedUrls = [];
+    for (const file of Array.from(filesInput.files)) {
+      const formData = new FormData();
+      formData.append('image', file);
+      try {
+        const response = await fetch('/media/upload-image', {
+          method: 'POST',
+          body: formData,
+          credentials: 'same-origin',
+        });
+        const payload = await response.json();
+        if (!response.ok || !payload?.ok || !payload?.url) {
+          throw new Error(payload?.detail || 'Ошибка загрузки');
+        }
+        uploadedUrls.push(payload.url);
+      } catch (error) {
+        if (status) status.textContent = `Ошибка: ${error.message || 'не удалось загрузить файл'}`;
+        return;
+      }
+    }
+
+    appendUrlsToTextarea(textarea, uploadedUrls);
+    filesInput.value = '';
+    updatePreview();
+    if (status) status.textContent = `Загружено: ${uploadedUrls.length}`;
+  }
+
+  const input = document.getElementById('comment_images_input');
+  if (input) {
+    input.addEventListener('input', updatePreview);
+    updatePreview();
+  }
+  const uploadButton = document.getElementById('comment_upload_btn');
+  if (uploadButton) {
+    uploadButton.addEventListener('click', uploadImages);
+  }
+})();
+</script>
 {% endblock %}

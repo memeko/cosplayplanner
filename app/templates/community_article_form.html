@@ -32,8 +32,11 @@
       <button type="button" class="btn btn-small" data-prefix="## " title="Подзаголовок">H2</button>
       <button type="button" class="btn btn-small" data-prefix="- " title="Список">Список</button>
       <button type="button" class="btn btn-small" id="insert-link">Ссылка</button>
+      <button type="button" class="btn btn-small" id="insert-image">Картинка</button>
+      <button type="button" class="btn btn-small" id="upload-image">Загрузить фото</button>
       <button type="button" class="btn btn-small" id="insert-color">Цвет</button>
       <button type="button" class="btn btn-small" id="insert-youtube">YouTube</button>
+      <input type="file" id="article_upload_files" accept="image/*" multiple hidden />
     </div>
 
     <label>
@@ -41,7 +44,7 @@
       <textarea name="body_markdown" id="article_body" rows="18" maxlength="15000" required>{{ form.body_markdown }}</textarea>
     </label>
     <p class="muted" id="article-counter">0 / 15000</p>
-    <p class="muted">Поддерживается markdown (заголовки, списки, ссылки), цветной текст через формат: <code>[color=#e180a5]текст[/color]</code>, вставка YouTube ссылкой отдельной строкой.</p>
+    <p class="muted">Поддерживается markdown (заголовки, списки, ссылки, картинки <code>![alt](url)</code>), цветной текст через формат: <code>[color=#e180a5]текст[/color]</code>, вставка YouTube ссылкой отдельной строкой.</p>
   </section>
 
   <div class="actions-inline">
@@ -90,6 +93,15 @@
     button.addEventListener('click', () => prefixLine(button.dataset.prefix || ''));
   });
 
+  function insertAtCursor(value) {
+    if (!textarea || !value) return;
+    const start = textarea.selectionStart;
+    const end = textarea.selectionEnd;
+    textarea.setRangeText(value, start, end, 'end');
+    textarea.focus();
+    updateCounter();
+  }
+
   document.getElementById('insert-link')?.addEventListener('click', () => {
     if (!textarea) return;
     const url = window.prompt('Введите URL ссылки', 'https://');
@@ -103,6 +115,19 @@
     updateCounter();
   });
 
+  document.getElementById('insert-image')?.addEventListener('click', () => {
+    if (!textarea) return;
+    const url = window.prompt('URL картинки', 'https://');
+    if (!url) return;
+    const trimmedUrl = url.trim();
+    if (!/^https?:\/\//i.test(trimmedUrl) && !trimmedUrl.startsWith('/')) {
+      window.alert('Нужна ссылка вида https://... или /media/...');
+      return;
+    }
+    const alt = window.prompt('Подпись картинки (alt)', 'изображение') || 'изображение';
+    insertAtCursor(`![${alt.trim() || 'изображение'}](${trimmedUrl})`);
+  });
+
   document.getElementById('insert-color')?.addEventListener('click', () => {
     if (!textarea) return;
     const color = window.prompt('Цвет (например #e180a5 или red)', '#e180a5');
@@ -114,6 +139,42 @@
     textarea.setRangeText(value, start, end, 'end');
     textarea.focus();
     updateCounter();
+  });
+
+  async function uploadArticleImages(files) {
+    const uploadedUrls = [];
+    for (const file of Array.from(files || [])) {
+      const formData = new FormData();
+      formData.append('image', file);
+      const response = await fetch('/media/upload-image', {
+        method: 'POST',
+        body: formData,
+        credentials: 'same-origin',
+      });
+      const payload = await response.json();
+      if (!response.ok || !payload?.ok || !payload?.url) {
+        throw new Error(payload?.detail || 'Ошибка загрузки изображения');
+      }
+      uploadedUrls.push(payload.url);
+    }
+    return uploadedUrls;
+  }
+
+  const uploadInput = document.getElementById('article_upload_files');
+  document.getElementById('upload-image')?.addEventListener('click', () => {
+    uploadInput?.click();
+  });
+  uploadInput?.addEventListener('change', async () => {
+    if (!uploadInput.files?.length) return;
+    try {
+      const urls = await uploadArticleImages(uploadInput.files);
+      const markdownBlock = urls.map((url) => `![изображение](${url})`).join('\n');
+      insertAtCursor(markdownBlock);
+    } catch (error) {
+      window.alert(error?.message || 'Не удалось загрузить изображение');
+    } finally {
+      uploadInput.value = '';
+    }
   });
 
   document.getElementById('insert-youtube')?.addEventListener('click', () => {

@@ -114,6 +114,11 @@ class User(Base):
         back_populates="user",
         cascade="all, delete-orphan",
     )
+    content_plan_posts = relationship(
+        "ContentPlanPost",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
 
 
 class UserOption(Base):
@@ -355,6 +360,24 @@ class WorkShiftDay(Base):
     )
 
 
+class ContentPlanPost(Base):
+    __tablename__ = "content_plan_posts"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    title = Column(String(255), nullable=False)
+    description = Column(Text, nullable=True)
+    publish_date = Column(Date, nullable=False, index=True)
+    publish_time = Column(String(8), nullable=True)
+    socials_json = Column(JSON, nullable=False, default=list)
+    rubric = Column(String(120), nullable=False, index=True)
+    status = Column(String(32), nullable=False, default="plan", index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    user = relationship("User", back_populates="content_plan_posts")
+
+
 class Festival(Base):
     __tablename__ = "festivals"
 
@@ -548,6 +571,8 @@ class CommunityMasterComment(Base):
     master_id = Column(Integer, ForeignKey("community_masters.id", ondelete="CASCADE"), nullable=False, index=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     body = Column(Text, nullable=False)
+    is_client = Column(Boolean, nullable=False, default=False)
+    images_json = Column(JSON, nullable=False, default=list)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     master = relationship("CommunityMaster", back_populates="comments")
