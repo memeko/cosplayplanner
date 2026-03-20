@@ -2371,7 +2371,7 @@ def telegram_send_message(chat_id: str, message: str) -> tuple[bool, int | None]
         return False, None
     payload = {
         "chat_id": chat_id,
-        "text": f"Cosplay Planner\n{message}",
+        "text": message,
         "disable_web_page_preview": True,
     }
     try:
@@ -2386,6 +2386,25 @@ def telegram_send_message(chat_id: str, message: str) -> tuple[bool, int | None]
     if not response.ok or not response_payload.get("ok"):
         return False, int(response_payload.get("error_code") or response.status_code or 0)
     return True, None
+
+
+def telegram_delete_message(chat_id: str, message_id: int) -> bool:
+    if not TELEGRAM_BOT_ENABLED or not TELEGRAM_BOT_TOKEN:
+        return False
+    payload = {
+        "chat_id": chat_id,
+        "message_id": int(message_id),
+    }
+    try:
+        response = requests.post(
+            telegram_api_url("deleteMessage"),
+            json=payload,
+            timeout=15,
+        )
+        response_payload = response.json() if response.content else {}
+    except (requests.RequestException, ValueError):
+        return False
+    return bool(response.ok and response_payload.get("ok"))
 
 
 def telegram_get_updates(offset: int) -> list[dict[str, Any]]:
@@ -2428,8 +2447,19 @@ def get_telegram_auth_step(chat_id: str) -> dict[str, str]:
         return dict(telegram_auth_state.get(chat_id, {}))
 
 
-def start_telegram_auth(chat_id: str) -> None:
+def start_telegram_auth(chat_id: str, *, with_greeting: bool = False) -> None:
     set_telegram_auth_step(chat_id, step="username", username="")
+    if with_greeting:
+        telegram_send_message(
+            chat_id,
+            (
+                "Вас приветствует помощник по оповещениям от портала Cosplay Planner. "
+                "Пожалуйста, пройдите авторизацию. После нее вам будут доступны оповещения "
+                "о входящих сообщениях на сайте, заданиях в коллективных проектах, информация "
+                "о добавлении в коспланы и комментариях на карточке мастера/студии. "
+                "Приятного использования!"
+            ),
+        )
     telegram_send_message(
         chat_id,
         "Введите ваш ник на сайте (можно @username или cosplay_nick).",
@@ -2485,10 +2515,7 @@ def handle_telegram_auth_message(chat_id: str, text_value: str) -> bool:
             db.commit()
 
         reset_telegram_auth(chat_id)
-        telegram_send_message(
-            chat_id,
-            f"Авторизация успешна. Привязано к аккаунту @{preferred_user_alias(user)}.",
-        )
+        telegram_send_message(chat_id, "Авторизация успешно пройдена!")
         return True
 
     return False
@@ -2503,6 +2530,7 @@ def handle_telegram_update(update: dict[str, Any]) -> None:
     if chat_id_raw is None:
         return
     chat_id = str(chat_id_raw)
+    message_id = int(message.get("message_id") or 0)
 
     text_value = str(message.get("text") or "").strip()
     if not text_value:
@@ -2510,8 +2538,11 @@ def handle_telegram_update(update: dict[str, Any]) -> None:
         return
 
     lowered = text_value.casefold()
-    if lowered in {"/start", "/login"}:
-        start_telegram_auth(chat_id)
+    if lowered == "/start":
+        start_telegram_auth(chat_id, with_greeting=True)
+        return
+    if lowered == "/login":
+        start_telegram_auth(chat_id, with_greeting=False)
         return
     if lowered == "/logout":
         with SessionLocal() as db:
@@ -2525,6 +2556,11 @@ def handle_telegram_update(update: dict[str, Any]) -> None:
         telegram_send_message(chat_id, "Telegram-привязка удалена.")
         return
 
+    # If user sends password step text, try to remove this message from chat history.
+    state = get_telegram_auth_step(chat_id)
+    if state.get("step") == "password" and message_id > 0:
+        telegram_delete_message(chat_id, message_id)
+
     if handle_telegram_auth_message(chat_id, text_value):
         return
 
@@ -2532,6 +2568,18 @@ def handle_telegram_update(update: dict[str, Any]) -> None:
         chat_id,
         "Чтобы подключить уведомления, отправьте /start или /login.",
     )
+
+
+def format_telegram_notification_message(message: str | None) -> str:
+    text_value = (message or "").strip()
+    if not text_value:
+        return ""
+    pigeon_payload = parse_pigeon_message(text_value)
+    if pigeon_payload:
+        sender_alias, body = pigeon_payload
+        body_text = body.strip() or "Без текста"
+        return f"Вам пришло сообщение от пользователя @{sender_alias} с текстом:\n\n{body_text}"
+    return text_value
 
 
 def dispatch_telegram_notifications() -> None:
@@ -2571,7 +2619,13 @@ def dispatch_telegram_notifications() -> None:
                     must_commit = True
                     continue
 
-                ok, error_code = telegram_send_message(chat_id, note.message)
+                telegram_text = format_telegram_notification_message(note.message)
+                if not telegram_text:
+                    note.telegram_sent_at = now_utc
+                    must_commit = True
+                    continue
+
+                ok, error_code = telegram_send_message(chat_id, telegram_text)
                 if ok:
                     note.telegram_sent_at = now_utc
                     must_commit = True
