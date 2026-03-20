@@ -347,16 +347,16 @@
                     {% if cell.day %}
                       <td class="calendar-grid-cell" {% if cell.bg_style %}style="{{ cell.bg_style }}"{% endif %}>
                         <span class="day-number">{{ cell.day }}</span>
-                        {% if cell.items %}
+                        {% if cell.content_items %}
                           <div class="calendar-cell-items content-cell-items">
-                            {% for content_item in cell.items[:2] %}
+                            {% for content_item in cell.content_items[:2] %}
                               <div class="calendar-cell-entry" title="{{ content_item.title }} — {{ content_item.socials }}">
                                 <div class="calendar-cell-item">{{ content_item.title }}</div>
                                 <div class="calendar-cell-social">{{ content_item.socials }}</div>
                               </div>
                             {% endfor %}
-                            {% if cell.items|length > 2 %}
-                              <div class="calendar-cell-more">+{{ cell.items|length - 2 }}</div>
+                            {% if cell.content_items|length > 2 %}
+                              <div class="calendar-cell-more">+{{ cell.content_items|length - 2 }}</div>
                             {% endif %}
                           </div>
                         {% endif %}

@@ -841,6 +841,7 @@ textarea {
   width: 100%;
   min-width: 520px;
   border-collapse: collapse;
+  table-layout: fixed;
 }
 
 .calendar-grid th {
@@ -848,6 +849,7 @@ textarea {
   color: var(--muted);
   padding: 6px;
   text-align: center;
+  width: 14.2857%;
 }
 
 .calendar-grid-cell {
@@ -858,6 +860,7 @@ textarea {
   padding: 4px 6px;
   background: #f8fafc;
   position: relative;
+  width: 14.2857%;
 }
 
 .calendar-grid-cell .day-number {

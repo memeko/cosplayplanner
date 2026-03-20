@@ -46,21 +46,8 @@
       {% if gallery %}
       <p class="meta">Галерея: {{ gallery|length }} изображ.</p>
       {% endif %}
-      {% set my_rating = user_rating_by_master.get(master.id, 0) %}
-      <form method="post" action="/community/masters/{{ master.id }}/rate" class="actions-inline">
-        <label class="inline-check">
-          <span class="muted">Ваша оценка:</span>
-          <select name="stars" required>
-            <option value="">Выбрать</option>
-            {% for score in [1,2,3,4,5] %}
-              <option value="{{ score }}" {% if my_rating == score %}selected{% endif %}>{{ score }} ★</option>
-            {% endfor %}
-          </select>
-        </label>
-        <button type="submit" class="btn btn-small">Оценить</button>
-      </form>
       <div class="actions-inline">
-        <a href="/community/masters/{{ master.id }}" class="btn">Открыть</a>
+        <a href="/community/masters/{{ master.id }}" class="btn">Подробнее</a>
         {% if user and user.id == master.user_id %}
           <a href="/community/masters/{{ master.id }}/edit" class="btn">Редактировать</a>
           <form method="post" action="/community/masters/{{ master.id }}/delete" onsubmit="return confirm('Удалить карточку мастера?');">

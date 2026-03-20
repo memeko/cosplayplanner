@@ -29,18 +29,6 @@
     <span class="chip">{{ master.master_type|capitalize }}</span>
   </div>
   <p class="meta">Общий рейтинг: {{ '%.1f'|format(rating_avg or 0) }} / 5 (оценок: {{ rating_count or 0 }})</p>
-  <form method="post" action="/community/masters/{{ master.id }}/rate" class="actions-inline">
-    <label class="inline-check">
-      <span>Ваша оценка:</span>
-      <select name="stars" required>
-        <option value="">Выбрать</option>
-        {% for score in [1,2,3,4,5] %}
-          <option value="{{ score }}" {% if (user_rating or 0) == score %}selected{% endif %}>{{ score }} ★</option>
-        {% endfor %}
-      </select>
-    </label>
-    <button type="submit" class="btn btn-accent">Сохранить оценку</button>
-  </form>
   <p class="notes-block">{{ master.details }}</p>
 </section>
 
@@ -88,6 +76,18 @@
 
 <section class="box">
   <h3>Комментарии</h3>
+  <form method="post" action="/community/masters/{{ master.id }}/rate" class="actions-inline">
+    <label class="inline-check">
+      <span>Ваша оценка:</span>
+      <select name="stars" required>
+        <option value="">Выбрать</option>
+        {% for score in [1,2,3,4,5] %}
+          <option value="{{ score }}" {% if (user_rating or 0) == score %}selected{% endif %}>{{ score }} ★</option>
+        {% endfor %}
+      </select>
+    </label>
+    <button type="submit" class="btn btn-accent">Сохранить оценку</button>
+  </form>
   {% if comments %}
     <div class="comments-list top-offset">
       {% for comment in comments %}
