@@ -15,12 +15,16 @@
         <input type="text" name="fandom" value="{{ form.fandom }}" list="board-fandom-options" required />
       </label>
       <label>
-        Дата *
-        <input type="date" name="event_date" value="{{ form.event_date }}" required />
+        Город
+        <input type="text" name="city" value="{{ form.city }}" list="board-city-options" placeholder="Например, Москва" />
       </label>
     </div>
 
     <div class="grid two-col">
+      <label>
+        Дата *
+        <input type="date" name="event_date" value="{{ form.event_date }}" required />
+      </label>
       <label>
         Тип *
         <select name="event_type" required>
@@ -58,6 +62,11 @@
 
   <datalist id="board-fandom-options">
     {% for value in fandom_options %}
+      <option value="{{ value }}"></option>
+    {% endfor %}
+  </datalist>
+  <datalist id="board-city-options">
+    {% for value in city_options %}
       <option value="{{ value }}"></option>
     {% endfor %}
   </datalist>

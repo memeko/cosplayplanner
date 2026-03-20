@@ -7,6 +7,15 @@
   <div class="actions-inline">
     <form method="get" action="/project-board" class="search-inline">
       <input type="text" name="q" value="{{ q }}" placeholder="Поиск по тексту объявлений" />
+      <label>
+        Город
+        <select name="city">
+          <option value="">Все города</option>
+          {% for city in city_options %}
+            <option value="{{ city }}" {% if selected_city == city %}selected{% endif %}>{{ city }}</option>
+          {% endfor %}
+        </select>
+      </label>
       <label class="inline-check">
         <input type="checkbox" name="mine" value="1" {% if only_mine %}checked{% endif %} />
         Мои запросы
@@ -31,6 +40,7 @@
       </div>
     </div>
     <p class="meta">Дата: {{ post.event_date.strftime('%d-%m-%Y') if post.event_date else "—" }}</p>
+    <p class="meta">Город: {{ post.city or "—" }}</p>
     <p class="meta">
       Ник человека:
       <span class="{% if nick_is_special(post.contact_nick) %}nick-special{% endif %}">@{{ post.contact_nick }}</span>

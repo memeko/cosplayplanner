@@ -56,6 +56,11 @@ class User(Base):
         back_populates="user",
         cascade="all, delete-orphan",
     )
+    community_master_ratings = relationship(
+        "CommunityMasterRating",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
     community_studios = relationship("CommunityStudio", back_populates="user", cascade="all, delete-orphan")
     community_articles = relationship("CommunityArticle", back_populates="user", cascade="all, delete-orphan")
     community_article_comments = relationship(
@@ -413,6 +418,7 @@ class ProjectSearchPost(Base):
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
 
     fandom = Column(String(255), nullable=False, index=True)
+    city = Column(String(255), nullable=True, index=True)
     event_date = Column(Date, nullable=True, index=True)
     event_type = Column(String(32), nullable=False, index=True)  # photoset | festival
     status = Column(String(32), nullable=False, default="active", index=True)  # active | found | inactive
@@ -562,6 +568,7 @@ class CommunityMaster(Base):
 
     user = relationship("User", back_populates="community_masters")
     comments = relationship("CommunityMasterComment", back_populates="master", cascade="all, delete-orphan")
+    ratings = relationship("CommunityMasterRating", back_populates="master", cascade="all, delete-orphan")
 
 
 class CommunityMasterComment(Base):
@@ -577,6 +584,24 @@ class CommunityMasterComment(Base):
 
     master = relationship("CommunityMaster", back_populates="comments")
     user = relationship("User", back_populates="community_master_comments")
+
+
+class CommunityMasterRating(Base):
+    __tablename__ = "community_master_ratings"
+
+    id = Column(Integer, primary_key=True)
+    master_id = Column(Integer, ForeignKey("community_masters.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    stars = Column(Integer, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    master = relationship("CommunityMaster", back_populates="ratings")
+    user = relationship("User", back_populates="community_master_ratings")
+
+    __table_args__ = (
+        UniqueConstraint("master_id", "user_id", name="uq_community_master_rating_user"),
+    )
 
 
 class CommunityStudio(Base):

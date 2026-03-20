@@ -38,6 +38,7 @@ from .models import (
     CommunityArticleFavorite,
     CommunityMaster,
     CommunityMasterComment,
+    CommunityMasterRating,
     CommunityQuestion,
     CommunityQuestionComment,
     CommunityStudio,
@@ -480,6 +481,7 @@ def apply_schema_migrations() -> None:
         ],
         "project_search_posts": [
             ("status", "VARCHAR(32) NOT NULL DEFAULT 'active'"),
+            ("city", "VARCHAR(255)"),
         ],
         "in_progress_cards": [
             ("is_frozen", "BOOLEAN NOT NULL DEFAULT 0"),
@@ -525,6 +527,8 @@ def apply_schema_migrations() -> None:
             CommunityMaster.__table__.create(bind=conn, checkfirst=True)
         if "community_master_comments" not in existing_tables:
             CommunityMasterComment.__table__.create(bind=conn, checkfirst=True)
+        if "community_master_ratings" not in existing_tables:
+            CommunityMasterRating.__table__.create(bind=conn, checkfirst=True)
         if "community_studios" not in existing_tables:
             CommunityStudio.__table__.create(bind=conn, checkfirst=True)
         if "community_articles" not in existing_tables:
@@ -1647,6 +1651,7 @@ def month_calendar_grid(
     calendar_builder = calendar.Calendar(firstweekday=0)
     matrix = calendar_builder.monthdayscalendar(year, month)
     day_types: dict[int, set[str]] = defaultdict(set)
+    day_labels: dict[int, list[str]] = defaultdict(list)
     normalized_shift_days = {int(day) for day in (shift_days or set()) if isinstance(day, int) and day > 0}
     normalized_shift_half_days = {int(day) for day in (shift_half_days or set()) if isinstance(day, int) and day > 0}
     for entry in entries:
@@ -1654,6 +1659,11 @@ def month_calendar_grid(
         if not isinstance(entry_date, date) or entry_date.year != year or entry_date.month != month:
             continue
         day_types[entry_date.day].add(str(entry.get("type_key") or ""))
+        title = str(entry.get("title") or "").strip()
+        kind = str(entry.get("kind") or "").strip()
+        label = title or kind
+        if label and label not in day_labels[entry_date.day]:
+            day_labels[entry_date.day].append(label)
 
     weeks: list[list[dict[str, Any]]] = []
     for week in matrix:
@@ -1679,6 +1689,7 @@ def month_calendar_grid(
                     "type_keys": types,
                     "single_type": (types[0] if len(types) == 1 else ""),
                     "is_multi": len(types) > 1,
+                    "labels": day_labels.get(day_value, []),
                     "has_work_shift": has_shift,
                     "has_full_day_shift": has_shift_full_day,
                     "is_work_shift_only": has_shift_full_day and not types,
@@ -1950,6 +1961,7 @@ def content_calendar_grid(
     matrix = calendar_builder.monthdayscalendar(year, month)
 
     day_colors: dict[int, list[str]] = defaultdict(list)
+    day_items: dict[int, list[dict[str, str]]] = defaultdict(list)
     for row in content_rows:
         publish_date = row.get("date")
         if not isinstance(publish_date, date):
@@ -1959,13 +1971,22 @@ def content_calendar_grid(
         color = str(row.get("rubric_color") or "").strip()
         if color and color not in day_colors[publish_date.day]:
             day_colors[publish_date.day].append(color)
+        title = str(row.get("title") or "").strip() or "Без названия"
+        socials_text = str(row.get("socials_text") or "").strip()
+        socials_label = socials_text if socials_text and socials_text != "—" else "другое"
+        day_items[publish_date.day].append(
+            {
+                "title": title,
+                "socials": socials_label,
+            }
+        )
 
     weeks: list[list[dict[str, Any]]] = []
     for week in matrix:
         week_cells: list[dict[str, Any]] = []
         for day_value in week:
             if day_value <= 0:
-                week_cells.append({"day": 0, "bg_style": ""})
+                week_cells.append({"day": 0, "bg_style": "", "items": []})
                 continue
             colors = day_colors.get(day_value, [])
             bg_style = ""
@@ -1981,7 +2002,7 @@ def content_calendar_grid(
                     gradient_parts.append(f"{color}66 {start:.2f}%")
                     gradient_parts.append(f"{color}66 {end:.2f}%")
                 bg_style = "background: linear-gradient(90deg, " + ", ".join(gradient_parts) + ");"
-            week_cells.append({"day": day_value, "bg_style": bg_style})
+            week_cells.append({"day": day_value, "bg_style": bg_style, "items": day_items.get(day_value, [])})
         weeks.append(week_cells)
     return weeks
 
@@ -3643,6 +3664,7 @@ def get_project_search_post_form_values(post: ProjectSearchPost | None = None, u
     if not post:
         return {
             "fandom": "",
+            "city": "",
             "event_date": "",
             "event_type": "photoset",
             "status": PROJECT_BOARD_STATUS_ACTIVE,
@@ -3653,6 +3675,7 @@ def get_project_search_post_form_values(post: ProjectSearchPost | None = None, u
 
     return {
         "fandom": post.fandom or "",
+        "city": post.city or "",
         "event_date": post.event_date.isoformat() if post.event_date else "",
         "event_type": post.event_type or "photoset",
         "status": post.status or PROJECT_BOARD_STATUS_ACTIVE,
@@ -6296,8 +6319,16 @@ def project_board_fandom_options(db: Session, user: User) -> list[str]:
     return merge_unique(global_fandoms, get_options(db, user.id, "fandom"))
 
 
+def project_board_city_options(db: Session, user: User) -> list[str]:
+    global_cities = db.execute(
+        select(ProjectSearchPost.city).where(ProjectSearchPost.city.is_not(None)).order_by(ProjectSearchPost.city)
+    ).scalars().all()
+    return merge_unique(global_cities, get_options(db, user.id, "project_board_city"), get_options(db, user.id, "city"))
+
+
 def save_project_search_post_from_form(form: Any, post: ProjectSearchPost) -> tuple[bool, str]:
     fandom = str(form.get("fandom", "")).strip()
+    city = str(form.get("city", "")).strip()
     event_date = parse_date(str(form.get("event_date", "")))
     event_type = str(form.get("event_type", "")).strip()
     status = str(form.get("status", PROJECT_BOARD_STATUS_ACTIVE)).strip()
@@ -6321,6 +6352,7 @@ def save_project_search_post_from_form(form: Any, post: ProjectSearchPost) -> tu
         status = PROJECT_BOARD_STATUS_ACTIVE
 
     post.fandom = fandom
+    post.city = city or None
     post.event_date = event_date
     post.event_type = event_type
     post.status = status
@@ -6337,6 +6369,7 @@ def project_board_list(request: Request, db: Session = Depends(get_db)):
         return redirect("/login")
 
     q = request.query_params.get("q", "").strip()
+    selected_city = request.query_params.get("city", "").strip()
     only_mine = to_bool(request.query_params.get("mine", ""))
 
     all_posts = db.execute(
@@ -6349,17 +6382,22 @@ def project_board_list(request: Request, db: Session = Depends(get_db)):
     posts = list(all_posts)
     if only_mine:
         posts = [post for post in posts if post.user_id == user.id]
+    if selected_city:
+        posts = [post for post in posts if city_matches(selected_city, post.city)]
     if q:
         needle = q.casefold()
         posts = [
             post
             for post in posts
             if needle in (post.fandom or "").casefold()
+            or needle in (post.city or "").casefold()
             or needle in (post.comment or "").casefold()
             or needle in (post.contact_nick or "").casefold()
             or needle in (post.contact_link or "").casefold()
             or needle in ("фотосет" if post.event_type == "photoset" else "фестиваль")
         ]
+
+    city_options = project_board_city_options(db, user)
 
     owner_ids = {post.user_id for post in posts}
     owners_by_id: dict[int, User] = {}
@@ -6376,6 +6414,8 @@ def project_board_list(request: Request, db: Session = Depends(get_db)):
         posts=posts,
         owners_by_id=owners_by_id,
         q=q,
+        selected_city=selected_city,
+        city_options=city_options,
         only_mine=only_mine,
         board_status_labels={
             PROJECT_BOARD_STATUS_ACTIVE: project_board_status_label(PROJECT_BOARD_STATUS_ACTIVE),
@@ -6401,6 +6441,7 @@ def project_board_new(request: Request, db: Session = Depends(get_db)):
         post_id=None,
         form=get_project_search_post_form_values(user=user),
         fandom_options=project_board_fandom_options(db, user),
+        city_options=project_board_city_options(db, user),
     )
 
 
@@ -6419,6 +6460,7 @@ async def project_board_create(request: Request, db: Session = Depends(get_db)):
 
     db.add(post)
     remember_options(db, user.id, "fandom", [post.fandom])
+    remember_options(db, user.id, "project_board_city", [post.city or ""])
     db.commit()
     add_flash(request, "Объявление добавлено.", "success")
     return redirect("/project-board")
@@ -6448,6 +6490,7 @@ def project_board_edit(post_id: int, request: Request, db: Session = Depends(get
         post_id=post.id,
         form=get_project_search_post_form_values(post, user),
         fandom_options=project_board_fandom_options(db, user),
+        city_options=project_board_city_options(db, user),
     )
 
 
@@ -6472,6 +6515,7 @@ async def project_board_update(post_id: int, request: Request, db: Session = Dep
         return redirect(f"/project-board/{post_id}/edit")
 
     remember_options(db, user.id, "fandom", [post.fandom])
+    remember_options(db, user.id, "project_board_city", [post.city or ""])
     db.commit()
     add_flash(request, "Объявление обновлено.", "success")
     return redirect("/project-board")
@@ -6820,6 +6864,46 @@ def save_master_from_form(form: Any, master: CommunityMaster) -> tuple[bool, str
     return True, ""
 
 
+def master_rating_maps(
+    db: Session,
+    master_ids: list[int],
+    current_user_id: int | None = None,
+) -> tuple[dict[int, float], dict[int, int], dict[int, int]]:
+    if not master_ids:
+        return {}, {}, {}
+
+    aggregate_rows = db.execute(
+        select(
+            CommunityMasterRating.master_id,
+            func.avg(CommunityMasterRating.stars),
+            func.count(CommunityMasterRating.id),
+        )
+        .where(CommunityMasterRating.master_id.in_(master_ids))
+        .group_by(CommunityMasterRating.master_id)
+    ).all()
+    avg_by_master: dict[int, float] = {}
+    count_by_master: dict[int, int] = {}
+    for row in aggregate_rows:
+        master_id = int(row[0])
+        avg_raw = row[1]
+        count_raw = row[2]
+        avg_by_master[master_id] = float(avg_raw or 0.0)
+        count_by_master[master_id] = int(count_raw or 0)
+
+    user_by_master: dict[int, int] = {}
+    if current_user_id:
+        user_rows = db.execute(
+            select(CommunityMasterRating.master_id, CommunityMasterRating.stars).where(
+                CommunityMasterRating.master_id.in_(master_ids),
+                CommunityMasterRating.user_id == current_user_id,
+            )
+        ).all()
+        for row in user_rows:
+            user_by_master[int(row[0])] = int(row[1] or 0)
+
+    return avg_by_master, count_by_master, user_by_master
+
+
 @app.get("/community/masters", response_class=HTMLResponse)
 def community_masters_list(request: Request, db: Session = Depends(get_db)):
     user = current_user(request, db)
@@ -6849,6 +6933,12 @@ def community_masters_list(request: Request, db: Session = Depends(get_db)):
         .group_by(CommunityMasterComment.master_id)
     ).all()
     comment_counts = {int(row[0]): int(row[1]) for row in comments_counts_raw}
+    master_ids = [item.id for item in masters]
+    rating_avg_by_master, rating_count_by_master, user_rating_by_master = master_rating_maps(
+        db,
+        master_ids,
+        current_user_id=user.id,
+    )
 
     return template_response(
         request,
@@ -6859,6 +6949,9 @@ def community_masters_list(request: Request, db: Session = Depends(get_db)):
         masters=masters,
         owners_by_id=owners_by_id,
         comment_counts=comment_counts,
+        rating_avg_by_master=rating_avg_by_master,
+        rating_count_by_master=rating_count_by_master,
+        user_rating_by_master=user_rating_by_master,
         q=q,
         selected_type=master_type,
         master_type_options=MASTER_TYPE_OPTIONS,
@@ -6922,6 +7015,11 @@ def community_masters_detail(master_id: int, request: Request, db: Session = Dep
     if author_ids:
         authors = db.execute(select(User).where(User.id.in_(author_ids))).scalars().all()
         authors_by_id = {item.id: item for item in authors}
+    rating_avg_by_master, rating_count_by_master, user_rating_by_master = master_rating_maps(
+        db,
+        [master.id],
+        current_user_id=user.id,
+    )
 
     return template_response(
         request,
@@ -6933,6 +7031,9 @@ def community_masters_detail(master_id: int, request: Request, db: Session = Dep
         comments=comments,
         authors_by_id=authors_by_id,
         price_rows=format_master_price_rows_for_form(as_list(master.price_list_json)),
+        rating_avg=rating_avg_by_master.get(master.id, 0.0),
+        rating_count=rating_count_by_master.get(master.id, 0),
+        user_rating=user_rating_by_master.get(master.id, 0),
     )
 
 
@@ -7020,6 +7121,49 @@ async def community_masters_add_comment(master_id: int, request: Request, db: Se
     )
     db.commit()
     add_flash(request, "Комментарий добавлен.", "success")
+    return redirect(f"/community/masters/{master_id}")
+
+
+@app.post("/community/masters/{master_id}/rate")
+async def community_masters_rate(master_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    master = db.get(CommunityMaster, master_id)
+    if not master:
+        add_flash(request, "Карточка мастера не найдена.", "error")
+        return redirect("/community/masters")
+
+    form = await request.form()
+    stars_raw = str(form.get("stars", "")).strip()
+    try:
+        stars = int(stars_raw)
+    except ValueError:
+        stars = 0
+    if stars < 1 or stars > 5:
+        add_flash(request, "Оценка должна быть от 1 до 5.", "error")
+        return redirect(f"/community/masters/{master_id}")
+
+    existing = db.execute(
+        select(CommunityMasterRating).where(
+            CommunityMasterRating.master_id == master.id,
+            CommunityMasterRating.user_id == user.id,
+        )
+    ).scalar_one_or_none()
+    if existing:
+        existing.stars = stars
+        add_flash(request, "Оценка обновлена.", "success")
+    else:
+        db.add(
+            CommunityMasterRating(
+                master_id=master.id,
+                user_id=user.id,
+                stars=stars,
+            )
+        )
+        add_flash(request, "Спасибо за оценку!", "success")
+    db.commit()
     return redirect(f"/community/masters/{master_id}")
 
 
