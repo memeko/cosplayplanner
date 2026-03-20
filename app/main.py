@@ -3,20 +3,24 @@ from __future__ import annotations
 import csv
 import calendar
 import colorsys
+import hashlib
 import html
 import io
 import os
 import re
+import secrets
 import sqlite3
+import smtplib
 import threading
 import time
 import uuid
 from collections import defaultdict
 from datetime import date, datetime, timedelta
 from difflib import SequenceMatcher
+from email.message import EmailMessage
 from pathlib import Path
 from typing import Any, Callable
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 import requests
 from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
@@ -53,6 +57,7 @@ from .models import (
     ProjectSearchPost,
     ProjectSearchComment,
     PersonalCalendarEvent,
+    PasswordResetToken,
     RehearsalCard,
     RehearsalEntry,
     User,
@@ -206,6 +211,15 @@ TELEGRAM_BOT_ENABLED = bool(TELEGRAM_BOT_TOKEN) and to_bool(os.getenv("TELEGRAM_
 TELEGRAM_POLL_TIMEOUT_SECONDS = max(5, min(60, int(os.getenv("TELEGRAM_POLL_TIMEOUT", "20"))))
 TELEGRAM_LOOP_SLEEP_SECONDS = max(1, min(30, int(os.getenv("TELEGRAM_LOOP_SLEEP", "2"))))
 TELEGRAM_DISPATCH_LIMIT = max(10, min(200, int(os.getenv("TELEGRAM_DISPATCH_LIMIT", "80"))))
+APP_BASE_URL = (os.getenv("APP_BASE_URL", "http://127.0.0.1:8000") or "http://127.0.0.1:8000").strip().rstrip("/")
+SMTP_HOST = os.getenv("SMTP_HOST", "").strip()
+SMTP_PORT = int(os.getenv("SMTP_PORT", "587") or "587")
+SMTP_USER = os.getenv("SMTP_USER", "").strip()
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "").strip()
+SMTP_FROM_EMAIL = (os.getenv("SMTP_FROM_EMAIL", "") or SMTP_USER).strip()
+SMTP_USE_TLS = to_bool(os.getenv("SMTP_USE_TLS", "1"))
+SMTP_USE_SSL = to_bool(os.getenv("SMTP_USE_SSL", "0"))
+PASSWORD_RESET_TOKEN_MINUTES = max(5, min(24 * 60, int(os.getenv("PASSWORD_RESET_TOKEN_MINUTES", "30") or "30")))
 
 telegram_auth_state_lock = threading.Lock()
 telegram_auth_state: dict[str, dict[str, str]] = {}
@@ -440,6 +454,8 @@ def apply_schema_migrations() -> None:
             ("birth_date", "DATE"),
             ("telegram_chat_id", "VARCHAR(64)"),
             ("telegram_linked_at", "DATETIME"),
+            ("telegram_secret_code_hash", "VARCHAR(255)"),
+            ("telegram_secret_code_updated_at", "DATETIME"),
         ],
         "cosplan_cards": [
             ("costume_bought", "BOOLEAN NOT NULL DEFAULT 0"),
@@ -568,6 +584,8 @@ def apply_schema_migrations() -> None:
             WorkShiftDay.__table__.create(bind=conn, checkfirst=True)
         if "content_plan_posts" not in existing_tables:
             ContentPlanPost.__table__.create(bind=conn, checkfirst=True)
+        if "password_reset_tokens" not in existing_tables:
+            PasswordResetToken.__table__.create(bind=conn, checkfirst=True)
 
         for table_name, columns in required_columns.items():
             if table_name not in existing_tables and table_name != "festival_notifications":
@@ -2476,6 +2494,16 @@ def resolve_user_for_telegram_login(db: Session, raw_username: str) -> User | No
     return db.execute(select(User).where(func.lower(User.cosplay_nick) == normalized)).scalar_one_or_none()
 
 
+def verify_user_telegram_secret_code(user: User, raw_code: str) -> bool:
+    secret_hash = (user.telegram_secret_code_hash or "").strip()
+    if not secret_hash:
+        return False
+    try:
+        return bool(password_context.verify(raw_code, secret_hash))
+    except Exception:
+        return False
+
+
 def handle_telegram_auth_message(chat_id: str, text_value: str) -> bool:
     state = get_telegram_auth_step(chat_id)
     step = state.get("step", "")
@@ -2484,20 +2512,29 @@ def handle_telegram_auth_message(chat_id: str, text_value: str) -> bool:
         if not entered_username:
             telegram_send_message(chat_id, "Ник не распознан. Введите ник ещё раз.")
             return True
-        set_telegram_auth_step(chat_id, step="password", username=entered_username)
-        telegram_send_message(chat_id, "Теперь отправьте пароль от сайта.")
+        set_telegram_auth_step(chat_id, step="secret_code", username=entered_username)
+        telegram_send_message(chat_id, "Теперь отправьте секретный код для ТГ-бота из профиля на сайте.")
         return True
 
-    if step == "password":
-        entered_password = text_value or ""
+    if step == "secret_code":
+        entered_secret_code = text_value or ""
         username = state.get("username", "")
         if not username:
             start_telegram_auth(chat_id)
             return True
         with SessionLocal() as db:
             user = resolve_user_for_telegram_login(db, username)
-            if not user or not password_context.verify(entered_password, user.password_hash):
-                telegram_send_message(chat_id, "Неверный ник или пароль. Попробуйте снова.")
+            if not user:
+                telegram_send_message(chat_id, "Неверный ник или секретный код. Попробуйте снова.")
+                return True
+            if not (user.telegram_secret_code_hash or "").strip():
+                telegram_send_message(
+                    chat_id,
+                    "Для этого аккаунта не задан секретный код. Задайте его в профиле на сайте и попробуйте снова.",
+                )
+                return True
+            if not verify_user_telegram_secret_code(user, entered_secret_code):
+                telegram_send_message(chat_id, "Неверный ник или секретный код. Попробуйте снова.")
                 return True
 
             linked_users = db.execute(
@@ -2556,9 +2593,9 @@ def handle_telegram_update(update: dict[str, Any]) -> None:
         telegram_send_message(chat_id, "Telegram-привязка удалена.")
         return
 
-    # If user sends password step text, try to remove this message from chat history.
+    # If user sends secret-code step text, try to remove this message from chat history.
     state = get_telegram_auth_step(chat_id)
-    if state.get("step") == "password" and message_id > 0:
+    if state.get("step") == "secret_code" and message_id > 0:
         telegram_delete_message(chat_id, message_id)
 
     if handle_telegram_auth_message(chat_id, text_value):
@@ -3586,6 +3623,86 @@ def current_user(request: Request, db: Session) -> User | None:
     return db.get(User, int(user_id))
 
 
+def smtp_is_configured() -> bool:
+    return bool(SMTP_HOST and SMTP_FROM_EMAIL)
+
+
+def send_plain_email(*, to_email: str, subject: str, body: str) -> bool:
+    if not smtp_is_configured():
+        return False
+    message = EmailMessage()
+    message["Subject"] = subject
+    message["From"] = SMTP_FROM_EMAIL
+    message["To"] = to_email
+    message.set_content(body)
+    try:
+        if SMTP_USE_SSL:
+            with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=20) as server:
+                if SMTP_USER:
+                    server.login(SMTP_USER, SMTP_PASSWORD)
+                server.send_message(message)
+        else:
+            with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=20) as server:
+                server.ehlo()
+                if SMTP_USE_TLS:
+                    server.starttls()
+                    server.ehlo()
+                if SMTP_USER:
+                    server.login(SMTP_USER, SMTP_PASSWORD)
+                server.send_message(message)
+    except Exception:
+        return False
+    return True
+
+
+def hash_password_reset_token(raw_token: str) -> str:
+    return hashlib.sha256((raw_token or "").encode("utf-8")).hexdigest()
+
+
+def build_password_reset_link(raw_token: str) -> str:
+    safe_token = quote(raw_token or "")
+    return f"{APP_BASE_URL}/reset-password?token={safe_token}"
+
+
+def create_password_reset_token(db: Session, user_id: int) -> str:
+    now_utc = datetime.utcnow()
+    active_tokens = db.execute(
+        select(PasswordResetToken).where(
+            PasswordResetToken.user_id == user_id,
+            PasswordResetToken.used_at.is_(None),
+            PasswordResetToken.expires_at > now_utc,
+        )
+    ).scalars().all()
+    for token_row in active_tokens:
+        token_row.used_at = now_utc
+
+    raw_token = secrets.token_urlsafe(32)
+    db.add(
+        PasswordResetToken(
+            user_id=user_id,
+            token_hash=hash_password_reset_token(raw_token),
+            expires_at=now_utc + timedelta(minutes=PASSWORD_RESET_TOKEN_MINUTES),
+            used_at=None,
+        )
+    )
+    return raw_token
+
+
+def find_active_password_reset_token(db: Session, raw_token: str | None) -> PasswordResetToken | None:
+    token_value = (raw_token or "").strip()
+    if not token_value:
+        return None
+    now_utc = datetime.utcnow()
+    token_hash = hash_password_reset_token(token_value)
+    return db.execute(
+        select(PasswordResetToken).where(
+            PasswordResetToken.token_hash == token_hash,
+            PasswordResetToken.used_at.is_(None),
+            PasswordResetToken.expires_at > now_utc,
+        )
+    ).scalar_one_or_none()
+
+
 def template_response(
     request: Request,
     name: str,
@@ -4163,6 +4280,119 @@ def login_page(request: Request, db: Session = Depends(get_db)):
     return template_response(request, "login.html", user=None)
 
 
+@app.get("/forgot-password", response_class=HTMLResponse)
+def forgot_password_page(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if user:
+        return redirect("/cosplan")
+    return template_response(request, "forgot_password.html", user=None)
+
+
+@app.post("/forgot-password")
+async def forgot_password_submit(request: Request, db: Session = Depends(get_db)):
+    form = await request.form()
+    email = str(form.get("email", "")).strip().lower()
+    if not email:
+        add_flash(request, "Введите email.", "error")
+        return redirect("/forgot-password")
+
+    user = db.execute(select(User).where(User.email == email)).scalar_one_or_none()
+    if user:
+        if smtp_is_configured():
+            raw_token = create_password_reset_token(db, user.id)
+            reset_link = build_password_reset_link(raw_token)
+            email_body = (
+                "Здравствуйте!\n\n"
+                "Мы получили запрос на восстановление пароля для вашего аккаунта Cosplay Planner.\n"
+                f"Перейдите по ссылке, чтобы задать новый пароль:\n{reset_link}\n\n"
+                f"Ссылка действует {PASSWORD_RESET_TOKEN_MINUTES} минут.\n"
+                "Если вы не запрашивали восстановление, просто проигнорируйте это письмо."
+            )
+            sent_ok = send_plain_email(
+                to_email=user.email,
+                subject="Восстановление пароля Cosplay Planner",
+                body=email_body,
+            )
+            if sent_ok:
+                db.commit()
+            else:
+                db.rollback()
+                print("[password-reset] Email send failed.")
+        else:
+            print("[password-reset] SMTP is not configured; reset email not sent.")
+
+    add_flash(
+        request,
+        "Если аккаунт с таким email существует, инструкция по восстановлению отправлена.",
+        "info",
+    )
+    return redirect("/login")
+
+
+@app.get("/reset-password", response_class=HTMLResponse)
+def reset_password_page(request: Request, token: str = "", db: Session = Depends(get_db)):
+    token_value = (token or "").strip()
+    token_valid = bool(find_active_password_reset_token(db, token_value)) if token_value else False
+    return template_response(
+        request,
+        "reset_password.html",
+        user=None,
+        token=token_value,
+        token_valid=token_valid,
+    )
+
+
+@app.post("/reset-password")
+async def reset_password_submit(request: Request, db: Session = Depends(get_db)):
+    form = await request.form()
+    token = str(form.get("token", "")).strip()
+    new_password = str(form.get("new_password", "")).strip()
+    new_password_confirm = str(form.get("new_password_confirm", "")).strip()
+
+    if not token:
+        add_flash(request, "Некорректная ссылка восстановления.", "error")
+        return redirect("/forgot-password")
+    if not new_password:
+        add_flash(request, "Введите новый пароль.", "error")
+        return redirect(f"/reset-password?token={quote(token)}")
+    if len(new_password) < 6:
+        add_flash(request, "Новый пароль должен быть не короче 6 символов.", "error")
+        return redirect(f"/reset-password?token={quote(token)}")
+    if new_password != new_password_confirm:
+        add_flash(request, "Новые пароли не совпадают.", "error")
+        return redirect(f"/reset-password?token={quote(token)}")
+
+    token_row = find_active_password_reset_token(db, token)
+    if not token_row:
+        add_flash(request, "Ссылка недействительна или срок её действия истёк.", "error")
+        return redirect("/forgot-password")
+
+    target_user = db.get(User, token_row.user_id)
+    if not target_user:
+        token_row.used_at = datetime.utcnow()
+        db.commit()
+        add_flash(request, "Ссылка недействительна или срок её действия истёк.", "error")
+        return redirect("/forgot-password")
+
+    now_utc = datetime.utcnow()
+    target_user.password_hash = password_context.hash(new_password)
+    token_row.used_at = now_utc
+
+    other_tokens = db.execute(
+        select(PasswordResetToken).where(
+            PasswordResetToken.user_id == target_user.id,
+            PasswordResetToken.id != token_row.id,
+            PasswordResetToken.used_at.is_(None),
+        )
+    ).scalars().all()
+    for item in other_tokens:
+        item.used_at = now_utc
+
+    db.commit()
+    add_flash(request, "Пароль обновлён. Войдите с новым паролем.", "success")
+    return redirect("/login")
+
+
 @app.post("/login")
 async def login_submit(request: Request, db: Session = Depends(get_db)):
     form = await request.form()
@@ -4297,6 +4527,7 @@ async def profile_update(request: Request, db: Session = Depends(get_db)):
     email = str(form.get("email", "")).strip().lower()
     home_city = str(form.get("home_city", "")).strip()
     birth_date = parse_date(str(form.get("birth_date", "")).strip())
+    telegram_secret_code = str(form.get("telegram_secret_code", "")).strip()
     new_password = str(form.get("new_password", "")).strip()
     new_password_confirm = str(form.get("new_password_confirm", "")).strip()
 
@@ -4335,6 +4566,16 @@ async def profile_update(request: Request, db: Session = Depends(get_db)):
 
     user.home_city = home_city or None
     user.birth_date = birth_date
+
+    if telegram_secret_code:
+        if len(telegram_secret_code) < 6:
+            add_flash(request, "Секретный код для ТГ-бота должен быть не короче 6 символов.", "error")
+            return redirect("/profile")
+        user.telegram_secret_code_hash = password_context.hash(telegram_secret_code)
+        user.telegram_secret_code_updated_at = datetime.utcnow()
+        # Re-auth in bot after code rotation.
+        user.telegram_chat_id = None
+        user.telegram_linked_at = None
 
     if new_password:
         if new_password != new_password_confirm:

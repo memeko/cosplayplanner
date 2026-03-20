@@ -27,6 +27,11 @@
       <input type="date" name="birth_date" value="{{ user.birth_date.isoformat() if user.birth_date else '' }}" />
     </label>
     <label>
+      Секретный код для ТГ-бота
+      <input type="password" name="telegram_secret_code" placeholder="Оставьте пустым, чтобы не менять" />
+      <small class="muted">Нужен для входа в Telegram-боте вместо пароля сайта.</small>
+    </label>
+    <label>
       Новый пароль
       <input type="password" name="new_password" placeholder="Оставьте пустым, чтобы не менять" />
     </label>

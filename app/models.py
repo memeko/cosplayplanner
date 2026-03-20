@@ -28,6 +28,8 @@ class User(Base):
     birth_date = Column(Date, nullable=True, index=True)
     telegram_chat_id = Column(String(64), nullable=True, unique=True, index=True)
     telegram_linked_at = Column(DateTime(timezone=True), nullable=True)
+    telegram_secret_code_hash = Column(String(255), nullable=True)
+    telegram_secret_code_updated_at = Column(DateTime(timezone=True), nullable=True)
     password_hash = Column(String(255), nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
@@ -131,6 +133,11 @@ class User(Base):
         back_populates="user",
         cascade="all, delete-orphan",
     )
+    password_reset_tokens = relationship(
+        "PasswordResetToken",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
 
 
 class UserOption(Base):
@@ -144,6 +151,19 @@ class UserOption(Base):
     user = relationship("User", back_populates="options")
 
     __table_args__ = (UniqueConstraint("user_id", "group", "value", name="uq_user_option_value"),)
+
+
+class PasswordResetToken(Base):
+    __tablename__ = "password_reset_tokens"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    token_hash = Column(String(64), nullable=False, unique=True, index=True)
+    expires_at = Column(DateTime(timezone=True), nullable=False, index=True)
+    used_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    user = relationship("User", back_populates="password_reset_tokens")
 
 
 class CosplanCard(Base):
