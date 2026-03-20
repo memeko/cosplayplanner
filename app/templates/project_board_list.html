@@ -52,6 +52,34 @@
     {% if post.comment %}
       <p class="notes-block">{{ post.comment }}</p>
     {% endif %}
+    {% set post_comments = comments_by_post.get(post.id, []) %}
+    {% if post_comments %}
+      <div class="top-offset comments-list">
+        {% for board_comment in post_comments %}
+          {% set comment_author = owners_by_id.get(board_comment.user_id) %}
+          <article class="comment-card">
+            <p class="comment-meta">
+              {% if comment_author %}
+                <span class="{% if user_is_special(comment_author) %}nick-special{% endif %}">@{{ comment_author.cosplay_nick or comment_author.username }}</span>
+              {% else %}
+                @unknown
+              {% endif %}
+              • {{ board_comment.created_at.strftime('%d-%m-%Y %H:%M') if board_comment.created_at else "—" }}
+            </p>
+            <p class="notes-block">{{ board_comment.body }}</p>
+          </article>
+        {% endfor %}
+      </div>
+    {% endif %}
+    <form method="post" action="/project-board/{{ post.id }}/comments" class="comment-form top-offset">
+      <label>
+        Комментарий
+        <textarea name="comment_body" rows="2" maxlength="1500" placeholder="Оставьте комментарий к объявлению" required></textarea>
+      </label>
+      <div class="actions-inline">
+        <button type="submit" class="btn btn-small">Отправить</button>
+      </div>
+    </form>
     {% if user and user.id == post.user_id %}
       <div class="actions-inline">
         <a href="/project-board/{{ post.id }}/edit" class="btn">Редактировать</a>

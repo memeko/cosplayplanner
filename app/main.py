@@ -8,6 +8,8 @@ import io
 import os
 import re
 import sqlite3
+import threading
+import time
 import uuid
 from collections import defaultdict
 from datetime import date, datetime, timedelta
@@ -30,7 +32,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .cosplay2_parser import guess_name_from_url, normalize_url, parse_events_from_homepage
-from .database import Base, engine, get_db
+from .database import Base, SessionLocal, engine, get_db
 from .models import (
     CardComment,
     CommunityArticle,
@@ -49,6 +51,7 @@ from .models import (
     FestivalNotification,
     InProgressCard,
     ProjectSearchPost,
+    ProjectSearchComment,
     PersonalCalendarEvent,
     RehearsalCard,
     RehearsalEntry,
@@ -197,6 +200,17 @@ CONTENT_RUBRIC_PALETTE = [
     "#43aa8b",
     "#f9c74f",
 ]
+
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+TELEGRAM_BOT_ENABLED = bool(TELEGRAM_BOT_TOKEN) and to_bool(os.getenv("TELEGRAM_BOT_ENABLED", "1"))
+TELEGRAM_POLL_TIMEOUT_SECONDS = max(5, min(60, int(os.getenv("TELEGRAM_POLL_TIMEOUT", "20"))))
+TELEGRAM_LOOP_SLEEP_SECONDS = max(1, min(30, int(os.getenv("TELEGRAM_LOOP_SLEEP", "2"))))
+TELEGRAM_DISPATCH_LIMIT = max(10, min(200, int(os.getenv("TELEGRAM_DISPATCH_LIMIT", "80"))))
+
+telegram_auth_state_lock = threading.Lock()
+telegram_auth_state: dict[str, dict[str, str]] = {}
+telegram_worker_lock = threading.Lock()
+telegram_worker_thread: threading.Thread | None = None
 
 MASTER_TYPE_OPTIONS = [
     "фотограф",
@@ -424,6 +438,8 @@ def apply_schema_migrations() -> None:
             ("home_city", "VARCHAR(255)"),
             ("cosplay_nick", "VARCHAR(100)"),
             ("birth_date", "DATE"),
+            ("telegram_chat_id", "VARCHAR(64)"),
+            ("telegram_linked_at", "DATETIME"),
         ],
         "cosplan_cards": [
             ("costume_bought", "BOOLEAN NOT NULL DEFAULT 0"),
@@ -477,6 +493,7 @@ def apply_schema_migrations() -> None:
             ("source_card_id", "INTEGER"),
             ("message", "TEXT NOT NULL"),
             ("is_read", "BOOLEAN NOT NULL DEFAULT 0"),
+            ("telegram_sent_at", "DATETIME"),
             ("created_at", "DATETIME DEFAULT CURRENT_TIMESTAMP"),
         ],
         "project_search_posts": [
@@ -519,6 +536,8 @@ def apply_schema_migrations() -> None:
             CardComment.__table__.create(bind=conn, checkfirst=True)
         if "project_search_posts" not in existing_tables:
             ProjectSearchPost.__table__.create(bind=conn, checkfirst=True)
+        if "project_search_comments" not in existing_tables:
+            ProjectSearchComment.__table__.create(bind=conn, checkfirst=True)
         if "community_questions" not in existing_tables:
             CommunityQuestion.__table__.create(bind=conn, checkfirst=True)
         if "community_question_comments" not in existing_tables:
@@ -568,6 +587,7 @@ def apply_schema_migrations() -> None:
 def startup() -> None:
     Base.metadata.create_all(bind=engine)
     apply_schema_migrations()
+    start_telegram_worker()
     try:
         auto_backup_if_needed()
     except OSError:
@@ -2322,6 +2342,283 @@ def remove_shared_card_notifications(
     for note in notes:
         if is_shared_card_notification_message(note.message):
             db.delete(note)
+
+
+def is_telegram_eligible_notification(message: str | None) -> bool:
+    text_value = (message or "").strip()
+    if not text_value:
+        return False
+    lower = text_value.casefold()
+    if is_pigeon_message(text_value):
+        return True
+    if is_shared_card_notification_message(text_value):
+        return True
+    if "вам назначено задание" in lower:
+        return True
+    if "новый комментарий в вашей карточке мастера" in lower:
+        return True
+    if "новый комментарий в вашем объявлении поиска" in lower:
+        return True
+    return False
+
+
+def telegram_api_url(method: str) -> str:
+    return f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/{method}"
+
+
+def telegram_send_message(chat_id: str, message: str) -> tuple[bool, int | None]:
+    if not TELEGRAM_BOT_ENABLED or not TELEGRAM_BOT_TOKEN:
+        return False, None
+    payload = {
+        "chat_id": chat_id,
+        "text": f"Cosplay Planner\n{message}",
+        "disable_web_page_preview": True,
+    }
+    try:
+        response = requests.post(
+            telegram_api_url("sendMessage"),
+            json=payload,
+            timeout=20,
+        )
+        response_payload = response.json() if response.content else {}
+    except (requests.RequestException, ValueError):
+        return False, None
+    if not response.ok or not response_payload.get("ok"):
+        return False, int(response_payload.get("error_code") or response.status_code or 0)
+    return True, None
+
+
+def telegram_get_updates(offset: int) -> list[dict[str, Any]]:
+    if not TELEGRAM_BOT_ENABLED or not TELEGRAM_BOT_TOKEN:
+        return []
+    params = {
+        "timeout": TELEGRAM_POLL_TIMEOUT_SECONDS,
+        "offset": offset,
+    }
+    try:
+        response = requests.get(
+            telegram_api_url("getUpdates"),
+            params=params,
+            timeout=TELEGRAM_POLL_TIMEOUT_SECONDS + 10,
+        )
+        payload = response.json() if response.content else {}
+    except (requests.RequestException, ValueError):
+        return []
+    if not response.ok or not payload.get("ok"):
+        return []
+    results = payload.get("result")
+    return results if isinstance(results, list) else []
+
+
+def reset_telegram_auth(chat_id: str) -> None:
+    with telegram_auth_state_lock:
+        telegram_auth_state.pop(chat_id, None)
+
+
+def set_telegram_auth_step(chat_id: str, *, step: str, username: str = "") -> None:
+    with telegram_auth_state_lock:
+        telegram_auth_state[chat_id] = {
+            "step": step,
+            "username": username,
+        }
+
+
+def get_telegram_auth_step(chat_id: str) -> dict[str, str]:
+    with telegram_auth_state_lock:
+        return dict(telegram_auth_state.get(chat_id, {}))
+
+
+def start_telegram_auth(chat_id: str) -> None:
+    set_telegram_auth_step(chat_id, step="username", username="")
+    telegram_send_message(
+        chat_id,
+        "Введите ваш ник на сайте (можно @username или cosplay_nick).",
+    )
+
+
+def resolve_user_for_telegram_login(db: Session, raw_username: str) -> User | None:
+    normalized = normalize_username(raw_username).casefold()
+    if not normalized:
+        return None
+    user = db.execute(select(User).where(func.lower(User.username) == normalized)).scalar_one_or_none()
+    if user:
+        return user
+    return db.execute(select(User).where(func.lower(User.cosplay_nick) == normalized)).scalar_one_or_none()
+
+
+def handle_telegram_auth_message(chat_id: str, text_value: str) -> bool:
+    state = get_telegram_auth_step(chat_id)
+    step = state.get("step", "")
+    if step == "username":
+        entered_username = normalize_username(text_value)
+        if not entered_username:
+            telegram_send_message(chat_id, "Ник не распознан. Введите ник ещё раз.")
+            return True
+        set_telegram_auth_step(chat_id, step="password", username=entered_username)
+        telegram_send_message(chat_id, "Теперь отправьте пароль от сайта.")
+        return True
+
+    if step == "password":
+        entered_password = text_value or ""
+        username = state.get("username", "")
+        if not username:
+            start_telegram_auth(chat_id)
+            return True
+        with SessionLocal() as db:
+            user = resolve_user_for_telegram_login(db, username)
+            if not user or not password_context.verify(entered_password, user.password_hash):
+                telegram_send_message(chat_id, "Неверный ник или пароль. Попробуйте снова.")
+                return True
+
+            linked_users = db.execute(
+                select(User).where(
+                    User.telegram_chat_id == chat_id,
+                    User.id != user.id,
+                )
+            ).scalars().all()
+            for linked_user in linked_users:
+                linked_user.telegram_chat_id = None
+                linked_user.telegram_linked_at = None
+
+            user.telegram_chat_id = chat_id
+            user.telegram_linked_at = datetime.utcnow()
+            db.commit()
+
+        reset_telegram_auth(chat_id)
+        telegram_send_message(
+            chat_id,
+            f"Авторизация успешна. Привязано к аккаунту @{preferred_user_alias(user)}.",
+        )
+        return True
+
+    return False
+
+
+def handle_telegram_update(update: dict[str, Any]) -> None:
+    message = update.get("message")
+    if not isinstance(message, dict):
+        return
+    chat = message.get("chat") or {}
+    chat_id_raw = chat.get("id")
+    if chat_id_raw is None:
+        return
+    chat_id = str(chat_id_raw)
+
+    text_value = str(message.get("text") or "").strip()
+    if not text_value:
+        telegram_send_message(chat_id, "Поддерживаются только текстовые сообщения.")
+        return
+
+    lowered = text_value.casefold()
+    if lowered in {"/start", "/login"}:
+        start_telegram_auth(chat_id)
+        return
+    if lowered == "/logout":
+        with SessionLocal() as db:
+            linked_users = db.execute(select(User).where(User.telegram_chat_id == chat_id)).scalars().all()
+            for linked_user in linked_users:
+                linked_user.telegram_chat_id = None
+                linked_user.telegram_linked_at = None
+            if linked_users:
+                db.commit()
+        reset_telegram_auth(chat_id)
+        telegram_send_message(chat_id, "Telegram-привязка удалена.")
+        return
+
+    if handle_telegram_auth_message(chat_id, text_value):
+        return
+
+    telegram_send_message(
+        chat_id,
+        "Чтобы подключить уведомления, отправьте /start или /login.",
+    )
+
+
+def dispatch_telegram_notifications() -> None:
+    if not TELEGRAM_BOT_ENABLED:
+        return
+    with SessionLocal() as db:
+        users = db.execute(select(User).where(User.telegram_chat_id.is_not(None))).scalars().all()
+        if not users:
+            return
+        now_utc = datetime.utcnow()
+
+        for user in users:
+            chat_id = (user.telegram_chat_id or "").strip()
+            if not chat_id:
+                continue
+
+            stmt = (
+                select(FestivalNotification)
+                .where(
+                    FestivalNotification.user_id == user.id,
+                    FestivalNotification.telegram_sent_at.is_(None),
+                )
+                .order_by(FestivalNotification.created_at.asc(), FestivalNotification.id.asc())
+                .limit(TELEGRAM_DISPATCH_LIMIT)
+            )
+            if user.telegram_linked_at:
+                stmt = stmt.where(FestivalNotification.created_at >= user.telegram_linked_at)
+
+            notifications = db.execute(stmt).scalars().all()
+            if not notifications:
+                continue
+
+            must_commit = False
+            for note in notifications:
+                if not is_telegram_eligible_notification(note.message):
+                    note.telegram_sent_at = now_utc
+                    must_commit = True
+                    continue
+
+                ok, error_code = telegram_send_message(chat_id, note.message)
+                if ok:
+                    note.telegram_sent_at = now_utc
+                    must_commit = True
+                    continue
+
+                if error_code in {401, 403}:
+                    user.telegram_chat_id = None
+                    user.telegram_linked_at = None
+                    must_commit = True
+                    break
+
+            if must_commit:
+                db.commit()
+
+
+def telegram_bot_loop() -> None:
+    if not TELEGRAM_BOT_ENABLED:
+        return
+    offset = 0
+    while True:
+        try:
+            updates = telegram_get_updates(offset)
+            for update in updates:
+                update_id = int(update.get("update_id") or 0)
+                if update_id >= offset:
+                    offset = update_id + 1
+                handle_telegram_update(update)
+            dispatch_telegram_notifications()
+        except Exception:
+            # Telegram loop must not crash app process.
+            pass
+        time.sleep(TELEGRAM_LOOP_SLEEP_SECONDS)
+
+
+def start_telegram_worker() -> None:
+    global telegram_worker_thread
+    if not TELEGRAM_BOT_ENABLED:
+        return
+    with telegram_worker_lock:
+        if telegram_worker_thread and telegram_worker_thread.is_alive():
+            return
+        telegram_worker_thread = threading.Thread(
+            target=telegram_bot_loop,
+            name="telegram-bot-worker",
+            daemon=True,
+        )
+        telegram_worker_thread.start()
 
 
 def user_busy_items_on_date(
@@ -6404,6 +6701,21 @@ def project_board_list(request: Request, db: Session = Depends(get_db)):
     city_options = project_board_city_options(db, user)
 
     owner_ids = {post.user_id for post in posts}
+    post_ids = [post.id for post in posts]
+    comments_by_post: dict[int, list[ProjectSearchComment]] = defaultdict(list)
+
+    if post_ids:
+        comments = db.execute(
+            select(ProjectSearchComment)
+            .where(ProjectSearchComment.post_id.in_(post_ids))
+            .order_by(ProjectSearchComment.created_at.desc(), ProjectSearchComment.id.desc())
+        ).scalars().all()
+        for item in comments:
+            if len(comments_by_post[item.post_id]) >= 5:
+                continue
+            comments_by_post[item.post_id].append(item)
+            owner_ids.add(item.user_id)
+
     owners_by_id: dict[int, User] = {}
     if owner_ids:
         owners = db.execute(select(User).where(User.id.in_(owner_ids))).scalars().all()
@@ -6417,6 +6729,7 @@ def project_board_list(request: Request, db: Session = Depends(get_db)):
         community_tab="project-board",
         posts=posts,
         owners_by_id=owners_by_id,
+        comments_by_post=comments_by_post,
         q=q,
         selected_city=selected_city,
         city_options=city_options,
@@ -6552,6 +6865,49 @@ async def project_board_update_status(post_id: int, request: Request, db: Sessio
     post.status = status
     db.commit()
     add_flash(request, "Статус объявления обновлен.", "success")
+    return redirect("/project-board")
+
+
+@app.post("/project-board/{post_id}/comments")
+async def project_board_add_comment(post_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    post = db.get(ProjectSearchPost, post_id)
+    if not post:
+        add_flash(request, "Объявление не найдено.", "error")
+        return redirect("/project-board")
+
+    form = await request.form()
+    body = str(form.get("comment_body", "")).strip()
+    if not body:
+        add_flash(request, "Введите комментарий.", "error")
+        return redirect("/project-board")
+
+    db.add(
+        ProjectSearchComment(
+            post_id=post.id,
+            user_id=user.id,
+            body=body,
+        )
+    )
+    if post.user_id != user.id:
+        preview = body if len(body) <= 120 else body[:117].rstrip() + "..."
+        db.add(
+            FestivalNotification(
+                user_id=post.user_id,
+                from_user_id=user.id,
+                source_card_id=None,
+                message=(
+                    "Новый комментарий в вашем объявлении поиска "
+                    f"«{post.fandom}» от @{preferred_user_alias(user)}: {preview}"
+                ),
+                is_read=False,
+            )
+        )
+    db.commit()
+    add_flash(request, "Комментарий добавлен.", "success")
     return redirect("/project-board")
 
 
@@ -7123,6 +7479,22 @@ async def community_masters_add_comment(master_id: int, request: Request, db: Se
             images_json=images,
         )
     )
+    if master.user_id != user.id:
+        preview = (body or "Добавлено изображение").strip()
+        if len(preview) > 120:
+            preview = preview[:117].rstrip() + "..."
+        db.add(
+            FestivalNotification(
+                user_id=master.user_id,
+                from_user_id=user.id,
+                source_card_id=None,
+                message=(
+                    "Новый комментарий в вашей карточке мастера "
+                    f"@{normalize_username(master.nick)}: {preview}"
+                ),
+                is_read=False,
+            )
+        )
     db.commit()
     add_flash(request, "Комментарий добавлен.", "success")
     return redirect(f"/community/masters/{master_id}")

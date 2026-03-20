@@ -26,6 +26,8 @@ class User(Base):
     email = Column(String(255), nullable=False, unique=True, index=True)
     home_city = Column(String(255), nullable=True, index=True)
     birth_date = Column(Date, nullable=True, index=True)
+    telegram_chat_id = Column(String(64), nullable=True, unique=True, index=True)
+    telegram_linked_at = Column(DateTime(timezone=True), nullable=True)
     password_hash = Column(String(255), nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
@@ -44,6 +46,11 @@ class User(Base):
     in_progress_cards = relationship("InProgressCard", back_populates="user", cascade="all, delete-orphan")
     festivals = relationship("Festival", back_populates="user", cascade="all, delete-orphan")
     project_search_posts = relationship("ProjectSearchPost", back_populates="user", cascade="all, delete-orphan")
+    project_search_comments = relationship(
+        "ProjectSearchComment",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
     community_questions = relationship("CommunityQuestion", back_populates="user", cascade="all, delete-orphan")
     community_question_comments = relationship(
         "CommunityQuestionComment",
@@ -430,6 +437,20 @@ class ProjectSearchPost(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
     user = relationship("User", back_populates="project_search_posts")
+    comments = relationship("ProjectSearchComment", back_populates="post", cascade="all, delete-orphan")
+
+
+class ProjectSearchComment(Base):
+    __tablename__ = "project_search_comments"
+
+    id = Column(Integer, primary_key=True)
+    post_id = Column(Integer, ForeignKey("project_search_posts.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    body = Column(Text, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    post = relationship("ProjectSearchPost", back_populates="comments")
+    user = relationship("User", back_populates="project_search_comments")
 
 
 class FestivalNotification(Base):
@@ -441,6 +462,7 @@ class FestivalNotification(Base):
     source_card_id = Column(Integer, ForeignKey("cosplan_cards.id", ondelete="SET NULL"), nullable=True, index=True)
     message = Column(Text, nullable=False)
     is_read = Column(Boolean, nullable=False, default=False)
+    telegram_sent_at = Column(DateTime(timezone=True), nullable=True, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     recipient = relationship("User", back_populates="incoming_notifications", foreign_keys=[user_id])
