@@ -1972,12 +1972,16 @@ def content_calendar_grid(
         if color and color not in day_colors[publish_date.day]:
             day_colors[publish_date.day].append(color)
         title = str(row.get("title") or "").strip() or "Без названия"
+        time_text = str(row.get("time") or "").strip()
         socials_text = str(row.get("socials_text") or "").strip()
         socials_label = socials_text if socials_text and socials_text != "—" else "другое"
+        schedule_label = f"{time_text} • {socials_label}" if time_text else socials_label
         day_items[publish_date.day].append(
             {
                 "title": title,
                 "socials": socials_label,
+                "time": time_text,
+                "schedule": schedule_label,
             }
         )
 
@@ -1986,7 +1990,7 @@ def content_calendar_grid(
         week_cells: list[dict[str, Any]] = []
         for day_value in week:
             if day_value <= 0:
-                week_cells.append({"day": 0, "bg_style": "", "items": []})
+                week_cells.append({"day": 0, "bg_style": "", "content_items": []})
                 continue
             colors = day_colors.get(day_value, [])
             bg_style = ""
@@ -2002,7 +2006,7 @@ def content_calendar_grid(
                     gradient_parts.append(f"{color}66 {start:.2f}%")
                     gradient_parts.append(f"{color}66 {end:.2f}%")
                 bg_style = "background: linear-gradient(90deg, " + ", ".join(gradient_parts) + ");"
-            week_cells.append({"day": day_value, "bg_style": bg_style, "items": day_items.get(day_value, [])})
+            week_cells.append({"day": day_value, "bg_style": bg_style, "content_items": day_items.get(day_value, [])})
         weeks.append(week_cells)
     return weeks
 

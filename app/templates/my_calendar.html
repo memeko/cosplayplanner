@@ -350,9 +350,9 @@
                         {% if cell.content_items %}
                           <div class="calendar-cell-items content-cell-items">
                             {% for content_item in cell.content_items[:2] %}
-                              <div class="calendar-cell-entry" title="{{ content_item.title }} — {{ content_item.socials }}">
+                              <div class="calendar-cell-entry" title="{{ content_item.title }} — {{ content_item.schedule }}">
                                 <div class="calendar-cell-item">{{ content_item.title }}</div>
-                                <div class="calendar-cell-social">{{ content_item.socials }}</div>
+                                <div class="calendar-cell-social">{{ content_item.schedule }}</div>
                               </div>
                             {% endfor %}
                             {% if cell.content_items|length > 2 %}
