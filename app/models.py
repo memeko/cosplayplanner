@@ -72,6 +72,16 @@ class User(Base):
         back_populates="user",
         cascade="all, delete-orphan",
     )
+    community_cosplayers = relationship(
+        "CommunityCosplayer",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+    community_cosplayer_comments = relationship(
+        "CommunityCosplayerComment",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
     community_studios = relationship("CommunityStudio", back_populates="user", cascade="all, delete-orphan")
     community_articles = relationship("CommunityArticle", back_populates="user", cascade="all, delete-orphan")
     community_article_comments = relationship(
@@ -140,6 +150,10 @@ class User(Base):
         back_populates="user",
         cascade="all, delete-orphan",
     )
+    home_news_entries = relationship(
+        "HomeNews",
+        back_populates="author",
+    )
 
 
 class UserOption(Base):
@@ -166,6 +180,18 @@ class PasswordResetToken(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     user = relationship("User", back_populates="password_reset_tokens")
+
+
+class HomeNews(Base):
+    __tablename__ = "home_news"
+
+    id = Column(Integer, primary_key=True)
+    author_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    body = Column(Text, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    author = relationship("User", back_populates="home_news_entries")
 
 
 class CosplanCard(Base):
@@ -371,6 +397,7 @@ class PersonalCalendarEvent(Base):
     event_date = Column(Date, nullable=False, index=True)
     event_time = Column(String(8), nullable=True)
     title = Column(String(255), nullable=False)
+    event_city = Column(String(255), nullable=True, index=True)
     details = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
@@ -433,6 +460,8 @@ class Festival(Base):
     going_coproplayers_json = Column(JSON, nullable=False, default=list)
     is_global_announcement = Column(Boolean, nullable=False, default=False)
     source_announcement_id = Column(Integer, ForeignKey("festival_announcements.id", ondelete="SET NULL"), nullable=True, index=True)
+    import_source = Column(String(64), nullable=True, index=True)
+    import_external_id = Column(String(128), nullable=True, index=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
@@ -606,6 +635,9 @@ class CommunityMaster(Base):
     details = Column(Text, nullable=False)
     gallery_json = Column(JSON, nullable=False, default=list)
     price_list_json = Column(JSON, nullable=False, default=list)
+    import_source = Column(String(64), nullable=True, index=True)
+    import_external_id = Column(String(128), nullable=True, index=True)
+    import_url = Column(Text, nullable=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
@@ -666,3 +698,38 @@ class CommunityStudio(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
     user = relationship("User", back_populates="community_studios")
+
+
+class CommunityCosplayer(Base):
+    __tablename__ = "community_cosplayers"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+
+    nick = Column(String(100), nullable=False, index=True)
+    tg_channel = Column(String(255), nullable=True)
+    city = Column(String(255), nullable=True, index=True)
+    favorite_directions = Column(Text, nullable=True)
+    promo_photos_json = Column(JSON, nullable=False, default=list)
+    about_markdown = Column(Text, nullable=True)
+    collab_status = Column(String(32), nullable=False, default="open", index=True)
+    extra_skills_json = Column(JSON, nullable=False, default=list)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    user = relationship("User", back_populates="community_cosplayers")
+    comments = relationship("CommunityCosplayerComment", back_populates="cosplayer", cascade="all, delete-orphan")
+
+
+class CommunityCosplayerComment(Base):
+    __tablename__ = "community_cosplayer_comments"
+
+    id = Column(Integer, primary_key=True)
+    cosplayer_id = Column(Integer, ForeignKey("community_cosplayers.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    body = Column(Text, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    cosplayer = relationship("CommunityCosplayer", back_populates="comments")
+    user = relationship("User", back_populates="community_cosplayer_comments")

@@ -16,6 +16,11 @@
       <button type="submit" class="btn">Найти</button>
       <a href="/community/masters" class="btn">Сброс</a>
     </form>
+    {% if can_import_masters %}
+      <form method="post" action="/community/masters/import-cosplay-team">
+        <button type="submit" class="btn">Импорт из Cosplay Team</button>
+      </form>
+    {% endif %}
     <a href="/community/masters/new" class="btn btn-accent">Добавить мастера</a>
   </div>
 </section>
@@ -28,7 +33,12 @@
     <article class="card">
       <div class="row-between">
         <h3><a href="/community/masters/{{ master.id }}" class="card-title-link"><span class="{% if nick_is_special(master.nick) %}nick-special{% endif %}">@{{ master.nick }}</span></a></h3>
-        <span class="chip">{{ master.master_type|capitalize }}</span>
+        <div class="chips-wrap">
+          <span class="chip">{{ master.master_type|capitalize }}</span>
+          {% if master.import_source %}
+            <span class="chip">{{ import_source_labels.get(master.import_source, master.import_source) }}</span>
+          {% endif %}
+        </div>
       </div>
       <p class="meta">
         Добавил:

@@ -26,7 +26,12 @@
         @unknown
       {% endif %}
     </p>
-    <span class="chip">{{ master.master_type|capitalize }}</span>
+    <div class="chips-wrap">
+      <span class="chip">{{ master.master_type|capitalize }}</span>
+      {% if master.import_source %}
+        <span class="chip">{{ import_source_labels.get(master.import_source, master.import_source) }}</span>
+      {% endif %}
+    </div>
   </div>
   <p class="meta">Общий рейтинг: {{ '%.1f'|format(rating_avg or 0) }} / 5 (оценок: {{ rating_count or 0 }})</p>
   <p class="notes-block">{{ master.details }}</p>

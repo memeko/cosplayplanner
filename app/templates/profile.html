@@ -45,6 +45,119 @@
   </form>
 </section>
 
+{% if vkid_enabled %}
+<section class="box">
+  <h2>Связь с VK</h2>
+  {% if user.vk_user_id %}
+    <p class="meta">
+      Текущая привязка:
+      <strong>
+        {% if user.vk_screen_name %}
+          @{{ user.vk_screen_name }}
+        {% else %}
+          id{{ user.vk_user_id }}
+        {% endif %}
+      </strong>
+    </p>
+    <p class="muted">Можно перепривязать профиль через VK-кнопку ниже или отвязать текущую связь.</p>
+  {% else %}
+    <p class="muted">Профиль VK пока не привязан.</p>
+  {% endif %}
+  <div id="vk-profile-link-onetap" class="top-offset"></div>
+  <p class="muted top-offset" id="vk-profile-link-message" style="display:none;"></p>
+
+  {% if user.vk_user_id %}
+    <form method="post" action="/profile/vk/unlink" class="top-offset" onsubmit="return confirm('Отвязать VK от вашего профиля?');">
+      <button type="submit" class="btn btn-danger">Отвязать VK</button>
+    </form>
+  {% endif %}
+</section>
+
+<script src="https://unpkg.com/@vkid/sdk@<3.0.0/dist-sdk/umd/index.js"></script>
+<script>
+(function () {
+  const container = document.getElementById('vk-profile-link-onetap');
+  const messageEl = document.getElementById('vk-profile-link-message');
+  if (!container || !window.VKIDSDK) {
+    return;
+  }
+
+  const VKID = window.VKIDSDK;
+
+  function showMessage(text, isError) {
+    if (!messageEl) {
+      return;
+    }
+    messageEl.textContent = text || '';
+    messageEl.style.display = text ? 'block' : 'none';
+    messageEl.style.color = isError ? '#b91c1c' : '';
+  }
+
+  function showVkError(rawError) {
+    let message = 'Не удалось связать профиль с VK. Попробуйте еще раз.';
+    if (rawError) {
+      if (typeof rawError === 'string') {
+        message = rawError;
+      } else if (rawError.detail) {
+        message = String(rawError.detail);
+      } else if (rawError.message) {
+        message = String(rawError.message);
+      }
+    }
+    showMessage(message, true);
+  }
+
+  VKID.Config.init({
+    app: Number({{ vkid_app_id }}),
+    redirectUrl: {{ vkid_redirect_url|tojson }},
+    responseMode: VKID.ConfigResponseMode.Callback,
+    source: VKID.ConfigSource.LOWCODE,
+    scope: {{ vkid_scope|tojson }}
+  });
+
+  const oneTap = new VKID.OneTap();
+  oneTap
+    .render({
+      container: container,
+      showAlternativeLogin: false
+    })
+    .on(VKID.WidgetEvents.ERROR, showVkError)
+    .on(VKID.OneTapInternalEvents.LOGIN_SUCCESS, function (payload) {
+      const code = payload && payload.code;
+      const deviceId = payload && payload.device_id;
+      if (!code || !deviceId) {
+        showVkError('VK ID не вернул данные авторизации.');
+        return;
+      }
+
+      showMessage('Проверяем профиль VK...', false);
+      VKID.Auth.exchangeCode(code, deviceId)
+        .then(function (exchangeData) {
+          return fetch('/profile/vk/link', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: {
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(exchangeData || {})
+          });
+        })
+        .then(async function (response) {
+          const payload = await response.json().catch(function () { return {}; });
+          if (!response.ok || !payload.ok) {
+            throw payload;
+          }
+          showMessage(payload.message || 'Профиль VK успешно привязан.', false);
+          window.setTimeout(function () {
+            window.location.href = payload.redirect || '/profile';
+          }, 450);
+        })
+        .catch(showVkError);
+    });
+})();
+</script>
+{% endif %}
+
 {% if admin_stats %}
 <section class="box">
   <h2>Статистика сервиса</h2>

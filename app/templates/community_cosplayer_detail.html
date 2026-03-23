@@ -1,0 +1,104 @@
+{% extends "base.html" %}
+{% block content %}
+{% include "community_tabs.html" %}
+
+{% set owner = authors_by_id.get(cosplayer.user_id) %}
+<section class="section-head">
+  <h1><span class="{% if nick_is_special(cosplayer.nick) %}nick-special{% endif %}">@{{ cosplayer.nick }}</span></h1>
+  <div class="actions-inline">
+    <a href="/community/cosplayers" class="btn">Назад к косплеерам</a>
+    {% if can_manage %}
+      <a href="/community/cosplayers/{{ cosplayer.id }}/edit" class="btn">Редактировать</a>
+      <form method="post" action="/community/cosplayers/{{ cosplayer.id }}/delete" onsubmit="return confirm('Удалить карточку косплеера?');">
+        <button type="submit" class="btn btn-danger">Удалить</button>
+      </form>
+    {% endif %}
+  </div>
+</section>
+
+<section class="box">
+  <div class="row-between">
+    <p class="meta">
+      Добавил(а):
+      {% if owner %}
+        <span class="{% if user_is_special(owner) %}nick-special{% endif %}">@{{ owner.cosplay_nick or owner.username }}</span>
+      {% else %}
+        @unknown
+      {% endif %}
+    </p>
+    <span class="chip">{{ collab_labels.get(cosplayer.collab_status, cosplayer.collab_status) }}</span>
+  </div>
+  <p class="meta">Город: {{ cosplayer.city or "—" }}</p>
+  {% if cosplayer.tg_channel %}
+    <p class="meta">ТГК: {{ cosplayer.tg_channel }}</p>
+  {% endif %}
+  {% if cosplayer.favorite_directions %}
+    <p class="notes-block">{{ cosplayer.favorite_directions }}</p>
+  {% endif %}
+  {% if cosplayer.extra_skills_json %}
+    <p class="meta top-offset">Дополнительные навыки:</p>
+    <div class="chips-wrap">
+      {% for skill in cosplayer.extra_skills_json %}
+        <span class="chip">{{ skill }}</span>
+      {% endfor %}
+    </div>
+  {% endif %}
+</section>
+
+{% set photos = cosplayer.promo_photos_json or [] %}
+{% if photos %}
+<section class="box">
+  <h3>Промо-фото</h3>
+  <div class="reference-grid top-offset">
+    {% for url in photos %}
+      <a class="reference-tile" href="{{ url }}" target="_blank" rel="noreferrer">
+        <img src="{{ url }}" alt="Промо-фото косплеера" loading="lazy" />
+      </a>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
+{% if about_html %}
+<section class="box">
+  <h3>О себе</h3>
+  <div class="article-content top-offset">
+    {{ about_html | safe }}
+  </div>
+</section>
+{% endif %}
+
+<section class="box">
+  <h3>Комментарии</h3>
+  {% if comments %}
+    <div class="comments-list top-offset">
+      {% for comment in comments %}
+        {% set author = authors_by_id.get(comment.user_id) %}
+        <article class="comment-card">
+          <p class="comment-meta">
+            {% if author %}
+              <span class="{% if user_is_special(author) %}nick-special{% endif %}">@{{ author.cosplay_nick or author.username }}</span>
+            {% else %}
+              @unknown
+            {% endif %}
+            • {{ comment.created_at.strftime('%d-%m-%Y %H:%M') if comment.created_at else "—" }}
+          </p>
+          <p class="notes-block">{{ comment.body }}</p>
+        </article>
+      {% endfor %}
+    </div>
+  {% else %}
+    <p class="muted top-offset">Комментариев пока нет.</p>
+  {% endif %}
+
+  <form method="post" action="/community/cosplayers/{{ cosplayer.id }}/comments" class="comment-form top-offset">
+    <label>
+      Добавить комментарий
+      <textarea name="body" rows="4" placeholder="Ваш комментарий" required></textarea>
+    </label>
+    <div class="actions-inline">
+      <button type="submit" class="btn btn-accent">Отправить</button>
+    </div>
+  </form>
+</section>
+{% endblock %}

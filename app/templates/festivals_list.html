@@ -8,6 +8,11 @@
     <form method="post" action="/festivals/import-cosplay2">
       <button type="submit" class="btn">Импорт с cosplay2.ru</button>
     </form>
+    {% if can_import_raf %}
+    <form method="post" action="/festivals/import-raf">
+      <button type="submit" class="btn">Импорт с РАФ</button>
+    </form>
+    {% endif %}
     <a href="/festivals/export.ics?only_going=1" class="btn">Экспорт в календарь (.ics)</a>
   </div>
 </section>
@@ -20,11 +25,13 @@
 {% if user_home_city %}
 <section class="box compact-box">
   <p class="muted">
-    Лавандовым выделены фестивали из вашего основного города{% if user_home_cities|length > 1 %}(ов){% endif %}: <strong>{{ user_home_city }}</strong>.
+    Фестивали из вашего основного города{% if user_home_cities|length > 1 %}(ов){% endif %}: <strong>{{ user_home_city }}</strong>
+    <span class="chip city-highlight-chip city-highlight-home">Город профиля</span>
   </p>
   {% if nearest_city_labels %}
   <p class="muted">
-    Синим выделены фестивали ближайших крупных городов: <strong>{{ nearest_city_labels | join(', ') }}</strong>.
+    Ближайшие крупные города: <strong>{{ nearest_city_labels | join(', ') }}</strong>
+    <span class="chip city-highlight-chip city-highlight-nearest">Ближайший город</span>
   </p>
   {% endif %}
 </section>
@@ -206,6 +213,9 @@
       <div class="actions-inline">
         {% if festival.is_global_announcement %}
           <span class="chip">Анонс</span>
+        {% endif %}
+        {% if festival.import_source %}
+          <span class="chip">{{ import_source_labels.get(festival.import_source, festival.import_source) }}</span>
         {% endif %}
         <form method="post" action="/festivals/{{ festival.id }}/toggle-going" class="going-toggle-form">
           <input type="hidden" name="next" value="/festivals{% if current_query %}?{{ current_query }}{% endif %}" />

@@ -2,6 +2,10 @@
 {% block content %}
 <section class="section-head">
   <h1>Календари</h1>
+  <div class="actions-inline">
+    <a href="/my-calendar/export.ics" class="btn">Экспорт «Мой календарь» (.ics)</a>
+    <a href="/my-calendar/content/export.ics" class="btn">Экспорт контент-плана (.ics)</a>
+  </div>
 </section>
 
 <nav class="calendar-tabs">
@@ -15,7 +19,7 @@
     <h2>Добавить личное событие</h2>
     <form method="post" action="/my-calendar/events/new" class="grid one-col">
       <input type="hidden" name="next_view" value="my" />
-      <div class="grid three-col">
+      <div class="grid four-col">
         <label>
           Дата
           <input type="date" name="event_date" required />
@@ -27,6 +31,10 @@
         <label>
           Название
           <input type="text" name="event_title" maxlength="255" placeholder="Например, примерка костюма" required />
+        </label>
+        <label>
+          Город
+          <input type="text" name="event_city" maxlength="255" placeholder="Например, Москва" />
         </label>
       </div>
       <label>

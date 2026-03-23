@@ -6,6 +6,7 @@ import colorsys
 import hashlib
 import html
 import io
+import json
 import os
 import re
 import secrets
@@ -20,7 +21,7 @@ from difflib import SequenceMatcher
 from email.message import EmailMessage
 from pathlib import Path
 from typing import Any, Callable
-from urllib.parse import parse_qs, quote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 import requests
 from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
@@ -43,6 +44,8 @@ from .models import (
     CommunityArticle,
     CommunityArticleComment,
     CommunityArticleFavorite,
+    CommunityCosplayer,
+    CommunityCosplayerComment,
     CommunityMaster,
     CommunityMasterComment,
     CommunityMasterRating,
@@ -54,6 +57,7 @@ from .models import (
     Festival,
     FestivalAnnouncement,
     FestivalNotification,
+    HomeNews,
     InProgressCard,
     ProjectSearchPost,
     ProjectSearchComment,
@@ -192,6 +196,24 @@ CONTENT_STATUS_LABELS = {
     "published": "Опубликовано",
 }
 
+COSPLAYER_COLLAB_OPTIONS = {
+    "open": "Открыт(а)",
+    "pause": "Сейчас не рассматриваю",
+    "closed": "Нет",
+}
+
+COSPLAYER_SKILL_OPTIONS = [
+    "Спецгость фестивалей",
+    "Лектор",
+    "Ведущий",
+    "Крафтер",
+    "Швея",
+    "Художник",
+    "Фотограф",
+    "Фотоартист",
+    "Многократный призер/победитель",
+]
+
 CONTENT_RUBRIC_PALETTE = [
     "#8ecae6",
     "#ffb703",
@@ -229,6 +251,24 @@ VKID_REDIRECT_URL = (
 ).strip()
 VKID_SCOPE = (os.getenv("VKID_SCOPE", "") or "").strip()
 VK_API_VERSION = (os.getenv("VK_API_VERSION", "5.199") or "5.199").strip()
+VK_IMPORT_TOKEN = (os.getenv("VK_IMPORT_TOKEN", "") or "").strip()
+VK_IMPORT_ENABLED = bool(VK_IMPORT_TOKEN) and to_bool(os.getenv("VK_IMPORT_ENABLED", "1"))
+VK_IMPORT_WALL_DOMAIN = (os.getenv("VK_IMPORT_WALL_DOMAIN", "cosplay_teamm") or "cosplay_teamm").strip()
+VK_IMPORT_WALL_COUNT = max(10, min(100, int(os.getenv("VK_IMPORT_WALL_COUNT", "50") or "50")))
+RAF_OWNER_ID = int(os.getenv("RAF_OWNER_ID", "-22664912") or "-22664912")
+RAF_PAGE_TITLES = [
+    "Календарь_2026_январь-май",
+    "Календарь_2026_июнь-август",
+    "Календарь_2026_сентябрь-декабрь",
+]
+MASTER_IMPORT_INTERVAL_HOURS = max(1, min(24, int(os.getenv("MASTER_IMPORT_INTERVAL_HOURS", "12") or "12")))
+RAF_IMPORT_INTERVAL_HOURS = max(1, min(72, int(os.getenv("RAF_IMPORT_INTERVAL_HOURS", "24") or "24")))
+MASTER_IMPORT_SOURCE_LABEL = "cosplay_team"
+RAF_IMPORT_SOURCE_LABEL = "raf"
+IMPORT_SOURCE_LABELS = {
+    MASTER_IMPORT_SOURCE_LABEL: "Cosplay Team",
+    RAF_IMPORT_SOURCE_LABEL: "взято с РАФ",
+}
 
 telegram_auth_state_lock = threading.Lock()
 telegram_auth_state: dict[str, dict[str, str]] = {}
@@ -535,13 +575,23 @@ def apply_schema_migrations() -> None:
             ("event_end_date", "DATE"),
             ("is_global_announcement", "BOOLEAN NOT NULL DEFAULT 0"),
             ("source_announcement_id", "INTEGER"),
+            ("import_source", "VARCHAR(64)"),
+            ("import_external_id", "VARCHAR(128)"),
         ],
         "work_shift_days": [
             ("is_half_day", "BOOLEAN NOT NULL DEFAULT 0"),
         ],
+        "personal_calendar_events": [
+            ("event_city", "VARCHAR(255)"),
+        ],
         "community_master_comments": [
             ("is_client", "BOOLEAN NOT NULL DEFAULT 0"),
             ("images_json", "JSON NOT NULL DEFAULT '[]'"),
+        ],
+        "community_masters": [
+            ("import_source", "VARCHAR(64)"),
+            ("import_external_id", "VARCHAR(128)"),
+            ("import_url", "TEXT"),
         ],
         "content_plan_posts": [
             ("description", "TEXT"),
@@ -577,6 +627,10 @@ def apply_schema_migrations() -> None:
             CommunityMasterRating.__table__.create(bind=conn, checkfirst=True)
         if "community_studios" not in existing_tables:
             CommunityStudio.__table__.create(bind=conn, checkfirst=True)
+        if "community_cosplayers" not in existing_tables:
+            CommunityCosplayer.__table__.create(bind=conn, checkfirst=True)
+        if "community_cosplayer_comments" not in existing_tables:
+            CommunityCosplayerComment.__table__.create(bind=conn, checkfirst=True)
         if "community_articles" not in existing_tables:
             CommunityArticle.__table__.create(bind=conn, checkfirst=True)
         if "community_article_comments" not in existing_tables:
@@ -585,6 +639,8 @@ def apply_schema_migrations() -> None:
             CommunityArticleFavorite.__table__.create(bind=conn, checkfirst=True)
         if "festival_announcements" not in existing_tables:
             FestivalAnnouncement.__table__.create(bind=conn, checkfirst=True)
+        if "home_news" not in existing_tables:
+            HomeNews.__table__.create(bind=conn, checkfirst=True)
         if "rehearsal_cards" not in existing_tables:
             RehearsalCard.__table__.create(bind=conn, checkfirst=True)
         if "rehearsal_entries" not in existing_tables:
@@ -639,12 +695,28 @@ def startup() -> None:
         pass
     except RuntimeError:
         pass
+    try:
+        auto_import_external_sources_if_needed()
+    except OSError:
+        pass
+    except sqlite3.Error:
+        pass
+    except RuntimeError:
+        pass
 
 
 @app.middleware("http")
 async def ensure_daily_backup(request: Request, call_next):
     try:
         auto_backup_if_needed()
+    except OSError:
+        pass
+    except sqlite3.Error:
+        pass
+    except RuntimeError:
+        pass
+    try:
+        auto_import_external_sources_if_needed()
     except OSError:
         pass
     except sqlite3.Error:
@@ -3908,6 +3980,36 @@ def upsert_user_by_vk(
     return user
 
 
+def link_existing_user_with_vk(db: Session, user: User, vk_profile: dict[str, Any]) -> User:
+    vk_user_id = str(vk_profile.get("id") or "").strip()
+    if not vk_user_id:
+        raise ValueError("VK не вернул идентификатор пользователя.")
+
+    vk_screen_name = normalize_username(str(vk_profile.get("screen_name") or ""))
+    linked_to_another = db.execute(
+        select(User).where(
+            User.vk_user_id == vk_user_id,
+            User.id != user.id,
+        )
+    ).scalar_one_or_none()
+    if linked_to_another:
+        raise ValueError("Этот VK-аккаунт уже связан с другим профилем Cosplay Planner.")
+
+    user.vk_user_id = vk_user_id
+    user.vk_screen_name = vk_screen_name or None
+    if vk_screen_name and not user.cosplay_nick:
+        user.cosplay_nick = vk_screen_name
+
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise ValueError("Не удалось связать VK с текущим профилем. Попробуйте ещё раз.") from exc
+
+    db.refresh(user)
+    return user
+
+
 def template_response(
     request: Request,
     name: str,
@@ -4371,6 +4473,9 @@ def index(request: Request, db: Session = Depends(get_db)):
     user = current_user(request, db)
     if user:
         today = date.today()
+        news_items = db.execute(
+            select(HomeNews).order_by(HomeNews.created_at.desc(), HomeNews.id.desc()).limit(40)
+        ).scalars().all()
         notifications = db.execute(
             select(FestivalNotification)
             .where(FestivalNotification.user_id == user.id)
@@ -4419,8 +4524,83 @@ def index(request: Request, db: Session = Depends(get_db)):
             info_events_week=info_events_week,
             character_birthdays_today=character_birthdays_today_rows,
             unread_notifications=unread_notifications,
+            news_items=news_items,
+            can_manage_news=is_moderator_user(user),
         )
     return template_response(request, "landing.html", user=None, active_tab=None)
+
+
+@app.post("/home-news/new")
+async def home_news_create(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    if not is_moderator_user(user):
+        add_flash(request, "Недостаточно прав для публикации новости.", "error")
+        return redirect("/")
+
+    form = await request.form()
+    body = str(form.get("body", "")).strip()
+    if not body:
+        add_flash(request, "Введите текст новости.", "error")
+        return redirect("/")
+    if len(body) > 8000:
+        add_flash(request, "Текст новости слишком длинный (до 8000 символов).", "error")
+        return redirect("/")
+
+    db.add(HomeNews(author_id=user.id, body=body))
+    db.commit()
+    add_flash(request, "Новость опубликована.", "success")
+    return redirect("/")
+
+
+@app.post("/home-news/{news_id}/edit")
+async def home_news_update(news_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    if not is_moderator_user(user):
+        add_flash(request, "Недостаточно прав для редактирования новости.", "error")
+        return redirect("/")
+
+    news_item = db.get(HomeNews, news_id)
+    if not news_item:
+        add_flash(request, "Новость не найдена.", "error")
+        return redirect("/")
+
+    form = await request.form()
+    body = str(form.get("body", "")).strip()
+    if not body:
+        add_flash(request, "Текст новости не может быть пустым.", "error")
+        return redirect("/")
+    if len(body) > 8000:
+        add_flash(request, "Текст новости слишком длинный (до 8000 символов).", "error")
+        return redirect("/")
+
+    news_item.body = body
+    db.commit()
+    add_flash(request, "Новость обновлена.", "success")
+    return redirect("/")
+
+
+@app.post("/home-news/{news_id}/delete")
+def home_news_delete(news_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    if not is_moderator_user(user):
+        add_flash(request, "Недостаточно прав для удаления новости.", "error")
+        return redirect("/")
+
+    news_item = db.get(HomeNews, news_id)
+    if not news_item:
+        add_flash(request, "Новость не найдена.", "error")
+        return redirect("/")
+
+    db.delete(news_item)
+    db.commit()
+    add_flash(request, "Новость удалена.", "info")
+    return redirect("/")
 
 
 @app.get("/privacy-policy", response_class=HTMLResponse)
@@ -4518,6 +4698,59 @@ async def auth_vk_complete(request: Request, db: Session = Depends(get_db)) -> d
 
     request.session["user_id"] = user.id
     return {"ok": True, "redirect": "/cosplan"}
+
+
+@app.post("/profile/vk/link")
+async def profile_vk_link(request: Request, db: Session = Depends(get_db)) -> dict[str, Any]:
+    user = current_user(request, db)
+    if not user:
+        raise HTTPException(status_code=401, detail="Требуется авторизация.")
+    if not VKID_ENABLED:
+        raise HTTPException(status_code=404, detail="VK ID отключен.")
+
+    try:
+        payload = await request.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Некорректный формат запроса.") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Некорректные данные авторизации VK.")
+
+    access_token = extract_vk_access_token(payload)
+    if not access_token:
+        raise HTTPException(status_code=400, detail="VK не вернул токен доступа.")
+
+    try:
+        vk_profile = fetch_vk_profile(access_token)
+        link_existing_user_with_vk(db, user, vk_profile)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    vk_screen_name = normalize_username(str(vk_profile.get("screen_name") or ""))
+    linked_label = f"@{vk_screen_name}" if vk_screen_name else f"id{vk_profile.get('id')}"
+    return {
+        "ok": True,
+        "message": f"Профиль успешно связан с VK ({linked_label}).",
+        "redirect": "/profile",
+    }
+
+
+@app.post("/profile/vk/unlink")
+def profile_vk_unlink(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    if not user.vk_user_id:
+        add_flash(request, "Профиль VK пока не привязан.", "info")
+        return redirect("/profile")
+
+    user.vk_user_id = None
+    user.vk_screen_name = None
+    db.commit()
+    add_flash(request, "Привязка VK удалена.", "info")
+    return redirect("/profile")
 
 
 @app.get("/forgot-password", response_class=HTMLResponse)
@@ -6685,7 +6918,7 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
                 "kind": "Личное событие",
                 "type_key": "personal",
                 "title": event.title or "Без названия",
-                "city": "—",
+                "city": event.event_city or "—",
                 "coproplayers": "",
                 "details": event.details or "",
                 "personal_event_id": event.id,
@@ -6836,6 +7069,7 @@ async def my_calendar_event_create(request: Request, db: Session = Depends(get_d
     event_date = parse_date(str(form.get("event_date", "")).strip())
     event_time = parse_time_hhmm(str(form.get("event_time", "")))
     event_title = str(form.get("event_title", "")).strip()
+    event_city = str(form.get("event_city", "")).strip()
     event_details = str(form.get("event_details", "")).strip()
 
     if not event_date:
@@ -6851,6 +7085,7 @@ async def my_calendar_event_create(request: Request, db: Session = Depends(get_d
             event_date=event_date,
             event_time=event_time,
             title=event_title,
+            event_city=event_city or None,
             details=event_details or None,
         )
     )
@@ -7146,6 +7381,250 @@ def my_calendar_content_delete(post_id: int, request: Request, db: Session = Dep
     db.commit()
     add_flash(request, "Пост удален из контент-плана.", "info")
     return calendar_redirect_for_view(next_view)
+
+
+def ics_calendar_header() -> list[str]:
+    return [
+        "BEGIN:VCALENDAR",
+        "VERSION:2.0",
+        "PRODID:-//Cosplay Planner//RU",
+        "CALSCALE:GREGORIAN",
+        "METHOD:PUBLISH",
+    ]
+
+
+def append_ics_event(
+    lines: list[str],
+    *,
+    dtstamp: str,
+    uid_prefix: str,
+    summary: str,
+    event_date: date,
+    time_hhmm: str | None = None,
+    duration_minutes: int = 60,
+    range_end_date: date | None = None,
+    location: str | None = None,
+    url: str | None = None,
+    description: str | None = None,
+) -> None:
+    lines.extend(
+        [
+            "BEGIN:VEVENT",
+            f"UID:{uid_prefix}-{uuid.uuid4().hex[:12]}@cosplay-planner.local",
+            f"DTSTAMP:{dtstamp}",
+            f"SUMMARY:{esc_ics(summary)}",
+        ]
+    )
+    normalized_time = parse_time_hhmm(time_hhmm or "")
+    if normalized_time:
+        hh_raw, mm_raw = normalized_time.split(":", 1)
+        start_dt = datetime.combine(event_date, datetime.min.time()).replace(hour=int(hh_raw), minute=int(mm_raw))
+        end_dt = start_dt + timedelta(minutes=max(duration_minutes, 15))
+        lines.append(f"DTSTART:{start_dt.strftime('%Y%m%dT%H%M%S')}")
+        lines.append(f"DTEND:{end_dt.strftime('%Y%m%dT%H%M%S')}")
+    else:
+        lines.append(f"DTSTART;VALUE=DATE:{event_date.strftime('%Y%m%d')}")
+        effective_end = range_end_date if range_end_date and range_end_date >= event_date else event_date
+        lines.append(f"DTEND;VALUE=DATE:{(effective_end + timedelta(days=1)).strftime('%Y%m%d')}")
+
+    if location:
+        lines.append(f"LOCATION:{esc_ics(location)}")
+    if url:
+        lines.append(f"URL:{esc_ics(url)}")
+    if description:
+        lines.append(f"DESCRIPTION:{esc_ics(description)}")
+    lines.append("END:VEVENT")
+
+
+@app.get("/my-calendar/export.ics")
+def my_calendar_export_ics(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    today = date.today()
+    festivals = db.execute(
+        select(Festival).where(
+            Festival.user_id == user.id,
+            Festival.is_going.is_(True),
+            Festival.event_date.is_not(None),
+        )
+    ).scalars().all()
+    festivals = [festival for festival in festivals if festival_is_active(festival, today)]
+
+    cards = db.execute(
+        select(CosplanCard).where(
+            CosplanCard.user_id == user.id,
+            CosplanCard.is_shared_copy.is_(False),
+            CosplanCard.photoset_date.is_not(None),
+            CosplanCard.photoset_date >= today,
+        )
+    ).scalars().all()
+    rehearsal_entries = db.execute(
+        select(RehearsalEntry)
+        .where(
+            RehearsalEntry.user_id == user.id,
+            RehearsalEntry.entry_date.is_not(None),
+            RehearsalEntry.entry_date >= today,
+            or_(
+                and_(
+                    RehearsalEntry.source_type == REHEARSAL_SOURCE_PARTICIPANT,
+                    RehearsalEntry.status == REHEARSAL_STATUS_APPROVED,
+                ),
+                and_(
+                    RehearsalEntry.source_type == REHEARSAL_SOURCE_LEADER,
+                    RehearsalEntry.status == REHEARSAL_STATUS_ACCEPTED,
+                ),
+            ),
+        )
+        .order_by(RehearsalEntry.entry_date, RehearsalEntry.entry_time, RehearsalEntry.id)
+    ).scalars().all()
+    personal_events = db.execute(
+        select(PersonalCalendarEvent)
+        .where(
+            PersonalCalendarEvent.user_id == user.id,
+            PersonalCalendarEvent.event_date.is_not(None),
+            PersonalCalendarEvent.event_date >= today,
+        )
+        .order_by(PersonalCalendarEvent.event_date, PersonalCalendarEvent.event_time, PersonalCalendarEvent.id)
+    ).scalars().all()
+    alias_to_username, users_by_username, _ = build_user_alias_lookup(db)
+
+    lines = ics_calendar_header()
+    dtstamp = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+
+    for festival in festivals:
+        if not festival.event_date:
+            continue
+        coproplayers_display = format_coproplayer_names(
+            as_list(festival.going_coproplayers_json),
+            alias_to_username,
+            users_by_username,
+        )
+        description_parts = ["Фестиваль"]
+        nomination_values = [item for item in [festival.nomination_1, festival.nomination_2, festival.nomination_3] if item]
+        if nomination_values:
+            description_parts.append("Номинации: " + ", ".join(nomination_values))
+        if coproplayers_display:
+            description_parts.append("Сокосплееры: " + ", ".join(coproplayers_display))
+        append_ics_event(
+            lines,
+            dtstamp=dtstamp,
+            uid_prefix=f"festival-{festival.id}",
+            summary=f"Фестиваль: {festival.name or 'Без названия'}",
+            event_date=festival.event_date,
+            range_end_date=festival_range_end(festival),
+            location=festival.city or "",
+            url=festival.url or "",
+            description="\n".join(description_parts),
+        )
+
+    for card in cards:
+        if not card.photoset_date:
+            continue
+        card_coproplayers = as_list(card.coproplayers_json) or as_list(card.coproplayer_nicks_json)
+        coproplayers_display = format_coproplayer_names(
+            card_coproplayers,
+            alias_to_username,
+            users_by_username,
+        )
+        description_parts = ["Фотосет"]
+        if coproplayers_display:
+            description_parts.append("Сокосплееры: " + ", ".join(coproplayers_display))
+        append_ics_event(
+            lines,
+            dtstamp=dtstamp,
+            uid_prefix=f"photoset-{card.id}",
+            summary=f"Фотосет: {card.character_name or 'Без названия'}",
+            event_date=card.photoset_date,
+            location=card.city or "",
+            description="\n".join(description_parts),
+        )
+
+    for entry in rehearsal_entries:
+        if not entry.entry_date or not entry.cosplan_card:
+            continue
+        append_ics_event(
+            lines,
+            dtstamp=dtstamp,
+            uid_prefix=f"rehearsal-{entry.id}",
+            summary=f"Репетиция: {entry.cosplan_card.character_name or 'Без названия'}",
+            event_date=entry.entry_date,
+            time_hhmm=entry.entry_time or "",
+            duration_minutes=120,
+            location=entry.cosplan_card.city or "",
+            description="Репетиция по карточке косплана.",
+        )
+
+    for event in personal_events:
+        append_ics_event(
+            lines,
+            dtstamp=dtstamp,
+            uid_prefix=f"personal-{event.id}",
+            summary=f"Личное: {event.title or 'Событие'}",
+            event_date=event.event_date,
+            time_hhmm=event.event_time or "",
+            duration_minutes=60,
+            location=event.event_city or "",
+            description=event.details or "",
+        )
+
+    lines.append("END:VCALENDAR")
+    body = "\r\n".join(lines) + "\r\n"
+    return PlainTextResponse(
+        body,
+        media_type="text/calendar; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="cosplay-my-calendar.ics"'},
+    )
+
+
+@app.get("/my-calendar/content/export.ics")
+def my_calendar_content_export_ics(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    today = date.today()
+    posts = db.execute(
+        select(ContentPlanPost)
+        .where(
+            ContentPlanPost.user_id == user.id,
+            ContentPlanPost.publish_date.is_not(None),
+            ContentPlanPost.publish_date >= today,
+        )
+        .order_by(ContentPlanPost.publish_date, ContentPlanPost.publish_time, ContentPlanPost.id)
+    ).scalars().all()
+
+    lines = ics_calendar_header()
+    dtstamp = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+
+    for post in posts:
+        socials_text = ", ".join(as_list(post.socials_json)) or "—"
+        description_parts = [
+            f"Рубрика: {post.rubric or 'Общее'}",
+            f"Площадки: {socials_text}",
+            f"Статус: {CONTENT_STATUS_LABELS.get(normalize_content_status(post.status), 'План')}",
+        ]
+        if post.description:
+            description_parts.append(post.description)
+        append_ics_event(
+            lines,
+            dtstamp=dtstamp,
+            uid_prefix=f"content-{post.id}",
+            summary=f"Контент: {post.title or 'Пост'}",
+            event_date=post.publish_date,
+            time_hhmm=post.publish_time or "",
+            duration_minutes=30,
+            description="\n".join(description_parts),
+        )
+
+    lines.append("END:VCALENDAR")
+    body = "\r\n".join(lines) + "\r\n"
+    return PlainTextResponse(
+        body,
+        media_type="text/calendar; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="cosplay-content-plan.ics"'},
+    )
 
 
 def project_board_fandom_options(db: Session, user: User) -> list[str]:
@@ -7847,6 +8326,8 @@ def community_masters_list(request: Request, db: Session = Depends(get_db)):
         rating_avg_by_master=rating_avg_by_master,
         rating_count_by_master=rating_count_by_master,
         user_rating_by_master=user_rating_by_master,
+        can_import_masters=is_moderator_user(user),
+        import_source_labels=IMPORT_SOURCE_LABELS,
         q=q,
         selected_type=master_type,
         master_type_options=MASTER_TYPE_OPTIONS,
@@ -7929,6 +8410,7 @@ def community_masters_detail(master_id: int, request: Request, db: Session = Dep
         rating_avg=rating_avg_by_master.get(master.id, 0.0),
         rating_count=rating_count_by_master.get(master.id, 0),
         user_rating=user_rating_by_master.get(master.id, 0),
+        import_source_labels=IMPORT_SOURCE_LABELS,
     )
 
 
@@ -8096,6 +8578,342 @@ def community_masters_delete(master_id: int, request: Request, db: Session = Dep
     db.commit()
     add_flash(request, "Карточка мастера удалена.", "info")
     return redirect("/community/masters")
+
+
+def normalize_cosplayer_skills(raw_skills: list[str]) -> list[str]:
+    normalized_map = {value.casefold(): value for value in COSPLAYER_SKILL_OPTIONS}
+    result: list[str] = []
+    for raw_value in raw_skills:
+        key = str(raw_value or "").strip().casefold()
+        if not key:
+            continue
+        skill = normalized_map.get(key)
+        if skill and skill not in result:
+            result.append(skill)
+    return result
+
+
+def get_cosplayer_form_values(cosplayer: CommunityCosplayer | None = None) -> dict[str, Any]:
+    if not cosplayer:
+        return {
+            "nick": "",
+            "tg_channel": "",
+            "city": "",
+            "favorite_directions": "",
+            "promo_input": "",
+            "about_markdown": "",
+            "collab_status": "open",
+            "extra_skills_json": [],
+        }
+    return {
+        "nick": cosplayer.nick or "",
+        "tg_channel": cosplayer.tg_channel or "",
+        "city": cosplayer.city or "",
+        "favorite_directions": cosplayer.favorite_directions or "",
+        "promo_input": "\n".join(as_list(cosplayer.promo_photos_json)),
+        "about_markdown": cosplayer.about_markdown or "",
+        "collab_status": cosplayer.collab_status or "open",
+        "extra_skills_json": normalize_cosplayer_skills(as_list(cosplayer.extra_skills_json)),
+    }
+
+
+def save_cosplayer_from_form(form: Any, cosplayer: CommunityCosplayer) -> tuple[bool, str]:
+    nick = normalize_username(str(form.get("nick", "")).strip())
+    tg_channel = str(form.get("tg_channel", "")).strip()
+    city = str(form.get("city", "")).strip()
+    favorite_directions = str(form.get("favorite_directions", "")).strip()
+    promo_input = str(form.get("promo_input", ""))
+    about_markdown = str(form.get("about_markdown", "")).strip()
+    collab_status = str(form.get("collab_status", "open")).strip().lower()
+    extra_skills = normalize_cosplayer_skills([str(item) for item in form.getlist("extra_skills")])
+
+    if not nick:
+        return False, "Укажите ник косплеера."
+    if collab_status not in COSPLAYER_COLLAB_OPTIONS:
+        return False, "Выберите корректную готовность к коллаборациям."
+    if len(tg_channel) > 255:
+        return False, "Поле ТГК слишком длинное (до 255 символов)."
+    if len(city) > 255:
+        return False, "Поле «Город» слишком длинное (до 255 символов)."
+    if len(favorite_directions) > 5000:
+        return False, "Поле «Любимые направления» должно быть до 5000 символов."
+    if len(about_markdown) > 5000:
+        return False, "Поле «О себе» должно быть до 5000 символов."
+
+    promo_photos = parse_reference_values(promo_input)
+    if len(promo_photos) > 5:
+        return False, "Можно добавить не более 5 промо-фото."
+
+    cosplayer.nick = nick
+    cosplayer.tg_channel = tg_channel or None
+    cosplayer.city = city or None
+    cosplayer.favorite_directions = favorite_directions or None
+    cosplayer.promo_photos_json = promo_photos
+    cosplayer.about_markdown = about_markdown or None
+    cosplayer.collab_status = collab_status
+    cosplayer.extra_skills_json = extra_skills
+    return True, ""
+
+
+@app.get("/community/cosplayers", response_class=HTMLResponse)
+def community_cosplayers_list(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    q = request.query_params.get("q", "").strip()
+    city_filter = request.query_params.get("city", "").strip()
+    selected_skills = normalize_cosplayer_skills([str(item) for item in request.query_params.getlist("skill")])
+
+    cosplayers = db.execute(
+        select(CommunityCosplayer).order_by(CommunityCosplayer.updated_at.desc(), CommunityCosplayer.id.desc())
+    ).scalars().all()
+
+    if q:
+        needle = q.casefold()
+        cosplayers = [
+            item
+            for item in cosplayers
+            if needle in (item.nick or "").casefold()
+            or needle in (item.city or "").casefold()
+            or needle in (item.favorite_directions or "").casefold()
+        ]
+    if city_filter:
+        city_values = split_city_values(city_filter)
+        cosplayers = [item for item in cosplayers if city_matches_any(city_values, item.city)]
+    if selected_skills:
+        selected_keys = {value.casefold() for value in selected_skills}
+        filtered: list[CommunityCosplayer] = []
+        for item in cosplayers:
+            item_keys = {str(skill).strip().casefold() for skill in as_list(item.extra_skills_json) if str(skill).strip()}
+            if selected_keys & item_keys:
+                filtered.append(item)
+        cosplayers = filtered
+
+    owner_ids = {item.user_id for item in cosplayers}
+    owners_by_id: dict[int, User] = {}
+    if owner_ids:
+        owners = db.execute(select(User).where(User.id.in_(owner_ids))).scalars().all()
+        owners_by_id = {item.id: item for item in owners}
+
+    comment_rows = db.execute(
+        select(CommunityCosplayerComment.cosplayer_id, func.count(CommunityCosplayerComment.id))
+        .group_by(CommunityCosplayerComment.cosplayer_id)
+    ).all()
+    comment_counts = {int(row[0]): int(row[1]) for row in comment_rows}
+
+    city_options = sorted(
+        merge_unique([item.city for item in cosplayers if item.city]),
+        key=lambda value: value.casefold(),
+    )
+
+    return template_response(
+        request,
+        "community_cosplayers_list.html",
+        user=user,
+        active_tab="community",
+        community_tab="cosplayers",
+        cosplayers=cosplayers,
+        owners_by_id=owners_by_id,
+        comment_counts=comment_counts,
+        q=q,
+        city_filter=city_filter,
+        selected_skills=selected_skills,
+        city_options=city_options,
+        collab_labels=COSPLAYER_COLLAB_OPTIONS,
+        skills_options=COSPLAYER_SKILL_OPTIONS,
+    )
+
+
+@app.get("/community/cosplayers/new", response_class=HTMLResponse)
+def community_cosplayers_new(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    return template_response(
+        request,
+        "community_cosplayer_form.html",
+        user=user,
+        active_tab="community",
+        community_tab="cosplayers",
+        editing=False,
+        cosplayer_id=None,
+        form=get_cosplayer_form_values(),
+        collab_options=COSPLAYER_COLLAB_OPTIONS,
+        skills_options=COSPLAYER_SKILL_OPTIONS,
+    )
+
+
+@app.post("/community/cosplayers/new")
+async def community_cosplayers_create(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    form = await request.form()
+    cosplayer = CommunityCosplayer(user_id=user.id, nick="", collab_status="open")
+    ok, error_text = save_cosplayer_from_form(form, cosplayer)
+    if not ok:
+        add_flash(request, error_text, "error")
+        return redirect("/community/cosplayers/new")
+
+    db.add(cosplayer)
+    db.commit()
+    add_flash(request, "Карточка косплеера опубликована.", "success")
+    return redirect(f"/community/cosplayers/{cosplayer.id}")
+
+
+@app.get("/community/cosplayers/{cosplayer_id}", response_class=HTMLResponse)
+def community_cosplayers_detail(cosplayer_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    cosplayer = db.get(CommunityCosplayer, cosplayer_id)
+    if not cosplayer:
+        add_flash(request, "Карточка косплеера не найдена.", "error")
+        return redirect("/community/cosplayers")
+
+    comments = db.execute(
+        select(CommunityCosplayerComment)
+        .where(CommunityCosplayerComment.cosplayer_id == cosplayer.id)
+        .order_by(CommunityCosplayerComment.created_at, CommunityCosplayerComment.id)
+    ).scalars().all()
+
+    author_ids = {cosplayer.user_id, *(item.user_id for item in comments)}
+    authors_by_id: dict[int, User] = {}
+    if author_ids:
+        authors = db.execute(select(User).where(User.id.in_(author_ids))).scalars().all()
+        authors_by_id = {item.id: item for item in authors}
+
+    return template_response(
+        request,
+        "community_cosplayer_detail.html",
+        user=user,
+        active_tab="community",
+        community_tab="cosplayers",
+        cosplayer=cosplayer,
+        comments=comments,
+        authors_by_id=authors_by_id,
+        collab_labels=COSPLAYER_COLLAB_OPTIONS,
+        about_html=render_article_markdown(cosplayer.about_markdown or ""),
+        can_manage=(cosplayer.user_id == user.id or is_moderator_user(user)),
+    )
+
+
+@app.get("/community/cosplayers/{cosplayer_id}/edit", response_class=HTMLResponse)
+def community_cosplayers_edit(cosplayer_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    cosplayer = db.get(CommunityCosplayer, cosplayer_id)
+    if not cosplayer:
+        add_flash(request, "Карточка косплеера не найдена.", "error")
+        return redirect("/community/cosplayers")
+    if cosplayer.user_id != user.id and not is_moderator_user(user):
+        add_flash(request, "Редактировать можно только свою карточку косплеера.", "error")
+        return redirect(f"/community/cosplayers/{cosplayer_id}")
+
+    return template_response(
+        request,
+        "community_cosplayer_form.html",
+        user=user,
+        active_tab="community",
+        community_tab="cosplayers",
+        editing=True,
+        cosplayer_id=cosplayer.id,
+        form=get_cosplayer_form_values(cosplayer),
+        collab_options=COSPLAYER_COLLAB_OPTIONS,
+        skills_options=COSPLAYER_SKILL_OPTIONS,
+    )
+
+
+@app.post("/community/cosplayers/{cosplayer_id}/edit")
+async def community_cosplayers_update(cosplayer_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    cosplayer = db.get(CommunityCosplayer, cosplayer_id)
+    if not cosplayer:
+        add_flash(request, "Карточка косплеера не найдена.", "error")
+        return redirect("/community/cosplayers")
+    if cosplayer.user_id != user.id and not is_moderator_user(user):
+        add_flash(request, "Редактировать можно только свою карточку косплеера.", "error")
+        return redirect(f"/community/cosplayers/{cosplayer_id}")
+
+    form = await request.form()
+    ok, error_text = save_cosplayer_from_form(form, cosplayer)
+    if not ok:
+        add_flash(request, error_text, "error")
+        return redirect(f"/community/cosplayers/{cosplayer_id}/edit")
+
+    db.commit()
+    add_flash(request, "Карточка косплеера обновлена.", "success")
+    return redirect(f"/community/cosplayers/{cosplayer_id}")
+
+
+@app.post("/community/cosplayers/{cosplayer_id}/delete")
+def community_cosplayers_delete(cosplayer_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    cosplayer = db.get(CommunityCosplayer, cosplayer_id)
+    if not cosplayer:
+        add_flash(request, "Карточка косплеера не найдена.", "error")
+        return redirect("/community/cosplayers")
+    if cosplayer.user_id != user.id and not is_moderator_user(user):
+        add_flash(request, "Удалять можно только свою карточку косплеера.", "error")
+        return redirect(f"/community/cosplayers/{cosplayer_id}")
+
+    db.delete(cosplayer)
+    db.commit()
+    add_flash(request, "Карточка косплеера удалена.", "info")
+    return redirect("/community/cosplayers")
+
+
+@app.post("/community/cosplayers/{cosplayer_id}/comments")
+async def community_cosplayers_add_comment(cosplayer_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    cosplayer = db.get(CommunityCosplayer, cosplayer_id)
+    if not cosplayer:
+        add_flash(request, "Карточка косплеера не найдена.", "error")
+        return redirect("/community/cosplayers")
+
+    form = await request.form()
+    body = str(form.get("body", "")).strip()
+    if not body:
+        add_flash(request, "Введите текст комментария.", "error")
+        return redirect(f"/community/cosplayers/{cosplayer_id}")
+
+    db.add(
+        CommunityCosplayerComment(
+            cosplayer_id=cosplayer.id,
+            user_id=user.id,
+            body=body,
+        )
+    )
+    if cosplayer.user_id != user.id:
+        preview = body if len(body) <= 120 else body[:117].rstrip() + "..."
+        db.add(
+            FestivalNotification(
+                user_id=cosplayer.user_id,
+                from_user_id=user.id,
+                source_card_id=None,
+                message=(
+                    f"Новый комментарий в вашей карточке косплеера @{normalize_username(cosplayer.nick)}: {preview}"
+                ),
+                is_read=False,
+            )
+        )
+    db.commit()
+    add_flash(request, "Комментарий добавлен.", "success")
+    return redirect(f"/community/cosplayers/{cosplayer_id}")
 
 
 def normalize_studio_tags(raw_tags: list[str]) -> list[str]:
@@ -8709,6 +9527,642 @@ async def community_articles_add_comment(article_id: int, request: Request, db: 
     return redirect(f"/community/articles/{article_id}")
 
 
+def app_state_storage_path() -> Path:
+    custom_path = (os.getenv("APP_STATE_DIR", "") or "").strip()
+    if custom_path:
+        path = Path(custom_path).expanduser().resolve()
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    data_dir = Path("/data")
+    if data_dir.exists() and os.access(data_dir, os.W_OK):
+        path = (data_dir / "app-state").resolve()
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    path = Path("./runtime-state").resolve()
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def external_import_state_path() -> Path:
+    return app_state_storage_path() / "external-import-state.json"
+
+
+def load_external_import_state() -> dict[str, Any]:
+    state_path = external_import_state_path()
+    if not state_path.exists():
+        return {}
+    try:
+        payload = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    return payload
+
+
+def save_external_import_state(state: dict[str, Any]) -> None:
+    state_path = external_import_state_path()
+    state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def parse_state_datetime(value: Any) -> datetime | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    normalized = raw.replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    if parsed.tzinfo is not None:
+        return parsed.astimezone(tz=None).replace(tzinfo=None)
+    return parsed
+
+
+def should_run_import_by_interval(state: dict[str, Any], key: str, interval_hours: int, now: datetime) -> bool:
+    last_run = parse_state_datetime(state.get(key))
+    if not last_run:
+        return True
+    return (now - last_run) >= timedelta(hours=max(1, interval_hours))
+
+
+def vk_api_call(method: str, params: dict[str, Any]) -> dict[str, Any]:
+    if not VK_IMPORT_ENABLED:
+        raise RuntimeError("Импорт VK недоступен: не задан VK_IMPORT_TOKEN.")
+
+    query = dict(params)
+    query["access_token"] = VK_IMPORT_TOKEN
+    query["v"] = VK_API_VERSION
+
+    try:
+        response = requests.get(
+            f"https://api.vk.com/method/{method}",
+            params=query,
+            timeout=max(10, HTTP_TIMEOUT_SECONDS * 2),
+        )
+    except requests.RequestException as exc:
+        raise RuntimeError(f"Не удалось связаться с VK API ({method}).") from exc
+
+    if response.status_code != 200:
+        raise RuntimeError(f"VK API ({method}) временно недоступен (HTTP {response.status_code}).")
+
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise RuntimeError(f"VK API ({method}) вернул некорректный ответ.") from exc
+
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"VK API ({method}) вернул неожиданный формат данных.")
+
+    error_payload = payload.get("error")
+    if isinstance(error_payload, dict):
+        message = str(error_payload.get("error_msg") or "Неизвестная ошибка VK API").strip()
+        raise RuntimeError(f"VK API ({method}): {message}")
+
+    response_payload = payload.get("response")
+    if not isinstance(response_payload, dict):
+        raise RuntimeError(f"VK API ({method}) не вернул ожидаемого поля response.")
+    return response_payload
+
+
+def get_import_owner_user(db: Session) -> User | None:
+    users = db.execute(select(User).order_by(User.id)).scalars().all()
+    if not users:
+        return None
+    for item in users:
+        if is_moderator_user(item):
+            return item
+    return users[0]
+
+
+def normalize_event_name_key(value: str | None) -> str:
+    raw = (value or "").strip().casefold()
+    if not raw:
+        return ""
+    return re.sub(r"[^0-9a-zа-яё]+", "", raw)
+
+
+def detect_master_type_from_text(text_value: str | None) -> str:
+    text = (text_value or "").casefold()
+    keyword_map = [
+        ("фотограф", "фотограф"),
+        ("фотосесс", "фотограф"),
+        ("шве", "швея"),
+        ("пошив", "швея"),
+        ("крафт", "крафтер"),
+        ("виг", "вигмейкер"),
+        ("парик", "вигмейкер"),
+        ("худож", "художник"),
+        ("арт", "художник"),
+        ("видеограф", "видеограф"),
+        ("видео", "видеограф"),
+    ]
+    for keyword, master_type in keyword_map:
+        if keyword in text:
+            return master_type
+    return "другое"
+
+
+def attachment_photo_urls(attachments: list[Any]) -> list[str]:
+    urls: list[str] = []
+    for item in attachments:
+        if not isinstance(item, dict):
+            continue
+        photo = item.get("photo")
+        if not isinstance(photo, dict):
+            continue
+        sizes = photo.get("sizes")
+        if not isinstance(sizes, list):
+            continue
+        best_url = ""
+        best_area = -1
+        for size in sizes:
+            if not isinstance(size, dict):
+                continue
+            url = str(size.get("url") or "").strip()
+            if not url:
+                continue
+            width = int(size.get("width") or 0)
+            height = int(size.get("height") or 0)
+            area = width * height
+            if area > best_area:
+                best_area = area
+                best_url = url
+        if best_url:
+            urls.append(best_url)
+    return merge_unique(urls)
+
+
+def import_cosplay_team_masters(db: Session, *, since_date: date) -> dict[str, Any]:
+    payload = vk_api_call(
+        "wall.get",
+        {
+            "domain": VK_IMPORT_WALL_DOMAIN,
+            "count": VK_IMPORT_WALL_COUNT,
+            "extended": 1,
+        },
+    )
+    items = payload.get("items")
+    if not isinstance(items, list):
+        return {"imported": 0, "skipped": 0, "total": 0}
+
+    import_owner = get_import_owner_user(db)
+    if not import_owner:
+        return {"imported": 0, "skipped": 0, "total": len(items), "error": "Нет пользователей в системе."}
+
+    profiles_raw = payload.get("profiles")
+    groups_raw = payload.get("groups")
+    profiles_by_id = {
+        int(item.get("id")): item
+        for item in (profiles_raw if isinstance(profiles_raw, list) else [])
+        if isinstance(item, dict) and item.get("id")
+    }
+    groups_by_owner_id = {
+        -int(item.get("id")): item
+        for item in (groups_raw if isinstance(groups_raw, list) else [])
+        if isinstance(item, dict) and item.get("id")
+    }
+
+    existing_external_ids = {
+        str(value).strip()
+        for value in db.execute(
+            select(CommunityMaster.import_external_id).where(CommunityMaster.import_external_id.is_not(None))
+        ).scalars().all()
+        if str(value).strip()
+    }
+    existing_import_urls = {
+        str(value).strip()
+        for value in db.execute(
+            select(CommunityMaster.import_url).where(CommunityMaster.import_url.is_not(None))
+        ).scalars().all()
+        if str(value).strip()
+    }
+
+    imported = 0
+    skipped = 0
+    for post in items:
+        if not isinstance(post, dict):
+            continue
+        if int(post.get("is_deleted") or 0) == 1:
+            continue
+        if int(post.get("marked_as_ads") or 0) == 1:
+            continue
+
+        post_id = post.get("id")
+        owner_id = post.get("owner_id")
+        post_ts = int(post.get("date") or 0)
+        if not post_id or not owner_id or post_ts <= 0:
+            continue
+
+        post_date = datetime.utcfromtimestamp(post_ts).date()
+        if post_date < since_date:
+            continue
+
+        external_id = f"wall{int(owner_id)}_{int(post_id)}"
+        post_url = f"https://vk.com/{external_id}"
+        if external_id in existing_external_ids or post_url in existing_import_urls:
+            skipped += 1
+            continue
+
+        text_value = str(post.get("text") or "").strip()
+        signer_id = int(post.get("signer_id") or 0) if post.get("signer_id") else 0
+        from_id = int(post.get("from_id") or owner_id)
+        author_id = signer_id if signer_id else from_id
+
+        nick_value = ""
+        if author_id > 0:
+            profile = profiles_by_id.get(author_id, {})
+            if isinstance(profile, dict):
+                nick_value = sanitize_vk_username(
+                    profile.get("screen_name")
+                    or f"{profile.get('first_name') or ''}_{profile.get('last_name') or ''}"
+                )
+        else:
+            group = groups_by_owner_id.get(author_id, {})
+            if isinstance(group, dict):
+                nick_value = sanitize_vk_username(group.get("screen_name") or group.get("name"))
+
+        if not nick_value:
+            nick_value = f"vk_{abs(author_id)}"
+
+        details_lines = [
+            "Импортировано из Cosplay Team.",
+            f"Пост: {post_url}",
+        ]
+        if text_value:
+            details_lines.append("")
+            details_lines.append(text_value)
+        details = "\n".join(details_lines).strip()
+        if len(details) > 6000:
+            details = details[:5997].rstrip() + "..."
+
+        gallery_urls = attachment_photo_urls(post.get("attachments") if isinstance(post.get("attachments"), list) else [])
+        db.add(
+            CommunityMaster(
+                user_id=import_owner.id,
+                nick=nick_value,
+                master_type=detect_master_type_from_text(text_value),
+                details=details,
+                gallery_json=gallery_urls,
+                price_list_json=[],
+                import_source=MASTER_IMPORT_SOURCE_LABEL,
+                import_external_id=external_id,
+                import_url=post_url,
+            )
+        )
+        existing_external_ids.add(external_id)
+        existing_import_urls.add(post_url)
+        imported += 1
+
+    return {
+        "imported": imported,
+        "skipped": skipped,
+        "total": len(items),
+    }
+
+
+def html_to_plain_lines(value: str) -> list[str]:
+    html_value = value or ""
+    html_value = re.sub(r"<br\\s*/?>", "\n", html_value, flags=re.IGNORECASE)
+    html_value = re.sub(r"</(p|div|li|tr|h[1-6]|table|ul|ol)>", "\n", html_value, flags=re.IGNORECASE)
+    text_value = re.sub(r"<[^>]+>", " ", html_value)
+    text_value = html.unescape(text_value)
+    lines: list[str] = []
+    for raw_line in text_value.splitlines():
+        cleaned = re.sub(r"\\s+", " ", raw_line).strip(" \t\r\n•*;")
+        if not cleaned:
+            continue
+        lines.append(cleaned)
+    return lines
+
+
+def parse_year_for_raf_page(page_title: str) -> int:
+    match = re.search(r"(20\\d{2})", page_title or "")
+    if not match:
+        return date.today().year
+    return int(match.group(1))
+
+
+def _build_date_or_none(year: int, month: int, day: int) -> date | None:
+    try:
+        return date(year, month, day)
+    except ValueError:
+        return None
+
+
+def parse_date_range_from_line(line_value: str, default_year: int) -> tuple[date | None, date | None, tuple[int, int] | None]:
+    numeric_match = re.search(
+        r"(?P<d1>\\d{1,2})[./](?P<m1>\\d{1,2})(?:[./](?P<y1>\\d{2,4}))?"
+        r"\\s*(?:[-–—]\\s*(?P<d2>\\d{1,2})[./](?P<m2>\\d{1,2})(?:[./](?P<y2>\\d{2,4}))?)?",
+        line_value,
+    )
+    if numeric_match:
+        y1_raw = numeric_match.group("y1") or ""
+        y2_raw = numeric_match.group("y2") or ""
+        y1 = int(y1_raw) if y1_raw else default_year
+        y2 = int(y2_raw) if y2_raw else y1
+        if y1 < 100:
+            y1 += 2000
+        if y2 < 100:
+            y2 += 2000
+        d1 = _build_date_or_none(y1, int(numeric_match.group("m1")), int(numeric_match.group("d1")))
+        if not d1:
+            return None, None, None
+        d2 = d1
+        if numeric_match.group("d2") and numeric_match.group("m2"):
+            d2_candidate = _build_date_or_none(y2, int(numeric_match.group("m2")), int(numeric_match.group("d2")))
+            if d2_candidate:
+                d2 = d2_candidate
+        if d2 < d1:
+            d2 = d1
+        return d1, d2, numeric_match.span()
+
+    word_match = re.search(
+        r"(?P<d1>\\d{1,2})(?:\\s*[-–—]\\s*(?P<d2>\\d{1,2}))?\\s+(?P<mw>[а-яё]+)(?:\\s+(?P<year>20\\d{2}))?",
+        line_value.casefold(),
+    )
+    if not word_match:
+        return None, None, None
+
+    month_word = word_match.group("mw")
+    month_value = RU_MONTH_WORDS_TO_NUM.get(month_word)
+    if not month_value:
+        return None, None, None
+    year_value = int(word_match.group("year")) if word_match.group("year") else default_year
+    d1 = _build_date_or_none(year_value, month_value, int(word_match.group("d1")))
+    if not d1:
+        return None, None, None
+    d2 = d1
+    if word_match.group("d2"):
+        d2_candidate = _build_date_or_none(year_value, month_value, int(word_match.group("d2")))
+        if d2_candidate and d2_candidate >= d1:
+            d2 = d2_candidate
+    return d1, d2, word_match.span()
+
+
+def parse_raf_city_and_name(line_value: str) -> tuple[str, str]:
+    value = line_value.strip()
+    value = re.sub(r"https?://\\S+", "", value).strip(" -—–,.;")
+    parts = [item.strip(" -—–,.;") for item in re.split(r"\\s+[—–-]\\s+", value) if item.strip(" -—–,.;")]
+    if not parts:
+        return "", ""
+    if len(parts) >= 3:
+        city_value = re.sub(r"^(г\\.?|город)\\s+", "", parts[1], flags=re.IGNORECASE).strip()
+        name_value = parts[2]
+    elif len(parts) == 2:
+        first_part = re.sub(r"^(г\\.?|город)\\s+", "", parts[0], flags=re.IGNORECASE).strip()
+        if 1 <= len(first_part.split()) <= 4 and not re.search(r"(фест|fest|аниме|косп|con)", first_part.casefold()):
+            city_value = first_part
+            name_value = parts[1]
+        else:
+            city_value = ""
+            name_value = parts[1]
+    else:
+        city_value = ""
+        name_value = parts[0]
+    return city_value, name_value
+
+
+def parse_raf_events_from_page_html(page_html: str, page_title: str) -> list[dict[str, Any]]:
+    default_year = parse_year_for_raf_page(page_title)
+    lines = html_to_plain_lines(page_html)
+    events: list[dict[str, Any]] = []
+    seen_external_ids: set[str] = set()
+
+    for line in lines:
+        if len(line) < 8:
+            continue
+        event_start, event_end, date_span = parse_date_range_from_line(line, default_year)
+        if not event_start or not event_end:
+            continue
+
+        url_match = re.search(r"(https?://\\S+)", line)
+        event_url = url_match.group(1).strip() if url_match else ""
+        line_without_url = line.replace(event_url, " ").strip() if event_url else line
+        if date_span:
+            left = line_without_url[: date_span[0]]
+            right = line_without_url[date_span[1] :]
+            line_without_date = f"{left} {right}".strip()
+        else:
+            line_without_date = line_without_url
+
+        city_value, name_value = parse_raf_city_and_name(line_without_date)
+        normalized_name = normalize_event_name_key(name_value)
+        if not normalized_name:
+            continue
+
+        external_id = f"{page_title}:{event_start.isoformat()}:{normalized_name}"
+        if external_id in seen_external_ids:
+            continue
+        seen_external_ids.add(external_id)
+        events.append(
+            {
+                "name": name_value,
+                "city": city_value,
+                "url": event_url,
+                "event_date": event_start,
+                "event_end_date": event_end,
+                "external_id": external_id,
+            }
+        )
+    return events
+
+
+def fetch_raf_events_from_vk() -> list[dict[str, Any]]:
+    all_events: list[dict[str, Any]] = []
+    for page_title in RAF_PAGE_TITLES:
+        payload = vk_api_call(
+            "pages.get",
+            {
+                "owner_id": RAF_OWNER_ID,
+                "title": page_title,
+                "need_html": 1,
+            },
+        )
+        html_value = str(payload.get("html") or "")
+        resolved_title = str(payload.get("title") or page_title)
+        if not html_value.strip():
+            continue
+        all_events.extend(parse_raf_events_from_page_html(html_value, resolved_title))
+
+    deduped: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for item in all_events:
+        external_id = str(item.get("external_id") or "").strip()
+        if not external_id or external_id in seen_ids:
+            continue
+        seen_ids.add(external_id)
+        deduped.append(item)
+    return deduped
+
+
+def import_raf_events_for_user(db: Session, user: User, events: list[dict[str, Any]]) -> int:
+    today = date.today()
+    existing_festivals = db.execute(
+        select(Festival).where(Festival.user_id == user.id)
+    ).scalars().all()
+    existing_name_keys = {
+        normalize_event_name_key(item.name)
+        for item in existing_festivals
+        if normalize_event_name_key(item.name)
+    }
+    existing_external_ids = {
+        str(item.import_external_id).strip()
+        for item in existing_festivals
+        if str(item.import_external_id or "").strip()
+    }
+
+    imported_names: list[str] = []
+    imported_count = 0
+    for event in events:
+        event_name = str(event.get("name") or "").strip()
+        event_date = event.get("event_date")
+        if not event_name or not isinstance(event_date, date):
+            continue
+        if event_date < today:
+            continue
+
+        name_key = normalize_event_name_key(event_name)
+        external_id = str(event.get("external_id") or "").strip()
+        if name_key and name_key in existing_name_keys:
+            continue
+        if external_id and external_id in existing_external_ids:
+            continue
+
+        db.add(
+            Festival(
+                user_id=user.id,
+                name=event_name,
+                url=str(event.get("url") or "").strip() or None,
+                city=str(event.get("city") or "").strip() or None,
+                event_date=event_date,
+                event_end_date=event.get("event_end_date") if isinstance(event.get("event_end_date"), date) else None,
+                import_source=RAF_IMPORT_SOURCE_LABEL,
+                import_external_id=external_id or None,
+            )
+        )
+        if name_key:
+            existing_name_keys.add(name_key)
+        if external_id:
+            existing_external_ids.add(external_id)
+        imported_count += 1
+        imported_names.append(event_name)
+
+    if imported_names:
+        remember_options(db, user.id, "festival", imported_names)
+    return imported_count
+
+
+def auto_import_external_sources_if_needed() -> None:
+    if not VK_IMPORT_ENABLED:
+        return
+
+    now = datetime.utcnow()
+    state = load_external_import_state()
+    changed = False
+
+    masters_since_raw = str(state.get("masters_since_date", "")).strip()
+    masters_since = parse_date(masters_since_raw) if masters_since_raw else None
+    if not masters_since:
+        masters_since = date.today()
+        state["masters_since_date"] = masters_since.isoformat()
+        changed = True
+
+    with SessionLocal() as db:
+        if should_run_import_by_interval(state, "masters_last_run_at", MASTER_IMPORT_INTERVAL_HOURS, now):
+            state["masters_last_run_at"] = now.isoformat()
+            changed = True
+            try:
+                import_cosplay_team_masters(db, since_date=masters_since)
+                db.commit()
+            except Exception:
+                db.rollback()
+
+        if should_run_import_by_interval(state, "raf_last_run_at", RAF_IMPORT_INTERVAL_HOURS, now):
+            state["raf_last_run_at"] = now.isoformat()
+            changed = True
+            try:
+                raf_events = fetch_raf_events_from_vk()
+                users = db.execute(select(User).order_by(User.id)).scalars().all()
+                for item in users:
+                    import_raf_events_for_user(db, item, raf_events)
+                db.commit()
+            except Exception:
+                db.rollback()
+
+    if changed:
+        save_external_import_state(state)
+
+
+@app.post("/community/masters/import-cosplay-team")
+def community_masters_import_cosplay_team(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    if not is_moderator_user(user):
+        add_flash(request, "Импорт доступен только модератору.", "error")
+        return redirect("/community/masters")
+    if not VK_IMPORT_ENABLED:
+        add_flash(request, "Импорт недоступен: задайте VK_IMPORT_TOKEN в переменных окружения.", "error")
+        return redirect("/community/masters")
+
+    state = load_external_import_state()
+    masters_since = parse_date(str(state.get("masters_since_date", "")).strip()) or date.today()
+    state["masters_since_date"] = masters_since.isoformat()
+    state["masters_last_run_at"] = datetime.utcnow().isoformat()
+    save_external_import_state(state)
+
+    try:
+        result = import_cosplay_team_masters(db, since_date=masters_since)
+        db.commit()
+    except RuntimeError as exc:
+        db.rollback()
+        add_flash(request, str(exc), "error")
+        return redirect("/community/masters")
+
+    if result.get("error"):
+        add_flash(request, str(result.get("error")), "error")
+    else:
+        add_flash(
+            request,
+            f"Импорт из Cosplay Team: добавлено {result.get('imported', 0)}, уже было {result.get('skipped', 0)}.",
+            "success",
+        )
+    return redirect("/community/masters")
+
+
+@app.post("/festivals/import-raf")
+def festivals_import_raf(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    if not VK_IMPORT_ENABLED:
+        add_flash(request, "Импорт РАФ недоступен: задайте VK_IMPORT_TOKEN в переменных окружения.", "error")
+        return redirect("/festivals")
+
+    state = load_external_import_state()
+    state["raf_last_run_at"] = datetime.utcnow().isoformat()
+    save_external_import_state(state)
+
+    try:
+        events = fetch_raf_events_from_vk()
+        imported_count = import_raf_events_for_user(db, user, events)
+        db.commit()
+    except RuntimeError as exc:
+        db.rollback()
+        add_flash(request, str(exc), "error")
+        return redirect("/festivals")
+
+    add_flash(
+        request,
+        f"Импорт с РАФ завершён: добавлено {imported_count}.",
+        "success" if imported_count else "info",
+    )
+    return redirect("/festivals")
+
+
 @app.get("/festivals", response_class=HTMLResponse)
 def festivals_list(request: Request, db: Session = Depends(get_db)):
     user = current_user(request, db)
@@ -8907,6 +10361,8 @@ def festivals_list(request: Request, db: Session = Depends(get_db)):
         moderator_announcements=moderator_announcements,
         own_announcements=own_announcements,
         announcement_requesters_by_id=announcement_requesters_by_id,
+        can_import_raf=VK_IMPORT_ENABLED,
+        import_source_labels=IMPORT_SOURCE_LABELS,
         announcement_status_labels={
             ANNOUNCEMENT_STATUS_PENDING: announcement_status_label(ANNOUNCEMENT_STATUS_PENDING),
             ANNOUNCEMENT_STATUS_APPROVED: announcement_status_label(ANNOUNCEMENT_STATUS_APPROVED),

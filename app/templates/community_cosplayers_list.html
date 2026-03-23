@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% block content %}
+{% include "community_tabs.html" %}
+
+<section class="section-head">
+  <h1>Косплееры</h1>
+  <div class="actions-inline">
+    <a href="/community/cosplayers/new" class="btn btn-accent">Добавить карточку</a>
+  </div>
+</section>
+
+<section class="box">
+  <form method="get" action="/community/cosplayers" class="grid one-col">
+    <div class="search-inline">
+      <input type="text" name="q" value="{{ q }}" placeholder="Поиск по нику или направлению" />
+      <input type="text" name="city" value="{{ city_filter }}" placeholder="Город" list="cosplayer-city-options" />
+      <datalist id="cosplayer-city-options">
+        {% for city in city_options %}
+          <option value="{{ city }}"></option>
+        {% endfor %}
+      </datalist>
+      <button type="submit" class="btn">Найти</button>
+      <a href="/community/cosplayers" class="btn">Сброс</a>
+    </div>
+
+    <label>Дополнительные навыки</label>
+    <div class="chips-wrap">
+      {% for skill in skills_options %}
+        <label class="chip-check">
+          <input type="checkbox" name="skill" value="{{ skill }}" {% if skill in selected_skills %}checked{% endif %} />
+          {{ skill }}
+        </label>
+      {% endfor %}
+    </div>
+  </form>
+</section>
+
+{% if cosplayers %}
+<div class="cards-grid top-offset">
+  {% for cosplayer in cosplayers %}
+    {% set owner = owners_by_id.get(cosplayer.user_id) %}
+    {% set photos = cosplayer.promo_photos_json or [] %}
+    <article class="card">
+      <div class="row-between">
+        <h3><a href="/community/cosplayers/{{ cosplayer.id }}" class="card-title-link"><span class="{% if nick_is_special(cosplayer.nick) %}nick-special{% endif %}">@{{ cosplayer.nick }}</span></a></h3>
+        <span class="chip">{{ collab_labels.get(cosplayer.collab_status, cosplayer.collab_status) }}</span>
+      </div>
+      {% if owner %}
+        <p class="meta">
+          Добавил(а): <span class="{% if user_is_special(owner) %}nick-special{% endif %}">@{{ owner.cosplay_nick or owner.username }}</span>
+        </p>
+      {% endif %}
+      <p class="meta">Город: {{ cosplayer.city or "—" }}</p>
+      {% if cosplayer.tg_channel %}
+        <p class="meta">ТГК: {{ cosplayer.tg_channel }}</p>
+      {% endif %}
+      {% if cosplayer.favorite_directions %}
+        <p class="notes-block">{{ cosplayer.favorite_directions[:220] }}{% if cosplayer.favorite_directions|length > 220 %}…{% endif %}</p>
+      {% endif %}
+      {% set skills = cosplayer.extra_skills_json or [] %}
+      {% if skills %}
+        <div class="chips-wrap top-offset">
+          {% for skill in skills %}
+            <span class="chip">{{ skill }}</span>
+          {% endfor %}
+        </div>
+      {% endif %}
+      {% if photos %}
+        <p class="meta">Промо-фото: {{ photos|length }}</p>
+      {% endif %}
+      <p class="meta">Комментариев: {{ comment_counts.get(cosplayer.id, 0) }}</p>
+      <div class="actions-inline">
+        <a href="/community/cosplayers/{{ cosplayer.id }}" class="btn">Открыть</a>
+      </div>
+    </article>
+  {% endfor %}
+</div>
+{% else %}
+<section class="box top-offset">
+  <p class="muted">Пока нет карточек косплееров. Добавьте первую карточку.</p>
+</section>
+{% endif %}
+{% endblock %}

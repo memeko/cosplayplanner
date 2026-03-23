@@ -1,0 +1,181 @@
+{% extends "base.html" %}
+{% block content %}
+{% include "community_tabs.html" %}
+
+<section class="section-head">
+  <h1>{{ "Редактирование карточки косплеера" if editing else "Новая карточка косплеера" }}</h1>
+  <a href="{{ '/community/cosplayers/' ~ cosplayer_id if editing else '/community/cosplayers' }}" class="btn">Назад</a>
+</section>
+
+<form method="post" action="{{ '/community/cosplayers/' ~ cosplayer_id ~ '/edit' if editing else '/community/cosplayers/new' }}" class="grid one-col big-form">
+  <section class="box">
+    <div class="grid two-col">
+      <label>
+        Ник *
+        <input type="text" name="nick" value="{{ form.nick }}" maxlength="100" required />
+      </label>
+      <label>
+        ТГК
+        <input type="text" name="tg_channel" value="{{ form.tg_channel }}" maxlength="255" placeholder="@your_channel или ссылка" />
+      </label>
+      <label>
+        Город
+        <input type="text" name="city" value="{{ form.city }}" maxlength="255" />
+      </label>
+      <label>
+        Готовность к коллаборациям
+        <select name="collab_status" required>
+          {% for key, label in collab_options.items() %}
+            <option value="{{ key }}" {% if form.collab_status == key %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </label>
+    </div>
+
+    <label>
+      Любимые направления
+      <textarea name="favorite_directions" rows="5" maxlength="5000">{{ form.favorite_directions }}</textarea>
+    </label>
+
+    <label>
+      О себе
+      <textarea name="about_markdown" rows="8" maxlength="5000" placeholder="Поддерживаются эмодзи, **жирный**, *курсив*.">{{ form.about_markdown }}</textarea>
+    </label>
+
+    <label>
+      Промо-фото (до 5 URL, по одному на строку)
+      <textarea name="promo_input" id="promo_input" rows="5" placeholder="https://...">{{ form.promo_input }}</textarea>
+    </label>
+    <div class="gallery-upload-row">
+      <input type="file" id="promo_upload_files" accept="image/*" multiple />
+      <button type="button" class="btn" id="promo_upload_btn">Загрузить фото</button>
+      <span class="muted" id="promo_upload_status"></span>
+    </div>
+    <div class="reference-grid" id="promo_preview"></div>
+  </section>
+
+  <section class="box">
+    <h3>Дополнительные навыки</h3>
+    <div class="chips-wrap top-offset">
+      {% for skill in skills_options %}
+        <label class="chip-check">
+          <input type="checkbox" name="extra_skills" value="{{ skill }}" {% if skill in (form.extra_skills_json or []) %}checked{% endif %} />
+          {{ skill }}
+        </label>
+      {% endfor %}
+    </div>
+  </section>
+
+  <div class="actions-inline">
+    <button type="submit" class="btn btn-accent">{{ "Сохранить" if editing else "Опубликовать" }}</button>
+    <a href="{{ '/community/cosplayers/' ~ cosplayer_id if editing else '/community/cosplayers' }}" class="btn">Отмена</a>
+  </div>
+</form>
+
+<script>
+(function () {
+  const MAX_PROMO_PHOTOS = 5;
+
+  function parseListEntries(value) {
+    if (!value) return [];
+    return value
+      .split(/\n|,/)
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
+
+  function uniqueHttpUrls(values) {
+    return Array.from(
+      new Set(
+        values.filter((value) => /^https?:\/\//i.test(value))
+      )
+    );
+  }
+
+  function createImageTile(url) {
+    const link = document.createElement('a');
+    link.className = 'reference-tile';
+    link.href = url;
+    link.target = '_blank';
+    link.rel = 'noreferrer';
+
+    const image = document.createElement('img');
+    image.src = url;
+    image.alt = 'Промо-фото косплеера';
+    link.appendChild(image);
+    return link;
+  }
+
+  function updatePreview() {
+    const input = document.getElementById('promo_input');
+    const wrap = document.getElementById('promo_preview');
+    const status = document.getElementById('promo_upload_status');
+    if (!input || !wrap) return [];
+
+    const urls = uniqueHttpUrls(parseListEntries(input.value)).slice(0, MAX_PROMO_PHOTOS);
+    if (urls.length < uniqueHttpUrls(parseListEntries(input.value)).length) {
+      input.value = urls.join('\n');
+      if (status) status.textContent = 'Оставлены только первые 5 фото.';
+    }
+
+    wrap.innerHTML = '';
+    urls.forEach((url) => wrap.appendChild(createImageTile(url)));
+    return urls;
+  }
+
+  async function uploadImages() {
+    const filesInput = document.getElementById('promo_upload_files');
+    const input = document.getElementById('promo_input');
+    const status = document.getElementById('promo_upload_status');
+    if (!filesInput || !input || !filesInput.files?.length) {
+      if (status) status.textContent = 'Выберите изображение.';
+      return;
+    }
+
+    const existingUrls = uniqueHttpUrls(parseListEntries(input.value));
+    const freeSlots = Math.max(0, MAX_PROMO_PHOTOS - existingUrls.length);
+    if (freeSlots <= 0) {
+      if (status) status.textContent = 'Достигнут лимит: 5 фото.';
+      return;
+    }
+
+    if (status) status.textContent = 'Загрузка...';
+    const uploadedUrls = [];
+    for (const file of Array.from(filesInput.files).slice(0, freeSlots)) {
+      const formData = new FormData();
+      formData.append('image', file);
+      try {
+        const response = await fetch('/media/upload-image', {
+          method: 'POST',
+          body: formData,
+          credentials: 'same-origin'
+        });
+        const payload = await response.json();
+        if (!response.ok || !payload?.ok || !payload?.url) {
+          throw new Error(payload?.detail || 'Ошибка загрузки');
+        }
+        uploadedUrls.push(payload.url);
+      } catch (error) {
+        if (status) status.textContent = `Ошибка: ${error.message || 'не удалось загрузить файл'}`;
+        return;
+      }
+    }
+
+    input.value = uniqueHttpUrls(existingUrls.concat(uploadedUrls)).slice(0, MAX_PROMO_PHOTOS).join('\n');
+    filesInput.value = '';
+    updatePreview();
+    if (status) status.textContent = `Загружено: ${uploadedUrls.length}`;
+  }
+
+  const input = document.getElementById('promo_input');
+  if (input) {
+    input.addEventListener('input', updatePreview);
+    updatePreview();
+  }
+  const uploadButton = document.getElementById('promo_upload_btn');
+  if (uploadButton) {
+    uploadButton.addEventListener('click', uploadImages);
+  }
+})();
+</script>
+{% endblock %}

@@ -7,6 +7,54 @@
   </div>
 </section>
 
+<section class="box">
+  <h2>Новости</h2>
+  {% if can_manage_news %}
+    <form method="post" action="/home-news/new" class="grid one-col top-offset">
+      <label>
+        Текст новости
+        <textarea name="body" rows="4" maxlength="8000" placeholder="Введите текст новости..." required></textarea>
+      </label>
+      <div class="actions-inline">
+        <button type="submit" class="btn btn-accent">Опубликовать новость</button>
+      </div>
+    </form>
+  {% endif %}
+
+  {% if news_items %}
+    <div class="news-list top-offset">
+      {% for item in news_items %}
+        <article class="news-item">
+          <p class="news-meta">
+            {{ item.created_at.strftime('%d-%m-%Y %H:%M') if item.created_at else "—" }}
+            {% if item.updated_at and item.created_at and item.updated_at != item.created_at %}
+              · обновлено {{ item.updated_at.strftime('%d-%m-%Y %H:%M') }}
+            {% endif %}
+          </p>
+          <div class="news-body">{{ item.body }}</div>
+
+          {% if can_manage_news %}
+            <details class="news-edit top-offset">
+              <summary>Редактировать</summary>
+              <form method="post" action="/home-news/{{ item.id }}/edit" class="grid one-col top-offset">
+                <textarea name="body" rows="4" maxlength="8000" required>{{ item.body }}</textarea>
+                <div class="actions-inline">
+                  <button type="submit" class="btn">Сохранить</button>
+                </div>
+              </form>
+            </details>
+            <form method="post" action="/home-news/{{ item.id }}/delete" class="top-offset" onsubmit="return confirm('Удалить новость?');">
+              <button type="submit" class="btn btn-danger btn-small">Удалить</button>
+            </form>
+          {% endif %}
+        </article>
+      {% endfor %}
+    </div>
+  {% else %}
+    <p class="muted top-offset">Пока новостей нет.</p>
+  {% endif %}
+</section>
+
 <section class="box top-offset">
   <h2>Дни рождения</h2>
   {% if birthdays_this_week %}

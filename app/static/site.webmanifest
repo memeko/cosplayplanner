@@ -1,0 +1,16 @@
+{
+  "name": "Cosplay Planner",
+  "short_name": "Cosplay Planner",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#d6ecf5",
+  "theme_color": "#1577b3",
+  "icons": [
+    {
+      "src": "/static/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}
