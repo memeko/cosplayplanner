@@ -549,18 +549,45 @@ textarea {
 }
 
 .cosplan-list-item {
-  padding-top: 12px;
-}
-
-.cosplan-list-item-head {
-  margin-bottom: 6px;
+  padding: 10px 12px;
 }
 
 .cosplan-list-number {
-  font-size: 0.86rem;
+  font-size: 0.92rem;
   font-weight: 700;
   color: var(--muted);
-  margin-bottom: 4px;
+  min-width: 2rem;
+  line-height: 1.2;
+  padding-top: 2px;
+}
+
+.cosplan-list-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+}
+
+.cosplan-list-main {
+  min-width: 0;
+}
+
+.cosplan-list-title {
+  display: inline-block;
+  font-weight: 700;
+  margin-bottom: 2px;
+}
+
+.cosplan-list-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  font-size: 0.92rem;
+  color: var(--muted);
+}
+
+.cosplan-list-actions {
+  justify-content: flex-end;
 }
 
 .cosplayer-card-avatar-wrap {
@@ -1548,6 +1575,16 @@ textarea {
 
   .cards-grid {
     grid-template-columns: 1fr;
+  }
+
+  .cosplan-list-row {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .cosplan-list-actions {
+    grid-column: 1 / -1;
+    justify-content: flex-start;
+    margin-left: calc(2rem + 10px);
   }
 
   .actions-inline {

@@ -18,7 +18,7 @@
     </form>
     {% if can_import_masters %}
       <form method="post" action="/community/masters/import-cosplay-team">
-        <button type="submit" class="btn">Импорт из Cosplay Team</button>
+        <button type="submit" class="btn">Импорт из Cosplay Team (30 дней)</button>
       </form>
     {% endif %}
     <a href="/community/masters/new" class="btn btn-accent">Добавить мастера</a>
@@ -58,7 +58,10 @@
       {% endif %}
       <div class="actions-inline">
         <a href="/community/masters/{{ master.id }}" class="btn">Подробнее</a>
-        {% if user and user.id == master.user_id %}
+        {% if user and not (user.id == master.user_id or (user_is_special(user) and master.import_source)) %}
+          <a href="/community/masters/{{ master.id }}#master-order-form" class="btn btn-accent">Записаться!</a>
+        {% endif %}
+        {% if user and (user.id == master.user_id or (user_is_special(user) and master.import_source)) %}
           <a href="/community/masters/{{ master.id }}/edit" class="btn">Редактировать</a>
           <form method="post" action="/community/masters/{{ master.id }}/delete" onsubmit="return confirm('Удалить карточку мастера?');">
             <button type="submit" class="btn btn-danger">Удалить</button>

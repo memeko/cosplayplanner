@@ -32,75 +32,39 @@
 
 {% if cards %}
   {% if current_view == "list" %}
-    <ol class="cosplan-list-view">
+    <div class="cosplan-list-view">
       {% for card in cards %}
-        {% set rehearsal_stat = rehearsal_stats_by_card.get(card.id) %}
         {% set editable_id = editable_card_links.get(card.id) %}
-        <li class="card cosplan-list-item {% if card.is_priority %}priority-card{% endif %}">
-          <div class="row-between cosplan-list-item-head">
-            <div>
-              <div class="cosplan-list-number">#{{ loop.index }}</div>
-              <h3>
-                <a href="/cosplan/{{ card.id }}" class="card-title-link">{{ card.character_name }}</a>
-                {% if card.is_priority %}
-                  <span class="chip chip-priority">★ Приоритетный проект</span>
-                {% endif %}
-                {% if card.is_shared_copy %}
-                  <span class="chip chip-shared">Общий доступ</span>
-                {% endif %}
-              </h3>
+        <article class="card cosplan-list-item {% if card.is_priority %}priority-card{% endif %}">
+          <div class="cosplan-list-row">
+            <div class="cosplan-list-number">{{ loop.index }}.</div>
+            <div class="cosplan-list-main">
+              <a href="/cosplan/{{ card.id }}" class="card-title-link cosplan-list-title">
+                {% if card.is_priority %}★ {% endif %}{{ card.character_name }}
+              </a>
+              <div class="cosplan-list-meta">
+                <span>{{ card.fandom or "—" }}</span>
+                <span>{{ card.project_deadline.strftime('%d-%m-%Y') if card.project_deadline else "—" }}</span>
+              </div>
             </div>
-            <div class="actions-inline">
+            <div class="actions-inline cosplan-list-actions">
               {% if editable_id %}
                 <form method="post" action="/cosplan/{{ editable_id }}/priority-toggle">
                   <input type="hidden" name="next" value="{{ current_url }}" />
-                  <button type="submit" class="btn">{{ "Снять приоритет" if card.is_priority else "В приоритет" }}</button>
+                  <button type="submit" class="btn">{{ "Приоритет ✓" if card.is_priority else "Приоритет" }}</button>
                 </form>
-                <a href="/cosplan/{{ editable_id }}/edit" class="btn">Редактировать</a>
               {% endif %}
-            </div>
-          </div>
-          <p class="meta">Фандом: {{ card.fandom or "—" }}</p>
-          <p class="meta">Тип: {{ "Проект" if card.plan_type == "project" else "Личное" }}</p>
-          <p class="meta">Дедлайн: {{ card.project_deadline.strftime('%d-%m-%Y') if card.project_deadline else "—" }}</p>
-          <p class="meta">Ориентировочная цена: {{ '%.2f'|format(card_totals.get(card.id, 0.0)) }} {{ card_total_currencies.get(card.id, "") }}</p>
-          {% if rehearsal_stat and rehearsal_stat.total %}
-            <p class="meta">
-              Репетиции: {{ rehearsal_stat.total }} (активные: {{ rehearsal_stat.active }})
-              {% if rehearsal_stat.upcoming_date %}· ближайшая: {{ rehearsal_stat.upcoming_date.strftime('%d-%m-%Y') }}{% endif %}
-            </p>
-          {% endif %}
-          {% if card.planned_festivals_json %}
-            <p class="meta">Планируемые фестивали: {{ card.planned_festivals_json | join(", ") }}</p>
-          {% endif %}
-          {% if card.is_shared_copy %}
-            <p class="meta">Карточка добавлена по вашему нику другим пользователем.</p>
-          {% endif %}
-          {% if card_date_conflicts.get(card.id) %}
-            <div class="card-disclaimer">
-              <strong>Конфликт дат</strong>
-              <ul>
-                {% for warning in card_date_conflicts.get(card.id) %}
-                  <li>{{ warning }}</li>
-                {% endfor %}
-              </ul>
-            </div>
-          {% endif %}
-          <div class="actions-inline top-offset">
             {% if card.id not in in_progress_ids %}
               <form method="post" action="/in-progress/add/{{ card.id }}">
                 <button type="submit" class="btn">В работу</button>
               </form>
             {% else %}
-              <span class="chip">Уже в работе</span>
+              <button type="button" class="btn" disabled>В работе</button>
             {% endif %}
-            <form method="post" action="/cosplan/{{ card.id }}/delete" onsubmit="return confirm('Удалить карточку?');">
-              <button type="submit" class="btn btn-danger">Удалить</button>
-            </form>
           </div>
-        </li>
+        </article>
       {% endfor %}
-    </ol>
+    </div>
   {% else %}
     <div class="cards-grid">
       {% for card in cards %}

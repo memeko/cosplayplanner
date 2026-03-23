@@ -67,6 +67,11 @@ class User(Base):
         back_populates="user",
         cascade="all, delete-orphan",
     )
+    community_master_orders = relationship(
+        "CommunityMasterOrder",
+        back_populates="customer",
+        cascade="all, delete-orphan",
+    )
     community_master_ratings = relationship(
         "CommunityMasterRating",
         back_populates="user",
@@ -645,6 +650,7 @@ class CommunityMaster(Base):
 
     user = relationship("User", back_populates="community_masters")
     comments = relationship("CommunityMasterComment", back_populates="master", cascade="all, delete-orphan")
+    orders = relationship("CommunityMasterOrder", back_populates="master", cascade="all, delete-orphan")
     ratings = relationship("CommunityMasterRating", back_populates="master", cascade="all, delete-orphan")
 
 
@@ -679,6 +685,24 @@ class CommunityMasterRating(Base):
     __table_args__ = (
         UniqueConstraint("master_id", "user_id", name="uq_community_master_rating_user"),
     )
+
+
+class CommunityMasterOrder(Base):
+    __tablename__ = "community_master_orders"
+
+    id = Column(Integer, primary_key=True)
+    master_id = Column(Integer, ForeignKey("community_masters.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    subject = Column(String(255), nullable=False)
+    contact_tg = Column(String(255), nullable=True)
+    character_fandom = Column(String(255), nullable=True)
+    details = Column(Text, nullable=True)
+    deadline = Column(Date, nullable=True, index=True)
+    references_json = Column(JSON, nullable=False, default=list)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    master = relationship("CommunityMaster", back_populates="orders")
+    customer = relationship("User", back_populates="community_master_orders")
 
 
 class CommunityStudio(Base):

@@ -48,6 +48,7 @@ from .models import (
     CommunityCosplayerComment,
     CommunityMaster,
     CommunityMasterComment,
+    CommunityMasterOrder,
     CommunityMasterRating,
     CommunityQuestion,
     CommunityQuestionComment,
@@ -260,6 +261,11 @@ RAF_PAGE_TITLES = [
     "Календарь_2026_январь-май",
     "Календарь_2026_июнь-август",
     "Календарь_2026_сентябрь-декабрь",
+]
+RAF_PAGE_URLS = [
+    "https://vk.com/pages?hash=bf2fe57dc20023910b&oid=-22664912&p=Календарь_2026_январь-май",
+    "https://vk.com/pages?hash=bf2fe57dc20023910b&oid=-22664912&p=Календарь_2026_июнь-август",
+    "https://vk.com/pages?hash=bf2fe57dc20023910b&oid=-22664912&p=Календарь_2026_сентябрь-декабрь",
 ]
 MASTER_IMPORT_INTERVAL_HOURS = max(1, min(24, int(os.getenv("MASTER_IMPORT_INTERVAL_HOURS", "12") or "12")))
 RAF_IMPORT_INTERVAL_HOURS = max(1, min(72, int(os.getenv("RAF_IMPORT_INTERVAL_HOURS", "24") or "24")))
@@ -888,6 +894,14 @@ def user_is_special(user: User | None) -> bool:
 
 def is_moderator_user(user: User | None) -> bool:
     return user_is_special(user)
+
+
+def can_manage_master(user: User | None, master: CommunityMaster | None) -> bool:
+    if not user or not master:
+        return False
+    if master.user_id == user.id:
+        return True
+    return user_is_special(user) and bool(master.import_source)
 
 
 def usernames_match(left: str | None, right: str | None) -> bool:
@@ -3044,6 +3058,34 @@ def format_master_price_rows_for_form(rows: list[Any]) -> list[dict[str, str]]:
             }
         )
     return formatted
+
+
+def save_master_order_from_form(form: Any, order: CommunityMasterOrder) -> tuple[bool, str]:
+    subject = str(form.get("subject", "")).strip()
+    contact_tg = str(form.get("contact_tg", "")).strip()
+    character_fandom = str(form.get("character_fandom", "")).strip()
+    details = str(form.get("details", "")).strip()
+    deadline = parse_date(str(form.get("deadline", "")).strip())
+    references = parse_reference_values(str(form.get("references_input", "")))[:3]
+
+    if not subject:
+        return False, "Укажите тему заказа."
+    if len(subject) > 255:
+        return False, "Тема заказа должна быть не длиннее 255 символов."
+    if len(contact_tg) > 255:
+        return False, "Поле TG для связи должно быть не длиннее 255 символов."
+    if len(character_fandom) > 255:
+        return False, "Поле персонажа и фандома должно быть не длиннее 255 символов."
+    if len(details) > 4000:
+        return False, "Подробности заказа должны быть не длиннее 4000 символов."
+
+    order.subject = subject
+    order.contact_tg = contact_tg or None
+    order.character_fandom = character_fandom or None
+    order.details = details or None
+    order.deadline = deadline
+    order.references_json = references
+    return True, ""
 
 
 def project_board_status_label(status: str) -> str:
@@ -8422,7 +8464,15 @@ def community_masters_detail(master_id: int, request: Request, db: Session = Dep
         .where(CommunityMasterComment.master_id == master.id)
         .order_by(CommunityMasterComment.created_at, CommunityMasterComment.id)
     ).scalars().all()
-    author_ids = {master.user_id, *(item.user_id for item in comments)}
+    orders: list[CommunityMasterOrder] = []
+    if can_manage_master(user, master):
+        orders = db.execute(
+            select(CommunityMasterOrder)
+            .where(CommunityMasterOrder.master_id == master.id)
+            .order_by(CommunityMasterOrder.created_at.desc(), CommunityMasterOrder.id.desc())
+        ).scalars().all()
+
+    author_ids = {master.user_id, *(item.user_id for item in comments), *(item.user_id for item in orders)}
     authors_by_id: dict[int, User] = {}
     if author_ids:
         authors = db.execute(select(User).where(User.id.in_(author_ids))).scalars().all()
@@ -8441,12 +8491,14 @@ def community_masters_detail(master_id: int, request: Request, db: Session = Dep
         community_tab="masters",
         master=master,
         comments=comments,
+        orders=orders,
         authors_by_id=authors_by_id,
         price_rows=format_master_price_rows_for_form(as_list(master.price_list_json)),
         rating_avg=rating_avg_by_master.get(master.id, 0.0),
         rating_count=rating_count_by_master.get(master.id, 0),
         user_rating=user_rating_by_master.get(master.id, 0),
         import_source_labels=IMPORT_SOURCE_LABELS,
+        can_manage_master=can_manage_master(user, master),
     )
 
 
@@ -8460,7 +8512,7 @@ def community_masters_edit(master_id: int, request: Request, db: Session = Depen
     if not master:
         add_flash(request, "Карточка мастера не найдена.", "error")
         return redirect("/community/masters")
-    if master.user_id != user.id:
+    if not can_manage_master(user, master):
         add_flash(request, "Редактировать можно только свою карточку мастера.", "error")
         return redirect(f"/community/masters/{master_id}")
 
@@ -8487,7 +8539,7 @@ async def community_masters_update(master_id: int, request: Request, db: Session
     if not master:
         add_flash(request, "Карточка мастера не найдена.", "error")
         return redirect("/community/masters")
-    if master.user_id != user.id:
+    if not can_manage_master(user, master):
         add_flash(request, "Редактировать можно только свою карточку мастера.", "error")
         return redirect(f"/community/masters/{master_id}")
 
@@ -8553,6 +8605,70 @@ async def community_masters_add_comment(master_id: int, request: Request, db: Se
     return redirect(f"/community/masters/{master_id}")
 
 
+@app.post("/community/masters/{master_id}/orders")
+async def community_masters_create_order(master_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    master = db.get(CommunityMaster, master_id)
+    if not master:
+        add_flash(request, "Карточка мастера не найдена.", "error")
+        return redirect("/community/masters")
+    if master.user_id == user.id:
+        add_flash(request, "Нельзя отправить заказ самому себе.", "error")
+        return redirect(f"/community/masters/{master_id}")
+
+    form = await request.form()
+    order = CommunityMasterOrder(master_id=master.id, user_id=user.id, subject="")
+    ok, error_text = save_master_order_from_form(form, order)
+    if not ok:
+        add_flash(request, error_text, "error")
+        return redirect(f"/community/masters/{master_id}#master-order-form")
+
+    db.add(order)
+    enqueue_notification_if_missing(
+        db,
+        user_id=master.user_id,
+        from_user_id=user.id,
+        source_card_id=None,
+        message=f"У ВАС НОВЫЙ ЗАКАЗ: {order.subject}",
+    )
+    db.commit()
+    add_flash(request, "Заявка отправлена мастеру.", "success")
+    return redirect(f"/community/masters/{master_id}")
+
+
+@app.post("/community/masters/{master_id}/orders/{order_id}/delete")
+def community_masters_delete_order(master_id: int, order_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    master = db.get(CommunityMaster, master_id)
+    if not master:
+        add_flash(request, "Карточка мастера не найдена.", "error")
+        return redirect("/community/masters")
+    if not can_manage_master(user, master):
+        add_flash(request, "Удалять заявки может только владелец карточки мастера.", "error")
+        return redirect(f"/community/masters/{master_id}")
+
+    order = db.execute(
+        select(CommunityMasterOrder).where(
+            CommunityMasterOrder.id == order_id,
+            CommunityMasterOrder.master_id == master.id,
+        )
+    ).scalar_one_or_none()
+    if not order:
+        add_flash(request, "Заявка не найдена.", "error")
+        return redirect(f"/community/masters/{master_id}")
+
+    db.delete(order)
+    db.commit()
+    add_flash(request, "Заявка удалена.", "info")
+    return redirect(f"/community/masters/{master_id}")
+
+
 @app.post("/community/masters/{master_id}/rate")
 async def community_masters_rate(master_id: int, request: Request, db: Session = Depends(get_db)):
     user = current_user(request, db)
@@ -8606,7 +8722,7 @@ def community_masters_delete(master_id: int, request: Request, db: Session = Dep
     if not master:
         add_flash(request, "Карточка мастера не найдена.", "error")
         return redirect("/community/masters")
-    if master.user_id != user.id:
+    if not can_manage_master(user, master):
         add_flash(request, "Удалять можно только свою карточку мастера.", "error")
         return redirect(f"/community/masters/{master_id}")
 
@@ -9731,13 +9847,15 @@ def attachment_photo_urls(attachments: list[Any]) -> list[str]:
     return merge_unique(urls)
 
 
-def import_cosplay_team_masters(db: Session, *, since_date: date) -> dict[str, Any]:
+def import_cosplay_team_masters(db: Session, *, since_date: date, fetch_count: int | None = None) -> dict[str, Any]:
+    count_value = max(10, min(100, int(fetch_count or VK_IMPORT_WALL_COUNT or 50)))
     payload = vk_api_call(
         "wall.get",
         {
             "domain": VK_IMPORT_WALL_DOMAIN,
-            "count": VK_IMPORT_WALL_COUNT,
+            "count": count_value,
             "extended": 1,
+            "filter": "owner",
         },
     )
     items = payload.get("items")
@@ -10006,22 +10124,42 @@ def parse_raf_events_from_page_html(page_html: str, page_title: str) -> list[dic
     return events
 
 
+def fetch_raf_page_html(page_url: str) -> tuple[str, str]:
+    resolved_title = parse_qs(urlparse(page_url).query).get("p", [""])[0]
+    resolved_title = unquote(resolved_title).strip() or "Календарь"
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Accept-Language": "ru-RU,ru;q=0.9",
+    }
+    try:
+        response = requests.get(
+            page_url,
+            headers=headers,
+            timeout=max(20, HTTP_TIMEOUT_SECONDS * 3),
+        )
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        raise RuntimeError(f"Не удалось получить страницу РАФ: {resolved_title}.") from exc
+
+    html_value = response.text or ""
+    if not html_value.strip():
+        raise RuntimeError(f"Страница РАФ пуста: {resolved_title}.")
+    return resolved_title, html_value
+
+
 def fetch_raf_events_from_vk() -> list[dict[str, Any]]:
     all_events: list[dict[str, Any]] = []
-    for page_title in RAF_PAGE_TITLES:
-        payload = vk_api_call(
-            "pages.get",
-            {
-                "owner_id": RAF_OWNER_ID,
-                "title": page_title,
-                "need_html": 1,
-            },
-        )
-        html_value = str(payload.get("html") or "")
-        resolved_title = str(payload.get("title") or page_title)
-        if not html_value.strip():
+    page_errors: list[str] = []
+    for page_url in RAF_PAGE_URLS:
+        try:
+            resolved_title, html_value = fetch_raf_page_html(page_url)
+        except RuntimeError as exc:
+            page_errors.append(str(exc))
             continue
         all_events.extend(parse_raf_events_from_page_html(html_value, resolved_title))
+
+    if not all_events and page_errors:
+        raise RuntimeError(page_errors[0])
 
     deduped: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
@@ -10098,20 +10236,14 @@ def auto_import_external_sources_if_needed() -> None:
     now = datetime.utcnow()
     state = load_external_import_state()
     changed = False
-
-    masters_since_raw = str(state.get("masters_since_date", "")).strip()
-    masters_since = parse_date(masters_since_raw) if masters_since_raw else None
-    if not masters_since:
-        masters_since = date.today()
-        state["masters_since_date"] = masters_since.isoformat()
-        changed = True
+    auto_masters_since = date.today() - timedelta(days=1)
 
     with SessionLocal() as db:
         if should_run_import_by_interval(state, "masters_last_run_at", MASTER_IMPORT_INTERVAL_HOURS, now):
             state["masters_last_run_at"] = now.isoformat()
             changed = True
             try:
-                import_cosplay_team_masters(db, since_date=masters_since)
+                import_cosplay_team_masters(db, since_date=auto_masters_since, fetch_count=VK_IMPORT_WALL_COUNT)
                 db.commit()
             except Exception:
                 db.rollback()
@@ -10145,13 +10277,12 @@ def community_masters_import_cosplay_team(request: Request, db: Session = Depend
         return redirect("/community/masters")
 
     state = load_external_import_state()
-    masters_since = parse_date(str(state.get("masters_since_date", "")).strip()) or date.today()
-    state["masters_since_date"] = masters_since.isoformat()
     state["masters_last_run_at"] = datetime.utcnow().isoformat()
     save_external_import_state(state)
+    manual_since = date.today() - timedelta(days=30)
 
     try:
-        result = import_cosplay_team_masters(db, since_date=masters_since)
+        result = import_cosplay_team_masters(db, since_date=manual_since, fetch_count=max(VK_IMPORT_WALL_COUNT, 100))
         db.commit()
     except RuntimeError as exc:
         db.rollback()
@@ -10163,7 +10294,7 @@ def community_masters_import_cosplay_team(request: Request, db: Session = Depend
     else:
         add_flash(
             request,
-            f"Импорт из Cosplay Team: добавлено {result.get('imported', 0)}, уже было {result.get('skipped', 0)}.",
+            f"Импорт из Cosplay Team за последние 30 дней: добавлено {result.get('imported', 0)}, уже было {result.get('skipped', 0)}.",
             "success",
         )
     return redirect("/community/masters")
