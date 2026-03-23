@@ -512,6 +512,12 @@ textarea {
   border-color: #c7d2fe;
 }
 
+.chip-source-cosplay-team {
+  background: rgba(177, 134, 255, 0.28);
+  border-color: rgba(140, 82, 255, 0.56);
+  color: #5f26b1;
+}
+
 .city-highlight-chip {
   font-weight: 600;
 }

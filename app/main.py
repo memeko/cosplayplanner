@@ -1496,6 +1496,7 @@ def fetch_character_birthdays_from_genshin(month: int) -> list[dict[str, Any]]:
                     "day": day_num,
                     "name": name,
                     "source": "Genshin Impact Wiki",
+                    "anime_title": "Genshin Impact",
                 }
             )
         return payload
@@ -1583,6 +1584,7 @@ def clean_character_birthday_name(raw_name: str) -> str:
         return ""
     # Убираем служебные подписи из alt/описаний вроде "Иконка X".
     value = re.sub(r"^\s*(иконка|icon)\s+", "", value, flags=re.IGNORECASE)
+    value = re.sub(r"^\s*(персонаж|character)\s+", "", value, flags=re.IGNORECASE)
     value = re.sub(r"\s*[-:]\s*(иконка|icon)\s*$", "", value, flags=re.IGNORECASE)
     value = value.replace("Иконка", "").replace("icon", "").replace("Icon", "")
     return re.sub(r"\s+", " ", value).strip(" -")
@@ -1667,6 +1669,8 @@ def character_birthdays_today(today: date) -> list[dict[str, Any]]:
                 continue
             source = str(row.get("source", "")).strip()
             anime_title = str(row.get("anime_title", "")).strip()
+            if source.casefold() == "genshin impact wiki" and not anime_title:
+                anime_title = "Genshin Impact"
             if source.casefold() == "anisearch":
                 anime_title = fetch_anisearch_anime_title(
                     str(row.get("character_url", "")).strip(),
@@ -2895,24 +2899,31 @@ def parse_reference_values(raw_value: str) -> list[str]:
     if not raw_value:
         return []
     items: list[str] = []
-    chunks = re.split(r"[\n,;]+", raw_value)
+    normalized_value = re.sub(
+        r",\s*(?=(?:https?://|/media/|iframe:|<iframe))",
+        "\n",
+        raw_value,
+        flags=re.IGNORECASE,
+    )
+    chunks = re.split(r"[\n;]+", normalized_value)
     for chunk in chunks:
         value = chunk.strip()
         if not value:
             continue
         if value.startswith("iframe:"):
-            iframe_src = value.removeprefix("iframe:").strip()
+            iframe_src = value.removeprefix("iframe:").strip().rstrip(",;")
             if iframe_src.lower().startswith(("http://", "https://")):
                 items.append(f"iframe:{iframe_src}")
             continue
         if value.lower().startswith("<iframe"):
             match = re.search(r'src=["\']([^"\']+)["\']', value, flags=re.IGNORECASE)
             if match:
-                src = match.group(1).strip()
+                src = match.group(1).strip().rstrip(",;")
                 if src.lower().startswith(("http://", "https://")):
                     items.append(f"iframe:{src}")
             continue
-        if value.lower().startswith(("http://", "https://")):
+        value = value.rstrip(",;")
+        if value.lower().startswith(("http://", "https://")) or value.startswith("/media/"):
             items.append(value)
     return merge_unique(items)
 
@@ -9979,13 +9990,13 @@ def import_cosplay_team_masters(db: Session, *, since_date: date, fetch_count: i
 
 def html_to_plain_lines(value: str) -> list[str]:
     html_value = value or ""
-    html_value = re.sub(r"<br\\s*/?>", "\n", html_value, flags=re.IGNORECASE)
+    html_value = re.sub(r"<br\s*/?>", "\n", html_value, flags=re.IGNORECASE)
     html_value = re.sub(r"</(p|div|li|tr|h[1-6]|table|ul|ol)>", "\n", html_value, flags=re.IGNORECASE)
     text_value = re.sub(r"<[^>]+>", " ", html_value)
     text_value = html.unescape(text_value)
     lines: list[str] = []
     for raw_line in text_value.splitlines():
-        cleaned = re.sub(r"\\s+", " ", raw_line).strip(" \t\r\n•*;")
+        cleaned = re.sub(r"\s+", " ", raw_line).strip(" \t\r\n•*;")
         if not cleaned:
             continue
         lines.append(cleaned)
@@ -9993,7 +10004,7 @@ def html_to_plain_lines(value: str) -> list[str]:
 
 
 def parse_year_for_raf_page(page_title: str) -> int:
-    match = re.search(r"(20\\d{2})", page_title or "")
+    match = re.search(r"(20\d{2})", page_title or "")
     if not match:
         return date.today().year
     return int(match.group(1))
@@ -10008,8 +10019,8 @@ def _build_date_or_none(year: int, month: int, day: int) -> date | None:
 
 def parse_date_range_from_line(line_value: str, default_year: int) -> tuple[date | None, date | None, tuple[int, int] | None]:
     numeric_match = re.search(
-        r"(?P<d1>\\d{1,2})[./](?P<m1>\\d{1,2})(?:[./](?P<y1>\\d{2,4}))?"
-        r"\\s*(?:[-–—]\\s*(?P<d2>\\d{1,2})[./](?P<m2>\\d{1,2})(?:[./](?P<y2>\\d{2,4}))?)?",
+        r"(?P<d1>\d{1,2})[./](?P<m1>\d{1,2})(?:[./](?P<y1>\d{2,4}))?"
+        r"\s*(?:[-–—]\s*(?P<d2>\d{1,2})[./](?P<m2>\d{1,2})(?:[./](?P<y2>\d{2,4}))?)?",
         line_value,
     )
     if numeric_match:
@@ -10034,7 +10045,7 @@ def parse_date_range_from_line(line_value: str, default_year: int) -> tuple[date
         return d1, d2, numeric_match.span()
 
     word_match = re.search(
-        r"(?P<d1>\\d{1,2})(?:\\s*[-–—]\\s*(?P<d2>\\d{1,2}))?\\s+(?P<mw>[а-яё]+)(?:\\s+(?P<year>20\\d{2}))?",
+        r"(?P<d1>\d{1,2})(?:\s*[-–—]\s*(?P<d2>\d{1,2}))?\s+(?P<mw>[а-яё]+)(?:\s+(?P<year>20\d{2}))?",
         line_value.casefold(),
     )
     if not word_match:
@@ -10058,15 +10069,15 @@ def parse_date_range_from_line(line_value: str, default_year: int) -> tuple[date
 
 def parse_raf_city_and_name(line_value: str) -> tuple[str, str]:
     value = line_value.strip()
-    value = re.sub(r"https?://\\S+", "", value).strip(" -—–,.;")
-    parts = [item.strip(" -—–,.;") for item in re.split(r"\\s+[—–-]\\s+", value) if item.strip(" -—–,.;")]
+    value = re.sub(r"https?://\S+", "", value).strip(" -—–,.;")
+    parts = [item.strip(" -—–,.;") for item in re.split(r"\s+[—–-]\s+", value) if item.strip(" -—–,.;")]
     if not parts:
         return "", ""
     if len(parts) >= 3:
-        city_value = re.sub(r"^(г\\.?|город)\\s+", "", parts[1], flags=re.IGNORECASE).strip()
+        city_value = re.sub(r"^(г\.?|город)\s+", "", parts[1], flags=re.IGNORECASE).strip()
         name_value = parts[2]
     elif len(parts) == 2:
-        first_part = re.sub(r"^(г\\.?|город)\\s+", "", parts[0], flags=re.IGNORECASE).strip()
+        first_part = re.sub(r"^(г\.?|город)\s+", "", parts[0], flags=re.IGNORECASE).strip()
         if 1 <= len(first_part.split()) <= 4 and not re.search(r"(фест|fest|аниме|косп|con)", first_part.casefold()):
             city_value = first_part
             name_value = parts[1]
@@ -10080,29 +10091,49 @@ def parse_raf_city_and_name(line_value: str) -> tuple[str, str]:
 
 
 def parse_raf_events_from_page_html(page_html: str, page_title: str) -> list[dict[str, Any]]:
-    default_year = parse_year_for_raf_page(page_title)
-    lines = html_to_plain_lines(page_html)
     events: list[dict[str, Any]] = []
     seen_external_ids: set[str] = set()
 
-    for line in lines:
-        if len(line) < 8:
-            continue
-        event_start, event_end, date_span = parse_date_range_from_line(line, default_year)
-        if not event_start or not event_end:
+    list_items = re.findall(
+        r"<li[^>]*>.*?<span class=[\"']l[\"']>(.*?)</span>.*?</li>",
+        page_html or "",
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    for entry_html in list_items:
+        entry_value = (entry_html or "").strip()
+        if not entry_value:
             continue
 
-        url_match = re.search(r"(https?://\\S+)", line)
-        event_url = url_match.group(1).strip() if url_match else ""
-        line_without_url = line.replace(event_url, " ").strip() if event_url else line
-        if date_span:
-            left = line_without_url[: date_span[0]]
-            right = line_without_url[date_span[1] :]
-            line_without_date = f"{left} {right}".strip()
-        else:
-            line_without_date = line_without_url
+        url_match = re.search(r'href=["\']([^"\']+)["\']', entry_value, flags=re.IGNORECASE)
+        event_url = html.unescape(url_match.group(1).strip()) if url_match else ""
+        if event_url.startswith("/"):
+            event_url = f"https://vk.com{event_url}"
 
-        city_value, name_value = parse_raf_city_and_name(line_without_date)
+        text_value = re.sub(r"<br\s*/?>", "\n", entry_value, flags=re.IGNORECASE)
+        text_value = re.sub(r"<[^>]+>", " ", text_value)
+        text_value = html.unescape(text_value)
+        text_value = re.sub(r"\s+", " ", text_value).strip(" \t\r\n•*;,")
+        if not text_value:
+            continue
+
+        event_start, event_end, date_span = parse_date_range_from_line(text_value, parse_year_for_raf_page(page_title))
+        if not event_start or not event_end or not date_span:
+            continue
+
+        remainder = text_value[date_span[1] :].lstrip(" ,—–-")
+        parts = [part.strip(" -—–,.;") for part in remainder.split(",") if part.strip(" -—–,.;")]
+        name_value = parts[0] if parts else ""
+        city_value = (
+            re.sub(r"^(г\.?|город)\s+", "", parts[1], flags=re.IGNORECASE).strip()
+            if len(parts) > 1
+            else ""
+        )
+
+        if not name_value:
+            city_fallback, name_fallback = parse_raf_city_and_name(remainder)
+            city_value = city_value or city_fallback
+            name_value = name_fallback
+
         normalized_name = normalize_event_name_key(name_value)
         if not normalized_name:
             continue
@@ -10128,7 +10159,11 @@ def fetch_raf_page_html(page_url: str) -> tuple[str, str]:
     resolved_title = parse_qs(urlparse(page_url).query).get("p", [""])[0]
     resolved_title = unquote(resolved_title).strip() or "Календарь"
     headers = {
-        "User-Agent": "Mozilla/5.0",
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/123.0.0.0 Safari/537.36"
+        ),
         "Accept-Language": "ru-RU,ru;q=0.9",
     }
     try:
@@ -10327,7 +10362,7 @@ def festivals_import_raf(request: Request, db: Session = Depends(get_db)):
 
     add_flash(
         request,
-        f"Импорт с РАФ завершён: добавлено {imported_count}.",
+        f"Импорт с РАФ завершён: найдено {len(events)}, добавлено {imported_count}.",
         "success" if imported_count else "info",
     )
     return redirect("/festivals")

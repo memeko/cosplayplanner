@@ -29,7 +29,7 @@
     <div class="chips-wrap">
       <span class="chip">{{ master.master_type|capitalize }}</span>
       {% if master.import_source %}
-        <span class="chip">{{ import_source_labels.get(master.import_source, master.import_source) }}</span>
+        <span class="chip {% if master.import_source == 'cosplay_team' %}chip-source-cosplay-team{% endif %}">{{ import_source_labels.get(master.import_source, master.import_source) }}</span>
       {% endif %}
     </div>
   </div>
@@ -243,9 +243,11 @@
 (function () {
   function parseListEntries(value) {
     if (!value) return [];
-    return value
-      .split(/\n|,/)
+    const normalized = value.replace(/,\s*(?=(?:https?:\/\/|\/media\/|iframe:|<iframe))/gi, '\n');
+    return normalized
+      .split(/\n|;/)
       .map((item) => item.trim())
+      .map((item) => item.replace(/[;,]+$/, ''))
       .filter(Boolean);
   }
 
@@ -275,7 +277,7 @@
     if (!input || !wrap) return;
 
     wrap.innerHTML = '';
-    const urls = Array.from(new Set(parseListEntries(input.value).filter((value) => /^https?:\/\//i.test(value))));
+    const urls = Array.from(new Set(parseListEntries(input.value).filter((value) => /^(https?:\/\/|\/media\/)/i.test(value))));
     urls.forEach((url) => wrap.appendChild(createImageTile(url)));
   }
 
@@ -335,7 +337,7 @@
   function updateOrderPreview() {
     if (!orderInput || !orderPreview) return;
     orderPreview.innerHTML = '';
-    const urls = Array.from(new Set(parseListEntries(orderInput.value).filter((value) => /^https?:\/\//i.test(value)))).slice(0, 3);
+    const urls = Array.from(new Set(parseListEntries(orderInput.value).filter((value) => /^(https?:\/\/|\/media\/)/i.test(value)))).slice(0, 3);
     urls.forEach((url) => orderPreview.appendChild(createImageTile(url)));
   }
 

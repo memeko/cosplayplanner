@@ -99,9 +99,11 @@
 (function () {
   function parseListEntries(value) {
     if (!value) return [];
-    return value
-      .split(/\n|,/)
+    const normalized = value.replace(/,\s*(?=(?:https?:\/\/|\/media\/|iframe:|<iframe))/gi, '\n');
+    return normalized
+      .split(/\n|;/)
       .map((item) => item.trim())
+      .map((item) => item.replace(/[;,]+$/, ''))
       .filter(Boolean);
   }
 
@@ -169,7 +171,7 @@
     if (!input || !wrap) return;
 
     wrap.innerHTML = '';
-    const urls = Array.from(new Set(parseListEntries(input.value).filter((value) => /^https?:\/\//i.test(value))));
+    const urls = Array.from(new Set(parseListEntries(input.value).filter((value) => /^(https?:\/\/|\/media\/)/i.test(value))));
     urls.forEach((url) => wrap.appendChild(createImageTile(url)));
   }
 

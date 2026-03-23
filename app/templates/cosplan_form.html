@@ -782,8 +782,10 @@
 
   const parseListEntries = (text) =>
     (text || "")
-      .split(/[\n,;]/g)
+      .replace(/,\s*(?=(?:https?:\/\/|\/media\/|iframe:|<iframe))/gi, "\n")
+      .split(/[\n;]/g)
       .map((value) => value.trim())
+      .map((value) => value.replace(/[;,]+$/, ""))
       .filter(Boolean);
 
   const extractPinterestEmbed = (value) => {
@@ -873,7 +875,7 @@
     if (referencesInput && referencesWrap) {
       referencesWrap.innerHTML = "";
       const links = Array.from(
-        new Set(parseListEntries(referencesInput.value).filter((value) => /^https?:\/\//i.test(value)))
+        new Set(parseListEntries(referencesInput.value).filter((value) => /^(https?:\/\/|\/media\/)/i.test(value)))
       );
       links.forEach((url) => referencesWrap.appendChild(createImageTile(url, "Референс")));
     }
@@ -893,7 +895,7 @@
           poseWrap.appendChild(iframe);
           return;
         }
-        if (/^https?:\/\//i.test(value)) {
+        if (/^(https?:\/\/|\/media\/)/i.test(value)) {
           poseWrap.appendChild(createImageTile(value, "Референс позы"));
         }
       });

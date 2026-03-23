@@ -7,6 +7,49 @@
 </section>
 
 <section class="box">
+  <div class="row-between">
+    <h2>Оповещения {% if unread_notifications %}<span class="chip chip-alert">{{ unread_notifications }}</span>{% endif %}</h2>
+    <div class="actions-inline">
+      <form method="post" action="/festivals/notifications/mark-read">
+        <input type="hidden" name="next" value="/" />
+        <button type="submit" class="btn">Отметить прочитанным</button>
+      </form>
+      <form method="post" action="/festivals/notifications/clear" onsubmit="return confirm('Очистить список оповещений?');">
+        <input type="hidden" name="next" value="/" />
+        <button type="submit" class="btn btn-danger">Очистить список оповещений</button>
+      </form>
+    </div>
+  </div>
+
+  {% if notifications %}
+  <ul class="notifications-list">
+    {% for note in notifications %}
+      <li class="{% if not note.is_read %}notification-unread{% endif %}">
+        <div class="notification-content">
+          {% set lower_message = (note.message or "") | lower %}
+          {% if "предлож" in lower_message and "репети" in lower_message %}
+            <p class="meta">Предложение репетиции</p>
+          {% endif %}
+          {% set conflict_subject = notification_conflict_subject(note.message) %}
+          {% if conflict_subject %}
+            <p class="meta">Конфликт: <strong>{{ conflict_subject }}</strong></p>
+          {% endif %}
+          {{ note.message }}
+          <span class="muted">({{ note.created_at }})</span>
+        </div>
+        <form method="post" action="/festivals/notifications/{{ note.id }}/ignore">
+          <input type="hidden" name="next" value="/" />
+          <button type="submit" class="btn btn-small">Не учитывать</button>
+        </form>
+      </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+    <p class="muted">Пока нет оповещений. Здесь появятся назначения заданий, карточки по вашему нику и другие важные события.</p>
+  {% endif %}
+</section>
+
+<section class="box top-offset">
   <h2>Новости</h2>
   {% if can_manage_news %}
     <form method="post" action="/home-news/new" class="grid one-col top-offset">
@@ -52,6 +95,29 @@
   {% else %}
     <p class="muted top-offset">Пока новостей нет.</p>
   {% endif %}
+</section>
+
+<section class="box top-offset">
+  <h2>Отправить голубя!</h2>
+  <form method="post" action="/notifications/pigeon" class="grid one-col">
+    <input type="hidden" name="next" value="/" />
+    <label>
+      Ник косплеера
+      <input type="text" name="recipient_alias" list="pigeon-recipients" placeholder="Введите ник" required />
+      <datalist id="pigeon-recipients">
+        {% for alias in pigeon_alias_options %}
+          <option value="{{ alias }}"></option>
+        {% endfor %}
+      </datalist>
+    </label>
+    <label>
+      Сообщение
+      <textarea name="message" rows="3" maxlength="1500" placeholder="Напишите сообщение..." required></textarea>
+    </label>
+    <div class="actions-inline">
+      <button type="submit" class="btn btn-accent">Послать птицу</button>
+    </div>
+  </form>
 </section>
 
 <section class="box top-offset">
@@ -107,72 +173,6 @@
     </ul>
   {% else %}
     <p class="muted">Сегодня нет данных о днях рождения персонажей.</p>
-  {% endif %}
-</section>
-
-<section class="box top-offset">
-  <h2>Отправить голубя!</h2>
-  <form method="post" action="/notifications/pigeon" class="grid one-col">
-    <input type="hidden" name="next" value="/" />
-    <label>
-      Ник косплеера
-      <input type="text" name="recipient_alias" list="pigeon-recipients" placeholder="Введите ник" required />
-      <datalist id="pigeon-recipients">
-        {% for alias in pigeon_alias_options %}
-          <option value="{{ alias }}"></option>
-        {% endfor %}
-      </datalist>
-    </label>
-    <label>
-      Сообщение
-      <textarea name="message" rows="3" maxlength="1500" placeholder="Напишите сообщение..." required></textarea>
-    </label>
-    <div class="actions-inline">
-      <button type="submit" class="btn btn-accent">Послать птицу</button>
-    </div>
-  </form>
-</section>
-
-<section class="box">
-  <div class="row-between">
-    <h2>Оповещения {% if unread_notifications %}<span class="chip chip-alert">{{ unread_notifications }}</span>{% endif %}</h2>
-    <div class="actions-inline">
-      <form method="post" action="/festivals/notifications/mark-read">
-        <input type="hidden" name="next" value="/" />
-        <button type="submit" class="btn">Отметить прочитанным</button>
-      </form>
-      <form method="post" action="/festivals/notifications/clear" onsubmit="return confirm('Очистить список оповещений?');">
-        <input type="hidden" name="next" value="/" />
-        <button type="submit" class="btn btn-danger">Очистить список оповещений</button>
-      </form>
-    </div>
-  </div>
-
-  {% if notifications %}
-  <ul class="notifications-list">
-    {% for note in notifications %}
-      <li class="{% if not note.is_read %}notification-unread{% endif %}">
-        <div class="notification-content">
-          {% set lower_message = (note.message or "") | lower %}
-          {% if "предлож" in lower_message and "репети" in lower_message %}
-            <p class="meta">Предложение репетиции</p>
-          {% endif %}
-          {% set conflict_subject = notification_conflict_subject(note.message) %}
-          {% if conflict_subject %}
-            <p class="meta">Конфликт: <strong>{{ conflict_subject }}</strong></p>
-          {% endif %}
-          {{ note.message }}
-          <span class="muted">({{ note.created_at }})</span>
-        </div>
-        <form method="post" action="/festivals/notifications/{{ note.id }}/ignore">
-          <input type="hidden" name="next" value="/" />
-          <button type="submit" class="btn btn-small">Не учитывать</button>
-        </form>
-      </li>
-    {% endfor %}
-  </ul>
-  {% else %}
-    <p class="muted">Пока нет оповещений. Здесь появятся назначения заданий, карточки по вашему нику и другие важные события.</p>
   {% endif %}
 </section>
 {% endblock %}

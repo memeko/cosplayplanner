@@ -36,7 +36,7 @@
         <div class="chips-wrap">
           <span class="chip">{{ master.master_type|capitalize }}</span>
           {% if master.import_source %}
-            <span class="chip">{{ import_source_labels.get(master.import_source, master.import_source) }}</span>
+            <span class="chip {% if master.import_source == 'cosplay_team' %}chip-source-cosplay-team{% endif %}">{{ import_source_labels.get(master.import_source, master.import_source) }}</span>
           {% endif %}
         </div>
       </div>
