@@ -83,13 +83,17 @@
 
       VKID.Auth.exchangeCode(code, deviceId)
         .then(function (exchangeData) {
+          const serverPayload = {
+            id_token: exchangeData && exchangeData.id_token,
+            user_id: exchangeData && exchangeData.user_id
+          };
           return fetch('/auth/vk/complete', {
             method: 'POST',
             credentials: 'same-origin',
             headers: {
               'Content-Type': 'application/json'
             },
-            body: JSON.stringify(exchangeData || {})
+            body: JSON.stringify(serverPayload)
           });
         })
         .then(async function (response) {

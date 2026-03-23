@@ -394,6 +394,11 @@ textarea {
   border-color: rgba(251, 146, 60, 0.9);
 }
 
+.priority-card {
+  background: linear-gradient(155deg, rgba(255, 249, 219, 0.88), rgba(255, 236, 153, 0.58));
+  border-color: rgba(245, 158, 11, 0.9);
+}
+
 .card-title-link {
   color: inherit;
   text-decoration: none;
@@ -496,6 +501,12 @@ textarea {
   color: #166534;
 }
 
+.chip-priority {
+  background: rgba(255, 243, 176, 0.88);
+  border-color: rgba(245, 158, 11, 0.55);
+  color: #8a4b00;
+}
+
 .chip-shared {
   background: #eef2ff;
   border-color: #c7d2fe;
@@ -527,6 +538,44 @@ textarea {
 
 .row-between > * {
   min-width: 0;
+}
+
+.cosplan-list-view {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 12px;
+}
+
+.cosplan-list-item {
+  padding-top: 12px;
+}
+
+.cosplan-list-item-head {
+  margin-bottom: 6px;
+}
+
+.cosplan-list-number {
+  font-size: 0.86rem;
+  font-weight: 700;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+
+.cosplayer-card-avatar-wrap {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 12px;
+}
+
+.cosplayer-card-avatar {
+  width: 110px;
+  height: 110px;
+  border-radius: 999px;
+  object-fit: cover;
+  border: 1px solid rgba(255, 255, 255, 0.78);
+  box-shadow: var(--glass-shadow), var(--glass-highlight-soft);
 }
 
 .card-post-found {

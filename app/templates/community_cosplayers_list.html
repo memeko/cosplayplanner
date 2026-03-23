@@ -41,6 +41,11 @@
     {% set owner = owners_by_id.get(cosplayer.user_id) %}
     {% set photos = cosplayer.promo_photos_json or [] %}
     <article class="card">
+      {% if photos %}
+        <div class="cosplayer-card-avatar-wrap">
+          <img src="{{ photos[0] }}" alt="Промо-фото @{{ cosplayer.nick }}" class="cosplayer-card-avatar" loading="lazy" />
+        </div>
+      {% endif %}
       <div class="row-between">
         <h3><a href="/community/cosplayers/{{ cosplayer.id }}" class="card-title-link"><span class="{% if nick_is_special(cosplayer.nick) %}nick-special{% endif %}">@{{ cosplayer.nick }}</span></a></h3>
         <span class="chip">{{ collab_labels.get(cosplayer.collab_status, cosplayer.collab_status) }}</span>

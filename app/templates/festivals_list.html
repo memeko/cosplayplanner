@@ -5,9 +5,11 @@
   <div class="actions-inline wrap">
     <a href="/festivals/new" class="btn btn-accent">Новый фестиваль</a>
     <a href="/festivals/announcements/new" class="btn">Добавить анонс</a>
+    {% if can_import_cosplay2 %}
     <form method="post" action="/festivals/import-cosplay2">
       <button type="submit" class="btn">Импорт с cosplay2.ru</button>
     </form>
+    {% endif %}
     {% if can_import_raf %}
     <form method="post" action="/festivals/import-raf">
       <button type="submit" class="btn">Импорт с РАФ</button>

@@ -251,8 +251,8 @@ VKID_REDIRECT_URL = (
 ).strip()
 VKID_SCOPE = (os.getenv("VKID_SCOPE", "") or "").strip()
 VK_API_VERSION = (os.getenv("VK_API_VERSION", "5.199") or "5.199").strip()
-VK_IMPORT_TOKEN = (os.getenv("VK_IMPORT_TOKEN", "") or "").strip()
-VK_IMPORT_ENABLED = bool(VK_IMPORT_TOKEN) and to_bool(os.getenv("VK_IMPORT_ENABLED", "1"))
+VK_API_TOKEN = (os.getenv("VK_API_TOKEN", "") or os.getenv("VK_IMPORT_TOKEN", "") or "").strip()
+VK_IMPORT_ENABLED = bool(VK_API_TOKEN) and to_bool(os.getenv("VK_IMPORT_ENABLED", "1"))
 VK_IMPORT_WALL_DOMAIN = (os.getenv("VK_IMPORT_WALL_DOMAIN", "cosplay_teamm") or "cosplay_teamm").strip()
 VK_IMPORT_WALL_COUNT = max(10, min(100, int(os.getenv("VK_IMPORT_WALL_COUNT", "50") or "50")))
 RAF_OWNER_ID = int(os.getenv("RAF_OWNER_ID", "-22664912") or "-22664912")
@@ -265,6 +265,7 @@ MASTER_IMPORT_INTERVAL_HOURS = max(1, min(24, int(os.getenv("MASTER_IMPORT_INTER
 RAF_IMPORT_INTERVAL_HOURS = max(1, min(72, int(os.getenv("RAF_IMPORT_INTERVAL_HOURS", "24") or "24")))
 MASTER_IMPORT_SOURCE_LABEL = "cosplay_team"
 RAF_IMPORT_SOURCE_LABEL = "raf"
+VKID_PUBLIC_INFO_URL = "https://id.vk.ru/oauth2/public_info"
 IMPORT_SOURCE_LABELS = {
     MASTER_IMPORT_SOURCE_LABEL: "Cosplay Team",
     RAF_IMPORT_SOURCE_LABEL: "взято с РАФ",
@@ -521,6 +522,7 @@ def apply_schema_migrations() -> None:
             ("wig_buy_price", "FLOAT"),
             ("coproplayer_nicks_json", "JSON NOT NULL DEFAULT '[]'"),
             ("is_shared_copy", "BOOLEAN NOT NULL DEFAULT 0"),
+            ("is_priority", "BOOLEAN NOT NULL DEFAULT 0"),
             ("source_card_id", "INTEGER"),
             ("shared_from_user_id", "INTEGER"),
             ("wig_no_buy_from", "VARCHAR(255)"),
@@ -3579,6 +3581,7 @@ def card_fields_for_sync() -> list[str]:
         "craft_parts_json",
         "coproplayers_json",
         "coproplayer_nicks_json",
+        "is_priority",
         "notes",
     ]
 
@@ -3829,6 +3832,10 @@ def extract_vk_access_token(payload: dict[str, Any]) -> str:
     return _deep_find_string(payload, {"access_token", "accesstoken"})
 
 
+def extract_vk_id_token(payload: dict[str, Any]) -> str:
+    return _deep_find_string(payload, {"id_token", "idtoken"})
+
+
 def extract_vk_email(payload: dict[str, Any]) -> str:
     email_value = _deep_find_string(payload, {"email", "user_email", "mail"}).lower()
     if "@" not in email_value:
@@ -3836,15 +3843,12 @@ def extract_vk_email(payload: dict[str, Any]) -> str:
     return email_value
 
 
-def fetch_vk_profile(access_token: str) -> dict[str, Any]:
+def fetch_vk_public_profile(id_token: str) -> dict[str, Any]:
     try:
-        response = requests.get(
-            "https://api.vk.com/method/users.get",
-            params={
-                "access_token": access_token,
-                "v": VK_API_VERSION,
-                "fields": "screen_name,first_name,last_name",
-            },
+        response = requests.post(
+            VKID_PUBLIC_INFO_URL,
+            params={"client_id": VKID_APP_ID},
+            data={"id_token": id_token},
             timeout=HTTP_TIMEOUT_SECONDS,
         )
     except requests.RequestException as exc:
@@ -3863,14 +3867,33 @@ def fetch_vk_profile(access_token: str) -> dict[str, Any]:
         message = str(error_payload.get("error_msg") or "Ошибка авторизации VK").strip()
         raise ValueError(message)
 
-    users = payload.get("response") if isinstance(payload, dict) else None
-    if not isinstance(users, list) or not users or not isinstance(users[0], dict):
+    profile = payload.get("user") if isinstance(payload, dict) else None
+    if not isinstance(profile, dict):
         raise RuntimeError("Не удалось получить профиль VK.")
 
-    profile = users[0]
-    if not profile.get("id"):
+    user_id = str(profile.get("user_id") or "").strip()
+    if not user_id:
         raise RuntimeError("В ответе VK отсутствует id пользователя.")
-    return profile
+
+    email = str(profile.get("email") or "").strip().lower()
+    if email and "@" not in email:
+        email = ""
+
+    return {
+        "id": user_id,
+        "email": email,
+        "first_name": str(profile.get("first_name") or "").strip(),
+        "last_name": str(profile.get("last_name") or "").strip(),
+        "avatar": str(profile.get("avatar") or "").strip(),
+        "phone": str(profile.get("phone") or "").strip(),
+    }
+
+
+def get_verified_vk_profile(payload: dict[str, Any]) -> dict[str, Any]:
+    id_token = extract_vk_id_token(payload)
+    if not id_token:
+        raise ValueError("VK не вернул id_token.")
+    return fetch_vk_public_profile(id_token)
 
 
 def sanitize_vk_username(value: str | None) -> str:
@@ -3919,14 +3942,13 @@ def upsert_user_by_vk(
     if not vk_user_id:
         raise ValueError("VK не вернул идентификатор пользователя.")
 
-    vk_screen_name = normalize_username(str(vk_profile.get("screen_name") or ""))
     first_name = str(vk_profile.get("first_name") or "").strip()
     last_name = str(vk_profile.get("last_name") or "").strip()
     display_name = (f"{first_name}_{last_name}").strip("_")
 
     user_by_vk = db.execute(select(User).where(User.vk_user_id == vk_user_id)).scalar_one_or_none()
 
-    email_candidate = extract_vk_email(payload)
+    email_candidate = str(vk_profile.get("email") or "").strip().lower() or extract_vk_email(payload)
     user_by_email = None
     if email_candidate:
         user_by_email = db.execute(select(User).where(User.email == email_candidate)).scalar_one_or_none()
@@ -3939,7 +3961,7 @@ def upsert_user_by_vk(
     if user is None:
         username = build_unique_username(
             db,
-            preferred=vk_screen_name or display_name or f"vk_{vk_user_id}",
+            preferred=display_name or f"vk_{vk_user_id}",
             fallback_seed=vk_user_id,
         )
         email_value = build_unique_email(db, email_candidate, vk_user_id)
@@ -3947,9 +3969,7 @@ def upsert_user_by_vk(
             username=username,
             email=email_value,
             password_hash=password_context.hash(secrets.token_urlsafe(24)),
-            cosplay_nick=vk_screen_name or None,
             vk_user_id=vk_user_id,
-            vk_screen_name=vk_screen_name or None,
         )
         db.add(user)
         db.flush()
@@ -3958,10 +3978,6 @@ def upsert_user_by_vk(
         if user.vk_user_id and user.vk_user_id != vk_user_id:
             raise ValueError("Этот VK-аккаунт уже привязан к другому пользователю.")
         user.vk_user_id = vk_user_id
-        if vk_screen_name:
-            user.vk_screen_name = vk_screen_name
-            if not user.cosplay_nick:
-                user.cosplay_nick = vk_screen_name
 
     if created_new:
         approved_announcements = db.execute(
@@ -3985,7 +4001,6 @@ def link_existing_user_with_vk(db: Session, user: User, vk_profile: dict[str, An
     if not vk_user_id:
         raise ValueError("VK не вернул идентификатор пользователя.")
 
-    vk_screen_name = normalize_username(str(vk_profile.get("screen_name") or ""))
     linked_to_another = db.execute(
         select(User).where(
             User.vk_user_id == vk_user_id,
@@ -3996,9 +4011,6 @@ def link_existing_user_with_vk(db: Session, user: User, vk_profile: dict[str, An
         raise ValueError("Этот VK-аккаунт уже связан с другим профилем Cosplay Planner.")
 
     user.vk_user_id = vk_user_id
-    user.vk_screen_name = vk_screen_name or None
-    if vk_screen_name and not user.cosplay_nick:
-        user.cosplay_nick = vk_screen_name
 
     try:
         db.commit()
@@ -4684,12 +4696,8 @@ async def auth_vk_complete(request: Request, db: Session = Depends(get_db)) -> d
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="Некорректные данные авторизации VK.")
 
-    access_token = extract_vk_access_token(payload)
-    if not access_token:
-        raise HTTPException(status_code=400, detail="VK не вернул токен доступа.")
-
     try:
-        vk_profile = fetch_vk_profile(access_token)
+        vk_profile = get_verified_vk_profile(payload)
         user = upsert_user_by_vk(db, vk_profile, payload)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -4715,20 +4723,15 @@ async def profile_vk_link(request: Request, db: Session = Depends(get_db)) -> di
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="Некорректные данные авторизации VK.")
 
-    access_token = extract_vk_access_token(payload)
-    if not access_token:
-        raise HTTPException(status_code=400, detail="VK не вернул токен доступа.")
-
     try:
-        vk_profile = fetch_vk_profile(access_token)
+        vk_profile = get_verified_vk_profile(payload)
         link_existing_user_with_vk(db, user, vk_profile)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
-    vk_screen_name = normalize_username(str(vk_profile.get("screen_name") or ""))
-    linked_label = f"@{vk_screen_name}" if vk_screen_name else f"id{vk_profile.get('id')}"
+    linked_label = f"id{vk_profile.get('id')}"
     return {
         "ok": True,
         "message": f"Профиль успешно связан с VK ({linked_label}).",
@@ -5062,13 +5065,15 @@ async def profile_update(request: Request, db: Session = Depends(get_db)):
 
 
 @app.get("/cosplan", response_class=HTMLResponse)
-def cosplan_list(request: Request, q: str = "", db: Session = Depends(get_db)):
+def cosplan_list(request: Request, q: str = "", view: str = "cards", db: Session = Depends(get_db)):
     user = current_user(request, db)
     if not user:
         return redirect("/login")
 
     all_cards = db.execute(
-        select(CosplanCard).where(CosplanCard.user_id == user.id).order_by(CosplanCard.updated_at.desc())
+        select(CosplanCard)
+        .where(CosplanCard.user_id == user.id)
+        .order_by(CosplanCard.is_priority.desc(), CosplanCard.updated_at.desc())
     ).scalars().all()
 
     cards = list(all_cards)
@@ -5152,6 +5157,8 @@ def cosplan_list(request: Request, q: str = "", db: Session = Depends(get_db)):
         if source_card and can_edit_card(user, source_card):
             editable_card_links[visible_card.id] = source_card.id
 
+    current_view = view if view in {"cards", "list"} else "cards"
+
     return template_response(
         request,
         "cosplan_list.html",
@@ -5162,9 +5169,12 @@ def cosplan_list(request: Request, q: str = "", db: Session = Depends(get_db)):
         card_total_currencies=card_total_currencies,
         card_date_conflicts=card_date_conflicts,
         q=q,
+        current_view=current_view,
+        cards_total=len(cards),
         in_progress_ids=in_progress_ids,
         rehearsal_stats_by_card=rehearsal_stats_by_card,
         editable_card_links=editable_card_links,
+        current_query=request.url.query or "",
     )
 
 
@@ -5895,6 +5905,32 @@ async def cosplan_update(card_id: int, request: Request, db: Session = Depends(g
     else:
         add_flash(request, "Карточка косплана обновлена.", "success")
     return redirect("/cosplan")
+
+
+@app.post("/cosplan/{card_id}/priority-toggle")
+async def cosplan_priority_toggle(card_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    card = get_editable_card(db, card_id, user)
+    if not card:
+        add_flash(request, "Карточка недоступна для редактирования.", "error")
+        return redirect("/cosplan")
+
+    form = await request.form()
+    next_url = safe_redirect_target(str(form.get("next", "")).strip(), "/cosplan")
+
+    card.is_priority = not bool(card.is_priority)
+    sync_shared_cards_for_nicks(card, user, db)
+    db.commit()
+
+    add_flash(
+        request,
+        "Карточка отмечена как приоритетная." if card.is_priority else "Приоритет для карточки снят.",
+        "success",
+    )
+    return redirect(next_url)
 
 
 @app.post("/cosplan/{card_id}/delete")
@@ -8326,7 +8362,7 @@ def community_masters_list(request: Request, db: Session = Depends(get_db)):
         rating_avg_by_master=rating_avg_by_master,
         rating_count_by_master=rating_count_by_master,
         user_rating_by_master=user_rating_by_master,
-        can_import_masters=is_moderator_user(user),
+        can_import_masters=user_is_special(user) and VK_IMPORT_ENABLED,
         import_source_labels=IMPORT_SOURCE_LABELS,
         q=q,
         selected_type=master_type,
@@ -9590,10 +9626,10 @@ def should_run_import_by_interval(state: dict[str, Any], key: str, interval_hour
 
 def vk_api_call(method: str, params: dict[str, Any]) -> dict[str, Any]:
     if not VK_IMPORT_ENABLED:
-        raise RuntimeError("Импорт VK недоступен: не задан VK_IMPORT_TOKEN.")
+        raise RuntimeError("Импорт VK недоступен: не задан VK_API_TOKEN.")
 
     query = dict(params)
-    query["access_token"] = VK_IMPORT_TOKEN
+    query["access_token"] = VK_API_TOKEN
     query["v"] = VK_API_VERSION
 
     try:
@@ -10101,11 +10137,11 @@ def community_masters_import_cosplay_team(request: Request, db: Session = Depend
     user = current_user(request, db)
     if not user:
         return redirect("/login")
-    if not is_moderator_user(user):
-        add_flash(request, "Импорт доступен только модератору.", "error")
+    if not user_is_special(user):
+        add_flash(request, "Импорт доступен только @brfox_cosplay.", "error")
         return redirect("/community/masters")
     if not VK_IMPORT_ENABLED:
-        add_flash(request, "Импорт недоступен: задайте VK_IMPORT_TOKEN в переменных окружения.", "error")
+        add_flash(request, "Импорт недоступен: задайте VK_API_TOKEN в переменных окружения.", "error")
         return redirect("/community/masters")
 
     state = load_external_import_state()
@@ -10138,8 +10174,11 @@ def festivals_import_raf(request: Request, db: Session = Depends(get_db)):
     user = current_user(request, db)
     if not user:
         return redirect("/login")
+    if not user_is_special(user):
+        add_flash(request, "Импорт РАФ доступен только @brfox_cosplay.", "error")
+        return redirect("/festivals")
     if not VK_IMPORT_ENABLED:
-        add_flash(request, "Импорт РАФ недоступен: задайте VK_IMPORT_TOKEN в переменных окружения.", "error")
+        add_flash(request, "Импорт РАФ недоступен: задайте VK_API_TOKEN в переменных окружения.", "error")
         return redirect("/festivals")
 
     state = load_external_import_state()
@@ -10361,7 +10400,8 @@ def festivals_list(request: Request, db: Session = Depends(get_db)):
         moderator_announcements=moderator_announcements,
         own_announcements=own_announcements,
         announcement_requesters_by_id=announcement_requesters_by_id,
-        can_import_raf=VK_IMPORT_ENABLED,
+        can_import_cosplay2=user_is_special(user),
+        can_import_raf=user_is_special(user) and VK_IMPORT_ENABLED,
         import_source_labels=IMPORT_SOURCE_LABELS,
         announcement_status_labels={
             ANNOUNCEMENT_STATUS_PENDING: announcement_status_label(ANNOUNCEMENT_STATUS_PENDING),
@@ -10816,6 +10856,9 @@ def festivals_import_cosplay2(request: Request, db: Session = Depends(get_db)):
     user = current_user(request, db)
     if not user:
         return redirect("/login")
+    if not user_is_special(user):
+        add_flash(request, "Импорт с cosplay2.ru доступен только @brfox_cosplay.", "error")
+        return redirect("/festivals")
 
     try:
         response = requests.get("https://cosplay2.ru/", timeout=20)

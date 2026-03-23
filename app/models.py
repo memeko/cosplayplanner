@@ -296,6 +296,7 @@ class CosplanCard(Base):
 
     # Shared copy support: if this is a propagated card for another user.
     is_shared_copy = Column(Boolean, nullable=False, default=False)
+    is_priority = Column(Boolean, nullable=False, default=False)
     source_card_id = Column(Integer, ForeignKey("cosplan_cards.id", ondelete="SET NULL"), nullable=True, index=True)
     shared_from_user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
     notes = Column(Text, nullable=True)
