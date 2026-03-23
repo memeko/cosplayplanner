@@ -1,0 +1,107 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="box auth-box">
+  <h1>Вход</h1>
+  <form method="post" action="/login" class="stack-form top-offset">
+    <label>
+      Логин или email
+      <input type="text" name="login" autocomplete="username" required />
+    </label>
+    <label class="top-offset">
+      Пароль
+      <input type="password" name="password" autocomplete="current-password" required />
+    </label>
+    <div class="actions-inline top-offset">
+      <button type="submit" class="btn btn-accent">Войти</button>
+      <a class="btn" href="/register">Присоединиться!</a>
+      <a class="btn" href="/forgot-password">Забыли пароль?</a>
+    </div>
+  </form>
+
+  {% if vkid_enabled %}
+  <div class="top-offset" id="vk-auth-wrapper">
+    <h3>Или войдите через VK</h3>
+    <div id="vkid-onetap"></div>
+    <p class="muted" id="vkid-error" style="display:none;"></p>
+  </div>
+  {% endif %}
+</section>
+
+{% if vkid_enabled %}
+<script src="https://unpkg.com/@vkid/sdk@<3.0.0/dist-sdk/umd/index.js"></script>
+<script>
+(function () {
+  const errorEl = document.getElementById('vkid-error');
+  const container = document.getElementById('vkid-onetap');
+  if (!container || !window.VKIDSDK) {
+    return;
+  }
+
+  const VKID = window.VKIDSDK;
+
+  function showVkError(rawError) {
+    if (!errorEl) {
+      return;
+    }
+    let message = 'Не удалось выполнить вход через VK. Попробуйте еще раз.';
+    if (rawError) {
+      if (typeof rawError === 'string') {
+        message = rawError;
+      } else if (rawError.detail) {
+        message = String(rawError.detail);
+      } else if (rawError.message) {
+        message = String(rawError.message);
+      }
+    }
+    errorEl.textContent = message;
+    errorEl.style.display = 'block';
+  }
+
+  VKID.Config.init({
+    app: Number({{ vkid_app_id }}),
+    redirectUrl: {{ vkid_redirect_url|tojson }},
+    responseMode: VKID.ConfigResponseMode.Callback,
+    source: VKID.ConfigSource.LOWCODE,
+    scope: {{ vkid_scope|tojson }}
+  });
+
+  const oneTap = new VKID.OneTap();
+
+  oneTap
+    .render({
+      container: container,
+      showAlternativeLogin: true
+    })
+    .on(VKID.WidgetEvents.ERROR, showVkError)
+    .on(VKID.OneTapInternalEvents.LOGIN_SUCCESS, function (payload) {
+      const code = payload && payload.code;
+      const deviceId = payload && payload.device_id;
+      if (!code || !deviceId) {
+        showVkError('VK ID не вернул данные авторизации.');
+        return;
+      }
+
+      VKID.Auth.exchangeCode(code, deviceId)
+        .then(function (exchangeData) {
+          return fetch('/auth/vk/complete', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: {
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(exchangeData || {})
+          });
+        })
+        .then(async function (response) {
+          const payload = await response.json().catch(function () { return {}; });
+          if (!response.ok || !payload.ok) {
+            throw payload;
+          }
+          window.location.href = payload.redirect || '/cosplan';
+        })
+        .catch(showVkError);
+    });
+})();
+</script>
+{% endif %}
+{% endblock %}

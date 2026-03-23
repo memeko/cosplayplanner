@@ -30,6 +30,7 @@ from fastapi.templating import Jinja2Templates
 from passlib.context import CryptContext
 from PIL import Image, ImageOps, UnidentifiedImageError
 from sqlalchemy import and_, func, inspect, or_, select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from starlette.middleware.gzip import GZipMiddleware
 from starlette.middleware.sessions import SessionMiddleware
@@ -220,6 +221,14 @@ SMTP_FROM_EMAIL = (os.getenv("SMTP_FROM_EMAIL", "") or SMTP_USER).strip()
 SMTP_USE_TLS = to_bool(os.getenv("SMTP_USE_TLS", "1"))
 SMTP_USE_SSL = to_bool(os.getenv("SMTP_USE_SSL", "0"))
 PASSWORD_RESET_TOKEN_MINUTES = max(5, min(24 * 60, int(os.getenv("PASSWORD_RESET_TOKEN_MINUTES", "30") or "30")))
+
+VKID_ENABLED = to_bool(os.getenv("VKID_ENABLED", "1"))
+VKID_APP_ID = int(os.getenv("VKID_APP_ID", "54500249") or "54500249")
+VKID_REDIRECT_URL = (
+    os.getenv("VKID_REDIRECT_URL", "https://cosplay-planner.ru/") or "https://cosplay-planner.ru/"
+).strip()
+VKID_SCOPE = (os.getenv("VKID_SCOPE", "") or "").strip()
+VK_API_VERSION = (os.getenv("VK_API_VERSION", "5.199") or "5.199").strip()
 
 telegram_auth_state_lock = threading.Lock()
 telegram_auth_state: dict[str, dict[str, str]] = {}
@@ -456,6 +465,8 @@ def apply_schema_migrations() -> None:
             ("telegram_linked_at", "DATETIME"),
             ("telegram_secret_code_hash", "VARCHAR(255)"),
             ("telegram_secret_code_updated_at", "DATETIME"),
+            ("vk_user_id", "VARCHAR(64)"),
+            ("vk_screen_name", "VARCHAR(255)"),
         ],
         "cosplan_cards": [
             ("costume_bought", "BOOLEAN NOT NULL DEFAULT 0"),
@@ -599,6 +610,19 @@ def apply_schema_migrations() -> None:
                     # Table create handles PK.
                     continue
                 conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}"))
+
+        conn.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ix_users_vk_user_id "
+                "ON users (vk_user_id)"
+            )
+        )
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_users_vk_screen_name "
+                "ON users (vk_screen_name)"
+            )
+        )
 
 
 @app.on_event("startup")
@@ -3703,6 +3727,187 @@ def find_active_password_reset_token(db: Session, raw_token: str | None) -> Pass
     ).scalar_one_or_none()
 
 
+def _deep_find_string(payload: Any, wanted_keys: set[str]) -> str:
+    stack: list[Any] = [payload]
+    visited: set[int] = set()
+
+    while stack:
+        item = stack.pop(0)
+        item_id = id(item)
+        if item_id in visited:
+            continue
+        visited.add(item_id)
+
+        if isinstance(item, dict):
+            for key, value in item.items():
+                key_norm = str(key).strip().casefold()
+                if key_norm in wanted_keys and isinstance(value, str) and value.strip():
+                    return value.strip()
+                if isinstance(value, (dict, list, tuple)):
+                    stack.append(value)
+        elif isinstance(item, (list, tuple)):
+            for value in item:
+                if isinstance(value, (dict, list, tuple)):
+                    stack.append(value)
+
+    return ""
+
+
+def extract_vk_access_token(payload: dict[str, Any]) -> str:
+    return _deep_find_string(payload, {"access_token", "accesstoken"})
+
+
+def extract_vk_email(payload: dict[str, Any]) -> str:
+    email_value = _deep_find_string(payload, {"email", "user_email", "mail"}).lower()
+    if "@" not in email_value:
+        return ""
+    return email_value
+
+
+def fetch_vk_profile(access_token: str) -> dict[str, Any]:
+    try:
+        response = requests.get(
+            "https://api.vk.com/method/users.get",
+            params={
+                "access_token": access_token,
+                "v": VK_API_VERSION,
+                "fields": "screen_name,first_name,last_name",
+            },
+            timeout=HTTP_TIMEOUT_SECONDS,
+        )
+    except requests.RequestException as exc:
+        raise RuntimeError("Не удалось связаться с VK ID. Попробуйте позже.") from exc
+
+    if response.status_code != 200:
+        raise RuntimeError("VK ID временно недоступен.")
+
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise RuntimeError("VK ID вернул некорректный ответ.") from exc
+
+    error_payload = payload.get("error") if isinstance(payload, dict) else None
+    if isinstance(error_payload, dict):
+        message = str(error_payload.get("error_msg") or "Ошибка авторизации VK").strip()
+        raise ValueError(message)
+
+    users = payload.get("response") if isinstance(payload, dict) else None
+    if not isinstance(users, list) or not users or not isinstance(users[0], dict):
+        raise RuntimeError("Не удалось получить профиль VK.")
+
+    profile = users[0]
+    if not profile.get("id"):
+        raise RuntimeError("В ответе VK отсутствует id пользователя.")
+    return profile
+
+
+def sanitize_vk_username(value: str | None) -> str:
+    cleaned = normalize_username(value)
+    if not cleaned:
+        return ""
+    cleaned = re.sub(r"[^\w.-]+", "_", cleaned, flags=re.UNICODE)
+    cleaned = re.sub(r"_+", "_", cleaned).strip("_.-")
+    return cleaned[:100]
+
+
+def build_unique_username(db: Session, preferred: str, fallback_seed: str) -> str:
+    base = sanitize_vk_username(preferred) or sanitize_vk_username(f"vk_{fallback_seed}")
+    if not base:
+        base = f"vk_{secrets.token_hex(4)}"
+
+    candidate = base
+    counter = 2
+    while db.execute(select(User.id).where(User.username == candidate)).first() is not None:
+        suffix = f"_{counter}"
+        candidate = f"{base[: max(1, 100 - len(suffix))]}{suffix}"
+        counter += 1
+    return candidate
+
+
+def build_unique_email(db: Session, preferred_email: str, vk_user_id: str) -> str:
+    normalized = (preferred_email or "").strip().lower()
+    if normalized and db.execute(select(User.id).where(User.email == normalized)).first() is None:
+        return normalized
+
+    base_local = f"vkid_{vk_user_id}"
+    candidate = f"{base_local}@vkid.local"
+    counter = 2
+    while db.execute(select(User.id).where(User.email == candidate)).first() is not None:
+        candidate = f"{base_local}_{counter}@vkid.local"
+        counter += 1
+    return candidate
+
+
+def upsert_user_by_vk(
+    db: Session,
+    vk_profile: dict[str, Any],
+    payload: dict[str, Any],
+) -> User:
+    vk_user_id = str(vk_profile.get("id") or "").strip()
+    if not vk_user_id:
+        raise ValueError("VK не вернул идентификатор пользователя.")
+
+    vk_screen_name = normalize_username(str(vk_profile.get("screen_name") or ""))
+    first_name = str(vk_profile.get("first_name") or "").strip()
+    last_name = str(vk_profile.get("last_name") or "").strip()
+    display_name = (f"{first_name}_{last_name}").strip("_")
+
+    user_by_vk = db.execute(select(User).where(User.vk_user_id == vk_user_id)).scalar_one_or_none()
+
+    email_candidate = extract_vk_email(payload)
+    user_by_email = None
+    if email_candidate:
+        user_by_email = db.execute(select(User).where(User.email == email_candidate)).scalar_one_or_none()
+
+    if user_by_vk and user_by_email and user_by_vk.id != user_by_email.id:
+        raise ValueError("Этот VK-аккаунт уже связан с другим профилем Cosplay Planner.")
+
+    created_new = False
+    user = user_by_vk or user_by_email
+    if user is None:
+        username = build_unique_username(
+            db,
+            preferred=vk_screen_name or display_name or f"vk_{vk_user_id}",
+            fallback_seed=vk_user_id,
+        )
+        email_value = build_unique_email(db, email_candidate, vk_user_id)
+        user = User(
+            username=username,
+            email=email_value,
+            password_hash=password_context.hash(secrets.token_urlsafe(24)),
+            cosplay_nick=vk_screen_name or None,
+            vk_user_id=vk_user_id,
+            vk_screen_name=vk_screen_name or None,
+        )
+        db.add(user)
+        db.flush()
+        created_new = True
+    else:
+        if user.vk_user_id and user.vk_user_id != vk_user_id:
+            raise ValueError("Этот VK-аккаунт уже привязан к другому пользователю.")
+        user.vk_user_id = vk_user_id
+        if vk_screen_name:
+            user.vk_screen_name = vk_screen_name
+            if not user.cosplay_nick:
+                user.cosplay_nick = vk_screen_name
+
+    if created_new:
+        approved_announcements = db.execute(
+            select(FestivalAnnouncement).where(FestivalAnnouncement.status == ANNOUNCEMENT_STATUS_APPROVED)
+        ).scalars().all()
+        for announcement in approved_announcements:
+            propagate_approved_announcement(db, announcement, target_user_ids=[user.id])
+
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise ValueError("Не удалось завершить авторизацию VK. Попробуйте ещё раз.") from exc
+
+    db.refresh(user)
+    return user
+
+
 def template_response(
     request: Request,
     name: str,
@@ -3720,6 +3925,10 @@ def template_response(
         "nick_is_special": nick_is_special,
         "user_is_special": user_is_special,
         "notification_conflict_subject": conflict_subject_from_message,
+        "vkid_enabled": VKID_ENABLED,
+        "vkid_app_id": VKID_APP_ID,
+        "vkid_redirect_url": VKID_REDIRECT_URL,
+        "vkid_scope": VKID_SCOPE,
     }
     payload.update(context)
     return templates.TemplateResponse(name, payload)
@@ -4277,7 +4486,38 @@ def login_page(request: Request, db: Session = Depends(get_db)):
     user = current_user(request, db)
     if user:
         return redirect("/cosplan")
-    return template_response(request, "login.html", user=None)
+    return template_response(request, "login_vkid.html", user=None)
+
+
+
+
+@app.post("/auth/vk/complete")
+async def auth_vk_complete(request: Request, db: Session = Depends(get_db)) -> dict[str, Any]:
+    if not VKID_ENABLED:
+        raise HTTPException(status_code=404, detail="VK ID отключен.")
+
+    try:
+        payload = await request.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Некорректный формат запроса.") from exc
+
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Некорректные данные авторизации VK.")
+
+    access_token = extract_vk_access_token(payload)
+    if not access_token:
+        raise HTTPException(status_code=400, detail="VK не вернул токен доступа.")
+
+    try:
+        vk_profile = fetch_vk_profile(access_token)
+        user = upsert_user_by_vk(db, vk_profile, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    request.session["user_id"] = user.id
+    return {"ok": True, "redirect": "/cosplan"}
 
 
 @app.get("/forgot-password", response_class=HTMLResponse)
