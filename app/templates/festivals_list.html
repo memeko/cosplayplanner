@@ -99,6 +99,7 @@
         <th>Город</th>
         <th>Дата</th>
         <th>Статус</th>
+        <th>Действия</th>
       </tr>
     </thead>
     <tbody>
@@ -117,6 +118,15 @@
           {% endif %}
         </td>
         <td>{{ announcement_status_labels.get(item.status or 'pending', item.status or 'pending') }}</td>
+        <td>
+          {% if item.status == 'rejected' %}
+            <form method="post" action="/festivals/announcements/{{ item.id }}/delete" onsubmit="return confirm('Удалить запись об отклонённом анонсе?');">
+              <button type="submit" class="btn btn-danger btn-small">Удалить</button>
+            </form>
+          {% else %}
+            <span class="muted">—</span>
+          {% endif %}
+        </td>
       </tr>
       {% endfor %}
     </tbody>
@@ -257,6 +267,12 @@
         </form>
       {% else %}
         <span class="muted">Карточка анонса доступна только для отметки «Я иду».</span>
+      {% endif %}
+      {% if user and user_is_special(user) %}
+        <form method="post" action="/festivals/{{ festival.id }}/delete-all" onsubmit="return confirm('Удалить этот фестиваль у всех пользователей?');">
+          <input type="hidden" name="next" value="/festivals{% if current_query %}?{{ current_query }}{% endif %}" />
+          <button type="submit" class="btn btn-danger">Удалить у всех</button>
+        </form>
       {% endif %}
     </div>
   </article>

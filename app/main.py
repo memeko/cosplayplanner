@@ -270,11 +270,28 @@ RAF_PAGE_URLS = [
 MASTER_IMPORT_INTERVAL_HOURS = max(1, min(24, int(os.getenv("MASTER_IMPORT_INTERVAL_HOURS", "12") or "12")))
 RAF_IMPORT_INTERVAL_HOURS = max(1, min(72, int(os.getenv("RAF_IMPORT_INTERVAL_HOURS", "24") or "24")))
 MASTER_IMPORT_SOURCE_LABEL = "cosplay_team"
+COSPLAY2_IMPORT_SOURCE_LABEL = "cos2"
 RAF_IMPORT_SOURCE_LABEL = "raf"
 VKID_PUBLIC_INFO_URL = "https://id.vk.ru/oauth2/public_info"
 IMPORT_SOURCE_LABELS = {
     MASTER_IMPORT_SOURCE_LABEL: "Cosplay Team",
+    COSPLAY2_IMPORT_SOURCE_LABEL: "взято с Cos2",
     RAF_IMPORT_SOURCE_LABEL: "взято с РАФ",
+}
+FESTIVAL_NAME_DUPLICATE_STOP_WORDS = {
+    "fest",
+    "festival",
+    "con",
+    "anime",
+    "cosplay",
+    "косплей",
+    "фест",
+    "фестиваль",
+    "аниме",
+    "феста",
+    "феста",
+    "эвент",
+    "event",
 }
 
 telegram_auth_state_lock = threading.Lock()
@@ -9807,6 +9824,47 @@ def normalize_event_name_key(value: str | None) -> str:
     return re.sub(r"[^0-9a-zа-яё]+", "", raw)
 
 
+def festival_name_keywords(value: str | None) -> set[str]:
+    raw = (value or "").strip().casefold().replace("ё", "е")
+    if not raw:
+        return set()
+    tokens = re.findall(r"[0-9a-zа-яё]+", raw)
+    keywords = {
+        token
+        for token in tokens
+        if len(token) >= 3 and token not in FESTIVAL_NAME_DUPLICATE_STOP_WORDS
+    }
+    if keywords:
+        return keywords
+    normalized = normalize_event_name_key(raw)
+    return {normalized} if normalized else set()
+
+
+def festivals_look_like_duplicates(
+    left_name: str | None,
+    left_city: str | None,
+    left_date: date | None,
+    right_name: str | None,
+    right_city: str | None,
+    right_date: date | None,
+) -> bool:
+    if not left_date or not right_date or left_date != right_date:
+        return False
+    if not city_matches(left_city, right_city):
+        return False
+
+    left_key = normalize_event_name_key(left_name)
+    right_key = normalize_event_name_key(right_name)
+    if left_key and right_key and left_key == right_key:
+        return True
+
+    left_keywords = festival_name_keywords(left_name)
+    right_keywords = festival_name_keywords(right_name)
+    if not left_keywords or not right_keywords:
+        return False
+    return bool(left_keywords & right_keywords)
+
+
 def detect_master_type_from_text(text_value: str | None) -> str:
     text = (text_value or "").casefold()
     keyword_map = [
@@ -10239,19 +10297,31 @@ def import_raf_events_for_user(db: Session, user: User, events: list[dict[str, A
             continue
         if external_id and external_id in existing_external_ids:
             continue
-
-        db.add(
-            Festival(
-                user_id=user.id,
-                name=event_name,
-                url=str(event.get("url") or "").strip() or None,
-                city=str(event.get("city") or "").strip() or None,
-                event_date=event_date,
-                event_end_date=event.get("event_end_date") if isinstance(event.get("event_end_date"), date) else None,
-                import_source=RAF_IMPORT_SOURCE_LABEL,
-                import_external_id=external_id or None,
+        if any(
+            festivals_look_like_duplicates(
+                item.name,
+                item.city,
+                item.event_date,
+                event_name,
+                str(event.get("city") or "").strip(),
+                event_date,
             )
+            for item in existing_festivals
+        ):
+            continue
+
+        festival = Festival(
+            user_id=user.id,
+            name=event_name,
+            url=str(event.get("url") or "").strip() or None,
+            city=str(event.get("city") or "").strip() or None,
+            event_date=event_date,
+            event_end_date=event.get("event_end_date") if isinstance(event.get("event_end_date"), date) else None,
+            import_source=RAF_IMPORT_SOURCE_LABEL,
+            import_external_id=external_id or None,
         )
+        db.add(festival)
+        existing_festivals.append(festival)
         if name_key:
             existing_name_keys.add(name_key)
         if external_id:
@@ -10819,6 +10889,29 @@ def festivals_announcements_reject(announcement_id: int, request: Request, db: S
     return redirect("/festivals")
 
 
+@app.post("/festivals/announcements/{announcement_id}/delete")
+def festivals_announcements_delete(announcement_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    announcement = db.get(FestivalAnnouncement, announcement_id)
+    if not announcement:
+        add_flash(request, "Заявка на анонс не найдена.", "error")
+        return redirect("/festivals")
+    if announcement.status != ANNOUNCEMENT_STATUS_REJECTED:
+        add_flash(request, "Удалять можно только отклонённые анонсы.", "error")
+        return redirect("/festivals")
+    if announcement.requester_user_id != user.id and not is_moderator_user(user):
+        add_flash(request, "Недостаточно прав для удаления этой заявки.", "error")
+        return redirect("/festivals")
+
+    db.delete(announcement)
+    db.commit()
+    add_flash(request, "Информация об отклонённом анонсе удалена.", "info")
+    return redirect("/festivals")
+
+
 @app.get("/festivals/new", response_class=HTMLResponse)
 def festivals_new(request: Request, db: Session = Depends(get_db)):
     user = current_user(request, db)
@@ -11017,6 +11110,66 @@ def festivals_delete(festival_id: int, request: Request, db: Session = Depends(g
     return redirect("/festivals")
 
 
+@app.post("/festivals/{festival_id}/delete-all")
+async def festivals_delete_all(festival_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    if not user_is_special(user):
+        add_flash(request, "Удаление фестиваля у всех доступно только @brfox_cosplay.", "error")
+        return redirect("/festivals")
+
+    festival = db.get(Festival, festival_id)
+    if not festival:
+        add_flash(request, "Фестиваль не найден.", "error")
+        return redirect("/festivals")
+
+    form = await request.form()
+    next_url = safe_redirect_target(str(form.get("next", "")).strip(), "/festivals")
+
+    all_festivals = db.execute(select(Festival)).scalars().all()
+    target_items: list[Festival] = []
+    for item in all_festivals:
+        if festival.source_announcement_id and item.source_announcement_id == festival.source_announcement_id:
+            target_items.append(item)
+            continue
+        if (
+            festival.import_source
+            and festival.import_external_id
+            and item.import_source == festival.import_source
+            and item.import_external_id == festival.import_external_id
+        ):
+            target_items.append(item)
+            continue
+        if festivals_look_like_duplicates(
+            item.name,
+            item.city,
+            item.event_date,
+            festival.name,
+            festival.city,
+            festival.event_date,
+        ):
+            target_items.append(item)
+
+    deleted_count = 0
+    seen_ids: set[int] = set()
+    for item in target_items:
+        if item.id in seen_ids:
+            continue
+        seen_ids.add(item.id)
+        db.delete(item)
+        deleted_count += 1
+
+    if festival.source_announcement_id:
+        source_announcement = db.get(FestivalAnnouncement, festival.source_announcement_id)
+        if source_announcement:
+            db.delete(source_announcement)
+
+    db.commit()
+    add_flash(request, f"Фестиваль удалён у всех пользователей: {deleted_count}.", "info")
+    return redirect(next_url)
+
+
 @app.post("/festivals/import-cosplay2")
 def festivals_import_cosplay2(request: Request, db: Session = Depends(get_db)):
     user = current_user(request, db)
@@ -11079,8 +11232,28 @@ def festivals_import_cosplay2(request: Request, db: Session = Depends(get_db)):
                 existing.submission_deadline = event.submission_deadline
                 changed = True
 
+            if existing.import_source != COSPLAY2_IMPORT_SOURCE_LABEL:
+                existing.import_source = COSPLAY2_IMPORT_SOURCE_LABEL
+                changed = True
+            if existing.import_external_id != normalized_url:
+                existing.import_external_id = normalized_url
+                changed = True
+
             if changed:
                 updated += 1
+            continue
+
+        if any(
+            festivals_look_like_duplicates(
+                row.name,
+                row.city,
+                row.event_date,
+                event.name,
+                event.city,
+                event.event_date,
+            )
+            for row in existing_rows
+        ):
             continue
 
         festival = Festival(
@@ -11090,9 +11263,12 @@ def festivals_import_cosplay2(request: Request, db: Session = Depends(get_db)):
             city=event.city,
             event_date=event.event_date,
             submission_deadline=event.submission_deadline,
+            import_source=COSPLAY2_IMPORT_SOURCE_LABEL,
+            import_external_id=normalized_url,
         )
         db.add(festival)
         existing_by_url[normalized_url] = festival
+        existing_rows.append(festival)
         imported += 1
         imported_names.append(event.name)
 
