@@ -72,12 +72,13 @@ body::after {
   position: fixed;
   left: 0;
   bottom: 0;
-  width: min(52vw, 640px);
-  height: min(45vh, 420px);
+  width: min(58vw, 760px);
+  height: min(50vh, 520px);
   background: url("/static/foxy.png") no-repeat left bottom / contain;
   opacity: 0.3;
   pointer-events: none;
   z-index: 0;
+  transform: translate(-25%, 25%);
 }
 
 .site-bg-star2 {
@@ -1630,8 +1631,8 @@ textarea {
   }
 
   .site-bg-foxy {
-    width: min(52vw, 340px);
-    height: min(32vh, 240px);
+    width: min(62vw, 420px);
+    height: min(40vh, 300px);
   }
 
   .site-bg-star2 {
