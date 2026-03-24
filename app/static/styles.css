@@ -80,6 +80,18 @@ body::after {
   z-index: 0;
 }
 
+.site-bg-star2 {
+  position: fixed;
+  right: 0;
+  top: 0;
+  width: min(78vw, 980px);
+  height: min(75vh, 760px);
+  background: url("/static/star2.png") no-repeat right top / contain;
+  opacity: 0.3;
+  pointer-events: none;
+  z-index: 0;
+}
+
 .container {
   width: min(1200px, 95%);
   margin: 0 auto;
@@ -373,6 +385,10 @@ textarea {
   max-width: 100%;
   min-width: 0;
   overflow-wrap: anywhere;
+}
+
+.card {
+  background: linear-gradient(160deg, rgba(255, 255, 255, 0.34), rgba(255, 255, 255, 0.14));
 }
 
 .card:hover,
@@ -1595,13 +1611,16 @@ textarea {
   }
 
   .box,
-  .card,
   .auth-card,
   .landing-feature,
   .welcome-modal,
   .pigeon-popup-card,
   .site-footnote {
     background: rgba(255, 255, 255, 0.78);
+  }
+
+  .card {
+    background: rgba(255, 255, 255, 0.68);
   }
 }
 
@@ -1613,6 +1632,11 @@ textarea {
   .site-bg-foxy {
     width: min(52vw, 340px);
     height: min(32vh, 240px);
+  }
+
+  .site-bg-star2 {
+    width: min(82vw, 560px);
+    height: min(42vh, 340px);
   }
 
   .two-col,
