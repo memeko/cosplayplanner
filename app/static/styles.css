@@ -72,8 +72,8 @@ body::after {
   position: fixed;
   left: 0;
   bottom: 0;
-  width: min(34vw, 430px);
-  height: min(25vh, 260px);
+  width: min(52vw, 640px);
+  height: min(45vh, 420px);
   background: url("/static/foxy.png") no-repeat left bottom / contain;
   opacity: 0.3;
   pointer-events: none;
@@ -361,7 +361,7 @@ textarea {
 .box,
 .card,
 .auth-card {
-  background: linear-gradient(160deg, rgba(255, 255, 255, 0.53), rgba(255, 255, 255, 0.33));
+  background: linear-gradient(160deg, rgba(255, 255, 255, 0.43), rgba(255, 255, 255, 0.23));
   border: 1px solid var(--line-strong);
   border-radius: 16px;
   padding: 14px;
@@ -1601,7 +1601,7 @@ textarea {
   .welcome-modal,
   .pigeon-popup-card,
   .site-footnote {
-    background: rgba(255, 255, 255, 0.88);
+    background: rgba(255, 255, 255, 0.78);
   }
 }
 
@@ -1611,8 +1611,8 @@ textarea {
   }
 
   .site-bg-foxy {
-    width: min(42vw, 260px);
-    height: min(22vh, 180px);
+    width: min(52vw, 340px);
+    height: min(32vh, 240px);
   }
 
   .two-col,
