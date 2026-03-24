@@ -7817,6 +7817,10 @@ def project_board_list(request: Request, db: Session = Depends(get_db)):
             or needle in (post.contact_link or "").casefold()
             or needle in ("фотосет" if post.event_type == "photoset" else "фестиваль")
         ]
+    posts = sorted(
+        posts,
+        key=lambda post: 1 if (post.status or PROJECT_BOARD_STATUS_ACTIVE) == PROJECT_BOARD_STATUS_INACTIVE else 0,
+    )
 
     city_options = project_board_city_options(db, user)
 

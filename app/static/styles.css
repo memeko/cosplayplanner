@@ -85,12 +85,13 @@ body::after {
   position: fixed;
   right: 0;
   top: 0;
-  width: min(78vw, 980px);
-  height: min(75vh, 760px);
+  width: min(96vw, 1320px);
+  height: min(100vh, 1080px);
   background: url("/static/star2.png") no-repeat right top / contain;
   opacity: 0.3;
   pointer-events: none;
   z-index: 0;
+  transform: translateX(20%);
 }
 
 .container {
@@ -1636,8 +1637,8 @@ textarea {
   }
 
   .site-bg-star2 {
-    width: min(82vw, 560px);
-    height: min(42vh, 340px);
+    width: min(98vw, 760px);
+    height: min(72vh, 620px);
   }
 
   .two-col,
