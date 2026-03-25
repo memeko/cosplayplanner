@@ -4522,9 +4522,6 @@ def robots_txt() -> FileResponse:
 
 @app.post("/vk/bot/callback", include_in_schema=False)
 async def vk_bot_callback(request: Request) -> PlainTextResponse:
-    if not VK_BOT_ENABLED:
-        raise HTTPException(status_code=404)
-
     try:
         payload = await request.json()
     except ValueError as exc:
@@ -4543,6 +4540,9 @@ async def vk_bot_callback(request: Request) -> PlainTextResponse:
         if not VK_BOT_CONFIRMATION_TOKEN:
             raise HTTPException(status_code=503, detail="VK bot confirmation token is not configured.")
         return PlainTextResponse(VK_BOT_CONFIRMATION_TOKEN)
+
+    if not VK_BOT_ENABLED:
+        return PlainTextResponse("ok")
 
     if VK_BOT_SECRET:
         incoming_secret = str(payload.get("secret") or "").strip()
