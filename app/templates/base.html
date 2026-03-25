@@ -6,7 +6,23 @@
   <meta name="theme-color" content="#1577b3" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-  <title>{{ title or project_name or "Cosplay Planner" }}</title>
+  {% set seo_title = title or project_name or "Cosplay Planner" %}
+  {% set seo_description = seo_description or default_seo_description %}
+  {% set seo_keywords = seo_keywords or default_seo_keywords %}
+  <title>{{ seo_title }}</title>
+  <meta name="description" content="{{ seo_description }}" />
+  <meta name="keywords" content="{{ seo_keywords }}" />
+  <meta name="robots" content="index,follow,max-image-preview:large,max-snippet:-1,max-video-preview:-1" />
+  <link rel="canonical" href="{{ site_url ~ request.url.path }}" />
+  <meta property="og:locale" content="ru_RU" />
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="{{ project_name or 'Cosplay Planner' }}" />
+  <meta property="og:title" content="{{ seo_title }}" />
+  <meta property="og:description" content="{{ seo_description }}" />
+  <meta property="og:url" content="{{ site_url ~ request.url.path }}" />
+  <meta name="twitter:card" content="summary" />
+  <meta name="twitter:title" content="{{ seo_title }}" />
+  <meta name="twitter:description" content="{{ seo_description }}" />
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg" />
   <link rel="manifest" href="/static/site.webmanifest" />
   <link rel="stylesheet" href="/static/styles.css" />

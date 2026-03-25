@@ -105,6 +105,17 @@ def load_secret_key() -> str:
 
 
 PROJECT_NAME = load_project_name()
+SITE_URL = os.getenv("BASE_SITE_URL", "https://cosplay-planner.ru").rstrip("/")
+SEO_DESCRIPTION = (
+    "Cosplay Planner — онлайн-органайзер для косплееров: косплей органайзер, "
+    "планирование косплей проектов, косплей фестивали, бюджетный косплей, "
+    "косплей фото и командная работа в одном месте."
+)
+SEO_KEYWORDS = (
+    "косплей, косплей органайзер, косплей это, планирование, планер, "
+    "командная работа, организация командной работы, проект, косплей проект, "
+    "косплей фестиваль, бюджетный косплей, косплей аниме, косплей фото"
+)
 app = FastAPI(title=PROJECT_NAME)
 
 secret_key = load_secret_key()
@@ -4113,9 +4124,17 @@ def template_response(
         "vkid_app_id": VKID_APP_ID,
         "vkid_redirect_url": VKID_REDIRECT_URL,
         "vkid_scope": VKID_SCOPE,
+        "site_url": SITE_URL,
+        "default_seo_description": SEO_DESCRIPTION,
+        "default_seo_keywords": SEO_KEYWORDS,
     }
     payload.update(context)
     return templates.TemplateResponse(name, payload)
+
+
+@app.get("/robots.txt", include_in_schema=False)
+def robots_txt() -> FileResponse:
+    return FileResponse("app/static/robots.txt", media_type="text/plain; charset=utf-8")
 
 
 def redirect(url: str) -> RedirectResponse:
