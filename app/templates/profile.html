@@ -27,9 +27,9 @@
       <input type="date" name="birth_date" value="{{ user.birth_date.isoformat() if user.birth_date else '' }}" />
     </label>
     <label>
-      Секретный код для ТГ-бота
+      Секретный код для ботов
       <input type="password" name="telegram_secret_code" placeholder="Оставьте пустым, чтобы не менять" />
-      <small class="muted">Нужен для входа в Telegram-боте вместо пароля сайта.</small>
+      <small class="muted">Используется для входа в Telegram-боте и VK-боте вместо пароля сайта.</small>
     </label>
     <label>
       Новый пароль
@@ -44,6 +44,30 @@
     </div>
   </form>
 </section>
+
+{% if vk_bot_enabled %}
+<section class="box">
+  <h2>Связь с VK-ботом</h2>
+  {% if user.vk_bot_user_id %}
+    <p class="meta">
+      VK-бот подключен:
+      <strong>id{{ user.vk_bot_user_id }}</strong>
+    </p>
+  {% else %}
+    <p class="muted">VK-бот пока не подключен.</p>
+  {% endif %}
+  <p class="muted">
+    Напишите сообществу
+    <a href="{{ vk_bot_link_url }}" target="_blank" rel="noreferrer">Cosplay Planner</a>,
+    затем отправьте в диалог <strong>/start</strong>, ваш ник и секретный код для ботов из профиля.
+  </p>
+  {% if user.vk_bot_user_id %}
+    <form method="post" action="/profile/vk-bot/unlink" class="top-offset" onsubmit="return confirm('Отвязать VK-бот от вашего профиля?');">
+      <button type="submit" class="btn btn-danger">Отвязать VK-бот</button>
+    </form>
+  {% endif %}
+</section>
+{% endif %}
 
 {% if vkid_enabled %}
 <section class="box">

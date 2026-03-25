@@ -30,6 +30,9 @@ class User(Base):
     telegram_linked_at = Column(DateTime(timezone=True), nullable=True)
     telegram_secret_code_hash = Column(String(255), nullable=True)
     telegram_secret_code_updated_at = Column(DateTime(timezone=True), nullable=True)
+    vk_bot_user_id = Column(String(64), nullable=True, unique=True, index=True)
+    vk_bot_peer_id = Column(String(64), nullable=True, unique=True, index=True)
+    vk_bot_linked_at = Column(DateTime(timezone=True), nullable=True)
     vk_user_id = Column(String(64), nullable=True, unique=True, index=True)
     vk_screen_name = Column(String(255), nullable=True)
     password_hash = Column(String(255), nullable=False)
@@ -520,6 +523,7 @@ class FestivalNotification(Base):
     message = Column(Text, nullable=False)
     is_read = Column(Boolean, nullable=False, default=False)
     telegram_sent_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    vk_sent_at = Column(DateTime(timezone=True), nullable=True, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     recipient = relationship("User", back_populates="incoming_notifications", foreign_keys=[user_id])

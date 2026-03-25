@@ -246,6 +246,14 @@ TELEGRAM_BOT_ENABLED = bool(TELEGRAM_BOT_TOKEN) and to_bool(os.getenv("TELEGRAM_
 TELEGRAM_POLL_TIMEOUT_SECONDS = max(5, min(60, int(os.getenv("TELEGRAM_POLL_TIMEOUT", "20"))))
 TELEGRAM_LOOP_SLEEP_SECONDS = max(1, min(30, int(os.getenv("TELEGRAM_LOOP_SLEEP", "2"))))
 TELEGRAM_DISPATCH_LIMIT = max(10, min(200, int(os.getenv("TELEGRAM_DISPATCH_LIMIT", "80"))))
+VK_BOT_TOKEN = os.getenv("VK_BOT_TOKEN", "").strip()
+VK_BOT_ENABLED = bool(VK_BOT_TOKEN) and to_bool(os.getenv("VK_BOT_ENABLED", "1"))
+VK_BOT_GROUP_ID = str(os.getenv("VK_BOT_GROUP_ID", "") or "").strip()
+VK_BOT_CONFIRMATION_TOKEN = str(os.getenv("VK_BOT_CONFIRMATION_TOKEN", "") or "").strip()
+VK_BOT_SECRET = str(os.getenv("VK_BOT_SECRET", "") or "").strip()
+VK_BOT_COMMUNITY_DOMAIN = (os.getenv("VK_BOT_COMMUNITY_DOMAIN", "cosplayplanner") or "cosplayplanner").strip()
+VK_BOT_LOOP_SLEEP_SECONDS = max(1, min(30, int(os.getenv("VK_BOT_LOOP_SLEEP", "2") or "2")))
+VK_BOT_DISPATCH_LIMIT = max(10, min(200, int(os.getenv("VK_BOT_DISPATCH_LIMIT", "80") or "80")))
 APP_BASE_URL = (os.getenv("APP_BASE_URL", "http://127.0.0.1:8000") or "http://127.0.0.1:8000").strip().rstrip("/")
 SMTP_HOST = os.getenv("SMTP_HOST", "").strip()
 SMTP_PORT = int(os.getenv("SMTP_PORT", "587") or "587")
@@ -309,6 +317,10 @@ telegram_auth_state_lock = threading.Lock()
 telegram_auth_state: dict[str, dict[str, str]] = {}
 telegram_worker_lock = threading.Lock()
 telegram_worker_thread: threading.Thread | None = None
+vk_bot_auth_state_lock = threading.Lock()
+vk_bot_auth_state: dict[str, dict[str, str]] = {}
+vk_bot_worker_lock = threading.Lock()
+vk_bot_worker_thread: threading.Thread | None = None
 
 MASTER_TYPE_OPTIONS = [
     "фотограф",
@@ -540,6 +552,9 @@ def apply_schema_migrations() -> None:
             ("telegram_linked_at", "DATETIME"),
             ("telegram_secret_code_hash", "VARCHAR(255)"),
             ("telegram_secret_code_updated_at", "DATETIME"),
+            ("vk_bot_user_id", "VARCHAR(64)"),
+            ("vk_bot_peer_id", "VARCHAR(64)"),
+            ("vk_bot_linked_at", "DATETIME"),
             ("vk_user_id", "VARCHAR(64)"),
             ("vk_screen_name", "VARCHAR(255)"),
         ],
@@ -597,6 +612,7 @@ def apply_schema_migrations() -> None:
             ("message", "TEXT NOT NULL"),
             ("is_read", "BOOLEAN NOT NULL DEFAULT 0"),
             ("telegram_sent_at", "DATETIME"),
+            ("vk_sent_at", "DATETIME"),
             ("created_at", "DATETIME DEFAULT CURRENT_TIMESTAMP"),
         ],
         "project_search_posts": [
@@ -711,8 +727,32 @@ def apply_schema_migrations() -> None:
         )
         conn.execute(
             text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ix_users_vk_bot_user_id "
+                "ON users (vk_bot_user_id)"
+            )
+        )
+        conn.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ix_users_vk_bot_peer_id "
+                "ON users (vk_bot_peer_id)"
+            )
+        )
+        conn.execute(
+            text(
                 "CREATE INDEX IF NOT EXISTS ix_users_vk_screen_name "
                 "ON users (vk_screen_name)"
+            )
+        )
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_festival_notifications_telegram_sent_at "
+                "ON festival_notifications (telegram_sent_at)"
+            )
+        )
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_festival_notifications_vk_sent_at "
+                "ON festival_notifications (vk_sent_at)"
             )
         )
 
@@ -722,6 +762,7 @@ def startup() -> None:
     Base.metadata.create_all(bind=engine)
     apply_schema_migrations()
     start_telegram_worker()
+    start_vk_bot_worker()
     try:
         auto_backup_if_needed()
     except OSError:
@@ -2506,7 +2547,7 @@ def remove_shared_card_notifications(
             db.delete(note)
 
 
-def is_telegram_eligible_notification(message: str | None) -> bool:
+def is_external_bot_eligible_notification(message: str | None) -> bool:
     text_value = (message or "").strip()
     if not text_value:
         return False
@@ -2522,6 +2563,10 @@ def is_telegram_eligible_notification(message: str | None) -> bool:
     if "новый комментарий в вашем объявлении поиска" in lower:
         return True
     return False
+
+
+def is_telegram_eligible_notification(message: str | None) -> bool:
+    return is_external_bot_eligible_notification(message)
 
 
 def telegram_api_url(method: str) -> str:
@@ -2657,7 +2702,7 @@ def handle_telegram_auth_message(chat_id: str, text_value: str) -> bool:
             telegram_send_message(chat_id, "Ник не распознан. Введите ник ещё раз.")
             return True
         set_telegram_auth_step(chat_id, step="secret_code", username=entered_username)
-        telegram_send_message(chat_id, "Теперь отправьте секретный код для ТГ-бота из профиля на сайте.")
+        telegram_send_message(chat_id, "Теперь отправьте секретный код для бота из профиля на сайте.")
         return True
 
     if step == "secret_code":
@@ -2751,7 +2796,7 @@ def handle_telegram_update(update: dict[str, Any]) -> None:
     )
 
 
-def format_telegram_notification_message(message: str | None) -> str:
+def format_external_bot_notification_message(message: str | None) -> str:
     text_value = (message or "").strip()
     if not text_value:
         return ""
@@ -2761,6 +2806,10 @@ def format_telegram_notification_message(message: str | None) -> str:
         body_text = body.strip() or "Без текста"
         return f"Вам пришло сообщение от пользователя @{sender_alias} с текстом:\n\n{body_text}"
     return text_value
+
+
+def format_telegram_notification_message(message: str | None) -> str:
+    return format_external_bot_notification_message(message)
 
 
 def dispatch_telegram_notifications() -> None:
@@ -2854,6 +2903,338 @@ def start_telegram_worker() -> None:
             daemon=True,
         )
         telegram_worker_thread.start()
+
+
+def vk_bot_api_call(method: str, params: dict[str, Any]) -> dict[str, Any]:
+    if not VK_BOT_ENABLED or not VK_BOT_TOKEN:
+        return {"error": {"error_code": 0, "error_msg": "VK bot is disabled"}}
+    payload = dict(params)
+    payload["access_token"] = VK_BOT_TOKEN
+    payload["v"] = VK_API_VERSION
+    try:
+        response = requests.post(
+            f"https://api.vk.com/method/{method}",
+            data=payload,
+            timeout=20,
+        )
+        return response.json() if response.content else {}
+    except (requests.RequestException, ValueError):
+        return {"error": {"error_code": 0, "error_msg": "VK API request failed"}}
+
+
+def vk_bot_send_message(peer_id: str | int, message: str) -> tuple[bool, int | None]:
+    if not VK_BOT_ENABLED or not VK_BOT_TOKEN:
+        return False, None
+    try:
+        peer_value = int(str(peer_id).strip())
+    except (TypeError, ValueError):
+        return False, None
+
+    payload = vk_bot_api_call(
+        "messages.send",
+        {
+            "peer_id": peer_value,
+            "message": message,
+            "random_id": secrets.randbelow(2_147_483_647),
+        },
+    )
+    error_payload = payload.get("error")
+    if isinstance(error_payload, dict):
+        return False, int(error_payload.get("error_code") or 0)
+    return "response" in payload, None
+
+
+def reset_vk_bot_auth(sender_id: str) -> None:
+    with vk_bot_auth_state_lock:
+        vk_bot_auth_state.pop(sender_id, None)
+
+
+def set_vk_bot_auth_step(sender_id: str, *, step: str, username: str = "") -> None:
+    with vk_bot_auth_state_lock:
+        vk_bot_auth_state[sender_id] = {
+            "step": step,
+            "username": username,
+        }
+
+
+def get_vk_bot_auth_step(sender_id: str) -> dict[str, str]:
+    with vk_bot_auth_state_lock:
+        return dict(vk_bot_auth_state.get(sender_id, {}))
+
+
+def start_vk_bot_auth(sender_id: str, peer_id: str, *, with_greeting: bool = False) -> None:
+    set_vk_bot_auth_step(sender_id, step="username", username="")
+    if with_greeting:
+        vk_bot_send_message(
+            peer_id,
+            (
+                "Вас приветствует помощник по оповещениям от портала Cosplay Planner. "
+                "Пожалуйста, пройдите авторизацию. После нее вам будут доступны оповещения "
+                "о входящих сообщениях на сайте, заданиях в коллективных проектах, информация "
+                "о добавлении в коспланы и комментариях на карточке мастера/студии. "
+                "Приятного использования!"
+            ),
+        )
+    vk_bot_send_message(
+        peer_id,
+        "Введите ваш ник на сайте (можно @username или cosplay_nick).",
+    )
+
+
+def handle_vk_bot_auth_message(sender_id: str, peer_id: str, text_value: str) -> bool:
+    state = get_vk_bot_auth_step(sender_id)
+    step = state.get("step", "")
+    if step == "username":
+        entered_username = normalize_username(text_value)
+        if not entered_username:
+            vk_bot_send_message(peer_id, "Ник не распознан. Введите ник ещё раз.")
+            return True
+        set_vk_bot_auth_step(sender_id, step="secret_code", username=entered_username)
+        vk_bot_send_message(peer_id, "Теперь отправьте секретный код для бота из профиля на сайте.")
+        return True
+
+    if step == "secret_code":
+        entered_secret_code = text_value or ""
+        username = state.get("username", "")
+        if not username:
+            start_vk_bot_auth(sender_id, peer_id)
+            return True
+
+        with SessionLocal() as db:
+            user = resolve_user_for_telegram_login(db, username)
+            if not user or not (user.telegram_secret_code_hash or "").strip():
+                vk_bot_send_message(
+                    peer_id,
+                    "Неверный ник или секретный код. Попробуйте снова.",
+                )
+                return True
+            if not verify_user_telegram_secret_code(user, entered_secret_code):
+                vk_bot_send_message(
+                    peer_id,
+                    "Неверный ник или секретный код. Попробуйте снова.",
+                )
+                return True
+
+            linked_users = db.execute(
+                select(User).where(
+                    or_(
+                        User.vk_bot_user_id == sender_id,
+                        User.vk_bot_peer_id == peer_id,
+                    ),
+                    User.id != user.id,
+                )
+            ).scalars().all()
+            for linked_user in linked_users:
+                linked_user.vk_bot_user_id = None
+                linked_user.vk_bot_peer_id = None
+                linked_user.vk_bot_linked_at = None
+
+            user.vk_bot_user_id = sender_id
+            user.vk_bot_peer_id = peer_id
+            user.vk_bot_linked_at = datetime.utcnow()
+            db.commit()
+
+        reset_vk_bot_auth(sender_id)
+        vk_bot_send_message(peer_id, "Авторизация успешно пройдена!")
+        return True
+
+    return False
+
+
+def handle_vk_bot_message(message: dict[str, Any]) -> None:
+    sender_raw = message.get("from_id")
+    peer_raw = message.get("peer_id")
+    if sender_raw is None or peer_raw is None:
+        return
+
+    sender_id = str(sender_raw)
+    peer_id = str(peer_raw)
+    text_value = str(message.get("text") or "").strip()
+
+    if peer_id != sender_id:
+        if text_value:
+            vk_bot_send_message(peer_id, "Для подключения уведомлений используйте личные сообщения сообщества.")
+        return
+
+    if not text_value:
+        vk_bot_send_message(peer_id, "Поддерживаются только текстовые сообщения.")
+        return
+
+    lowered = text_value.casefold()
+    if lowered in {"/start", "start", "начать"}:
+        start_vk_bot_auth(sender_id, peer_id, with_greeting=True)
+        return
+    if lowered in {"/login", "login", "войти"}:
+        start_vk_bot_auth(sender_id, peer_id, with_greeting=False)
+        return
+    if lowered in {"/logout", "logout", "выйти"}:
+        with SessionLocal() as db:
+            linked_users = db.execute(
+                select(User).where(
+                    or_(
+                        User.vk_bot_user_id == sender_id,
+                        User.vk_bot_peer_id == peer_id,
+                    )
+                )
+            ).scalars().all()
+            for linked_user in linked_users:
+                linked_user.vk_bot_user_id = None
+                linked_user.vk_bot_peer_id = None
+                linked_user.vk_bot_linked_at = None
+            if linked_users:
+                db.commit()
+        reset_vk_bot_auth(sender_id)
+        vk_bot_send_message(peer_id, "VK-привязка удалена.")
+        return
+
+    state = get_vk_bot_auth_step(sender_id)
+    if state or not text_value.startswith("/"):
+        if handle_vk_bot_auth_message(sender_id, peer_id, text_value):
+            return
+
+    with SessionLocal() as db:
+        linked_user = db.execute(
+            select(User).where(
+                or_(
+                    User.vk_bot_user_id == sender_id,
+                    User.vk_bot_peer_id == peer_id,
+                )
+            )
+        ).scalar_one_or_none()
+    if linked_user:
+        vk_bot_send_message(peer_id, "Оповещения подключены. Если понадобится перепривязка, отправьте /login.")
+        return
+
+    start_vk_bot_auth(sender_id, peer_id, with_greeting=True)
+
+
+def handle_vk_bot_message_allow(event_object: dict[str, Any]) -> None:
+    user_id = str(event_object.get("user_id") or "").strip()
+    if not user_id:
+        return
+    with SessionLocal() as db:
+        linked_user = db.execute(select(User).where(User.vk_bot_user_id == user_id)).scalar_one_or_none()
+        if linked_user and linked_user.vk_bot_linked_at is None:
+            linked_user.vk_bot_linked_at = datetime.utcnow()
+            db.commit()
+
+
+def handle_vk_bot_message_deny(event_object: dict[str, Any]) -> None:
+    user_id = str(event_object.get("user_id") or "").strip()
+    if not user_id:
+        return
+    with SessionLocal() as db:
+        linked_users = db.execute(select(User).where(User.vk_bot_user_id == user_id)).scalars().all()
+        for linked_user in linked_users:
+            linked_user.vk_bot_user_id = None
+            linked_user.vk_bot_peer_id = None
+            linked_user.vk_bot_linked_at = None
+        if linked_users:
+            db.commit()
+
+
+def handle_vk_bot_event(payload: dict[str, Any]) -> None:
+    event_type = str(payload.get("type") or "").strip()
+    event_object = payload.get("object")
+    if not isinstance(event_object, dict):
+        return
+
+    if event_type == "message_new":
+        message = event_object.get("message")
+        if isinstance(message, dict):
+            handle_vk_bot_message(message)
+        return
+    if event_type == "message_allow":
+        handle_vk_bot_message_allow(event_object)
+        return
+    if event_type == "message_deny":
+        handle_vk_bot_message_deny(event_object)
+
+
+def dispatch_vk_bot_notifications() -> None:
+    if not VK_BOT_ENABLED:
+        return
+    with SessionLocal() as db:
+        users = db.execute(select(User).where(User.vk_bot_peer_id.is_not(None))).scalars().all()
+        if not users:
+            return
+        now_utc = datetime.utcnow()
+
+        for user in users:
+            peer_id = (user.vk_bot_peer_id or "").strip()
+            if not peer_id:
+                continue
+
+            stmt = (
+                select(FestivalNotification)
+                .where(
+                    FestivalNotification.user_id == user.id,
+                    FestivalNotification.vk_sent_at.is_(None),
+                )
+                .order_by(FestivalNotification.created_at.asc(), FestivalNotification.id.asc())
+                .limit(VK_BOT_DISPATCH_LIMIT)
+            )
+            if user.vk_bot_linked_at:
+                stmt = stmt.where(FestivalNotification.created_at >= user.vk_bot_linked_at)
+
+            notifications = db.execute(stmt).scalars().all()
+            if not notifications:
+                continue
+
+            must_commit = False
+            for note in notifications:
+                if not is_external_bot_eligible_notification(note.message):
+                    note.vk_sent_at = now_utc
+                    must_commit = True
+                    continue
+
+                bot_text = format_external_bot_notification_message(note.message)
+                if not bot_text:
+                    note.vk_sent_at = now_utc
+                    must_commit = True
+                    continue
+
+                ok, error_code = vk_bot_send_message(peer_id, bot_text)
+                if ok:
+                    note.vk_sent_at = now_utc
+                    must_commit = True
+                    continue
+
+                if error_code in {7, 901, 917}:
+                    user.vk_bot_user_id = None
+                    user.vk_bot_peer_id = None
+                    user.vk_bot_linked_at = None
+                    must_commit = True
+                    break
+
+            if must_commit:
+                db.commit()
+
+
+def vk_bot_loop() -> None:
+    if not VK_BOT_ENABLED:
+        return
+    while True:
+        try:
+            dispatch_vk_bot_notifications()
+        except Exception:
+            pass
+        time.sleep(VK_BOT_LOOP_SLEEP_SECONDS)
+
+
+def start_vk_bot_worker() -> None:
+    global vk_bot_worker_thread
+    if not VK_BOT_ENABLED:
+        return
+    with vk_bot_worker_lock:
+        if vk_bot_worker_thread and vk_bot_worker_thread.is_alive():
+            return
+        vk_bot_worker_thread = threading.Thread(
+            target=vk_bot_loop,
+            name="vk-bot-worker",
+            daemon=True,
+        )
+        vk_bot_worker_thread.start()
 
 
 def user_busy_items_on_date(
@@ -4124,6 +4505,8 @@ def template_response(
         "vkid_app_id": VKID_APP_ID,
         "vkid_redirect_url": VKID_REDIRECT_URL,
         "vkid_scope": VKID_SCOPE,
+        "vk_bot_enabled": VK_BOT_ENABLED,
+        "vk_bot_link_url": f"https://vk.me/{VK_BOT_COMMUNITY_DOMAIN}" if VK_BOT_COMMUNITY_DOMAIN else "",
         "site_url": SITE_URL,
         "default_seo_description": SEO_DESCRIPTION,
         "default_seo_keywords": SEO_KEYWORDS,
@@ -4135,6 +4518,39 @@ def template_response(
 @app.get("/robots.txt", include_in_schema=False)
 def robots_txt() -> FileResponse:
     return FileResponse("app/static/robots.txt", media_type="text/plain; charset=utf-8")
+
+
+@app.post("/vk/bot/callback", include_in_schema=False)
+async def vk_bot_callback(request: Request) -> PlainTextResponse:
+    if not VK_BOT_ENABLED:
+        raise HTTPException(status_code=404)
+
+    try:
+        payload = await request.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid VK callback payload.") from exc
+
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Invalid VK callback payload.")
+
+    event_type = str(payload.get("type") or "").strip()
+    group_id = str(payload.get("group_id") or "").strip()
+
+    if VK_BOT_GROUP_ID and group_id and group_id != VK_BOT_GROUP_ID:
+        raise HTTPException(status_code=403, detail="Unexpected VK group id.")
+
+    if event_type == "confirmation":
+        if not VK_BOT_CONFIRMATION_TOKEN:
+            raise HTTPException(status_code=503, detail="VK bot confirmation token is not configured.")
+        return PlainTextResponse(VK_BOT_CONFIRMATION_TOKEN)
+
+    if VK_BOT_SECRET:
+        incoming_secret = str(payload.get("secret") or "").strip()
+        if incoming_secret != VK_BOT_SECRET:
+            raise HTTPException(status_code=403, detail="Invalid VK callback secret.")
+
+    handle_vk_bot_event(payload)
+    return PlainTextResponse("ok")
 
 
 def redirect(url: str) -> RedirectResponse:
@@ -5134,13 +5550,16 @@ async def profile_update(request: Request, db: Session = Depends(get_db)):
 
     if telegram_secret_code:
         if len(telegram_secret_code) < 6:
-            add_flash(request, "Секретный код для ТГ-бота должен быть не короче 6 символов.", "error")
+            add_flash(request, "Секретный код для ботов должен быть не короче 6 символов.", "error")
             return redirect("/profile")
         user.telegram_secret_code_hash = password_context.hash(telegram_secret_code)
         user.telegram_secret_code_updated_at = datetime.utcnow()
-        # Re-auth in bot after code rotation.
+        # Re-auth in bots after code rotation.
         user.telegram_chat_id = None
         user.telegram_linked_at = None
+        user.vk_bot_user_id = None
+        user.vk_bot_peer_id = None
+        user.vk_bot_linked_at = None
 
     if new_password:
         if new_password != new_password_confirm:
@@ -5150,6 +5569,20 @@ async def profile_update(request: Request, db: Session = Depends(get_db)):
 
     db.commit()
     add_flash(request, "Профиль обновлён.", "success")
+    return redirect("/profile")
+
+
+@app.post("/profile/vk-bot/unlink")
+def profile_vk_bot_unlink(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    user.vk_bot_user_id = None
+    user.vk_bot_peer_id = None
+    user.vk_bot_linked_at = None
+    db.commit()
+    add_flash(request, "VK-бот отвязан от профиля.", "success")
     return redirect("/profile")
 
 
