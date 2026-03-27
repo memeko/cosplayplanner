@@ -334,14 +334,27 @@
               data-target="telegram_body_html"
               data-emoji-id="{{ premium_emoji.emoji_id }}"
               data-fallback="{{ premium_emoji.emoji }}"
+              data-preview-url="{{ telegram_settings.premium_emoji_preview_base_url }}/{{ premium_emoji.emoji_id }}"
               title="emoji-id: {{ premium_emoji.emoji_id }}"
-            >{{ premium_emoji.emoji }}</button>
+            >
+              <img
+                src="{{ telegram_settings.premium_emoji_preview_base_url }}/{{ premium_emoji.emoji_id }}"
+                alt="{{ premium_emoji.emoji }}"
+                class="telegram-custom-emoji-button-img"
+                data-fallback="{{ premium_emoji.emoji }}"
+                loading="lazy"
+              />
+            </button>
           {% endfor %}
         </div>
         <label class="top-offset">
           Текст поста для Telegram
           <textarea name="telegram_body_html" id="telegram_body_html" rows="10" maxlength="12000" placeholder="<b>Заголовок</b>&#10;&#10;Текст публикации...">{{ content_form.telegram_body_html }}</textarea>
         </label>
+        <div class="top-offset">
+          <p class="muted">Предпросмотр premium emoji в редакторе</p>
+          <div id="telegram_body_custom_emoji_preview" class="notes-block telegram-editor-custom-emoji-preview"></div>
+        </div>
         <label>
           Фотографии для Telegram (URL, по одной на строку)
           <textarea name="telegram_photos_input" id="telegram_photos_input" rows="4" placeholder="https://...">{{ content_form.telegram_photos_input }}</textarea>
@@ -544,6 +557,15 @@
 
 <script>
   (function () {
+    function escapeHtml(value) {
+      return String(value || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
     function insertAtCursor(textarea, beforeText, afterText) {
       if (!textarea) return;
       const start = textarea.selectionStart || 0;
@@ -556,6 +578,31 @@
       textarea.focus();
       textarea.setSelectionRange(cursorPos, cursorPos);
     }
+
+    function installCustomEmojiImageFallback(root) {
+      if (!root) return;
+      root.querySelectorAll('img[data-fallback]').forEach((image) => {
+        if (image.dataset.fallbackBound === '1') return;
+        image.dataset.fallbackBound = '1';
+        image.addEventListener('error', function () {
+          const fallback = document.createElement('span');
+          fallback.className = 'telegram-custom-emoji-fallback';
+          fallback.textContent = image.dataset.fallback || image.alt || '✨';
+          image.replaceWith(fallback);
+        });
+      });
+    }
+
+    const premiumEmojiMap = new Map();
+    document.querySelectorAll('.content-premium-emoji-entry-btn').forEach((button) => {
+      const emojiId = button.dataset.emojiId || '';
+      if (!emojiId) return;
+      premiumEmojiMap.set(emojiId, {
+        previewUrl: button.dataset.previewUrl || '',
+        fallback: button.dataset.fallback || '✨'
+      });
+    });
+    installCustomEmojiImageFallback(document);
 
     document.querySelectorAll('.content-format-btn').forEach((button) => {
       button.addEventListener('click', function () {
@@ -588,8 +635,8 @@
         if (!target) return;
         const emojiId = window.prompt('Введите emoji-id для Telegram premium emoji. Если не знаете ID, его можно получить через @Emoji_ID_Extractor_bot');
         if (!emojiId) return;
-        const fallback = window.prompt('Введите резервный символ эмодзи', '✨') || '✨';
-        insertAtCursor(target, `<tg-emoji emoji-id="${emojiId}">${fallback}</tg-emoji>`, '');
+        insertAtCursor(target, `<tg-emoji emoji-id="${emojiId}"></tg-emoji>`, '');
+        updateTelegramCustomEmojiPreview();
       });
     });
 
@@ -598,11 +645,45 @@
         const target = document.getElementById(button.dataset.target);
         if (!target) return;
         const emojiId = button.dataset.emojiId || '';
-        const fallback = button.dataset.fallback || '✨';
         if (!emojiId) return;
-        insertAtCursor(target, `<tg-emoji emoji-id="${emojiId}">${fallback}</tg-emoji>`, '');
+        insertAtCursor(target, `<tg-emoji emoji-id="${emojiId}"></tg-emoji>`, '');
+        updateTelegramCustomEmojiPreview();
       });
     });
+
+    function renderTelegramCustomEmojiTag(emojiId) {
+      const entry = premiumEmojiMap.get(emojiId);
+      if (entry && entry.previewUrl) {
+        return `<img src="${escapeHtml(entry.previewUrl)}" alt="${escapeHtml(entry.fallback || 'premium')}" class="telegram-custom-emoji-inline-img" data-fallback="${escapeHtml(entry.fallback || '✨')}" loading="lazy" />`;
+      }
+      const fallbackText = (entry && entry.fallback) || 'premium';
+      return `<span class="telegram-custom-emoji-fallback" title="emoji-id: ${escapeHtml(emojiId)}">${escapeHtml(fallbackText)}</span>`;
+    }
+
+    function updateTelegramCustomEmojiPreview() {
+      const textarea = document.getElementById('telegram_body_html');
+      const preview = document.getElementById('telegram_body_custom_emoji_preview');
+      if (!textarea || !preview) return;
+      const raw = textarea.value || '';
+      const pattern = /<tg-emoji\b[^>]*emoji-id=(["'])(\d+)\1[^>]*>([\s\S]*?)<\/tg-emoji>/gi;
+      let html = '';
+      let lastIndex = 0;
+      let match;
+      while ((match = pattern.exec(raw)) !== null) {
+        html += escapeHtml(raw.slice(lastIndex, match.index)).replace(/\n/g, '<br>');
+        html += renderTelegramCustomEmojiTag(match[2]);
+        lastIndex = match.index + match[0].length;
+      }
+      html += escapeHtml(raw.slice(lastIndex)).replace(/\n/g, '<br>');
+      preview.innerHTML = html || '<span class="muted">Здесь появится предпросмотр premium emoji из текста поста.</span>';
+      installCustomEmojiImageFallback(preview);
+    }
+
+    const telegramBodyField = document.getElementById('telegram_body_html');
+    if (telegramBodyField) {
+      telegramBodyField.addEventListener('input', updateTelegramCustomEmojiPreview);
+      updateTelegramCustomEmojiPreview();
+    }
 
     function parseListEntries(value) {
       if (!value) return [];

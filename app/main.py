@@ -2219,7 +2219,7 @@ def get_content_plan_form_values(
         "rubric_new": "",
         "rubric_tag_value": normalize_content_rubric_tag(post.rubric_tag) or tag_map.get(post.rubric or "", ""),
         "status": normalize_content_status(post.status),
-        "telegram_body_html": post.telegram_body_html or "",
+        "telegram_body_html": normalize_telegram_custom_emoji_html(post.telegram_body_html or ""),
         "telegram_photos_input": "\n".join(as_list(post.telegram_photos_json)),
     }
 
@@ -2235,7 +2235,7 @@ def save_content_plan_post_from_form(form: Any, post: ContentPlanPost, user: Use
     rubric_tag_value = str(form.get("rubric_tag_value", "")).strip()
     rubric = rubric_new or rubric_existing
     socials = merge_unique(form.getlist("socials"), split_csv(str(form.get("socials_other", "")).strip()))
-    telegram_body_html = str(form.get("telegram_body_html", "")).strip()
+    telegram_body_html = normalize_telegram_custom_emoji_html(str(form.get("telegram_body_html", "")).strip())
     telegram_photos = parse_reference_values(str(form.get("telegram_photos_input", "")))[:10]
     available_telegram_channels = get_content_telegram_channels(db, user.id)
     selected_telegram_channels = resolve_content_telegram_channels(
@@ -2300,11 +2300,13 @@ def save_content_plan_post_from_form(form: Any, post: ContentPlanPost, user: Use
 def get_content_telegram_settings(user: User, db: Session) -> dict[str, Any]:
     premium_entries = get_content_premium_emoji_entries(db, user.id)
     channels = get_content_telegram_channels(db, user.id)
+    bot_token = get_user_option_value(db, user.id, CONTENT_TELEGRAM_TOKEN_GROUP)
     return {
-        "bot_token": get_user_option_value(db, user.id, CONTENT_TELEGRAM_TOKEN_GROUP),
+        "bot_token": bot_token,
         "chat_id": channels[0]["chat_id"] if channels else get_user_option_value(db, user.id, CONTENT_TELEGRAM_CHAT_GROUP),
         "channels_text": format_content_telegram_channel_lines(channels),
         "channels": channels,
+        "premium_emoji_preview_base_url": "/my-calendar/content/telegram/custom-emoji",
         "premium_emojis_text": format_content_premium_emoji_lines(premium_entries),
         "premium_emojis": premium_entries,
     }
@@ -2344,6 +2346,11 @@ def telegram_custom_api_url(token: str, method: str) -> str:
     return f"https://api.telegram.org/bot{token}/{method}"
 
 
+def telegram_custom_file_url(token: str, file_path: str) -> str:
+    normalized_path = str(file_path or "").lstrip("/")
+    return f"https://api.telegram.org/file/bot{token}/{normalized_path}"
+
+
 def telegram_custom_request(
     token: str,
     method: str,
@@ -2367,8 +2374,52 @@ def telegram_custom_request(
     return payload
 
 
+TELEGRAM_CUSTOM_EMOJI_TAG_RE = re.compile(
+    r"<tg-emoji\b(?P<attrs>[^>]*)>(?P<body>.*?)</tg-emoji>",
+    re.IGNORECASE | re.DOTALL,
+)
+TELEGRAM_CUSTOM_EMOJI_SELF_CLOSING_RE = re.compile(
+    r"<tg-emoji\b(?P<attrs>[^>]*)/>",
+    re.IGNORECASE | re.DOTALL,
+)
+TELEGRAM_CUSTOM_EMOJI_ID_RE = re.compile(r'emoji-id\s*=\s*["\'](?P<emoji_id>\d+)["\']', re.IGNORECASE)
+
+
+def extract_telegram_custom_emoji_id(attrs: str | None) -> str:
+    match = TELEGRAM_CUSTOM_EMOJI_ID_RE.search(attrs or "")
+    return str(match.group("emoji_id") or "").strip() if match else ""
+
+
+def normalize_telegram_custom_emoji_html(text_value: str | None) -> str:
+    normalized = text_value or ""
+
+    def replace_open_close(match: re.Match[str]) -> str:
+        emoji_id = extract_telegram_custom_emoji_id(match.group("attrs"))
+        if not emoji_id:
+            return match.group(0)
+        return f'<tg-emoji emoji-id="{emoji_id}"></tg-emoji>'
+
+    def replace_self_closing(match: re.Match[str]) -> str:
+        emoji_id = extract_telegram_custom_emoji_id(match.group("attrs"))
+        if not emoji_id:
+            return match.group(0)
+        return f'<tg-emoji emoji-id="{emoji_id}"></tg-emoji>'
+
+    normalized = TELEGRAM_CUSTOM_EMOJI_TAG_RE.sub(replace_open_close, normalized)
+    normalized = TELEGRAM_CUSTOM_EMOJI_SELF_CLOSING_RE.sub(replace_self_closing, normalized)
+    return normalized
+
+
 def strip_telegram_html(text_value: str) -> str:
-    return re.sub(r"<[^>]+>", "", text_value or "")
+    normalized = text_value or ""
+
+    def replace_custom_emoji(match: re.Match[str]) -> str:
+        body = re.sub(r"<[^>]+>", "", match.group("body") or "").strip()
+        return body or "🙂"
+
+    normalized = TELEGRAM_CUSTOM_EMOJI_TAG_RE.sub(replace_custom_emoji, normalized)
+    normalized = TELEGRAM_CUSTOM_EMOJI_SELF_CLOSING_RE.sub("🙂", normalized)
+    return re.sub(r"<[^>]+>", "", normalized)
 
 
 def append_rubric_tag_to_message(message_html: str, rubric_tag: str | None) -> str:
@@ -2382,6 +2433,71 @@ def append_rubric_tag_to_message(message_html: str, rubric_tag: str | None) -> s
     if not message_html.strip():
         return suffix
     return f"{message_html.rstrip()}\n\n{suffix}"
+
+
+def find_cached_telegram_custom_emoji_preview(emoji_id: str) -> Path | None:
+    if not str(emoji_id or "").isdigit():
+        return None
+    media_path = media_storage_path()
+    for candidate in sorted(media_path.glob(f"tg-custom-emoji-{emoji_id}.*")):
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def cache_telegram_custom_emoji_preview(token: str, emoji_id: str) -> Path | None:
+    cached = find_cached_telegram_custom_emoji_preview(emoji_id)
+    if cached:
+        return cached
+    if not token or not str(emoji_id or "").isdigit():
+        return None
+
+    sticker_payload = telegram_custom_request(
+        token,
+        "getCustomEmojiStickers",
+        json_payload={"custom_emoji_ids": [emoji_id]},
+    )
+    stickers = sticker_payload.get("result")
+    if not isinstance(stickers, list):
+        return None
+
+    sticker = next(
+        (
+            item
+            for item in stickers
+            if isinstance(item, dict) and str(item.get("custom_emoji_id") or "").strip() == emoji_id
+        ),
+        None,
+    )
+    if not isinstance(sticker, dict):
+        return None
+
+    file_id = ""
+    thumbnail = sticker.get("thumbnail")
+    if isinstance(thumbnail, dict):
+        file_id = str(thumbnail.get("file_id") or "").strip()
+    if not file_id and not bool(sticker.get("is_animated")) and not bool(sticker.get("is_video")):
+        file_id = str(sticker.get("file_id") or "").strip()
+    if not file_id:
+        return None
+
+    file_payload = telegram_custom_request(token, "getFile", json_payload={"file_id": file_id})
+    file_info = file_payload.get("result") or {}
+    remote_path = str(file_info.get("file_path") or "").strip().lstrip("/")
+    if not remote_path:
+        return None
+
+    extension = Path(remote_path).suffix.lower()
+    if extension not in {".webp", ".png", ".jpg", ".jpeg", ".gif", ".webm"}:
+        extension = ".webp"
+
+    response = requests.get(telegram_custom_file_url(token, remote_path), timeout=20)
+    if not response.ok or not response.content:
+        return None
+
+    destination = media_storage_path() / f"tg-custom-emoji-{emoji_id}{extension}"
+    destination.write_bytes(response.content)
+    return destination
 
 
 def content_post_targets_telegram(post: ContentPlanPost) -> bool:
@@ -2476,7 +2592,7 @@ def publish_content_post_to_telegram(
     post: ContentPlanPost,
     rubric_tag: str | None = None,
 ) -> str:
-    html_body = (post.telegram_body_html or "").strip()
+    html_body = normalize_telegram_custom_emoji_html((post.telegram_body_html or "").strip())
     photo_urls = [build_external_url(item) for item in as_list(post.telegram_photos_json) if build_external_url(item)]
     fallback_text = html.escape(post.title or "Пост")
     message_html = append_rubric_tag_to_message(html_body or fallback_text, rubric_tag)
@@ -9316,6 +9432,33 @@ def my_calendar_content_delete(post_id: int, request: Request, db: Session = Dep
     db.commit()
     add_flash(request, "Пост удален из контент-плана.", "info")
     return calendar_redirect_for_view(next_view)
+
+
+@app.get("/my-calendar/content/telegram/custom-emoji/{emoji_id}", include_in_schema=False)
+def my_calendar_content_telegram_custom_emoji_preview(emoji_id: str, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        raise HTTPException(status_code=401, detail="Требуется авторизация.")
+    if not str(emoji_id or "").isdigit():
+        raise HTTPException(status_code=404, detail="Эмодзи не найден.")
+
+    token = str(get_user_option_value(db, user.id, CONTENT_TELEGRAM_TOKEN_GROUP) or "").strip()
+    if not token:
+        raise HTTPException(status_code=404, detail="Telegram не подключен.")
+
+    try:
+        preview_path = cache_telegram_custom_emoji_preview(token, emoji_id)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    if not preview_path or not preview_path.exists():
+        raise HTTPException(status_code=404, detail="Превью эмодзи не найдено.")
+
+    media_type = mimetypes.guess_type(str(preview_path))[0] or "application/octet-stream"
+    return FileResponse(
+        str(preview_path),
+        media_type=media_type,
+        headers={"Cache-Control": "private, max-age=86400"},
+    )
 
 
 @app.post("/my-calendar/content/telegram/connect")

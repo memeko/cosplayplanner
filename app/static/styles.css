@@ -1471,6 +1471,32 @@ textarea {
   margin-bottom: 8px;
 }
 
+.telegram-custom-emoji-button-img,
+.telegram-custom-emoji-inline-img {
+  width: 1.35em;
+  height: 1.35em;
+  display: inline-block;
+  vertical-align: middle;
+  object-fit: contain;
+}
+
+.telegram-custom-emoji-button-img {
+  pointer-events: none;
+}
+
+.telegram-custom-emoji-fallback {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.35em;
+  min-height: 1.35em;
+  line-height: 1;
+}
+
+.telegram-editor-custom-emoji-preview {
+  min-height: 40px;
+}
+
 .reference-tile {
   width: 200px;
   aspect-ratio: 3 / 4;
