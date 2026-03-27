@@ -249,6 +249,50 @@
     </section>
   {% endif %}
 {% else %}
+  <section class="box">
+    <h2>Telegram-канал</h2>
+    <p class="muted">
+      Подключите своего Telegram-бота и канал, чтобы публиковать посты прямо из контент-плана.
+      Для публикации в другие сети используйте сторонний автопостинг.
+    </p>
+    <details class="top-offset">
+      <summary>Как подключить канал</summary>
+      <ol class="notes-list top-offset">
+        <li>Создайте бота через BotFather и получите токен.</li>
+        <li>Добавьте этого бота администратором в ваш Telegram-канал.</li>
+        <li>Укажите здесь токен бота и @канал или chat_id канала.</li>
+        <li>Если пользуетесь премиум-эмодзи, сохраните ID пака как памятку, а в тексте вставляйте конкретные emoji-id через кнопку редактора.</li>
+      </ol>
+    </details>
+    <form method="post" action="/my-calendar/content/telegram/connect" class="grid one-col top-offset">
+      <div class="grid three-col">
+        <label>
+          Токен бота
+          <input type="password" name="bot_token" value="{{ telegram_settings.bot_token }}" placeholder="123456:ABC..." required />
+          {% if telegram_settings_masked.bot_token %}
+            <small class="muted">Сейчас сохранено: {{ telegram_settings_masked.bot_token }}</small>
+          {% endif %}
+        </label>
+        <label>
+          Канал / chat_id
+          <input type="text" name="chat_id" value="{{ telegram_settings.chat_id }}" placeholder="@my_channel или -100..." required />
+        </label>
+        <label>
+          ID пака премиум-эмодзи
+          <input type="text" name="premium_pack_id" value="{{ telegram_settings.premium_pack_id }}" placeholder="Необязательно" />
+        </label>
+      </div>
+      <div class="actions-inline">
+        <button type="submit" class="btn btn-accent">Сохранить Telegram</button>
+      </div>
+    </form>
+    {% if telegram_content_connected %}
+      <form method="post" action="/my-calendar/content/telegram/disconnect" class="top-offset" onsubmit="return confirm('Удалить настройки Telegram-канала?');">
+        <button type="submit" class="btn btn-danger">Отключить Telegram</button>
+      </form>
+    {% endif %}
+  </section>
+
   <section class="box" id="content-form">
     <h2>{{ "Редактировать пост" if editing_content_post else "Добавить пост в контент-план" }}</h2>
     <form method="post" action="{{ '/my-calendar/content/' ~ editing_content_post.id ~ '/edit' if editing_content_post else '/my-calendar/content/new' }}" class="grid one-col">
@@ -271,6 +315,33 @@
         Краткое описание
         <textarea name="description" rows="2" maxlength="4000">{{ content_form.description }}</textarea>
       </label>
+      <section class="top-offset">
+        <h3>Оформление для Telegram</h3>
+        <p class="muted">Редактор использует HTML-разметку Telegram Bot API. Обычные эмодзи можно вставлять прямо в текст. Кнопка премиум-эмодзи добавляет тег <code>&lt;tg-emoji&gt;</code>.</p>
+        <div class="actions-inline wrap top-offset">
+          <button type="button" class="btn btn-small content-format-btn" data-tag-open="<b>" data-tag-close="</b>" data-target="telegram_body_html">Жирный</button>
+          <button type="button" class="btn btn-small content-format-btn" data-tag-open="<i>" data-tag-close="</i>" data-target="telegram_body_html">Курсив</button>
+          <button type="button" class="btn btn-small content-link-btn" data-target="telegram_body_html">Ссылка</button>
+          <button type="button" class="btn btn-small content-premium-emoji-btn" data-target="telegram_body_html">Премиум-эмодзи</button>
+          {% for emoji in ['✨','🔥','🖤','🌸','🎭','📸','🕊️','⭐'] %}
+            <button type="button" class="btn btn-small content-insert-btn" data-target="telegram_body_html" data-insert="{{ emoji }}">{{ emoji }}</button>
+          {% endfor %}
+        </div>
+        <label class="top-offset">
+          Текст поста для Telegram
+          <textarea name="telegram_body_html" id="telegram_body_html" rows="10" maxlength="12000" placeholder="<b>Заголовок</b>&#10;&#10;Текст публикации...">{{ content_form.telegram_body_html }}</textarea>
+        </label>
+        <label>
+          Фотографии для Telegram (URL, по одной на строку)
+          <textarea name="telegram_photos_input" id="telegram_photos_input" rows="4" placeholder="https://...">{{ content_form.telegram_photos_input }}</textarea>
+        </label>
+        <div class="gallery-upload-row">
+          <input type="file" id="telegram_photo_upload_files" accept="image/*" multiple />
+          <button type="button" class="btn" id="telegram_photo_upload_btn">Загрузить фото</button>
+          <span class="muted" id="telegram_photo_upload_status"></span>
+        </div>
+        <div class="reference-grid comment-images" id="telegram_photos_preview"></div>
+      </section>
       <div class="grid two-col">
         <label>
           Дата публикации
@@ -314,6 +385,9 @@
       <div class="actions-inline">
         <button type="submit" class="btn btn-accent">{{ "Сохранить" if editing_content_post else "Добавить пост" }}</button>
         {% if editing_content_post %}
+          {% if telegram_content_connected %}
+            <button type="submit" class="btn" formaction="/my-calendar/content/{{ editing_content_post.id }}/telegram-publish" formmethod="post">Опубликовать в Telegram</button>
+          {% endif %}
           <a href="/my-calendar?view=content" class="btn">Отмена</a>
         {% endif %}
       </div>
@@ -393,9 +467,17 @@
               <strong>{{ item.title }}</strong>
               <span class="muted">Соцсети: {{ item.socials_text }}</span>
               {% if item.description %}
-                <span class="muted">{{ item.description }}</span>
+                <span class="muted">{{ item.description|render_text }}</span>
+              {% endif %}
+              {% if item.telegram_published_at %}
+                <span class="muted">Telegram: {{ item.telegram_published_at.strftime('%d-%m-%Y %H:%M') }}</span>
               {% endif %}
               <a class="btn btn-small" href="/my-calendar?view=content&edit_post_id={{ item.post_id }}#content-form">Редактировать</a>
+              {% if telegram_content_connected %}
+                <form method="post" action="/my-calendar/content/{{ item.post_id }}/telegram-publish">
+                  <button type="submit" class="btn btn-small">В Telegram</button>
+                </form>
+              {% endif %}
               <form method="post" action="/my-calendar/content/{{ item.post_id }}/delete?view=content" onsubmit="return confirm('Удалить этот пост из контент-плана?');">
                 <button type="submit" class="btn btn-danger btn-small">Удалить</button>
               </form>
@@ -413,6 +495,132 @@
 
 <script>
   (function () {
+    function insertAtCursor(textarea, beforeText, afterText) {
+      if (!textarea) return;
+      const start = textarea.selectionStart || 0;
+      const end = textarea.selectionEnd || 0;
+      const current = textarea.value || '';
+      const selected = current.slice(start, end);
+      const replacement = `${beforeText}${selected}${afterText}`;
+      textarea.value = current.slice(0, start) + replacement + current.slice(end);
+      const cursorPos = start + beforeText.length + selected.length + afterText.length;
+      textarea.focus();
+      textarea.setSelectionRange(cursorPos, cursorPos);
+    }
+
+    document.querySelectorAll('.content-format-btn').forEach((button) => {
+      button.addEventListener('click', function () {
+        const target = document.getElementById(button.dataset.target);
+        insertAtCursor(target, button.dataset.tagOpen || '', button.dataset.tagClose || '');
+      });
+    });
+
+    document.querySelectorAll('.content-insert-btn').forEach((button) => {
+      button.addEventListener('click', function () {
+        const target = document.getElementById(button.dataset.target);
+        insertAtCursor(target, button.dataset.insert || '', '');
+      });
+    });
+
+    document.querySelectorAll('.content-link-btn').forEach((button) => {
+      button.addEventListener('click', function () {
+        const target = document.getElementById(button.dataset.target);
+        if (!target) return;
+        const url = window.prompt('Введите ссылку');
+        if (!url) return;
+        const label = window.prompt('Текст ссылки', 'ссылка') || 'ссылка';
+        insertAtCursor(target, `<a href="${url}">${label}</a>`, '');
+      });
+    });
+
+    document.querySelectorAll('.content-premium-emoji-btn').forEach((button) => {
+      button.addEventListener('click', function () {
+        const target = document.getElementById(button.dataset.target);
+        if (!target) return;
+        const emojiId = window.prompt('Введите emoji-id для Telegram premium emoji');
+        if (!emojiId) return;
+        const fallback = window.prompt('Введите резервный символ эмодзи', '✨') || '✨';
+        insertAtCursor(target, `<tg-emoji emoji-id="${emojiId}">${fallback}</tg-emoji>`, '');
+      });
+    });
+
+    function parseListEntries(value) {
+      if (!value) return [];
+      const normalized = value.replace(/,\s*(?=(?:https?:\/\/|\/media\/))/gi, '\n');
+      return normalized
+        .split(/\n|;/)
+        .map((item) => item.trim())
+        .map((item) => item.replace(/[;,]+$/, ''))
+        .filter(Boolean);
+    }
+
+    function createImageTile(url) {
+      const link = document.createElement('a');
+      link.className = 'reference-tile';
+      link.href = url;
+      link.target = '_blank';
+      link.rel = 'noreferrer';
+      const image = document.createElement('img');
+      image.src = url;
+      image.alt = 'Фото для Telegram';
+      link.appendChild(image);
+      return link;
+    }
+
+    function appendUrlsToTextarea(textarea, urls) {
+      if (!textarea || !urls.length) return;
+      const existing = textarea.value ? `${textarea.value}\n` : '';
+      textarea.value = `${existing}${urls.join('\n')}`.trim();
+    }
+
+    function updateTelegramPhotosPreview() {
+      const input = document.getElementById('telegram_photos_input');
+      const wrap = document.getElementById('telegram_photos_preview');
+      if (!input || !wrap) return;
+      wrap.innerHTML = '';
+      const urls = Array.from(new Set(parseListEntries(input.value).filter((value) => /^(https?:\/\/|\/media\/)/i.test(value))));
+      urls.forEach((url) => wrap.appendChild(createImageTile(url)));
+    }
+
+    const telegramPhotosInput = document.getElementById('telegram_photos_input');
+    telegramPhotosInput?.addEventListener('input', updateTelegramPhotosPreview);
+    updateTelegramPhotosPreview();
+
+    const telegramUploadButton = document.getElementById('telegram_photo_upload_btn');
+    const telegramUploadFiles = document.getElementById('telegram_photo_upload_files');
+    const telegramUploadStatus = document.getElementById('telegram_photo_upload_status');
+    if (telegramUploadButton && telegramUploadFiles && telegramPhotosInput) {
+      telegramUploadButton.addEventListener('click', async function () {
+        const files = Array.from(telegramUploadFiles.files || []);
+        if (!files.length) {
+          if (telegramUploadStatus) telegramUploadStatus.textContent = 'Выберите изображения.';
+          return;
+        }
+        if (telegramUploadStatus) telegramUploadStatus.textContent = 'Загружаем...';
+        const uploaded = [];
+        for (const file of files) {
+          const formData = new FormData();
+          formData.append('image', file);
+          const response = await fetch('/media/upload-image', {
+            method: 'POST',
+            body: formData,
+            credentials: 'same-origin'
+          });
+          const payload = await response.json().catch(() => ({}));
+          if (!response.ok || !payload.path) {
+            const errorText = payload && (payload.detail || payload.error) ? String(payload.detail || payload.error) : 'Ошибка загрузки';
+            if (telegramUploadStatus) telegramUploadStatus.textContent = errorText;
+            return;
+          }
+          uploaded.push(payload.path.startsWith('http') ? payload.path : payload.path);
+        }
+        appendUrlsToTextarea(telegramPhotosInput, uploaded);
+        updateTelegramPhotosPreview();
+        telegramUploadFiles.value = '';
+        if (telegramUploadStatus) telegramUploadStatus.textContent = `Загружено: ${uploaded.length}`;
+      });
+    }
+
     const mode = document.getElementById("shift_mode");
     const repeatKind = document.getElementById("shift_repeat_kind");
     const repeatKindWrap = document.getElementById("shift_repeat_kind_wrap");

@@ -31,6 +31,7 @@
 <div class="cards-grid">
   {% for post in posts %}
   {% set owner = owners_by_id.get(post.user_id) %}
+  {% set contact_buttons = external_contact_buttons(post.contact_link, include_site=True) %}
   <article class="card {% if post.status == 'found' %}card-post-found{% elif post.status == 'inactive' %}card-post-inactive{% endif %}">
     <div class="row-between">
       <h3>{{ post.fandom }}</h3>
@@ -48,9 +49,17 @@
         <span class="muted">(автор: <span class="{% if user_is_special(owner) %}nick-special{% endif %}">@{{ owner.cosplay_nick or owner.username }}</span>)</span>
       {% endif %}
     </p>
-    <p class="meta">Для связи (тг или вк): {{ post.contact_link or "—" }}</p>
+    {% if contact_buttons %}
+      <div class="actions-inline">
+        {% for button in contact_buttons %}
+          <a href="{{ button.url }}" target="_blank" rel="noreferrer" class="btn btn-small btn-platform">{{ button.label }}</a>
+        {% endfor %}
+      </div>
+    {% else %}
+      <p class="meta">Для связи: {{ post.contact_link or "—" }}</p>
+    {% endif %}
     {% if post.comment %}
-      <p class="notes-block">{{ post.comment }}</p>
+      <p class="notes-block">{{ post.comment|render_text }}</p>
     {% endif %}
     {% set post_comments = comments_by_post.get(post.id, []) %}
     {% if post_comments %}
@@ -66,7 +75,7 @@
               {% endif %}
               • {{ board_comment.created_at.strftime('%d-%m-%Y %H:%M') if board_comment.created_at else "—" }}
             </p>
-            <p class="notes-block">{{ board_comment.body }}</p>
+            <p class="notes-block">{{ board_comment.body|render_text }}</p>
           </article>
         {% endfor %}
       </div>

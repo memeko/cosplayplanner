@@ -28,6 +28,7 @@ from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from markupsafe import Markup
 from passlib.context import CryptContext
 from PIL import Image, ImageOps, UnidentifiedImageError
 from sqlalchemy import and_, func, inspect, or_, select, text
@@ -53,6 +54,7 @@ from .models import (
     CommunityQuestion,
     CommunityQuestionComment,
     CommunityStudio,
+    CommunityStudioComment,
     ContentPlanPost,
     CosplanCard,
     Festival,
@@ -67,6 +69,7 @@ from .models import (
     RehearsalCard,
     RehearsalEntry,
     User,
+    UserOption,
     WorkShiftDay,
 )
 from .services import (
@@ -207,6 +210,9 @@ CONTENT_STATUS_LABELS = {
     "draft": "Черновик",
     "published": "Опубликовано",
 }
+CONTENT_TELEGRAM_TOKEN_GROUP = "content_telegram_bot_token"
+CONTENT_TELEGRAM_CHAT_GROUP = "content_telegram_chat"
+CONTENT_TELEGRAM_PACK_GROUP = "content_telegram_premium_pack_id"
 
 COSPLAYER_COLLAB_OPTIONS = {
     "open": "Открыт(а)",
@@ -572,6 +578,7 @@ def apply_schema_migrations() -> None:
             ("coproplayer_nicks_json", "JSON NOT NULL DEFAULT '[]'"),
             ("is_shared_copy", "BOOLEAN NOT NULL DEFAULT 0"),
             ("is_priority", "BOOLEAN NOT NULL DEFAULT 0"),
+            ("is_completed", "BOOLEAN NOT NULL DEFAULT 0"),
             ("source_card_id", "INTEGER"),
             ("shared_from_user_id", "INTEGER"),
             ("wig_no_buy_from", "VARCHAR(255)"),
@@ -609,6 +616,7 @@ def apply_schema_migrations() -> None:
             ("user_id", "INTEGER NOT NULL"),
             ("from_user_id", "INTEGER"),
             ("source_card_id", "INTEGER"),
+            ("reply_to_notification_id", "INTEGER"),
             ("message", "TEXT NOT NULL"),
             ("is_read", "BOOLEAN NOT NULL DEFAULT 0"),
             ("telegram_sent_at", "DATETIME"),
@@ -651,6 +659,10 @@ def apply_schema_migrations() -> None:
             ("socials_json", "JSON NOT NULL DEFAULT '[]'"),
             ("rubric", "VARCHAR(120) NOT NULL DEFAULT 'Общее'"),
             ("status", "VARCHAR(32) NOT NULL DEFAULT 'plan'"),
+            ("telegram_body_html", "TEXT"),
+            ("telegram_photos_json", "JSON NOT NULL DEFAULT '[]'"),
+            ("telegram_message_id", "VARCHAR(64)"),
+            ("telegram_published_at", "DATETIME"),
         ],
     }
 
@@ -679,6 +691,8 @@ def apply_schema_migrations() -> None:
             CommunityMasterRating.__table__.create(bind=conn, checkfirst=True)
         if "community_studios" not in existing_tables:
             CommunityStudio.__table__.create(bind=conn, checkfirst=True)
+        if "community_studio_comments" not in existing_tables:
+            CommunityStudioComment.__table__.create(bind=conn, checkfirst=True)
         if "community_cosplayers" not in existing_tables:
             CommunityCosplayer.__table__.create(bind=conn, checkfirst=True)
         if "community_cosplayer_comments" not in existing_tables:
@@ -2106,6 +2120,8 @@ def get_content_plan_form_values(post: ContentPlanPost | None = None) -> dict[st
             "rubric_existing": "",
             "rubric_new": "",
             "status": "plan",
+            "telegram_body_html": "",
+            "telegram_photos_input": "",
         }
 
     socials = as_list(post.socials_json)
@@ -2120,6 +2136,8 @@ def get_content_plan_form_values(post: ContentPlanPost | None = None) -> dict[st
         "rubric_existing": post.rubric or "",
         "rubric_new": "",
         "status": normalize_content_status(post.status),
+        "telegram_body_html": post.telegram_body_html or "",
+        "telegram_photos_input": "\n".join(as_list(post.telegram_photos_json)),
     }
 
 
@@ -2133,6 +2151,8 @@ def save_content_plan_post_from_form(form: Any, post: ContentPlanPost, user: Use
     rubric_new = str(form.get("rubric_new", "")).strip()
     rubric = rubric_new or rubric_existing
     socials = merge_unique(form.getlist("socials"), split_csv(str(form.get("socials_other", "")).strip()))
+    telegram_body_html = str(form.get("telegram_body_html", "")).strip()
+    telegram_photos = parse_reference_values(str(form.get("telegram_photos_input", "")))[:10]
 
     if not title:
         return False, "Укажите название публикации."
@@ -2146,6 +2166,8 @@ def save_content_plan_post_from_form(form: Any, post: ContentPlanPost, user: Use
         return False, "Название рубрики должно быть не длиннее 120 символов."
     if len(description) > 4000:
         return False, "Краткое описание должно быть не длиннее 4000 символов."
+    if len(telegram_body_html) > 12000:
+        return False, "Текст для Telegram должен быть не длиннее 12000 символов."
 
     post.title = title
     post.description = description or None
@@ -2154,9 +2176,148 @@ def save_content_plan_post_from_form(form: Any, post: ContentPlanPost, user: Use
     post.socials_json = socials
     post.rubric = rubric
     post.status = status
+    post.telegram_body_html = telegram_body_html or None
+    post.telegram_photos_json = telegram_photos
 
     remember_options(db, user.id, "content_rubric", [rubric])
     return True, ""
+
+
+def get_content_telegram_settings(user: User, db: Session) -> dict[str, str]:
+    return {
+        "bot_token": get_user_option_value(db, user.id, CONTENT_TELEGRAM_TOKEN_GROUP),
+        "chat_id": get_user_option_value(db, user.id, CONTENT_TELEGRAM_CHAT_GROUP),
+        "premium_pack_id": get_user_option_value(db, user.id, CONTENT_TELEGRAM_PACK_GROUP),
+    }
+
+
+def mask_secret_value(value: str | None) -> str:
+    raw = (value or "").strip()
+    if len(raw) <= 8:
+        return "•" * len(raw) if raw else ""
+    return f"{raw[:4]}{'•' * max(4, len(raw) - 8)}{raw[-4:]}"
+
+
+def normalize_telegram_target(value: str | None) -> str:
+    raw = (value or "").strip()
+    if not raw:
+        return ""
+    if raw.startswith("@"):
+        return raw
+    if raw.startswith("-100") and raw[1:].isdigit():
+        return raw
+    if raw.lstrip("-").isdigit():
+        return raw
+    if raw.lower().startswith(("https://t.me/", "http://t.me/", "t.me/")):
+        parsed = build_external_url(raw)
+        try:
+            path = urlparse(parsed).path.strip("/")
+        except ValueError:
+            path = ""
+        if path:
+            return f"@{path.split('/', 1)[0]}"
+    if re.fullmatch(r"[A-Za-z0-9_]{3,}", raw):
+        return f"@{raw}"
+    return raw
+
+
+def telegram_custom_api_url(token: str, method: str) -> str:
+    return f"https://api.telegram.org/bot{token}/{method}"
+
+
+def telegram_custom_request(
+    token: str,
+    method: str,
+    *,
+    json_payload: dict[str, Any] | None = None,
+    data_payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    response = requests.post(
+        telegram_custom_api_url(token, method),
+        json=json_payload,
+        data=data_payload,
+        timeout=20,
+    )
+    try:
+        payload = response.json() if response.content else {}
+    except ValueError as exc:
+        raise RuntimeError("Telegram вернул некорректный ответ.") from exc
+    if not response.ok or not payload.get("ok"):
+        description = str(payload.get("description") or f"HTTP {response.status_code}")
+        raise RuntimeError(f"Telegram API: {description}")
+    return payload
+
+
+def strip_telegram_html(text_value: str) -> str:
+    return re.sub(r"<[^>]+>", "", text_value or "")
+
+
+def publish_content_post_to_telegram(
+    *,
+    token: str,
+    chat_id: str,
+    post: ContentPlanPost,
+) -> str:
+    html_body = (post.telegram_body_html or "").strip()
+    photo_urls = [build_external_url(item) for item in as_list(post.telegram_photos_json) if build_external_url(item)]
+    fallback_text = html.escape(post.title or "Пост")
+    message_html = html_body or fallback_text
+    if len(strip_telegram_html(message_html)) > 4096:
+        raise RuntimeError("Сообщение для Telegram слишком длинное (максимум 4096 символов без учета HTML-тегов).")
+
+    last_message_id = ""
+    if photo_urls:
+        first_photo = photo_urls[0]
+        remaining = photo_urls[1:]
+        caption_text = message_html if len(strip_telegram_html(message_html)) <= 1024 else ""
+        photo_payload = telegram_custom_request(
+            token,
+            "sendPhoto",
+            json_payload={
+                "chat_id": chat_id,
+                "photo": first_photo,
+                "caption": caption_text,
+                "parse_mode": "HTML" if caption_text else None,
+                "show_caption_above_media": True if caption_text else None,
+            },
+        )
+        result = photo_payload.get("result") or {}
+        last_message_id = str(result.get("message_id") or "")
+        for url in remaining:
+            extra_payload = telegram_custom_request(
+                token,
+                "sendPhoto",
+                json_payload={"chat_id": chat_id, "photo": url},
+            )
+            extra_result = extra_payload.get("result") or {}
+            last_message_id = str(extra_result.get("message_id") or last_message_id)
+        if not caption_text:
+            text_payload = telegram_custom_request(
+                token,
+                "sendMessage",
+                json_payload={
+                    "chat_id": chat_id,
+                    "text": message_html,
+                    "parse_mode": "HTML",
+                    "disable_web_page_preview": False,
+                },
+            )
+            text_result = text_payload.get("result") or {}
+            last_message_id = str(text_result.get("message_id") or last_message_id)
+        return last_message_id
+
+    text_payload = telegram_custom_request(
+        token,
+        "sendMessage",
+        json_payload={
+            "chat_id": chat_id,
+            "text": message_html,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": False,
+        },
+    )
+    text_result = text_payload.get("result") or {}
+    return str(text_result.get("message_id") or "")
 
 
 def hsl_to_hex(hue: float, saturation: float, lightness: float) -> str:
@@ -2259,6 +2420,219 @@ def parse_positive_int(raw: str | None) -> int | None:
 def looks_like_url(value: str | None) -> bool:
     raw = (value or "").strip().lower()
     return raw.startswith("http://") or raw.startswith("https://")
+
+
+def looks_like_telegram_username(value: str | None) -> bool:
+    raw = (value or "").strip()
+    return bool(re.fullmatch(r"@[A-Za-z0-9_]{3,}", raw))
+
+
+def normalize_url_with_scheme(value: str | None) -> str:
+    raw = (value or "").strip()
+    if not raw:
+        return ""
+    if raw.startswith("/"):
+        return f"{SITE_URL}{raw}"
+    if looks_like_url(raw):
+        return raw
+    if raw.lower().startswith(("www.", "t.me/", "telegram.me/", "vk.com/", "m.vk.com/")):
+        return f"https://{raw}"
+    return raw
+
+
+def classify_external_url(value: str | None) -> str:
+    normalized = normalize_url_with_scheme(value)
+    if not normalized:
+        return ""
+    if looks_like_telegram_username(normalized):
+        return "telegram"
+    try:
+        parsed = urlparse(normalized)
+    except ValueError:
+        return ""
+    host = (parsed.netloc or "").lower()
+    if "t.me" in host or "telegram.me" in host:
+        return "telegram"
+    if host.endswith("vk.com"):
+        return "vk"
+    if host:
+        return "site"
+    return ""
+
+
+def build_external_url(value: str | None) -> str:
+    raw = (value or "").strip()
+    if not raw:
+        return ""
+    if looks_like_telegram_username(raw):
+        return f"https://t.me/{raw[1:]}"
+    return normalize_url_with_scheme(raw)
+
+
+def button_label_for_external_url(value: str | None) -> str:
+    kind = classify_external_url(value)
+    if kind == "telegram":
+        return "Телеграм"
+    if kind == "vk":
+        return "VK"
+    if kind == "site":
+        return "Сайт"
+    return ""
+
+
+def _trim_link_trailing_punctuation(value: str) -> str:
+    trimmed = value.rstrip()
+    while trimmed and trimmed[-1] in ".,;!?)]}>»":
+        trimmed = trimmed[:-1]
+    return trimmed
+
+
+def extract_urls_from_text(value: str | None) -> list[str]:
+    text_value = (value or "").strip()
+    if not text_value:
+        return []
+    pattern = re.compile(r"((?:https?://|www\.|t\.me/|telegram\.me/|vk\.com/|m\.vk\.com/|/media/)[^\s<]+)", re.IGNORECASE)
+    found: list[str] = []
+    for match in pattern.finditer(text_value):
+        candidate = _trim_link_trailing_punctuation(match.group(1))
+        built = build_external_url(candidate)
+        if built:
+            found.append(built)
+    if looks_like_telegram_username(text_value):
+        found.append(build_external_url(text_value))
+    return merge_unique(found)
+
+
+def external_contact_buttons(*values: Any, include_site: bool = True) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for raw_value in values:
+        if raw_value is None:
+            continue
+        if isinstance(raw_value, (list, tuple, set)):
+            for nested in raw_value:
+                for row in external_contact_buttons(nested, include_site=include_site):
+                    key = (row["label"], row["url"])
+                    if key not in seen:
+                        seen.add(key)
+                        rows.append(row)
+            continue
+        text_value = str(raw_value).strip()
+        if not text_value:
+            continue
+        candidates = [build_external_url(text_value)] if (
+            looks_like_telegram_username(text_value) or classify_external_url(text_value)
+        ) else []
+        candidates.extend(extract_urls_from_text(text_value))
+        for candidate in merge_unique(candidates):
+            kind = classify_external_url(candidate)
+            if not kind:
+                continue
+            if kind == "site" and not include_site:
+                continue
+            label = button_label_for_external_url(candidate)
+            key = (label, candidate)
+            if label and key not in seen:
+                seen.add(key)
+                rows.append({"label": label, "url": candidate})
+    return rows
+
+
+def static_pixel_emoji_root() -> Path:
+    return Path("app/static/pixel-emoji").resolve()
+
+
+def slugify_pixel_emoji_code(relative_path: str) -> str:
+    stem = Path(relative_path).with_suffix("").as_posix()
+    slug = re.sub(r"[^a-z0-9]+", "-", stem.casefold()).strip("-")
+    return slug or "emoji"
+
+
+def build_pixel_emoji_catalog() -> list[dict[str, str]]:
+    root = static_pixel_emoji_root()
+    if not root.exists():
+        return []
+    rows: list[dict[str, str]] = []
+    for path in sorted(root.rglob("*.png")):
+        relative = path.relative_to(root)
+        relative_posix = relative.as_posix()
+        rows.append(
+            {
+                "code": slugify_pixel_emoji_code(relative_posix),
+                "label": relative.stem,
+                "url": f"/static/pixel-emoji/{relative_posix}",
+            }
+        )
+    return rows
+
+
+PIXEL_EMOJI_CATALOG = build_pixel_emoji_catalog()
+PIXEL_EMOJI_BY_CODE = {item["code"]: item for item in PIXEL_EMOJI_CATALOG}
+TEXT_RENDER_TOKEN_RE = re.compile(
+    r"(\[\[emoji:(?P<emoji>[a-z0-9-]+)\]\]|(?P<url>(?:https?://|www\.|t\.me/|telegram\.me/|vk\.com/|m\.vk\.com/|/media/)[^\s<]+))",
+    re.IGNORECASE,
+)
+
+
+def render_text_content(value: str | None) -> Markup:
+    text_value = (value or "")
+    if not text_value:
+        return Markup("")
+
+    parts: list[str] = []
+    last_end = 0
+    for match in TEXT_RENDER_TOKEN_RE.finditer(text_value):
+        if match.start() > last_end:
+            parts.append(html.escape(text_value[last_end:match.start()]).replace("\n", "<br>"))
+        emoji_code = match.group("emoji")
+        raw_url = match.group("url")
+        if emoji_code:
+            emoji = PIXEL_EMOJI_BY_CODE.get(emoji_code.casefold())
+            if emoji:
+                parts.append(
+                    '<img class="inline-pixel-emoji" src="{src}" alt="{alt}" title="{alt}" loading="lazy" />'.format(
+                        src=html.escape(emoji["url"], quote=True),
+                        alt=html.escape(emoji["label"], quote=True),
+                    )
+                )
+            else:
+                parts.append(html.escape(match.group(0)))
+        elif raw_url:
+            trimmed = _trim_link_trailing_punctuation(raw_url)
+            href = build_external_url(trimmed)
+            if href:
+                parts.append(
+                    '<a href="{href}" target="_blank" rel="noreferrer">{label}</a>'.format(
+                        href=html.escape(href, quote=True),
+                        label=html.escape(trimmed),
+                    )
+                )
+            else:
+                parts.append(html.escape(raw_url))
+        last_end = match.end()
+
+    if last_end < len(text_value):
+        parts.append(html.escape(text_value[last_end:]).replace("\n", "<br>"))
+    return Markup("".join(parts))
+
+
+def replace_pixel_emoji_tokens_for_bots(value: str | None) -> str:
+    text_value = (value or "")
+    if not text_value:
+        return ""
+
+    def repl(match: re.Match[str]) -> str:
+        emoji_code = (match.group(1) or "").casefold()
+        emoji = PIXEL_EMOJI_BY_CODE.get(emoji_code)
+        if emoji:
+            return f":{emoji['label']}:"
+        return match.group(0)
+
+    return re.sub(r"\[\[emoji:([a-z0-9-]+)\]\]", repl, text_value, flags=re.IGNORECASE)
+
+
+templates.env.filters["render_text"] = render_text_content
+templates.env.filters["urlencode"] = lambda value: quote(str(value or ""))
 
 
 def is_mp3_url(value: str | None) -> bool:
@@ -2489,6 +2863,7 @@ def enqueue_notification_if_missing(
     from_user_id: int | None,
     source_card_id: int | None,
     message: str,
+    reply_to_notification_id: int | None = None,
 ) -> bool:
     conditions = [FestivalNotification.user_id == user_id, FestivalNotification.message == message]
     if from_user_id is None:
@@ -2499,6 +2874,10 @@ def enqueue_notification_if_missing(
         conditions.append(FestivalNotification.source_card_id.is_(None))
     else:
         conditions.append(FestivalNotification.source_card_id == source_card_id)
+    if reply_to_notification_id is None:
+        conditions.append(FestivalNotification.reply_to_notification_id.is_(None))
+    else:
+        conditions.append(FestivalNotification.reply_to_notification_id == reply_to_notification_id)
 
     existing_notes = db.execute(select(FestivalNotification).where(and_(*conditions))).scalars().all()
     if existing_notes:
@@ -2512,6 +2891,7 @@ def enqueue_notification_if_missing(
             user_id=user_id,
             from_user_id=from_user_id,
             source_card_id=source_card_id,
+            reply_to_notification_id=reply_to_notification_id,
             message=message,
             is_read=False,
         )
@@ -2559,6 +2939,8 @@ def is_external_bot_eligible_notification(message: str | None) -> bool:
     if "вам назначено задание" in lower:
         return True
     if "новый комментарий в вашей карточке мастера" in lower:
+        return True
+    if "новый комментарий в вашей карточке студии" in lower:
         return True
     if "новый комментарий в вашем объявлении поиска" in lower:
         return True
@@ -2747,6 +3129,39 @@ def handle_telegram_auth_message(chat_id: str, text_value: str) -> bool:
     return False
 
 
+def handle_telegram_reply_command(chat_id: str, text_value: str) -> bool:
+    command_match = re.match(r"^/reply(?:@\w+)?\s+(.+)$", text_value.strip(), flags=re.IGNORECASE | re.DOTALL)
+    if not command_match:
+        return False
+    reply_body = command_match.group(1).strip()
+    if not reply_body:
+        telegram_send_message(chat_id, "После /reply укажите текст ответа.")
+        return True
+    with SessionLocal() as db:
+        sender = db.execute(select(User).where(User.telegram_chat_id == chat_id)).scalar_one_or_none()
+        if not sender:
+            telegram_send_message(chat_id, "Сначала пройдите авторизацию через /start или /login.")
+            return True
+        latest_note = latest_pigeon_notification_for_reply(db, sender.id)
+        if not latest_note or latest_note.from_user_id is None:
+            telegram_send_message(chat_id, "Не найдено входящих голубей, на которые можно ответить.")
+            return True
+        recipient = db.get(User, latest_note.from_user_id)
+        if not recipient:
+            telegram_send_message(chat_id, "Получатель ответа не найден.")
+            return True
+        send_pigeon_notification(
+            db,
+            sender=sender,
+            recipient=recipient,
+            message_body=reply_body,
+            reply_to_notification_id=latest_note.id,
+        )
+        db.commit()
+    telegram_send_message(chat_id, f"Ответ отправлен пользователю @{preferred_user_alias(recipient)}.")
+    return True
+
+
 def handle_telegram_update(update: dict[str, Any]) -> None:
     message = update.get("message")
     if not isinstance(message, dict):
@@ -2781,6 +3196,9 @@ def handle_telegram_update(update: dict[str, Any]) -> None:
         reset_telegram_auth(chat_id)
         telegram_send_message(chat_id, "Telegram-привязка удалена.")
         return
+    if lowered.startswith("/reply"):
+        if handle_telegram_reply_command(chat_id, text_value):
+            return
 
     # If user sends secret-code step text, try to remove this message from chat history.
     state = get_telegram_auth_step(chat_id)
@@ -2797,14 +3215,18 @@ def handle_telegram_update(update: dict[str, Any]) -> None:
 
 
 def format_external_bot_notification_message(message: str | None) -> str:
-    text_value = (message or "").strip()
+    text_value = replace_pixel_emoji_tokens_for_bots(message)
+    text_value = (text_value or "").strip()
     if not text_value:
         return ""
     pigeon_payload = parse_pigeon_message(text_value)
     if pigeon_payload:
         sender_alias, body = pigeon_payload
         body_text = body.strip() or "Без текста"
-        return f"Вам пришло сообщение от пользователя @{sender_alias} с текстом:\n\n{body_text}"
+        return (
+            f"Вам пришло сообщение от пользователя @{sender_alias} с текстом:\n\n{body_text}\n\n"
+            "Чтобы ответить, отправьте: /reply ваш текст"
+        )
     return text_value
 
 
@@ -3041,6 +3463,46 @@ def handle_vk_bot_auth_message(sender_id: str, peer_id: str, text_value: str) ->
     return False
 
 
+def handle_vk_bot_reply_command(sender_id: str, peer_id: str, text_value: str) -> bool:
+    command_match = re.match(r"^(?:/reply|reply|ответ)\s+(.+)$", text_value.strip(), flags=re.IGNORECASE | re.DOTALL)
+    if not command_match:
+        return False
+    reply_body = command_match.group(1).strip()
+    if not reply_body:
+        vk_bot_send_message(peer_id, "После reply укажите текст ответа.")
+        return True
+    with SessionLocal() as db:
+        sender = db.execute(
+            select(User).where(
+                or_(
+                    User.vk_bot_user_id == sender_id,
+                    User.vk_bot_peer_id == peer_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if not sender:
+            vk_bot_send_message(peer_id, "Сначала пройдите авторизацию через /start или /login.")
+            return True
+        latest_note = latest_pigeon_notification_for_reply(db, sender.id)
+        if not latest_note or latest_note.from_user_id is None:
+            vk_bot_send_message(peer_id, "Не найдено входящих голубей, на которые можно ответить.")
+            return True
+        recipient = db.get(User, latest_note.from_user_id)
+        if not recipient:
+            vk_bot_send_message(peer_id, "Получатель ответа не найден.")
+            return True
+        send_pigeon_notification(
+            db,
+            sender=sender,
+            recipient=recipient,
+            message_body=reply_body,
+            reply_to_notification_id=latest_note.id,
+        )
+        db.commit()
+    vk_bot_send_message(peer_id, f"Ответ отправлен пользователю @{preferred_user_alias(recipient)}.")
+    return True
+
+
 def handle_vk_bot_message(message: dict[str, Any]) -> None:
     sender_raw = message.get("from_id")
     peer_raw = message.get("peer_id")
@@ -3086,6 +3548,9 @@ def handle_vk_bot_message(message: dict[str, Any]) -> None:
         reset_vk_bot_auth(sender_id)
         vk_bot_send_message(peer_id, "VK-привязка удалена.")
         return
+    if lowered.startswith("/reply") or lowered.startswith("reply ") or lowered.startswith("ответ "):
+        if handle_vk_bot_reply_command(sender_id, peer_id, text_value):
+            return
 
     state = get_vk_bot_auth_step(sender_id)
     if state or not text_value.startswith("/"):
@@ -3604,6 +4069,42 @@ def is_pigeon_message(message: str | None) -> bool:
     return parse_pigeon_message(message) is not None
 
 
+def latest_pigeon_notification_for_reply(db: Session, user_id: int) -> FestivalNotification | None:
+    notifications = db.execute(
+        select(FestivalNotification)
+        .where(
+            FestivalNotification.user_id == user_id,
+            FestivalNotification.from_user_id.is_not(None),
+        )
+        .order_by(FestivalNotification.created_at.desc(), FestivalNotification.id.desc())
+        .limit(50)
+    ).scalars().all()
+    for note in notifications:
+        if is_pigeon_message(note.message):
+            return note
+    return None
+
+
+def send_pigeon_notification(
+    db: Session,
+    *,
+    sender: User,
+    recipient: User,
+    message_body: str,
+    reply_to_notification_id: int | None = None,
+) -> bool:
+    sender_alias = preferred_user_alias(sender)
+    payload = f"Курлык! (@{sender_alias}) {message_body.strip()}"
+    return enqueue_notification_if_missing(
+        db,
+        user_id=recipient.id,
+        from_user_id=sender.id,
+        source_card_id=None,
+        reply_to_notification_id=reply_to_notification_id,
+        message=payload,
+    )
+
+
 def get_latest_unread_pigeon(db: Session, user_id: int) -> dict[str, Any] | None:
     notifications = db.execute(
         select(FestivalNotification)
@@ -3623,6 +4124,7 @@ def get_latest_unread_pigeon(db: Session, user_id: int) -> dict[str, Any] | None
             "id": note.id,
             "sender_alias": sender_alias,
             "body": body or "Без текста",
+            "body_html": str(render_text_content(body or "Без текста")),
             "created_at": (note.created_at.isoformat() if note.created_at else ""),
         }
     return None
@@ -4044,6 +4546,7 @@ def card_fields_for_sync() -> list[str]:
         "coproplayers_json",
         "coproplayer_nicks_json",
         "is_priority",
+        "is_completed",
         "notes",
     ]
 
@@ -4182,6 +4685,33 @@ def current_user(request: Request, db: Session) -> User | None:
     if not user_id:
         return None
     return db.get(User, int(user_id))
+
+
+def get_user_option_value(db: Session, user_id: int, group: str) -> str:
+    row = db.execute(
+        select(UserOption).where(
+            UserOption.user_id == user_id,
+            UserOption.group == group,
+        )
+    ).scalar_one_or_none()
+    return str(row.value or "").strip() if row else ""
+
+
+def set_user_option_value(db: Session, user_id: int, group: str, value: str | None) -> None:
+    normalized = str(value or "").strip()
+    row = db.execute(
+        select(UserOption).where(
+            UserOption.user_id == user_id,
+            UserOption.group == group,
+        )
+    ).scalar_one_or_none()
+    if normalized:
+        if row:
+            row.value = normalized
+        else:
+            db.add(UserOption(user_id=user_id, group=group, value=normalized))
+    elif row:
+        db.delete(row)
 
 
 def smtp_is_configured() -> bool:
@@ -4501,6 +5031,10 @@ def template_response(
         "nick_is_special": nick_is_special,
         "user_is_special": user_is_special,
         "notification_conflict_subject": conflict_subject_from_message,
+        "external_contact_buttons": external_contact_buttons,
+        "build_external_url": build_external_url,
+        "button_label_for_external_url": button_label_for_external_url,
+        "pixel_emoji_catalog": PIXEL_EMOJI_CATALOG,
         "vkid_enabled": VKID_ENABLED,
         "vkid_app_id": VKID_APP_ID,
         "vkid_redirect_url": VKID_REDIRECT_URL,
@@ -5003,14 +5537,18 @@ def index(request: Request, db: Session = Depends(get_db)):
         regular_notifications: list[FestivalNotification] = []
         for note in notifications:
             pigeon_payload = parse_pigeon_message(note.message)
-            if pigeon_payload and not note.is_read:
+            if pigeon_payload:
                 sender_alias, body = pigeon_payload
                 pigeon_notifications.append(
                     {
                         "id": note.id,
+                        "from_user_id": note.from_user_id,
+                        "reply_to_notification_id": note.reply_to_notification_id,
                         "sender_alias": sender_alias,
                         "body": body,
+                        "body_html": render_text_content(body),
                         "created_at": note.created_at,
+                        "is_read": bool(note.is_read),
                     }
                 )
             else:
@@ -5587,7 +6125,14 @@ def profile_vk_bot_unlink(request: Request, db: Session = Depends(get_db)):
 
 
 @app.get("/cosplan", response_class=HTMLResponse)
-def cosplan_list(request: Request, q: str = "", view: str = "cards", db: Session = Depends(get_db)):
+def cosplan_list(
+    request: Request,
+    q: str = "",
+    view: str = "cards",
+    tab: str = "current",
+    plan_filter: str = "all",
+    db: Session = Depends(get_db),
+):
     user = current_user(request, db)
     if not user:
         return redirect("/login")
@@ -5598,7 +6143,31 @@ def cosplan_list(request: Request, q: str = "", view: str = "cards", db: Session
         .order_by(CosplanCard.is_priority.desc(), CosplanCard.updated_at.desc())
     ).scalars().all()
 
-    cards = list(all_cards)
+    current_tab = tab if tab in {"current", "completed"} else "current"
+    current_filter = plan_filter if plan_filter in {"all", "project", "personal", "frozen"} else "all"
+
+    in_progress_rows = db.execute(
+        select(InProgressCard).where(InProgressCard.user_id == user.id)
+    ).scalars().all()
+    in_progress_ids = {row.cosplan_card_id for row in in_progress_rows if row.cosplan_card_id}
+    frozen_card_ids = {
+        row.cosplan_card_id for row in in_progress_rows if row.cosplan_card_id and bool(row.is_frozen)
+    }
+
+    current_cards_pool = [card for card in all_cards if not card.is_completed]
+    completed_cards_pool = [card for card in all_cards if card.is_completed]
+
+    if current_tab == "completed":
+        cards = list(completed_cards_pool)
+    else:
+        cards = list(current_cards_pool)
+        if current_filter == "project":
+            cards = [card for card in cards if (card.plan_type or "") == "project"]
+        elif current_filter == "personal":
+            cards = [card for card in cards if (card.plan_type or "") != "project"]
+        elif current_filter == "frozen":
+            cards = [card for card in cards if card.id in frozen_card_ids]
+
     if q.strip():
         alias_to_username, users_by_username, _ = build_user_alias_lookup(db)
         needle = q.strip().casefold()
@@ -5631,7 +6200,7 @@ def cosplan_list(request: Request, q: str = "", view: str = "cards", db: Session
             )
             return any(needle in value.casefold() for value in searchable if value)
 
-        cards = [card for card in all_cards if matches(card)]
+        cards = [card for card in cards if matches(card)]
 
     festivals = db.execute(
         select(Festival).where(Festival.user_id == user.id, Festival.event_date.is_not(None))
@@ -5643,9 +6212,6 @@ def cosplan_list(request: Request, q: str = "", view: str = "cards", db: Session
         card_totals[card.id] = total
         card_total_currencies[card.id] = currency
     card_date_conflicts = build_card_date_conflicts(cards, all_cards, festivals)
-    in_progress_ids = set(
-        db.execute(select(InProgressCard.cosplan_card_id).where(InProgressCard.user_id == user.id)).scalars().all()
-    )
     rehearsal_stats_by_card: dict[int, dict[str, Any]] = {}
     card_ids = [card.id for card in cards]
     if card_ids:
@@ -5693,7 +6259,12 @@ def cosplan_list(request: Request, q: str = "", view: str = "cards", db: Session
         q=q,
         current_view=current_view,
         cards_total=len(cards),
+        current_tab=current_tab,
+        current_filter=current_filter,
+        current_count=len(current_cards_pool),
+        completed_count=len(completed_cards_pool),
         in_progress_ids=in_progress_ids,
+        frozen_card_ids=frozen_card_ids,
         rehearsal_stats_by_card=rehearsal_stats_by_card,
         editable_card_links=editable_card_links,
         current_query=request.url.query or "",
@@ -6450,6 +7021,32 @@ async def cosplan_priority_toggle(card_id: int, request: Request, db: Session = 
     add_flash(
         request,
         "Карточка отмечена как приоритетная." if card.is_priority else "Приоритет для карточки снят.",
+        "success",
+    )
+    return redirect(next_url)
+
+
+@app.post("/cosplan/{card_id}/completed-toggle")
+async def cosplan_completed_toggle(card_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    card = get_editable_card(db, card_id, user)
+    if not card:
+        add_flash(request, "Карточка недоступна для редактирования.", "error")
+        return redirect("/cosplan")
+
+    form = await request.form()
+    next_url = safe_redirect_target(str(form.get("next", "")).strip(), "/cosplan")
+
+    card.is_completed = not bool(card.is_completed)
+    sync_shared_cards_for_nicks(card, user, db)
+    db.commit()
+
+    add_flash(
+        request,
+        "Карточка перенесена в завершенные." if card.is_completed else "Карточка возвращена в текущие планы.",
         "success",
     )
     return redirect(next_url)
@@ -7539,6 +8136,7 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
         .where(ContentPlanPost.user_id == user.id)
         .order_by(ContentPlanPost.publish_date, ContentPlanPost.publish_time, ContentPlanPost.id)
     ).scalars().all()
+    telegram_settings = get_content_telegram_settings(user, db)
     rubric_options = merge_unique(
         get_options(db, user.id, "content_rubric"),
         [post.rubric for post in content_posts if post.rubric],
@@ -7560,6 +8158,7 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
                 "rubric_color": row_color,
                 "status": normalize_content_status(post.status),
                 "status_label": CONTENT_STATUS_LABELS.get(normalize_content_status(post.status), "План"),
+                "telegram_published_at": post.telegram_published_at,
             }
         )
 
@@ -7612,6 +8211,13 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
         content_rubric_colors=rubric_colors,
         content_form=get_content_plan_form_values(editing_content_post),
         editing_content_post=editing_content_post,
+        telegram_settings=telegram_settings,
+        telegram_settings_masked={
+            "bot_token": mask_secret_value(telegram_settings.get("bot_token")),
+            "chat_id": telegram_settings.get("chat_id", ""),
+            "premium_pack_id": telegram_settings.get("premium_pack_id", ""),
+        },
+        telegram_content_connected=bool(telegram_settings.get("bot_token") and telegram_settings.get("chat_id")),
         month_weekday_labels=["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"],
     )
 
@@ -7939,6 +8545,83 @@ def my_calendar_content_delete(post_id: int, request: Request, db: Session = Dep
     db.commit()
     add_flash(request, "Пост удален из контент-плана.", "info")
     return calendar_redirect_for_view(next_view)
+
+
+@app.post("/my-calendar/content/telegram/connect")
+async def my_calendar_content_telegram_connect(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    form = await request.form()
+    bot_token = str(form.get("bot_token", "")).strip()
+    chat_id = normalize_telegram_target(str(form.get("chat_id", "")).strip())
+    premium_pack_id = str(form.get("premium_pack_id", "")).strip()
+
+    if not bot_token or ":" not in bot_token:
+        add_flash(request, "Укажите корректный токен Telegram-бота.", "error")
+        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+    if not chat_id:
+        add_flash(request, "Укажите @канал или chat_id для публикации.", "error")
+        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+
+    set_user_option_value(db, user.id, CONTENT_TELEGRAM_TOKEN_GROUP, bot_token)
+    set_user_option_value(db, user.id, CONTENT_TELEGRAM_CHAT_GROUP, chat_id)
+    set_user_option_value(db, user.id, CONTENT_TELEGRAM_PACK_GROUP, premium_pack_id)
+    db.commit()
+    add_flash(request, "Настройки Telegram-канала сохранены.", "success")
+    return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+
+
+@app.post("/my-calendar/content/telegram/disconnect")
+def my_calendar_content_telegram_disconnect(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    set_user_option_value(db, user.id, CONTENT_TELEGRAM_TOKEN_GROUP, "")
+    set_user_option_value(db, user.id, CONTENT_TELEGRAM_CHAT_GROUP, "")
+    set_user_option_value(db, user.id, CONTENT_TELEGRAM_PACK_GROUP, "")
+    db.commit()
+    add_flash(request, "Настройки Telegram-канала удалены.", "info")
+    return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+
+
+@app.post("/my-calendar/content/{post_id}/telegram-publish")
+def my_calendar_content_publish_telegram(post_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    post = db.execute(
+        select(ContentPlanPost).where(
+            ContentPlanPost.id == post_id,
+            ContentPlanPost.user_id == user.id,
+        )
+    ).scalar_one_or_none()
+    if not post:
+        add_flash(request, "Пост контент-плана не найден.", "error")
+        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+
+    telegram_settings = get_content_telegram_settings(user, db)
+    bot_token = telegram_settings.get("bot_token", "")
+    chat_id = telegram_settings.get("chat_id", "")
+    if not bot_token or not chat_id:
+        add_flash(request, "Сначала подключите Telegram-канал в настройках контент-плана.", "error")
+        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+
+    try:
+        message_id = publish_content_post_to_telegram(token=bot_token, chat_id=chat_id, post=post)
+    except RuntimeError as exc:
+        add_flash(request, str(exc), "error")
+        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+
+    post.telegram_message_id = message_id or None
+    post.telegram_published_at = datetime.utcnow()
+    if normalize_content_status(post.status) != "published":
+        post.status = "published"
+    db.commit()
+    add_flash(request, "Пост опубликован в Telegram.", "success")
+    return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
 
 
 def ics_calendar_header() -> list[str]:
@@ -9731,6 +10414,16 @@ def community_studios_detail(studio_id: int, request: Request, db: Session = Dep
         return redirect("/community/studios")
 
     owner = db.get(User, studio.user_id)
+    comments = db.execute(
+        select(CommunityStudioComment)
+        .where(CommunityStudioComment.studio_id == studio.id)
+        .order_by(CommunityStudioComment.created_at, CommunityStudioComment.id)
+    ).scalars().all()
+    author_ids = {studio.user_id, *(item.user_id for item in comments)}
+    authors_by_id: dict[int, User] = {}
+    if author_ids:
+        author_rows = db.execute(select(User).where(User.id.in_(author_ids))).scalars().all()
+        authors_by_id = {item.id: item for item in author_rows}
     return template_response(
         request,
         "community_studio_detail.html",
@@ -9741,6 +10434,8 @@ def community_studios_detail(studio_id: int, request: Request, db: Session = Dep
         owner=owner,
         price_rows=format_master_price_rows_for_form(as_list(studio.price_list_json)),
         studio_tags=normalize_studio_tags(as_list(studio.tags_json)),
+        comments=comments,
+        authors_by_id=authors_by_id,
     )
 
 
@@ -9814,6 +10509,46 @@ def community_studios_delete(studio_id: int, request: Request, db: Session = Dep
     db.commit()
     add_flash(request, "Карточка студии удалена.", "info")
     return redirect("/community/studios")
+
+
+@app.post("/community/studios/{studio_id}/comments")
+async def community_studios_add_comment(studio_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    studio = db.get(CommunityStudio, studio_id)
+    if not studio:
+        add_flash(request, "Карточка студии не найдена.", "error")
+        return redirect("/community/studios")
+
+    form = await request.form()
+    body = str(form.get("body", "")).strip()
+    if not body:
+        add_flash(request, "Введите текст комментария.", "error")
+        return redirect(f"/community/studios/{studio_id}")
+
+    db.add(
+        CommunityStudioComment(
+            studio_id=studio.id,
+            user_id=user.id,
+            body=body,
+        )
+    )
+    if studio.user_id != user.id:
+        preview = body if len(body) <= 120 else body[:117].rstrip() + "..."
+        db.add(
+            FestivalNotification(
+                user_id=studio.user_id,
+                from_user_id=user.id,
+                source_card_id=None,
+                message=f"Новый комментарий в вашей карточке студии «{studio.name}»: {preview}",
+                is_read=False,
+            )
+        )
+    db.commit()
+    add_flash(request, "Комментарий добавлен.", "success")
+    return redirect(f"/community/studios/{studio_id}")
 
 
 def get_article_form_values(article: CommunityArticle | None = None, user: User | None = None) -> dict[str, Any]:
@@ -11158,6 +11893,7 @@ async def notifications_send_pigeon(request: Request, db: Session = Depends(get_
     form = await request.form()
     recipient_alias_raw = str(form.get("recipient_alias", "")).strip()
     message_body = str(form.get("message", "")).strip()
+    reply_to_raw = str(form.get("reply_to_notification_id", "")).strip()
     next_url = safe_redirect_target(str(form.get("next", "")).strip(), "/")
 
     if not recipient_alias_raw:
@@ -11180,14 +11916,22 @@ async def notifications_send_pigeon(request: Request, db: Session = Depends(get_
         add_flash(request, "Нельзя отправить голубя самому себе.", "error")
         return redirect(next_url)
 
-    sender_alias = preferred_user_alias(user)
-    payload = f"Курлык! (@{sender_alias}) {message_body}"
-    enqueue_notification_if_missing(
+    reply_to_notification_id = None
+    if reply_to_raw.isdigit():
+        reply_note = db.execute(
+            select(FestivalNotification).where(
+                FestivalNotification.id == int(reply_to_raw),
+                FestivalNotification.user_id == user.id,
+            )
+        ).scalar_one_or_none()
+        if reply_note and is_pigeon_message(reply_note.message):
+            reply_to_notification_id = reply_note.id
+    send_pigeon_notification(
         db,
-        user_id=recipient.id,
-        from_user_id=user.id,
-        source_card_id=None,
-        message=payload,
+        sender=user,
+        recipient=recipient,
+        message_body=message_body,
+        reply_to_notification_id=reply_to_notification_id,
     )
     db.commit()
 

@@ -3,6 +3,7 @@
 {% include "community_tabs.html" %}
 
 {% set owner = authors_by_id.get(cosplayer.user_id) %}
+{% set contact_buttons = external_contact_buttons(cosplayer.tg_channel, include_site=False) %}
 <section class="section-head">
   <h1><span class="{% if nick_is_special(cosplayer.nick) %}nick-special{% endif %}">@{{ cosplayer.nick }}</span></h1>
   <div class="actions-inline">
@@ -29,11 +30,15 @@
     <span class="chip">{{ collab_labels.get(cosplayer.collab_status, cosplayer.collab_status) }}</span>
   </div>
   <p class="meta">Город: {{ cosplayer.city or "—" }}</p>
-  {% if cosplayer.tg_channel %}
-    <p class="meta">ТГК: {{ cosplayer.tg_channel }}</p>
+  {% if contact_buttons %}
+    <div class="actions-inline top-offset">
+      {% for button in contact_buttons %}
+        <a href="{{ button.url }}" target="_blank" rel="noreferrer" class="btn btn-small btn-platform">{{ button.label }}</a>
+      {% endfor %}
+    </div>
   {% endif %}
   {% if cosplayer.favorite_directions %}
-    <p class="notes-block">{{ cosplayer.favorite_directions }}</p>
+    <p class="notes-block">{{ cosplayer.favorite_directions|render_text }}</p>
   {% endif %}
   {% if cosplayer.extra_skills_json %}
     <p class="meta top-offset">Дополнительные навыки:</p>
@@ -83,7 +88,7 @@
             {% endif %}
             • {{ comment.created_at.strftime('%d-%m-%Y %H:%M') if comment.created_at else "—" }}
           </p>
-          <p class="notes-block">{{ comment.body }}</p>
+          <p class="notes-block">{{ comment.body|render_text }}</p>
         </article>
       {% endfor %}
     </div>

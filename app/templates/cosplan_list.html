@@ -5,21 +5,33 @@
 <section class="section-head">
   <div>
     <h1>Косплан</h1>
-    <p class="meta">Всего карточек: <strong>{{ cards_total }}</strong></p>
+    <p class="meta">Показано карточек: <strong>{{ cards_total }}</strong></p>
   </div>
   <div class="actions-inline wrap">
     <form method="get" action="/cosplan" class="search-inline">
+      <input type="hidden" name="tab" value="{{ current_tab }}" />
+      {% if current_tab == 'current' %}
+        <input type="hidden" name="plan_filter" value="{{ current_filter }}" />
+      {% endif %}
       <input type="hidden" name="view" value="{{ current_view }}" />
       <input type="text" name="q" value="{{ q }}" placeholder="Поиск по карточкам" />
       <button type="submit" class="btn">Найти</button>
     </form>
     <div class="actions-inline">
       <form method="get" action="/cosplan">
+        <input type="hidden" name="tab" value="{{ current_tab }}" />
+        {% if current_tab == 'current' %}
+          <input type="hidden" name="plan_filter" value="{{ current_filter }}" />
+        {% endif %}
         <input type="hidden" name="view" value="cards" />
         <input type="hidden" name="q" value="{{ q }}" />
         <button type="submit" class="btn {% if current_view == 'cards' %}btn-accent{% endif %}">Карточки</button>
       </form>
       <form method="get" action="/cosplan">
+        <input type="hidden" name="tab" value="{{ current_tab }}" />
+        {% if current_tab == 'current' %}
+          <input type="hidden" name="plan_filter" value="{{ current_filter }}" />
+        {% endif %}
         <input type="hidden" name="view" value="list" />
         <input type="hidden" name="q" value="{{ q }}" />
         <button type="submit" class="btn {% if current_view == 'list' %}btn-accent{% endif %}">Список</button>
@@ -29,6 +41,26 @@
     <a href="/cosplan/new" class="btn btn-accent">Новая карточка</a>
   </div>
 </section>
+
+<nav class="calendar-tabs">
+  <a href="/cosplan?tab=current&view={{ current_view }}{% if q %}&q={{ q|urlencode }}{% endif %}" class="tab {% if current_tab == 'current' %}active{% endif %}">
+    Текущие планы
+    <span class="chip">{{ current_count }}</span>
+  </a>
+  <a href="/cosplan?tab=completed&view={{ current_view }}{% if q %}&q={{ q|urlencode }}{% endif %}" class="tab {% if current_tab == 'completed' %}active{% endif %}">
+    Завершенные
+    <span class="chip">{{ completed_count }}</span>
+  </a>
+</nav>
+
+{% if current_tab == "current" %}
+  <div class="actions-inline wrap top-offset">
+    <a href="/cosplan?tab=current&view={{ current_view }}{% if q %}&q={{ q|urlencode }}{% endif %}" class="btn {% if current_filter == 'all' %}btn-accent{% endif %}">Все</a>
+    <a href="/cosplan?tab=current&plan_filter=project&view={{ current_view }}{% if q %}&q={{ q|urlencode }}{% endif %}" class="btn {% if current_filter == 'project' %}btn-accent{% endif %}">Общий</a>
+    <a href="/cosplan?tab=current&plan_filter=personal&view={{ current_view }}{% if q %}&q={{ q|urlencode }}{% endif %}" class="btn {% if current_filter == 'personal' %}btn-accent{% endif %}">Личный</a>
+    <a href="/cosplan?tab=current&plan_filter=frozen&view={{ current_view }}{% if q %}&q={{ q|urlencode }}{% endif %}" class="btn {% if current_filter == 'frozen' %}btn-accent{% endif %}">Заморожено</a>
+  </div>
+{% endif %}
 
 {% if cards %}
   {% if current_view == "list" %}
@@ -40,7 +72,7 @@
             <div class="cosplan-list-number">{{ loop.index }}.</div>
             <div class="cosplan-list-main">
               <a href="/cosplan/{{ card.id }}" class="card-title-link cosplan-list-title">
-                {% if card.is_priority %}★ {% endif %}{{ card.character_name }}
+                {{ '★ ' if card.is_priority else '' }}{{ card.character_name }}
               </a>
               <div class="cosplan-list-meta">
                 <span>{{ card.fandom or "—" }}</span>
@@ -48,19 +80,27 @@
               </div>
             </div>
             <div class="actions-inline cosplan-list-actions">
-              {% if editable_id %}
+              {% if editable_id and current_tab == 'current' %}
                 <form method="post" action="/cosplan/{{ editable_id }}/priority-toggle">
                   <input type="hidden" name="next" value="{{ current_url }}" />
                   <button type="submit" class="btn">{{ "Приоритет ✓" if card.is_priority else "Приоритет" }}</button>
                 </form>
               {% endif %}
-            {% if card.id not in in_progress_ids %}
-              <form method="post" action="/in-progress/add/{{ card.id }}">
-                <button type="submit" class="btn">В работу</button>
-              </form>
-            {% else %}
-              <button type="button" class="btn" disabled>В работе</button>
-            {% endif %}
+              {% if current_tab == 'current' %}
+                {% if card.id not in in_progress_ids %}
+                  <form method="post" action="/in-progress/add/{{ card.id }}">
+                    <button type="submit" class="btn">В работу</button>
+                  </form>
+                {% else %}
+                  <button type="button" class="btn" disabled>В работе</button>
+                {% endif %}
+              {% elif editable_id %}
+                <form method="post" action="/cosplan/{{ editable_id }}/completed-toggle">
+                  <input type="hidden" name="next" value="{{ current_url }}" />
+                  <button type="submit" class="btn">Вернуть</button>
+                </form>
+              {% endif %}
+            </div>
           </div>
         </article>
       {% endfor %}
@@ -75,6 +115,9 @@
             <a href="/cosplan/{{ card.id }}" class="card-title-link">{{ card.character_name }}</a>
             {% if card.is_priority %}
               <span class="chip chip-priority">★ Приоритетный проект</span>
+            {% endif %}
+            {% if card.is_completed %}
+              <span class="chip">Сделан!</span>
             {% endif %}
             {% if card.is_shared_copy %}
               <span class="chip chip-shared">Общий доступ</span>
@@ -112,13 +155,17 @@
                 <input type="hidden" name="next" value="{{ current_url }}" />
                 <button type="submit" class="btn">{{ "Снять приоритет" if card.is_priority else "В приоритет" }}</button>
               </form>
+              <form method="post" action="/cosplan/{{ editable_id }}/completed-toggle">
+                <input type="hidden" name="next" value="{{ current_url }}" />
+                <button type="submit" class="btn">{{ "Вернуть в текущие" if card.is_completed else "Сделан!" }}</button>
+              </form>
               <a href="/cosplan/{{ editable_id }}/edit" class="btn">Редактировать</a>
             {% endif %}
-            {% if card.id not in in_progress_ids %}
+            {% if not card.is_completed and card.id not in in_progress_ids %}
               <form method="post" action="/in-progress/add/{{ card.id }}">
                 <button type="submit" class="btn">В работу</button>
               </form>
-            {% else %}
+            {% elif not card.is_completed %}
               <span class="chip">Уже в работе</span>
             {% endif %}
             <form method="post" action="/cosplan/{{ card.id }}/delete" onsubmit="return confirm('Удалить карточку?');">

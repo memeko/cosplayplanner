@@ -59,7 +59,7 @@
             {% endif %}
             • {{ comment.created_at.strftime('%d-%m-%Y %H:%M') if comment.created_at else '—' }}
           </p>
-          <p class="notes-block">{{ comment.body }}</p>
+          <p class="notes-block">{{ comment.body|render_text }}</p>
         </article>
       {% endfor %}
     </div>

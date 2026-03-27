@@ -40,6 +40,7 @@
   {% for cosplayer in cosplayers %}
     {% set owner = owners_by_id.get(cosplayer.user_id) %}
     {% set photos = cosplayer.promo_photos_json or [] %}
+    {% set contact_buttons = external_contact_buttons(cosplayer.tg_channel, include_site=False) %}
     <article class="card">
       {% if photos %}
         <div class="cosplayer-card-avatar-wrap">
@@ -56,11 +57,15 @@
         </p>
       {% endif %}
       <p class="meta">Город: {{ cosplayer.city or "—" }}</p>
-      {% if cosplayer.tg_channel %}
-        <p class="meta">ТГК: {{ cosplayer.tg_channel }}</p>
+      {% if contact_buttons %}
+        <div class="actions-inline">
+          {% for button in contact_buttons %}
+            <a href="{{ button.url }}" target="_blank" rel="noreferrer" class="btn btn-small btn-platform">{{ button.label }}</a>
+          {% endfor %}
+        </div>
       {% endif %}
       {% if cosplayer.favorite_directions %}
-        <p class="notes-block">{{ cosplayer.favorite_directions[:220] }}{% if cosplayer.favorite_directions|length > 220 %}…{% endif %}</p>
+        <p class="notes-block">{{ (cosplayer.favorite_directions[:220] ~ ('…' if cosplayer.favorite_directions|length > 220 else ''))|render_text }}</p>
       {% endif %}
       {% set skills = cosplayer.extra_skills_json or [] %}
       {% if skills %}
@@ -75,7 +80,7 @@
       {% endif %}
       <p class="meta">Комментариев: {{ comment_counts.get(cosplayer.id, 0) }}</p>
       <div class="actions-inline">
-        <a href="/community/cosplayers/{{ cosplayer.id }}" class="btn">Открыть</a>
+        <a href="/community/cosplayers/{{ cosplayer.id }}" class="btn">Подробнее</a>
       </div>
     </article>
   {% endfor %}

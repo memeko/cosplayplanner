@@ -40,75 +40,38 @@
   {% for studio in studios %}
     {% set owner = owners_by_id.get(studio.user_id) %}
     {% set gallery = studio.gallery_json or [] %}
-    {% set price_rows = studio.price_list_json or [] %}
     {% set tags = studio.tags_json or [] %}
+    {% set contact_buttons = external_contact_buttons(studio.contact, include_site=True) %}
     <article class="card">
+      {% if gallery %}
+        <a href="/community/studios/{{ studio.id }}" class="studio-preview-hero">
+          <img src="{{ gallery[0] }}" alt="Фото студии {{ studio.name }}" loading="lazy" />
+        </a>
+      {% endif %}
       <div class="row-between">
         <h3><a href="/community/studios/{{ studio.id }}" class="card-title-link">{{ studio.name }}</a></h3>
         <span class="chip">{{ studio.city }}</span>
       </div>
-      {% if owner %}
-        <p class="meta">
-          Добавил(а):
-          <span class="{% if user_is_special(owner) %}nick-special{% endif %}">@{{ owner.cosplay_nick or owner.username }}</span>
-        </p>
-      {% endif %}
       {% if studio.address %}
         <p class="meta">Адрес: {{ studio.address }}</p>
       {% endif %}
-      {% if studio.contact %}
-        <p class="meta">Контакт: {{ studio.contact }}</p>
-      {% endif %}
       {% if tags %}
-        <p class="meta">Теги:</p>
         <div class="chips-wrap">
           {% for tag in tags %}
             <span class="chip">{{ tag }}</span>
           {% endfor %}
         </div>
       {% endif %}
-
-      {% if gallery %}
-      <div class="reference-grid top-offset">
-        {% for url in gallery[:3] %}
-          <a class="reference-tile" href="{{ url }}" target="_blank" rel="noreferrer">
-            <img src="{{ url }}" alt="Фото студии" loading="lazy" />
-          </a>
-        {% endfor %}
-      </div>
-      {% if gallery|length > 3 %}
-        <p class="meta">И ещё фото: {{ gallery|length - 3 }}</p>
+      {% if contact_buttons %}
+        <div class="actions-inline top-offset">
+          {% for button in contact_buttons %}
+            <a href="{{ button.url }}" target="_blank" rel="noreferrer" class="btn btn-small btn-platform">{{ button.label }}</a>
+          {% endfor %}
+        </div>
       {% endif %}
-      {% endif %}
-
-      <section class="top-offset">
-        <h4>Прайс-лист</h4>
-        {% if price_rows %}
-          <table class="table">
-            <thead>
-              <tr>
-                <th>Услуга</th>
-                <th>Стоимость (руб)</th>
-                <th>Комментарий</th>
-              </tr>
-            </thead>
-            <tbody>
-              {% for row in price_rows %}
-                <tr>
-                  <td>{{ row.service or "—" }}</td>
-                  <td>{% if row.cost is not none and row.cost != "" %}{{ row.cost }}{% else %}—{% endif %}</td>
-                  <td>{{ row.comment or "—" }}</td>
-                </tr>
-              {% endfor %}
-            </tbody>
-          </table>
-        {% else %}
-          <p class="muted">Прайс-лист пока не заполнен.</p>
-        {% endif %}
-      </section>
 
       <div class="actions-inline">
-        <a href="/community/studios/{{ studio.id }}" class="btn">Открыть</a>
+        <a href="/community/studios/{{ studio.id }}" class="btn">Подробнее</a>
         {% if user and user.id == studio.user_id %}
           <a href="/community/studios/{{ studio.id }}/edit" class="btn">Редактировать</a>
           <form method="post" action="/community/studios/{{ studio.id }}/delete" onsubmit="return confirm('Удалить карточку студии?');">

@@ -30,6 +30,7 @@
   {% for master in masters %}
     {% set owner = owners_by_id.get(master.user_id) %}
     {% set gallery = master.gallery_json or [] %}
+    {% set contact_buttons = external_contact_buttons(master.details, master.import_url, include_site=True) %}
     <article class="card">
       <div class="row-between">
         <h3><a href="/community/masters/{{ master.id }}" class="card-title-link"><span class="{% if nick_is_special(master.nick) %}nick-special{% endif %}">@{{ master.nick }}</span></a></h3>
@@ -52,9 +53,16 @@
       {% set total_ratings = rating_count_by_master.get(master.id, 0) %}
       <p class="meta">Рейтинг: {{ '%.1f'|format(avg_rating) }} / 5 (оценок: {{ total_ratings }})</p>
       <p class="meta">Комментариев: {{ comment_counts.get(master.id, 0) }}</p>
-      <p class="notes-block">{{ master.details[:240] }}{% if master.details|length > 240 %}…{% endif %}</p>
+      <p class="notes-block">{{ (master.details[:240] ~ ('…' if master.details|length > 240 else ''))|render_text }}</p>
       {% if gallery %}
       <p class="meta">Галерея: {{ gallery|length }} изображ.</p>
+      {% endif %}
+      {% if contact_buttons %}
+        <div class="actions-inline">
+          {% for button in contact_buttons %}
+            <a href="{{ button.url }}" target="_blank" rel="noreferrer" class="btn btn-small btn-platform">{{ button.label }}</a>
+          {% endfor %}
+        </div>
       {% endif %}
       <div class="actions-inline">
         <a href="/community/masters/{{ master.id }}" class="btn">Подробнее</a>

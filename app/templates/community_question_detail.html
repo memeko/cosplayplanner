@@ -25,7 +25,7 @@
     </p>
     <span class="chip">{{ question_status_labels.get(question.status or 'open', question.status or 'open') }}</span>
   </div>
-  <p class="notes-block">{{ question.body }}</p>
+  <p class="notes-block">{{ question.body|render_text }}</p>
   {% if user and user.id == question.user_id %}
   <div class="actions-inline top-offset">
     <form method="post" action="/community/questions/{{ question.id }}/status">
@@ -55,7 +55,7 @@
             {% endif %}
             • {{ comment.created_at.strftime('%d-%m-%Y %H:%M') if comment.created_at else '—' }}
           </p>
-          <p class="notes-block">{{ comment.body }}</p>
+          <p class="notes-block">{{ comment.body|render_text }}</p>
         </article>
       {% endfor %}
     </div>

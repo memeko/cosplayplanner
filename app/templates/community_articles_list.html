@@ -53,11 +53,11 @@
       </div>
       {% endif %}
 
-      <p class="notes-block">{{ (article.body_markdown or '')[:320] }}{% if (article.body_markdown or '')|length > 320 %}…{% endif %}</p>
+      <p class="notes-block">{{ ((article.body_markdown or '')[:320] ~ ('…' if (article.body_markdown or '')|length > 320 else ''))|render_text }}</p>
       <p class="meta">Комментариев: {{ comment_counts.get(article.id, 0) }} · В избранном: {{ favorite_counts.get(article.id, 0) }}</p>
 
       <div class="actions-inline">
-        <a href="/community/articles/{{ article.id }}" class="btn">Открыть</a>
+        <a href="/community/articles/{{ article.id }}" class="btn">Подробнее</a>
         {% if user and user.id == article.user_id %}
           <a href="/community/articles/{{ article.id }}/edit" class="btn">Редактировать</a>
         {% endif %}

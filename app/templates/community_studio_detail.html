@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block content %}
 {% include "community_tabs.html" %}
+{% set contact_buttons = external_contact_buttons(studio.contact, include_site=True) %}
 
 <section class="section-head">
   <h1>{{ studio.name }}</h1>
@@ -25,8 +26,14 @@
   {% if studio.address %}
     <p class="meta">Адрес: {{ studio.address }}</p>
   {% endif %}
-  {% if studio.contact %}
-    <p class="meta">Контакт: {{ studio.contact }}</p>
+  {% if contact_buttons %}
+    <div class="actions-inline top-offset">
+      {% for button in contact_buttons %}
+        <a href="{{ button.url }}" target="_blank" rel="noreferrer" class="btn btn-small btn-platform">{{ button.label }}</a>
+      {% endfor %}
+    </div>
+  {% elif studio.contact %}
+    <p class="meta">Контакт: {{ studio.contact|render_text }}</p>
   {% endif %}
   {% if studio_tags %}
     <p class="meta">Теги:</p>
@@ -78,5 +85,39 @@
   {% else %}
     <p class="muted top-offset">Прайс-лист пока не заполнен.</p>
   {% endif %}
+</section>
+
+<section class="box">
+  <h3>Комментарии</h3>
+  {% if comments %}
+    <div class="comments-list top-offset">
+      {% for comment in comments %}
+        {% set author = authors_by_id.get(comment.user_id) %}
+        <article class="comment-card">
+          <p class="comment-meta">
+            {% if author %}
+              <span class="{% if user_is_special(author) %}nick-special{% endif %}">@{{ author.cosplay_nick or author.username }}</span>
+            {% else %}
+              @unknown
+            {% endif %}
+            • {{ comment.created_at.strftime('%d-%m-%Y %H:%M') if comment.created_at else "—" }}
+          </p>
+          <p class="notes-block">{{ comment.body|render_text }}</p>
+        </article>
+      {% endfor %}
+    </div>
+  {% else %}
+    <p class="muted top-offset">Комментариев пока нет.</p>
+  {% endif %}
+
+  <form method="post" action="/community/studios/{{ studio.id }}/comments" class="comment-form top-offset">
+    <label>
+      Добавить комментарий
+      <textarea name="body" rows="4" placeholder="Ваш комментарий" required></textarea>
+    </label>
+    <div class="actions-inline">
+      <button type="submit" class="btn btn-accent">Отправить</button>
+    </div>
+  </form>
 </section>
 {% endblock %}

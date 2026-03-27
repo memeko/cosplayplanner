@@ -91,6 +91,11 @@ class User(Base):
         cascade="all, delete-orphan",
     )
     community_studios = relationship("CommunityStudio", back_populates="user", cascade="all, delete-orphan")
+    community_studio_comments = relationship(
+        "CommunityStudioComment",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
     community_articles = relationship("CommunityArticle", back_populates="user", cascade="all, delete-orphan")
     community_article_comments = relationship(
         "CommunityArticleComment",
@@ -305,6 +310,7 @@ class CosplanCard(Base):
     # Shared copy support: if this is a propagated card for another user.
     is_shared_copy = Column(Boolean, nullable=False, default=False)
     is_priority = Column(Boolean, nullable=False, default=False)
+    is_completed = Column(Boolean, nullable=False, default=False)
     source_card_id = Column(Integer, ForeignKey("cosplan_cards.id", ondelete="SET NULL"), nullable=True, index=True)
     shared_from_user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
     notes = Column(Text, nullable=True)
@@ -442,6 +448,10 @@ class ContentPlanPost(Base):
     socials_json = Column(JSON, nullable=False, default=list)
     rubric = Column(String(120), nullable=False, index=True)
     status = Column(String(32), nullable=False, default="plan", index=True)
+    telegram_body_html = Column(Text, nullable=True)
+    telegram_photos_json = Column(JSON, nullable=False, default=list)
+    telegram_message_id = Column(String(64), nullable=True)
+    telegram_published_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
@@ -520,6 +530,7 @@ class FestivalNotification(Base):
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     from_user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
     source_card_id = Column(Integer, ForeignKey("cosplan_cards.id", ondelete="SET NULL"), nullable=True, index=True)
+    reply_to_notification_id = Column(Integer, ForeignKey("festival_notifications.id", ondelete="SET NULL"), nullable=True, index=True)
     message = Column(Text, nullable=False)
     is_read = Column(Boolean, nullable=False, default=False)
     telegram_sent_at = Column(DateTime(timezone=True), nullable=True, index=True)
@@ -727,6 +738,20 @@ class CommunityStudio(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
     user = relationship("User", back_populates="community_studios")
+    comments = relationship("CommunityStudioComment", back_populates="studio", cascade="all, delete-orphan")
+
+
+class CommunityStudioComment(Base):
+    __tablename__ = "community_studio_comments"
+
+    id = Column(Integer, primary_key=True)
+    studio_id = Column(Integer, ForeignKey("community_studios.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    body = Column(Text, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    studio = relationship("CommunityStudio", back_populates="comments")
+    user = relationship("User", back_populates="community_studio_comments")
 
 
 class CommunityCosplayer(Base):

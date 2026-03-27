@@ -34,7 +34,7 @@
           {% if conflict_subject %}
             <p class="meta">Конфликт: <strong>{{ conflict_subject }}</strong></p>
           {% endif %}
-          {{ note.message }}
+          {{ note.message|render_text }}
           <span class="muted">({{ note.created_at }})</span>
         </div>
         <form method="post" action="/festivals/notifications/{{ note.id }}/ignore">
@@ -73,7 +73,7 @@
               · обновлено {{ item.updated_at.strftime('%d-%m-%Y %H:%M') }}
             {% endif %}
           </p>
-          <div class="news-body">{{ item.body }}</div>
+          <div class="news-body">{{ item.body|render_text }}</div>
 
           {% if can_manage_news %}
             <details class="news-edit top-offset">
@@ -112,12 +112,80 @@
     </label>
     <label>
       Сообщение
-      <textarea name="message" rows="3" maxlength="1500" placeholder="Напишите сообщение..." required></textarea>
+      <textarea name="message" id="pigeon-message-input" rows="3" maxlength="1500" placeholder="Напишите сообщение..." required></textarea>
     </label>
+    {% if pixel_emoji_catalog %}
+      <details class="top-offset">
+        <summary>Эмодзи</summary>
+        <div class="emoji-picker-grid top-offset" data-emoji-target="pigeon-message-input">
+          {% for emoji in pixel_emoji_catalog %}
+            <button type="button" class="emoji-picker-btn" data-emoji-code="{{ emoji.code }}" title="{{ emoji.label }}">
+              <img src="{{ emoji.url }}" alt="{{ emoji.label }}" loading="lazy" />
+            </button>
+          {% endfor %}
+        </div>
+        <p class="muted small-note top-offset">За эмодзи спасибо fava-beans.</p>
+      </details>
+    {% endif %}
     <div class="actions-inline">
       <button type="submit" class="btn btn-accent">Послать птицу</button>
     </div>
   </form>
+</section>
+
+<section class="box top-offset">
+  <h2>Входящие голуби</h2>
+  {% if pigeon_notifications %}
+    <div class="comments-list top-offset">
+      {% for note in pigeon_notifications %}
+        <article class="comment-card {% if not note.is_read %}notification-unread{% endif %}">
+          <p class="comment-meta">
+            <strong>Курлык! (@{{ note.sender_alias }})</strong>
+            • {{ note.created_at.strftime('%d-%m-%Y %H:%M') if note.created_at else '—' }}
+            {% if note.reply_to_notification_id %}
+              <span class="chip">Ответ</span>
+            {% endif %}
+          </p>
+          <div class="notes-block">{{ note.body_html }}</div>
+          {% if note.sender_alias %}
+            <details class="top-offset">
+              <summary>Ответить</summary>
+              <form method="post" action="/notifications/pigeon" class="grid one-col top-offset">
+                <input type="hidden" name="next" value="/" />
+                <input type="hidden" name="recipient_alias" value="{{ note.sender_alias }}" />
+                <input type="hidden" name="reply_to_notification_id" value="{{ note.id }}" />
+                <label>
+                  Сообщение
+                  <textarea
+                    name="message"
+                    id="pigeon-reply-{{ note.id }}"
+                    rows="3"
+                    maxlength="1500"
+                    placeholder="Ответ пользователю @{{ note.sender_alias }}"
+                    required
+                  ></textarea>
+                </label>
+                {% if pixel_emoji_catalog %}
+                  <div class="emoji-picker-grid" data-emoji-target="pigeon-reply-{{ note.id }}">
+                    {% for emoji in pixel_emoji_catalog[:24] %}
+                      <button type="button" class="emoji-picker-btn" data-emoji-code="{{ emoji.code }}" title="{{ emoji.label }}">
+                        <img src="{{ emoji.url }}" alt="{{ emoji.label }}" loading="lazy" />
+                      </button>
+                    {% endfor %}
+                  </div>
+                {% endif %}
+                <div class="actions-inline">
+                  <button type="submit" class="btn btn-accent">Отправить ответ</button>
+                </div>
+              </form>
+            </details>
+          {% endif %}
+        </article>
+      {% endfor %}
+    </div>
+  {% else %}
+    <p class="muted">Пока голубей нет.</p>
+  {% endif %}
 </section>
 
 <section class="box top-offset">
@@ -175,4 +243,33 @@
     <p class="muted">Сегодня нет данных о днях рождения персонажей.</p>
   {% endif %}
 </section>
+{% endblock %}
+{% block scripts %}
+<script>
+  (function () {
+    function insertAtCursor(textarea, value) {
+      if (!textarea) return;
+      const start = textarea.selectionStart || 0;
+      const end = textarea.selectionEnd || 0;
+      const current = textarea.value || '';
+      textarea.value = current.slice(0, start) + value + current.slice(end);
+      const nextPos = start + value.length;
+      textarea.focus();
+      textarea.setSelectionRange(nextPos, nextPos);
+    }
+
+    document.querySelectorAll('.emoji-picker-grid').forEach((grid) => {
+      const targetId = grid.getAttribute('data-emoji-target');
+      const target = targetId ? document.getElementById(targetId) : null;
+      if (!target) return;
+      grid.querySelectorAll('.emoji-picker-btn').forEach((button) => {
+        button.addEventListener('click', function () {
+          const code = button.getAttribute('data-emoji-code');
+          if (!code) return;
+          insertAtCursor(target, `[[emoji:${code}]]`);
+        });
+      });
+    });
+  })();
+</script>
 {% endblock %}

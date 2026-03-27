@@ -357,6 +357,11 @@ textarea {
   border-radius: 8px;
 }
 
+.btn-platform {
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
 .actions-inline {
   display: flex;
   gap: 8px;
@@ -935,6 +940,32 @@ textarea {
   word-break: break-word;
 }
 
+.notes-block a,
+.news-body a,
+.comment-card a,
+.notification-content a {
+  color: var(--accent-2);
+  font-weight: 600;
+}
+
+.notes-block a:hover,
+.news-body a:hover,
+.comment-card a:hover,
+.notification-content a:hover {
+  color: var(--accent);
+}
+
+.inline-pixel-emoji {
+  width: 1.2em;
+  height: 1.2em;
+  vertical-align: text-bottom;
+  image-rendering: pixelated;
+}
+
+.small-note {
+  font-size: 12px;
+}
+
 .notes-list {
   margin: 8px 0 0;
   padding-left: 18px;
@@ -1358,6 +1389,55 @@ textarea {
 
 .gallery-upload-row input[type="file"] {
   max-width: 100%;
+}
+
+.emoji-picker-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(42px, 1fr));
+  gap: 8px;
+}
+
+.emoji-picker-btn {
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.68);
+  box-shadow: var(--glass-highlight-soft);
+  padding: 6px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 42px;
+}
+
+.emoji-picker-btn:hover {
+  border-color: rgba(21, 119, 179, 0.48);
+  transform: translateY(-1px);
+}
+
+.emoji-picker-btn img {
+  width: 24px;
+  height: 24px;
+  image-rendering: pixelated;
+}
+
+.studio-preview-hero {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border-radius: 14px;
+  overflow: hidden;
+  border: 1px solid var(--line-strong);
+  background: rgba(248, 250, 252, 0.72);
+  box-shadow: var(--glass-highlight-soft), var(--glass-shadow-soft);
+  margin-bottom: 10px;
+}
+
+.studio-preview-hero img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
 }
 
 .reference-tile {
