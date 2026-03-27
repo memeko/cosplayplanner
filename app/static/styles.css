@@ -835,6 +835,11 @@ textarea {
   line-height: 1.45;
 }
 
+.pigeon-popup-card .notes-block {
+  margin-top: 0;
+  line-height: 1.45;
+}
+
 .notifications-list li {
   display: flex;
   align-items: flex-start;
@@ -1424,20 +1429,46 @@ textarea {
 .studio-preview-hero {
   display: block;
   width: 100%;
-  aspect-ratio: 16 / 9;
   border-radius: 14px;
   overflow: hidden;
   border: 1px solid var(--line-strong);
   background: rgba(248, 250, 252, 0.72);
   box-shadow: var(--glass-highlight-soft), var(--glass-shadow-soft);
   margin-bottom: 10px;
+  line-height: 0;
 }
 
 .studio-preview-hero img {
   width: 100%;
-  height: 100%;
+  height: auto;
+  aspect-ratio: 16 / 9;
   object-fit: cover;
   display: block;
+}
+
+.card-expand {
+  width: 100%;
+}
+
+.card-expand summary {
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.62);
+  box-shadow: var(--glass-highlight-soft);
+  list-style: none;
+}
+
+.card-expand summary::-webkit-details-marker {
+  display: none;
+}
+
+.card-expand[open] summary {
+  margin-bottom: 8px;
 }
 
 .reference-tile {

@@ -32,7 +32,7 @@
         {% endif %}
       </p>
       <p class="meta">Комментариев: {{ comment_counts.get(question.id, 0) }}</p>
-      <p class="notes-block">{{ (question.body[:280] ~ ('…' if question.body|length > 280 else ''))|render_text }}</p>
+      <p class="notes-block">{{ question.body|preview_text(280)|render_text }}</p>
       <div class="actions-inline">
         <a href="/community/questions/{{ question.id }}" class="btn">Подробнее</a>
         {% if user and user.id == question.user_id %}

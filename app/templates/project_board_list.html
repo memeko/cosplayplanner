@@ -59,7 +59,14 @@
       <p class="meta">Для связи: {{ post.contact_link or "—" }}</p>
     {% endif %}
     {% if post.comment %}
-      <p class="notes-block">{{ post.comment|render_text }}</p>
+      {% set preview_text = (post.comment or '')|preview_text(150) %}
+      <p class="notes-block">{{ preview_text|render_text }}</p>
+      {% if (post.comment or '')|length > 150 %}
+        <details class="card-expand top-offset">
+          <summary>Подробнее</summary>
+          <p class="notes-block">{{ post.comment|render_text }}</p>
+        </details>
+      {% endif %}
     {% endif %}
     {% set post_comments = comments_by_post.get(post.id, []) %}
     {% if post_comments %}

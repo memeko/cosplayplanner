@@ -53,7 +53,7 @@
       {% set total_ratings = rating_count_by_master.get(master.id, 0) %}
       <p class="meta">Рейтинг: {{ '%.1f'|format(avg_rating) }} / 5 (оценок: {{ total_ratings }})</p>
       <p class="meta">Комментариев: {{ comment_counts.get(master.id, 0) }}</p>
-      <p class="notes-block">{{ (master.details[:240] ~ ('…' if master.details|length > 240 else ''))|render_text }}</p>
+      <p class="notes-block">{{ master.details|preview_text(240)|render_text }}</p>
       {% if gallery %}
       <p class="meta">Галерея: {{ gallery|length }} изображ.</p>
       {% endif %}

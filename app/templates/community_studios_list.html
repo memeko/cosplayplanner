@@ -62,15 +62,10 @@
           {% endfor %}
         </div>
       {% endif %}
-      {% if contact_buttons %}
-        <div class="actions-inline top-offset">
-          {% for button in contact_buttons %}
-            <a href="{{ button.url }}" target="_blank" rel="noreferrer" class="btn btn-small btn-platform">{{ button.label }}</a>
-          {% endfor %}
-        </div>
-      {% endif %}
-
-      <div class="actions-inline">
+      <div class="actions-inline top-offset">
+        {% for button in contact_buttons %}
+          <a href="{{ button.url }}" target="_blank" rel="noreferrer" class="btn btn-small btn-platform">{{ button.label }}</a>
+        {% endfor %}
         <a href="/community/studios/{{ studio.id }}" class="btn">Подробнее</a>
         {% if user and user.id == studio.user_id %}
           <a href="/community/studios/{{ studio.id }}/edit" class="btn">Редактировать</a>

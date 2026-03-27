@@ -53,7 +53,7 @@
       </div>
       {% endif %}
 
-      <p class="notes-block">{{ ((article.body_markdown or '')[:320] ~ ('…' if (article.body_markdown or '')|length > 320 else ''))|render_text }}</p>
+      <p class="notes-block">{{ (article.body_markdown or '')|preview_text(320)|render_text }}</p>
       <p class="meta">Комментариев: {{ comment_counts.get(article.id, 0) }} · В избранном: {{ favorite_counts.get(article.id, 0) }}</p>
 
       <div class="actions-inline">

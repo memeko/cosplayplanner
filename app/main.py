@@ -2868,6 +2868,23 @@ def render_text_content(value: str | None) -> Markup:
     return Markup("".join(parts))
 
 
+def build_text_preview(value: str | None, limit: int = 200) -> str:
+    if limit <= 0:
+        return ""
+
+    compact_value = "\n".join(line.strip() for line in str(value or "").splitlines() if line.strip()).strip()
+    if not compact_value:
+        return ""
+    if len(compact_value) <= limit:
+        return compact_value
+
+    truncated = compact_value[:limit].rstrip()
+    word_safe = re.sub(r"\s+\S*$", "", truncated).rstrip()
+    if word_safe and len(word_safe) >= max(20, limit // 3):
+        truncated = word_safe
+    return truncated + "…"
+
+
 def replace_pixel_emoji_tokens_for_bots(value: str | None) -> str:
     text_value = (value or "")
     if not text_value:
@@ -2884,6 +2901,7 @@ def replace_pixel_emoji_tokens_for_bots(value: str | None) -> str:
 
 
 templates.env.filters["render_text"] = render_text_content
+templates.env.filters["preview_text"] = build_text_preview
 templates.env.filters["urlencode"] = lambda value: quote(str(value or ""))
 
 

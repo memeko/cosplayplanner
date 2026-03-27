@@ -65,7 +65,7 @@
         </div>
       {% endif %}
       {% if cosplayer.favorite_directions %}
-        <p class="notes-block">{{ (cosplayer.favorite_directions[:220] ~ ('…' if cosplayer.favorite_directions|length > 220 else ''))|render_text }}</p>
+        <p class="notes-block">{{ cosplayer.favorite_directions|preview_text(220)|render_text }}</p>
       {% endif %}
       {% set skills = cosplayer.extra_skills_json or [] %}
       {% if skills %}
