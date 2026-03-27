@@ -1473,8 +1473,8 @@ textarea {
 
 .telegram-custom-emoji-button-img,
 .telegram-custom-emoji-inline-img {
-  width: 1.35em;
-  height: 1.35em;
+  width: 12px;
+  height: 12px;
   display: inline-block;
   vertical-align: middle;
   object-fit: contain;
@@ -1488,8 +1488,8 @@ textarea {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 1.35em;
-  min-height: 1.35em;
+  min-width: 12px;
+  min-height: 12px;
   line-height: 1;
 }
 

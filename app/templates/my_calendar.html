@@ -4,7 +4,9 @@
   <h1>Календари</h1>
   <div class="actions-inline">
     <a href="/my-calendar/export.ics" class="btn">Экспорт «Мой календарь» (.ics)</a>
-    <a href="/my-calendar/content/export.ics" class="btn">Экспорт контент-плана (.ics)</a>
+    {% if content_access_state.has_access %}
+      <a href="/my-calendar/content/export.ics" class="btn">Экспорт контент-плана (.ics)</a>
+    {% endif %}
   </div>
 </section>
 
@@ -249,6 +251,7 @@
     </section>
   {% endif %}
 {% else %}
+  {% if content_access_state.has_access %}
   <section class="box">
     <h2>Telegram-бот и каналы</h2>
     <p class="muted">
@@ -553,6 +556,42 @@
       <p class="muted">Постов в контент-плане пока нет.</p>
     </section>
   {% endif %}
+  {% else %}
+    <div class="welcome-overlay">
+      <div class="welcome-modal">
+        <h2>Проверка подписки</h2>
+        <p>Данный функционал доступен, если вы подписаны на телеграм-канал автора проекта.</p>
+        <p>
+          Канал:
+          <a href="{{ content_access_state.channel_url }}" target="_blank" rel="noreferrer" class="btn btn-small btn-platform">{{ content_access_state.channel_handle }}</a>
+        </p>
+        <p>
+          Проверку выполняет бот
+          <a href="{{ content_access_state.bot_url }}" target="_blank" rel="noreferrer" class="btn btn-small btn-platform">@{{ content_access_state.bot_username }}</a>.
+        </p>
+        {% if content_access_state.requires_telegram_link %}
+          <p class="muted">Сначала задайте секретный код в <a href="/profile">профиле</a>, затем откройте бота, отправьте <code>/start</code>, свой ник на сайте и этот код. После привязки вернитесь сюда и нажмите «Проверить».</p>
+        {% else %}
+          <p class="muted">Введите ник того Telegram-аккаунта, который привязан к вашему профилю на сайте.</p>
+        {% endif %}
+        <form method="post" action="/my-calendar/content/access/check" class="grid one-col top-offset">
+          <label>
+            Ваш ник в Telegram
+            <input type="text" name="telegram_username" value="{{ content_access_state.telegram_username or '' }}" placeholder="@username" required />
+            <small class="muted">Проверка подписки идёт по привязанному Telegram-аккаунту. Ник нужен для сверки.</small>
+          </label>
+          <div class="actions-inline">
+            <a href="{{ content_access_state.channel_url }}" target="_blank" rel="noreferrer" class="btn">Открыть канал</a>
+            <a href="{{ content_access_state.bot_url }}" target="_blank" rel="noreferrer" class="btn">Открыть бота</a>
+            <button type="submit" class="btn btn-accent">Проверить</button>
+          </div>
+        </form>
+      </div>
+    </div>
+    <section class="box">
+      <p class="muted">Контент-план станет доступен после подтверждения подписки.</p>
+    </section>
+  {% endif %}
 {% endif %}
 
 <script>
@@ -635,7 +674,9 @@
         if (!target) return;
         const emojiId = window.prompt('Введите emoji-id для Telegram premium emoji. Если не знаете ID, его можно получить через @Emoji_ID_Extractor_bot');
         if (!emojiId) return;
-        insertAtCursor(target, `<tg-emoji emoji-id="${emojiId}"></tg-emoji>`, '');
+        const existingEntry = premiumEmojiMap.get(emojiId);
+        const fallback = (window.prompt('Введите сам эмодзи для этого emoji-id', (existingEntry && existingEntry.fallback) || '✨') || '').trim() || '✨';
+        insertAtCursor(target, `<tg-emoji emoji-id="${emojiId}">${fallback}</tg-emoji>`, '');
         updateTelegramCustomEmojiPreview();
       });
     });
@@ -646,7 +687,8 @@
         if (!target) return;
         const emojiId = button.dataset.emojiId || '';
         if (!emojiId) return;
-        insertAtCursor(target, `<tg-emoji emoji-id="${emojiId}"></tg-emoji>`, '');
+        const fallback = (button.dataset.fallback || '✨').trim() || '✨';
+        insertAtCursor(target, `<tg-emoji emoji-id="${emojiId}">${fallback}</tg-emoji>`, '');
         updateTelegramCustomEmojiPreview();
       });
     });

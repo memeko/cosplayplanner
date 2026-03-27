@@ -218,6 +218,7 @@ CONTENT_TELEGRAM_PACK_GROUP = "content_telegram_premium_pack_id"
 CONTENT_TELEGRAM_CHANNEL_GROUP = "content_telegram_channel"
 CONTENT_TELEGRAM_PREMIUM_EMOJI_GROUP = "content_telegram_premium_emoji"
 CONTENT_RUBRIC_TAG_GROUP = "content_rubric_tag"
+CONTENT_PLAN_ACCESS_VERIFIED_GROUP = "content_plan_brfox_subscription_verified_at"
 CONTENT_TELEGRAM_IMAGE_MAX_SIDE = 2000
 CONTENT_TELEGRAM_IMAGE_RETENTION_HOURS = max(
     1,
@@ -270,6 +271,9 @@ TELEGRAM_BOT_ENABLED = bool(TELEGRAM_BOT_TOKEN) and to_bool(os.getenv("TELEGRAM_
 TELEGRAM_POLL_TIMEOUT_SECONDS = max(5, min(60, int(os.getenv("TELEGRAM_POLL_TIMEOUT", "20"))))
 TELEGRAM_LOOP_SLEEP_SECONDS = max(1, min(30, int(os.getenv("TELEGRAM_LOOP_SLEEP", "2"))))
 TELEGRAM_DISPATCH_LIMIT = max(10, min(200, int(os.getenv("TELEGRAM_DISPATCH_LIMIT", "80"))))
+BRFOX_BOT_TOKEN = os.getenv("BRFOX_BOT_TOKEN", "").strip()
+BRFOX_BOT_USERNAME = (os.getenv("BRFOX_BOT_USERNAME", "brfox_cosplaybot") or "brfox_cosplaybot").strip().lstrip("@")
+BRFOX_CONTENT_CHANNEL = (os.getenv("BRFOX_CONTENT_CHANNEL", "@brfox_cosplay") or "@brfox_cosplay").strip() or "@brfox_cosplay"
 VK_BOT_TOKEN = os.getenv("VK_BOT_TOKEN", "").strip()
 VK_BOT_ENABLED = bool(VK_BOT_TOKEN) and to_bool(os.getenv("VK_BOT_ENABLED", "1"))
 VK_BOT_GROUP_ID = str(os.getenv("VK_BOT_GROUP_ID", "") or "").strip()
@@ -575,6 +579,7 @@ def apply_schema_migrations() -> None:
             ("cosplay_nick", "VARCHAR(100)"),
             ("birth_date", "DATE"),
             ("telegram_chat_id", "VARCHAR(64)"),
+            ("telegram_username", "VARCHAR(255)"),
             ("telegram_linked_at", "DATETIME"),
             ("telegram_secret_code_hash", "VARCHAR(255)"),
             ("telegram_secret_code_updated_at", "DATETIME"),
@@ -2180,6 +2185,7 @@ def get_content_plan_form_values(
     post: ContentPlanPost | None = None,
     rubric_tags: dict[str, str] | None = None,
     telegram_channels: list[dict[str, str]] | None = None,
+    premium_emoji_map: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     tag_map = rubric_tags or {}
     available_telegram_channels = telegram_channels or []
@@ -2219,7 +2225,7 @@ def get_content_plan_form_values(
         "rubric_new": "",
         "rubric_tag_value": normalize_content_rubric_tag(post.rubric_tag) or tag_map.get(post.rubric or "", ""),
         "status": normalize_content_status(post.status),
-        "telegram_body_html": normalize_telegram_custom_emoji_html(post.telegram_body_html or ""),
+        "telegram_body_html": normalize_telegram_custom_emoji_html(post.telegram_body_html or "", premium_emoji_map),
         "telegram_photos_input": "\n".join(as_list(post.telegram_photos_json)),
     }
 
@@ -2235,7 +2241,15 @@ def save_content_plan_post_from_form(form: Any, post: ContentPlanPost, user: Use
     rubric_tag_value = str(form.get("rubric_tag_value", "")).strip()
     rubric = rubric_new or rubric_existing
     socials = merge_unique(form.getlist("socials"), split_csv(str(form.get("socials_other", "")).strip()))
-    telegram_body_html = normalize_telegram_custom_emoji_html(str(form.get("telegram_body_html", "")).strip())
+    premium_emoji_map = {
+        str(entry.get("emoji_id") or "").strip(): str(entry.get("emoji") or "").strip()
+        for entry in get_content_premium_emoji_entries(db, user.id)
+        if str(entry.get("emoji_id") or "").strip() and str(entry.get("emoji") or "").strip()
+    }
+    telegram_body_html = normalize_telegram_custom_emoji_html(
+        str(form.get("telegram_body_html", "")).strip(),
+        premium_emoji_map,
+    )
     telegram_photos = parse_reference_values(str(form.get("telegram_photos_input", "")))[:10]
     available_telegram_channels = get_content_telegram_channels(db, user.id)
     selected_telegram_channels = resolve_content_telegram_channels(
@@ -2357,11 +2371,20 @@ def telegram_custom_request(
     *,
     json_payload: dict[str, Any] | None = None,
     data_payload: dict[str, Any] | None = None,
+    files_payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    normalized_data_payload = None
+    if data_payload is not None:
+        normalized_data_payload = {
+            str(key): ("true" if value is True else "false" if value is False else str(value))
+            for key, value in data_payload.items()
+            if value is not None
+        }
     response = requests.post(
         telegram_custom_api_url(token, method),
         json=json_payload,
-        data=data_payload,
+        data=normalized_data_payload,
+        files=files_payload,
         timeout=20,
     )
     try:
@@ -2390,20 +2413,26 @@ def extract_telegram_custom_emoji_id(attrs: str | None) -> str:
     return str(match.group("emoji_id") or "").strip() if match else ""
 
 
-def normalize_telegram_custom_emoji_html(text_value: str | None) -> str:
+def normalize_telegram_custom_emoji_html(
+    text_value: str | None,
+    emoji_fallback_by_id: dict[str, str] | None = None,
+) -> str:
     normalized = text_value or ""
+    fallback_map = emoji_fallback_by_id or {}
 
     def replace_open_close(match: re.Match[str]) -> str:
         emoji_id = extract_telegram_custom_emoji_id(match.group("attrs"))
         if not emoji_id:
             return match.group(0)
-        return f'<tg-emoji emoji-id="{emoji_id}"></tg-emoji>'
+        body = re.sub(r"<[^>]+>", "", match.group("body") or "").strip() or fallback_map.get(emoji_id, "").strip() or "✨"
+        return f'<tg-emoji emoji-id="{emoji_id}">{html.escape(body)}</tg-emoji>'
 
     def replace_self_closing(match: re.Match[str]) -> str:
         emoji_id = extract_telegram_custom_emoji_id(match.group("attrs"))
         if not emoji_id:
             return match.group(0)
-        return f'<tg-emoji emoji-id="{emoji_id}"></tg-emoji>'
+        body = fallback_map.get(emoji_id, "").strip() or "✨"
+        return f'<tg-emoji emoji-id="{emoji_id}">{html.escape(body)}</tg-emoji>'
 
     normalized = TELEGRAM_CUSTOM_EMOJI_TAG_RE.sub(replace_open_close, normalized)
     normalized = TELEGRAM_CUSTOM_EMOJI_SELF_CLOSING_RE.sub(replace_self_closing, normalized)
@@ -2500,6 +2529,66 @@ def cache_telegram_custom_emoji_preview(token: str, emoji_id: str) -> Path | Non
     return destination
 
 
+def user_has_content_plan_access(db: Session, user: User) -> bool:
+    return bool(str(get_user_option_value(db, user.id, CONTENT_PLAN_ACCESS_VERIFIED_GROUP) or "").strip())
+
+
+def telegram_membership_is_active(status: str | None) -> bool:
+    normalized = str(status or "").strip().lower()
+    return normalized in {"member", "administrator", "creator", "restricted"}
+
+
+def check_brfox_content_subscription(user: User) -> tuple[bool, str]:
+    telegram_user_id = parse_positive_int(user.telegram_chat_id)
+    if not telegram_user_id:
+        return False, "Сначала привяжите Telegram-аккаунт к профилю."
+    if not BRFOX_BOT_TOKEN:
+        return False, "Проверка подписки временно недоступна."
+
+    try:
+        payload = telegram_custom_request(
+            BRFOX_BOT_TOKEN,
+            "getChatMember",
+            json_payload={
+                "chat_id": normalize_telegram_target(BRFOX_CONTENT_CHANNEL) or "@brfox_cosplay",
+                "user_id": telegram_user_id,
+            },
+        )
+    except RuntimeError as exc:
+        return False, str(exc)
+
+    member = payload.get("result") or {}
+    status = str(member.get("status") or "").strip().lower()
+    if telegram_membership_is_active(status):
+        return True, ""
+    return False, "Подписка на канал Братца Лиса не найдена."
+
+
+def build_content_plan_access_state(user: User, db: Session) -> dict[str, Any]:
+    telegram_username = normalize_username(user.telegram_username)
+    has_access = user_has_content_plan_access(db, user)
+    return {
+        "has_access": has_access,
+        "channel_url": "https://t.me/brfox_cosplay",
+        "channel_handle": normalize_telegram_target(BRFOX_CONTENT_CHANNEL) or "@brfox_cosplay",
+        "bot_username": BRFOX_BOT_USERNAME,
+        "bot_url": f"https://t.me/{BRFOX_BOT_USERNAME}",
+        "requires_telegram_link": not bool(parse_positive_int(user.telegram_chat_id)),
+        "telegram_username": telegram_username,
+    }
+
+
+def ensure_content_plan_access(request: Request, user: User, db: Session) -> RedirectResponse | None:
+    if user_has_content_plan_access(db, user):
+        return None
+    add_flash(
+        request,
+        "Доступ к контент-плану откроется после проверки подписки на канал Братца Лиса.",
+        "error",
+    )
+    return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+
+
 def content_post_targets_telegram(post: ContentPlanPost) -> bool:
     return any(str(item).strip().casefold() == "тг" for item in as_list(post.socials_json))
 
@@ -2555,6 +2644,19 @@ def local_media_reference_to_path(reference: str | None) -> Path | None:
     return media_storage_path() / safe_media_filename(normalized_ref.removeprefix("/media/"))
 
 
+def build_telegram_photo_request_payload(photo_ref: str) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    local_path = local_media_reference_to_path(photo_ref)
+    if local_path and local_path.exists() and local_path.is_file():
+        media_type = mimetypes.guess_type(str(local_path))[0] or "application/octet-stream"
+        file_bytes = local_path.read_bytes()
+        return {"photo": "attach://photo"}, {"photo": (local_path.name, file_bytes, media_type)}
+
+    external_url = build_external_url(photo_ref)
+    if not external_url:
+        return {}, None
+    return {"photo": external_url}, None
+
+
 def mark_content_post_telegram_published(
     post: ContentPlanPost,
     *,
@@ -2591,37 +2693,51 @@ def publish_content_post_to_telegram(
     chat_id: str,
     post: ContentPlanPost,
     rubric_tag: str | None = None,
+    premium_emoji_map: dict[str, str] | None = None,
 ) -> str:
-    html_body = normalize_telegram_custom_emoji_html((post.telegram_body_html or "").strip())
-    photo_urls = [build_external_url(item) for item in as_list(post.telegram_photos_json) if build_external_url(item)]
+    html_body = normalize_telegram_custom_emoji_html((post.telegram_body_html or "").strip(), premium_emoji_map)
+    photo_refs = [str(item).strip() for item in as_list(post.telegram_photos_json) if str(item).strip()]
     fallback_text = html.escape(post.title or "Пост")
     message_html = append_rubric_tag_to_message(html_body or fallback_text, rubric_tag)
     if len(strip_telegram_html(message_html)) > 4096:
         raise RuntimeError("Сообщение для Telegram слишком длинное (максимум 4096 символов без учета HTML-тегов).")
 
     last_message_id = ""
-    if photo_urls:
-        first_photo = photo_urls[0]
-        remaining = photo_urls[1:]
+    if photo_refs:
+        first_photo = photo_refs[0]
+        remaining = photo_refs[1:]
         caption_text = message_html if len(strip_telegram_html(message_html)) <= 1024 else ""
-        photo_payload = telegram_custom_request(
-            token,
-            "sendPhoto",
-            json_payload={
+        first_photo_payload, first_files_payload = build_telegram_photo_request_payload(first_photo)
+        if not first_photo_payload:
+            raise RuntimeError("Не удалось подготовить первое изображение для Telegram.")
+        first_request_payload = {
+            key: value
+            for key, value in {
                 "chat_id": chat_id,
-                "photo": first_photo,
+                **first_photo_payload,
                 "caption": caption_text,
                 "parse_mode": "HTML" if caption_text else None,
                 "show_caption_above_media": True if caption_text else None,
-            },
+            }.items()
+            if value is not None
+        }
+        photo_payload = telegram_custom_request(
+            token,
+            "sendPhoto",
+            data_payload=first_request_payload,
+            files_payload=first_files_payload,
         )
         result = photo_payload.get("result") or {}
         last_message_id = str(result.get("message_id") or "")
-        for url in remaining:
+        for photo_ref in remaining:
+            photo_payload_data, photo_files_payload = build_telegram_photo_request_payload(photo_ref)
+            if not photo_payload_data:
+                continue
             extra_payload = telegram_custom_request(
                 token,
                 "sendPhoto",
-                json_payload={"chat_id": chat_id, "photo": url},
+                data_payload={"chat_id": chat_id, **photo_payload_data},
+                files_payload=photo_files_payload,
             )
             extra_result = extra_payload.get("result") or {}
             last_message_id = str(extra_result.get("message_id") or last_message_id)
@@ -2660,6 +2776,7 @@ def publish_content_post_to_telegram_channels(
     channels: list[dict[str, str]],
     post: ContentPlanPost,
     rubric_tag: str | None = None,
+    premium_emoji_map: dict[str, str] | None = None,
 ) -> tuple[list[dict[str, str]], list[str]]:
     successful: list[dict[str, str]] = []
     errors: list[str] = []
@@ -2674,6 +2791,7 @@ def publish_content_post_to_telegram_channels(
                 chat_id=chat_id,
                 post=post,
                 rubric_tag=rubric_tag,
+                premium_emoji_map=premium_emoji_map,
             )
         except RuntimeError as exc:
             errors.append(f"{title}: {exc}")
@@ -3527,7 +3645,7 @@ def verify_user_telegram_secret_code(user: User, raw_code: str) -> bool:
         return False
 
 
-def handle_telegram_auth_message(chat_id: str, text_value: str) -> bool:
+def handle_telegram_auth_message(chat_id: str, text_value: str, *, telegram_username: str = "") -> bool:
     state = get_telegram_auth_step(chat_id)
     step = state.get("step", "")
     if step == "username":
@@ -3568,10 +3686,14 @@ def handle_telegram_auth_message(chat_id: str, text_value: str) -> bool:
             ).scalars().all()
             for linked_user in linked_users:
                 linked_user.telegram_chat_id = None
+                linked_user.telegram_username = None
                 linked_user.telegram_linked_at = None
+                set_user_option_value(db, linked_user.id, CONTENT_PLAN_ACCESS_VERIFIED_GROUP, "")
 
             user.telegram_chat_id = chat_id
+            user.telegram_username = normalize_username(telegram_username) or None
             user.telegram_linked_at = datetime.utcnow()
+            set_user_option_value(db, user.id, CONTENT_PLAN_ACCESS_VERIFIED_GROUP, "")
             db.commit()
 
         reset_telegram_auth(chat_id)
@@ -3619,11 +3741,13 @@ def handle_telegram_update(update: dict[str, Any]) -> None:
     if not isinstance(message, dict):
         return
     chat = message.get("chat") or {}
+    sender = message.get("from") or {}
     chat_id_raw = chat.get("id")
     if chat_id_raw is None:
         return
     chat_id = str(chat_id_raw)
     message_id = int(message.get("message_id") or 0)
+    sender_username = normalize_username(sender.get("username") if isinstance(sender, dict) else "")
 
     text_value = str(message.get("text") or "").strip()
     if not text_value:
@@ -3642,7 +3766,9 @@ def handle_telegram_update(update: dict[str, Any]) -> None:
             linked_users = db.execute(select(User).where(User.telegram_chat_id == chat_id)).scalars().all()
             for linked_user in linked_users:
                 linked_user.telegram_chat_id = None
+                linked_user.telegram_username = None
                 linked_user.telegram_linked_at = None
+                set_user_option_value(db, linked_user.id, CONTENT_PLAN_ACCESS_VERIFIED_GROUP, "")
             if linked_users:
                 db.commit()
         reset_telegram_auth(chat_id)
@@ -3657,7 +3783,7 @@ def handle_telegram_update(update: dict[str, Any]) -> None:
     if state.get("step") == "secret_code" and message_id > 0:
         telegram_delete_message(chat_id, message_id)
 
-    if handle_telegram_auth_message(chat_id, text_value):
+    if handle_telegram_auth_message(chat_id, text_value, telegram_username=sender_username):
         return
 
     telegram_send_message(
@@ -3737,7 +3863,9 @@ def dispatch_telegram_notifications() -> None:
 
                 if error_code in {401, 403}:
                     user.telegram_chat_id = None
+                    user.telegram_username = None
                     user.telegram_linked_at = None
+                    set_user_option_value(db, user.id, CONTENT_PLAN_ACCESS_VERIFIED_GROUP, "")
                     must_commit = True
                     break
 
@@ -3880,6 +4008,8 @@ def dispatch_scheduled_content_posts() -> None:
             user = users_cache.get(post.user_id)
             if not user:
                 continue
+            if not user_has_content_plan_access(db, user):
+                continue
 
             if user.id not in settings_cache:
                 settings_cache[user.id] = get_content_telegram_settings(user, db)
@@ -3904,6 +4034,11 @@ def dispatch_scheduled_content_posts() -> None:
                 channels=selected_channels,
                 post=post,
                 rubric_tag=rubric_tag,
+                premium_emoji_map={
+                    str(entry.get("emoji_id") or "").strip(): str(entry.get("emoji") or "").strip()
+                    for entry in list(telegram_settings.get("premium_emojis") or [])
+                    if str(entry.get("emoji_id") or "").strip() and str(entry.get("emoji") or "").strip()
+                },
             )
             if not sent_messages:
                 continue
@@ -6964,7 +7099,9 @@ async def profile_update(request: Request, db: Session = Depends(get_db)):
         user.telegram_secret_code_updated_at = datetime.utcnow()
         # Re-auth in bots after code rotation.
         user.telegram_chat_id = None
+        user.telegram_username = None
         user.telegram_linked_at = None
+        set_user_option_value(db, user.id, CONTENT_PLAN_ACCESS_VERIFIED_GROUP, "")
         user.vk_bot_user_id = None
         user.vk_bot_peer_id = None
         user.vk_bot_linked_at = None
@@ -9000,6 +9137,7 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
         )
 
     budget_month_groups = build_budget_month_groups(user, db)
+    content_access_state = build_content_plan_access_state(user, db)
 
     content_posts = db.execute(
         select(ContentPlanPost)
@@ -9007,6 +9145,11 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
         .order_by(ContentPlanPost.publish_date, ContentPlanPost.publish_time, ContentPlanPost.id)
     ).scalars().all()
     telegram_settings = get_content_telegram_settings(user, db)
+    premium_emoji_map = {
+        str(entry.get("emoji_id") or "").strip(): str(entry.get("emoji") or "").strip()
+        for entry in list(telegram_settings.get("premium_emojis") or [])
+        if str(entry.get("emoji_id") or "").strip() and str(entry.get("emoji") or "").strip()
+    }
     telegram_channels = list(telegram_settings.get("channels") or [])
     telegram_channels_by_id = {
         str(channel.get("chat_id") or "").strip(): channel
@@ -9097,7 +9240,7 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
         content_rubric_options=rubric_options,
         content_rubric_colors=rubric_colors,
         content_rubric_tags=rubric_tags,
-        content_form=get_content_plan_form_values(editing_content_post, rubric_tags, telegram_channels),
+        content_form=get_content_plan_form_values(editing_content_post, rubric_tags, telegram_channels, premium_emoji_map),
         editing_content_post=editing_content_post,
         telegram_settings=telegram_settings,
         telegram_settings_masked={
@@ -9105,6 +9248,7 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
             "channels_text": telegram_settings.get("channels_text", ""),
         },
         telegram_content_connected=bool(telegram_settings.get("bot_token") and telegram_channels),
+        content_access_state=content_access_state,
         month_weekday_labels=["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"],
     )
 
@@ -9363,11 +9507,62 @@ def my_calendar_event_delete(event_id: int, request: Request, db: Session = Depe
     return calendar_redirect_for_view(next_view)
 
 
+@app.post("/my-calendar/content/access/check")
+async def my_calendar_content_access_check(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    form = await request.form()
+    entered_username = normalize_username(str(form.get("telegram_username", "")).strip())
+    if not entered_username:
+        add_flash(request, "Введите ваш ник в Telegram.", "error")
+        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+
+    if not parse_positive_int(user.telegram_chat_id):
+        add_flash(
+            request,
+            f"Сначала привяжите Telegram к профилю через бота @{BRFOX_BOT_USERNAME} и повторите проверку.",
+            "error",
+        )
+        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+
+    stored_username = normalize_username(user.telegram_username)
+    if stored_username and stored_username.casefold() != entered_username.casefold():
+        add_flash(
+            request,
+            f"Введите Telegram-ник, привязанный к вашему профилю: @{stored_username}.",
+            "error",
+        )
+        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+
+    ok, error_text = check_brfox_content_subscription(user)
+    if not ok:
+        set_user_option_value(db, user.id, CONTENT_PLAN_ACCESS_VERIFIED_GROUP, "")
+        db.commit()
+        add_flash(
+            request,
+            error_text or "Не удалось подтвердить подписку на канал Братца Лиса.",
+            "error",
+        )
+        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+
+    if not stored_username:
+        user.telegram_username = entered_username
+    set_user_option_value(db, user.id, CONTENT_PLAN_ACCESS_VERIFIED_GROUP, datetime.utcnow().isoformat())
+    db.commit()
+    add_flash(request, "Подписка подтверждена. Контент-план открыт.", "success")
+    return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+
+
 @app.post("/my-calendar/content/new")
 async def my_calendar_content_create(request: Request, db: Session = Depends(get_db)):
     user = current_user(request, db)
     if not user:
         return redirect("/login")
+    access_redirect = ensure_content_plan_access(request, user, db)
+    if access_redirect:
+        return access_redirect
 
     form = await request.form()
     next_view = normalize_calendar_view(str(form.get("next_view", CALENDAR_VIEW_CONTENT)))
@@ -9388,6 +9583,9 @@ async def my_calendar_content_update(post_id: int, request: Request, db: Session
     user = current_user(request, db)
     if not user:
         return redirect("/login")
+    access_redirect = ensure_content_plan_access(request, user, db)
+    if access_redirect:
+        return access_redirect
 
     post = db.execute(
         select(ContentPlanPost).where(
@@ -9416,6 +9614,9 @@ def my_calendar_content_delete(post_id: int, request: Request, db: Session = Dep
     user = current_user(request, db)
     if not user:
         return redirect("/login")
+    access_redirect = ensure_content_plan_access(request, user, db)
+    if access_redirect:
+        return access_redirect
 
     next_view = normalize_calendar_view(str(request.query_params.get("view", CALENDAR_VIEW_CONTENT)))
     post = db.execute(
@@ -9439,6 +9640,8 @@ def my_calendar_content_telegram_custom_emoji_preview(emoji_id: str, request: Re
     user = current_user(request, db)
     if not user:
         raise HTTPException(status_code=401, detail="Требуется авторизация.")
+    if not user_has_content_plan_access(db, user):
+        raise HTTPException(status_code=403, detail="Сначала подтвердите доступ к контент-плану.")
     if not str(emoji_id or "").isdigit():
         raise HTTPException(status_code=404, detail="Эмодзи не найден.")
 
@@ -9466,6 +9669,9 @@ async def my_calendar_content_telegram_connect(request: Request, db: Session = D
     user = current_user(request, db)
     if not user:
         return redirect("/login")
+    access_redirect = ensure_content_plan_access(request, user, db)
+    if access_redirect:
+        return access_redirect
 
     form = await request.form()
     bot_token = str(form.get("bot_token", "")).strip()
@@ -9517,6 +9723,9 @@ def my_calendar_content_telegram_disconnect(request: Request, db: Session = Depe
     user = current_user(request, db)
     if not user:
         return redirect("/login")
+    access_redirect = ensure_content_plan_access(request, user, db)
+    if access_redirect:
+        return access_redirect
     set_user_option_value(db, user.id, CONTENT_TELEGRAM_TOKEN_GROUP, "")
     set_user_option_value(db, user.id, CONTENT_TELEGRAM_CHAT_GROUP, "")
     set_user_option_value(db, user.id, CONTENT_TELEGRAM_PACK_GROUP, "")
@@ -9531,6 +9740,9 @@ def my_calendar_content_publish_telegram(post_id: int, request: Request, db: Ses
     user = current_user(request, db)
     if not user:
         return redirect("/login")
+    access_redirect = ensure_content_plan_access(request, user, db)
+    if access_redirect:
+        return access_redirect
 
     post = db.execute(
         select(ContentPlanPost).where(
@@ -9563,6 +9775,11 @@ def my_calendar_content_publish_telegram(post_id: int, request: Request, db: Ses
             channels=selected_channels,
             post=post,
             rubric_tag=rubric_tag,
+            premium_emoji_map={
+                str(entry.get("emoji_id") or "").strip(): str(entry.get("emoji") or "").strip()
+                for entry in list(telegram_settings.get("premium_emojis") or [])
+                if str(entry.get("emoji_id") or "").strip() and str(entry.get("emoji") or "").strip()
+            },
         )
     except Exception as exc:
         add_flash(request, str(exc), "error")
@@ -9785,6 +10002,9 @@ def my_calendar_content_export_ics(request: Request, db: Session = Depends(get_d
     user = current_user(request, db)
     if not user:
         return redirect("/login")
+    access_redirect = ensure_content_plan_access(request, user, db)
+    if access_redirect:
+        return access_redirect
 
     today = date.today()
     posts = db.execute(

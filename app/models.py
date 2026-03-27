@@ -27,6 +27,7 @@ class User(Base):
     home_city = Column(String(255), nullable=True, index=True)
     birth_date = Column(Date, nullable=True, index=True)
     telegram_chat_id = Column(String(64), nullable=True, unique=True, index=True)
+    telegram_username = Column(String(255), nullable=True)
     telegram_linked_at = Column(DateTime(timezone=True), nullable=True)
     telegram_secret_code_hash = Column(String(255), nullable=True)
     telegram_secret_code_updated_at = Column(DateTime(timezone=True), nullable=True)
