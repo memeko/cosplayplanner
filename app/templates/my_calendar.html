@@ -250,47 +250,46 @@
   {% endif %}
 {% else %}
   <section class="box">
-    <h2>Telegram-канал</h2>
+    <h2>Telegram-бот и каналы</h2>
     <p class="muted">
-      Подключите своего Telegram-бота и канал, чтобы публиковать посты прямо из контент-плана.
+      Подключите своего Telegram-бота и один или несколько каналов, чтобы публиковать посты прямо из контент-плана.
       Для публикации в другие сети используйте сторонний автопостинг.
     </p>
     <details class="top-offset">
       <summary>Как подключить канал</summary>
       <ol class="notes-list top-offset">
         <li>Создайте бота через BotFather и получите токен.</li>
-        <li>Добавьте этого бота администратором в ваш Telegram-канал.</li>
-        <li>Укажите здесь токен бота и @канал или chat_id канала.</li>
+        <li>Добавьте этого бота администратором во все Telegram-каналы, куда планируете публиковать.</li>
+        <li>Укажите здесь токен бота и список каналов в формате «Название — @channel» или просто «@channel».</li>
         <li>Если пользуетесь премиум-эмодзи, можно сохранить несколько эмодзи из разных паков в формате «💃 — 5327958075158568158» по одному на строку.</li>
         <li>ID эмодзи удобно получать через бота <code>@Emoji_ID_Extractor_bot</code>.</li>
       </ol>
     </details>
     <form method="post" action="/my-calendar/content/telegram/connect" class="grid one-col top-offset">
-      <div class="grid two-col">
-        <label>
-          Токен бота
-          <input type="password" name="bot_token" value="{{ telegram_settings.bot_token }}" placeholder="123456:ABC..." required />
-          {% if telegram_settings_masked.bot_token %}
-            <small class="muted">Сейчас сохранено: {{ telegram_settings_masked.bot_token }}</small>
-          {% endif %}
-        </label>
-        <label>
-          Канал / chat_id
-          <input type="text" name="chat_id" value="{{ telegram_settings.chat_id }}" placeholder="@my_channel или -100..." required />
-        </label>
-      </div>
       <label>
-        Премиум-эмодзи для быстрого вставления
+        Токен бота
+        <input type="password" name="bot_token" value="{{ telegram_settings.bot_token }}" placeholder="123456:ABC..." required />
+        {% if telegram_settings_masked.bot_token %}
+          <small class="muted">Сейчас сохранено: {{ telegram_settings_masked.bot_token }}</small>
+        {% endif %}
+      </label>
+      <label>
+        Telegram-каналы пользователя
+        <textarea name="telegram_channels_text" rows="5" placeholder="Основной канал — @my_channel&#10;Лента анонсов — @my_second_channel&#10;-1001234567890" required>{{ telegram_settings.channels_text }}</textarea>
+        <small class="muted">По одному каналу на строку. Можно писать с названием или без него. В редакторе поста потом можно выбрать несколько каналов сразу.</small>
+      </label>
+      <label>
+        Библиотека premium-эмодзи пользователя
         <textarea name="premium_emojis_text" rows="5" placeholder="💃 — 5327958075158568158&#10;🖤 — 5327849271711964241">{{ telegram_settings.premium_emojis_text }}</textarea>
-        <small class="muted">Можно смешивать эмодзи из разных паков. Формат: один эмодзи и его ID на каждой новой строке. ID можно узнать через <code>@Emoji_ID_Extractor_bot</code>.</small>
+        <small class="muted">Эти эмодзи сохраняются в библиотеке пользователя и доступны как быстрые кнопки в редакторе. Можно смешивать эмодзи из разных паков. Формат: один эмодзи и его ID на каждой новой строке. ID можно узнать через <code>@Emoji_ID_Extractor_bot</code>.</small>
       </label>
       <div class="actions-inline">
         <button type="submit" class="btn btn-accent">Сохранить Telegram</button>
       </div>
     </form>
     {% if telegram_content_connected %}
-      <form method="post" action="/my-calendar/content/telegram/disconnect" class="top-offset" onsubmit="return confirm('Удалить настройки Telegram-канала?');">
-        <button type="submit" class="btn btn-danger">Отключить Telegram</button>
+      <form method="post" action="/my-calendar/content/telegram/disconnect" class="top-offset" onsubmit="return confirm('Удалить настройки Telegram-каналов?');">
+        <button type="submit" class="btn btn-danger">Отключить Telegram-каналы</button>
       </form>
     {% endif %}
   </section>
@@ -366,6 +365,27 @@
         </label>
       </div>
       <p class="muted">Если отмечена соцсеть <strong>ТГ</strong>, пост отправится в Telegram автоматически по указанным дате и времени.</p>
+      <div>
+        <p class="muted">Telegram-каналы для публикации</p>
+        {% if telegram_settings.channels %}
+          <div class="chips-wrap">
+            {% for channel in telegram_settings.channels %}
+              <label class="chip-check">
+                <input
+                  type="checkbox"
+                  name="telegram_channel_ids"
+                  value="{{ channel.chat_id }}"
+                  {% if channel.chat_id in content_form.telegram_channel_ids %}checked{% endif %}
+                />
+                {{ channel.title or channel.chat_id }}
+              </label>
+            {% endfor %}
+          </div>
+          <small class="muted">Можно выбрать несколько каналов: пост уйдет во все отмеченные.</small>
+        {% else %}
+          <p class="muted">Сначала добавьте Telegram-каналы в блоке выше.</p>
+        {% endif %}
+      </div>
       <div>
         <p class="muted">Соцсеть</p>
         <div class="chips-wrap">
@@ -497,6 +517,9 @@
               {% endif %}
               {% if item.telegram_published_at %}
                 <span class="muted">Telegram: {{ item.telegram_published_at.strftime('%d-%m-%Y %H:%M') }}</span>
+              {% endif %}
+              {% if item.telegram_channels_text and item.telegram_channels_text != "—" %}
+                <span class="muted">TG-каналы: {{ item.telegram_channels_text }}</span>
               {% endif %}
               <a class="btn btn-small" href="/my-calendar?view=content&edit_post_id={{ item.post_id }}#content-form">Редактировать</a>
               {% if telegram_content_connected %}

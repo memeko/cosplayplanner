@@ -215,6 +215,7 @@ CONTENT_STATUS_LABELS = {
 CONTENT_TELEGRAM_TOKEN_GROUP = "content_telegram_bot_token"
 CONTENT_TELEGRAM_CHAT_GROUP = "content_telegram_chat"
 CONTENT_TELEGRAM_PACK_GROUP = "content_telegram_premium_pack_id"
+CONTENT_TELEGRAM_CHANNEL_GROUP = "content_telegram_channel"
 CONTENT_TELEGRAM_PREMIUM_EMOJI_GROUP = "content_telegram_premium_emoji"
 CONTENT_RUBRIC_TAG_GROUP = "content_rubric_tag"
 CONTENT_TELEGRAM_IMAGE_MAX_SIDE = 2000
@@ -681,8 +682,10 @@ def apply_schema_migrations() -> None:
             ("status", "VARCHAR(32) NOT NULL DEFAULT 'plan'"),
             ("telegram_body_html", "TEXT"),
             ("telegram_photos_json", "JSON NOT NULL DEFAULT '[]'"),
+            ("telegram_channels_json", "JSON NOT NULL DEFAULT '[]'"),
             ("telegram_cleanup_photos_json", "JSON NOT NULL DEFAULT '[]'"),
             ("telegram_message_id", "VARCHAR(64)"),
+            ("telegram_message_ids_json", "JSON NOT NULL DEFAULT '[]'"),
             ("telegram_published_at", "DATETIME"),
         ],
     }
@@ -2176,8 +2179,15 @@ def normalize_content_status(raw_status: str | None) -> str:
 def get_content_plan_form_values(
     post: ContentPlanPost | None = None,
     rubric_tags: dict[str, str] | None = None,
+    telegram_channels: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     tag_map = rubric_tags or {}
+    available_telegram_channels = telegram_channels or []
+    default_channel_ids = (
+        [available_telegram_channels[0]["chat_id"]]
+        if len(available_telegram_channels) == 1 and available_telegram_channels[0].get("chat_id")
+        else []
+    )
     if not post:
         return {
             "title": "",
@@ -2186,6 +2196,7 @@ def get_content_plan_form_values(
             "publish_time": "",
             "socials_json": [],
             "socials_other": "",
+            "telegram_channel_ids": default_channel_ids,
             "rubric_existing": "",
             "rubric_new": "",
             "rubric_tag_value": "",
@@ -2203,6 +2214,7 @@ def get_content_plan_form_values(
         "publish_time": post.publish_time or "",
         "socials_json": [value for value in socials if value in CONTENT_SOCIAL_OPTIONS],
         "socials_other": ", ".join(socials_other_values),
+        "telegram_channel_ids": as_list(post.telegram_channels_json) or default_channel_ids,
         "rubric_existing": post.rubric or "",
         "rubric_new": "",
         "rubric_tag_value": normalize_content_rubric_tag(post.rubric_tag) or tag_map.get(post.rubric or "", ""),
@@ -2225,6 +2237,12 @@ def save_content_plan_post_from_form(form: Any, post: ContentPlanPost, user: Use
     socials = merge_unique(form.getlist("socials"), split_csv(str(form.get("socials_other", "")).strip()))
     telegram_body_html = str(form.get("telegram_body_html", "")).strip()
     telegram_photos = parse_reference_values(str(form.get("telegram_photos_input", "")))[:10]
+    available_telegram_channels = get_content_telegram_channels(db, user.id)
+    selected_telegram_channels = resolve_content_telegram_channels(
+        form.getlist("telegram_channel_ids"),
+        available_telegram_channels,
+    )
+    selected_telegram_channel_ids = [channel["chat_id"] for channel in selected_telegram_channels]
     rubric_tags = get_content_rubric_tags(db, user.id)
 
     if not title:
@@ -2243,6 +2261,14 @@ def save_content_plan_post_from_form(form: Any, post: ContentPlanPost, user: Use
         return False, "Текст для Telegram должен быть не длиннее 12000 символов."
     if any(item.casefold() == "тг" for item in socials) and not publish_time:
         return False, "Для автопубликации в Telegram укажите время публикации."
+    if any(item.casefold() == "тг" for item in socials):
+        if not available_telegram_channels:
+            return False, "Сначала добавьте хотя бы один Telegram-канал в настройках."
+        if not selected_telegram_channel_ids:
+            if len(available_telegram_channels) == 1:
+                selected_telegram_channel_ids = [available_telegram_channels[0]["chat_id"]]
+            else:
+                return False, "Выберите хотя бы один Telegram-канал для публикации."
 
     normalized_tag = normalize_content_rubric_tag(rubric_tag_value)
     if rubric_new and not normalized_tag:
@@ -2261,6 +2287,7 @@ def save_content_plan_post_from_form(form: Any, post: ContentPlanPost, user: Use
     post.status = status
     post.telegram_body_html = telegram_body_html or None
     post.telegram_photos_json = telegram_photos
+    post.telegram_channels_json = selected_telegram_channel_ids
 
     if resolved_rubric_tag and (rubric_new or rubric_existing):
         rubric_tags[rubric] = resolved_rubric_tag
@@ -2272,9 +2299,12 @@ def save_content_plan_post_from_form(form: Any, post: ContentPlanPost, user: Use
 
 def get_content_telegram_settings(user: User, db: Session) -> dict[str, Any]:
     premium_entries = get_content_premium_emoji_entries(db, user.id)
+    channels = get_content_telegram_channels(db, user.id)
     return {
         "bot_token": get_user_option_value(db, user.id, CONTENT_TELEGRAM_TOKEN_GROUP),
-        "chat_id": get_user_option_value(db, user.id, CONTENT_TELEGRAM_CHAT_GROUP),
+        "chat_id": channels[0]["chat_id"] if channels else get_user_option_value(db, user.id, CONTENT_TELEGRAM_CHAT_GROUP),
+        "channels_text": format_content_telegram_channel_lines(channels),
+        "channels": channels,
         "premium_emojis_text": format_content_premium_emoji_lines(premium_entries),
         "premium_emojis": premium_entries,
     }
@@ -2412,13 +2442,27 @@ def local_media_reference_to_path(reference: str | None) -> Path | None:
 def mark_content_post_telegram_published(
     post: ContentPlanPost,
     *,
-    message_id: str | None,
+    message_id: str | None = None,
+    channel_message_ids: list[dict[str, str]] | None = None,
     rubric_tag: str | None = None,
 ) -> None:
     normalized_tag = normalize_content_rubric_tag(rubric_tag) or normalize_content_rubric_tag(post.rubric_tag)
     if normalized_tag:
         post.rubric_tag = normalized_tag
-    post.telegram_message_id = (message_id or "").strip() or None
+    message_id_rows = [
+        {
+            "chat_id": str(item.get("chat_id") or "").strip(),
+            "title": str(item.get("title") or "").strip(),
+            "message_id": str(item.get("message_id") or "").strip(),
+        }
+        for item in as_list(channel_message_ids)
+        if isinstance(item, dict) and str(item.get("chat_id") or "").strip() and str(item.get("message_id") or "").strip()
+    ]
+    last_message_id = (message_id or "").strip()
+    if not last_message_id and message_id_rows:
+        last_message_id = str(message_id_rows[-1].get("message_id") or "").strip()
+    post.telegram_message_id = last_message_id or None
+    post.telegram_message_ids_json = message_id_rows
     post.telegram_published_at = datetime.utcnow()
     post.telegram_cleanup_photos_json = as_list(post.telegram_photos_json)
     if normalize_content_status(post.status) != "published":
@@ -2492,6 +2536,40 @@ def publish_content_post_to_telegram(
     )
     text_result = text_payload.get("result") or {}
     return str(text_result.get("message_id") or "")
+
+
+def publish_content_post_to_telegram_channels(
+    *,
+    token: str,
+    channels: list[dict[str, str]],
+    post: ContentPlanPost,
+    rubric_tag: str | None = None,
+) -> tuple[list[dict[str, str]], list[str]]:
+    successful: list[dict[str, str]] = []
+    errors: list[str] = []
+    for channel in channels:
+        chat_id = str(channel.get("chat_id") or "").strip()
+        title = str(channel.get("title") or "").strip() or chat_id
+        if not chat_id:
+            continue
+        try:
+            message_id = publish_content_post_to_telegram(
+                token=token,
+                chat_id=chat_id,
+                post=post,
+                rubric_tag=rubric_tag,
+            )
+        except RuntimeError as exc:
+            errors.append(f"{title}: {exc}")
+            continue
+        successful.append(
+            {
+                "chat_id": chat_id,
+                "title": title,
+                "message_id": message_id,
+            }
+        )
+    return successful, errors
 
 
 def hsl_to_hex(hue: float, saturation: float, lightness: float) -> str:
@@ -3673,25 +3751,34 @@ def dispatch_scheduled_content_posts() -> None:
                 settings_cache[user.id] = get_content_telegram_settings(user, db)
             telegram_settings = settings_cache[user.id]
             bot_token = str(telegram_settings.get("bot_token") or "").strip()
-            chat_id = str(telegram_settings.get("chat_id") or "").strip()
-            if not bot_token or not chat_id:
+            available_channels = list(telegram_settings.get("channels") or [])
+            if not bot_token or not available_channels:
+                continue
+
+            selected_channels = resolve_content_telegram_channels(as_list(post.telegram_channels_json), available_channels)
+            if not selected_channels and len(available_channels) == 1:
+                selected_channels = [available_channels[0]]
+            if not selected_channels:
                 continue
 
             if user.id not in rubric_tag_cache:
                 rubric_tag_cache[user.id] = get_content_rubric_tags(db, user.id)
             rubric_tag = normalize_content_rubric_tag(post.rubric_tag) or rubric_tag_cache[user.id].get(post.rubric or "", "")
 
-            try:
-                message_id = publish_content_post_to_telegram(
-                    token=bot_token,
-                    chat_id=chat_id,
-                    post=post,
-                    rubric_tag=rubric_tag,
-                )
-            except RuntimeError:
+            sent_messages, _ = publish_content_post_to_telegram_channels(
+                token=bot_token,
+                channels=selected_channels,
+                post=post,
+                rubric_tag=rubric_tag,
+            )
+            if not sent_messages:
                 continue
 
-            mark_content_post_telegram_published(post, message_id=message_id, rubric_tag=rubric_tag)
+            mark_content_post_telegram_published(
+                post,
+                channel_message_ids=sent_messages,
+                rubric_tag=rubric_tag,
+            )
             has_changes = True
 
         if has_changes:
@@ -5159,6 +5246,104 @@ def decode_content_premium_emoji_value(value: str) -> dict[str, str] | None:
         payload = json.loads(raw)
     except ValueError:
         return None
+def encode_content_telegram_channel_value(title: str, chat_id: str) -> str:
+    return json.dumps({"title": title, "chat_id": chat_id}, ensure_ascii=False, separators=(",", ":"))
+
+
+def decode_content_telegram_channel_value(value: str) -> dict[str, str] | None:
+    raw = (value or "").strip()
+    if not raw:
+        return None
+    try:
+        payload = json.loads(raw)
+    except ValueError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    chat_id = normalize_telegram_target(payload.get("chat_id"))
+    title = str(payload.get("title") or "").strip() or chat_id
+    if not chat_id:
+        return None
+    return {"title": title[:120], "chat_id": chat_id}
+
+
+def parse_content_telegram_channel_lines(raw_text: str) -> tuple[list[dict[str, str]], str]:
+    entries: list[dict[str, str]] = []
+    seen_chat_ids: set[str] = set()
+    for index, raw_line in enumerate((raw_text or "").splitlines(), start=1):
+        line = raw_line.strip()
+        if not line:
+            continue
+        title = ""
+        chat_raw = line
+        match = re.fullmatch(r"(.+?)\s+[—-]\s+(.+)", line)
+        if match:
+            title = match.group(1).strip()
+            chat_raw = match.group(2).strip()
+        chat_id = normalize_telegram_target(chat_raw)
+        if not chat_id:
+            return [], f"Строка {index}: укажите канал в формате «Название — @channel» или просто «@channel»."
+        if chat_id in seen_chat_ids:
+            continue
+        seen_chat_ids.add(chat_id)
+        entries.append({"title": (title or chat_id)[:120], "chat_id": chat_id})
+    return entries, ""
+
+
+def format_content_telegram_channel_lines(entries: list[dict[str, str]]) -> str:
+    return "\n".join(
+        (
+            f"{entry['title']} — {entry['chat_id']}"
+            if entry.get("title") and entry.get("title") != entry.get("chat_id")
+            else entry.get("chat_id", "")
+        )
+        for entry in entries
+        if entry.get("chat_id")
+    )
+
+
+def get_content_telegram_channels(db: Session, user_id: int) -> list[dict[str, str]]:
+    result: list[dict[str, str]] = []
+    seen_chat_ids: set[str] = set()
+    for value in get_user_option_values(db, user_id, CONTENT_TELEGRAM_CHANNEL_GROUP):
+        decoded = decode_content_telegram_channel_value(value)
+        if not decoded:
+            continue
+        chat_id = decoded["chat_id"]
+        if chat_id in seen_chat_ids:
+            continue
+        seen_chat_ids.add(chat_id)
+        result.append(decoded)
+
+    legacy_chat_id = normalize_telegram_target(get_user_option_value(db, user_id, CONTENT_TELEGRAM_CHAT_GROUP))
+    if legacy_chat_id and legacy_chat_id not in seen_chat_ids:
+        result.append({"title": legacy_chat_id, "chat_id": legacy_chat_id})
+    return result
+
+
+def resolve_content_telegram_channels(
+    selected_chat_ids: list[str] | tuple[str, ...],
+    available_channels: list[dict[str, str]],
+) -> list[dict[str, str]]:
+    available_by_chat_id = {
+        str(channel.get("chat_id") or "").strip(): channel
+        for channel in available_channels
+        if str(channel.get("chat_id") or "").strip()
+    }
+    resolved: list[dict[str, str]] = []
+    seen_chat_ids: set[str] = set()
+    for raw_chat_id in selected_chat_ids:
+        chat_id = normalize_telegram_target(raw_chat_id)
+        if not chat_id or chat_id in seen_chat_ids:
+            continue
+        channel = available_by_chat_id.get(chat_id)
+        if not channel:
+            continue
+        seen_chat_ids.add(chat_id)
+        resolved.append(channel)
+    return resolved
+
+
     if not isinstance(payload, dict):
         return None
     emoji = str(payload.get("emoji") or "").strip()
@@ -8688,6 +8873,12 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
         row_color = rubric_colors.get(row_rubric, CONTENT_RUBRIC_PALETTE[0])
         content_rows.append(
             {
+    telegram_channels = list(telegram_settings.get("channels") or [])
+    telegram_channels_by_id = {
+        str(channel.get("chat_id") or "").strip(): channel
+        for channel in telegram_channels
+        if str(channel.get("chat_id") or "").strip()
+    }
                 "post_id": post.id,
                 "date": post.publish_date,
                 "time": post.publish_time or "",
@@ -8698,6 +8889,11 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
                 "rubric_color": row_color,
                 "status": normalize_content_status(post.status),
                 "status_label": CONTENT_STATUS_LABELS.get(normalize_content_status(post.status), "План"),
+        row_telegram_channels = [
+            telegram_channels_by_id[channel_id]
+            for channel_id in as_list(post.telegram_channels_json)
+            if channel_id in telegram_channels_by_id
+        ]
                 "telegram_published_at": post.telegram_published_at,
             }
         )
@@ -8710,6 +8906,11 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
         content_by_month[(publish_date.year, publish_date.month)].append(row)
 
     content_month_groups: list[dict[str, Any]] = []
+                "telegram_channels_text": ", ".join(
+                    str(channel.get("title") or channel.get("chat_id") or "").strip()
+                    for channel in row_telegram_channels
+                    if str(channel.get("title") or channel.get("chat_id") or "").strip()
+                ) or "—",
     for year_month in sorted(content_by_month.keys()):
         year, month = year_month
         month_date = date(year, month, 1)
@@ -8750,14 +8951,14 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
         content_rubric_options=rubric_options,
         content_rubric_colors=rubric_colors,
         content_rubric_tags=rubric_tags,
-        content_form=get_content_plan_form_values(editing_content_post, rubric_tags),
+        content_form=get_content_plan_form_values(editing_content_post, rubric_tags, telegram_channels),
         editing_content_post=editing_content_post,
         telegram_settings=telegram_settings,
         telegram_settings_masked={
             "bot_token": mask_secret_value(telegram_settings.get("bot_token")),
-            "chat_id": telegram_settings.get("chat_id", ""),
+            "channels_text": telegram_settings.get("channels_text", ""),
         },
-        telegram_content_connected=bool(telegram_settings.get("bot_token") and telegram_settings.get("chat_id")),
+        telegram_content_connected=bool(telegram_settings.get("bot_token") and telegram_channels),
         month_weekday_labels=["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"],
     )
 
@@ -9095,14 +9296,19 @@ async def my_calendar_content_telegram_connect(request: Request, db: Session = D
 
     form = await request.form()
     bot_token = str(form.get("bot_token", "")).strip()
-    chat_id = normalize_telegram_target(str(form.get("chat_id", "")).strip())
+    telegram_channels_text = str(form.get("telegram_channels_text", "")).strip()
     premium_emojis_text = str(form.get("premium_emojis_text", "")).strip()
 
     if not bot_token or ":" not in bot_token:
         add_flash(request, "Укажите корректный токен Telegram-бота.", "error")
         return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
-    if not chat_id:
-        add_flash(request, "Укажите @канал или chat_id для публикации.", "error")
+
+    channel_entries, channel_error = parse_content_telegram_channel_lines(telegram_channels_text)
+    if channel_error:
+        add_flash(request, channel_error, "error")
+        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+    if not channel_entries:
+        add_flash(request, "Добавьте хотя бы один Telegram-канал для публикации.", "error")
         return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
 
     premium_entries, premium_error = parse_content_premium_emoji_lines(premium_emojis_text)
@@ -9111,7 +9317,7 @@ async def my_calendar_content_telegram_connect(request: Request, db: Session = D
         return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
 
     set_user_option_value(db, user.id, CONTENT_TELEGRAM_TOKEN_GROUP, bot_token)
-    set_user_option_value(db, user.id, CONTENT_TELEGRAM_CHAT_GROUP, chat_id)
+    set_user_option_value(db, user.id, CONTENT_TELEGRAM_CHAT_GROUP, channel_entries[0]["chat_id"])
     set_user_option_value(db, user.id, CONTENT_TELEGRAM_PACK_GROUP, "")
     replace_user_option_values(
         db,
@@ -9125,6 +9331,15 @@ async def my_calendar_content_telegram_connect(request: Request, db: Session = D
 
 
 @app.post("/my-calendar/content/telegram/disconnect")
+    replace_user_option_values(
+        db,
+        user.id,
+        CONTENT_TELEGRAM_CHANNEL_GROUP,
+        [
+            encode_content_telegram_channel_value(entry["title"], entry["chat_id"])
+            for entry in channel_entries
+        ],
+    )
 def my_calendar_content_telegram_disconnect(request: Request, db: Session = Depends(get_db)):
     user = current_user(request, db)
     if not user:
@@ -9132,9 +9347,9 @@ def my_calendar_content_telegram_disconnect(request: Request, db: Session = Depe
     set_user_option_value(db, user.id, CONTENT_TELEGRAM_TOKEN_GROUP, "")
     set_user_option_value(db, user.id, CONTENT_TELEGRAM_CHAT_GROUP, "")
     set_user_option_value(db, user.id, CONTENT_TELEGRAM_PACK_GROUP, "")
-    replace_user_option_values(db, user.id, CONTENT_TELEGRAM_PREMIUM_EMOJI_GROUP, [])
+    replace_user_option_values(db, user.id, CONTENT_TELEGRAM_CHANNEL_GROUP, [])
     db.commit()
-    add_flash(request, "Настройки Telegram-канала удалены.", "info")
+    add_flash(request, "Настройки Telegram-каналов удалены. Библиотека premium-эмодзи сохранена.", "info")
     return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
 
 
@@ -9156,26 +9371,44 @@ def my_calendar_content_publish_telegram(post_id: int, request: Request, db: Ses
 
     telegram_settings = get_content_telegram_settings(user, db)
     bot_token = telegram_settings.get("bot_token", "")
-    chat_id = telegram_settings.get("chat_id", "")
-    if not bot_token or not chat_id:
-        add_flash(request, "Сначала подключите Telegram-канал в настройках контент-плана.", "error")
+    available_channels = list(telegram_settings.get("channels") or [])
+    if not bot_token or not available_channels:
+        add_flash(request, "Сначала подключите Telegram-каналы в настройках контент-плана.", "error")
+        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+
+    selected_channels = resolve_content_telegram_channels(as_list(post.telegram_channels_json), available_channels)
+    if not selected_channels and len(available_channels) == 1:
+        selected_channels = [available_channels[0]]
+    if not selected_channels:
+        add_flash(request, "Выберите хотя бы один Telegram-канал в карточке поста.", "error")
         return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
 
     try:
         rubric_tag = normalize_content_rubric_tag(post.rubric_tag) or get_content_rubric_tags(db, user.id).get(post.rubric or "", "")
-        message_id = publish_content_post_to_telegram(
+        sent_messages, send_errors = publish_content_post_to_telegram_channels(
             token=bot_token,
-            chat_id=chat_id,
+            channels=selected_channels,
             post=post,
             rubric_tag=rubric_tag,
         )
-    except RuntimeError as exc:
+    except Exception as exc:
         add_flash(request, str(exc), "error")
         return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
 
-    mark_content_post_telegram_published(post, message_id=message_id, rubric_tag=rubric_tag)
+    if not sent_messages:
+        add_flash(request, send_errors[0] if send_errors else "Не удалось опубликовать пост в Telegram.", "error")
+        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+
+    mark_content_post_telegram_published(
+        post,
+        channel_message_ids=sent_messages,
+        rubric_tag=rubric_tag,
+    )
     db.commit()
-    add_flash(request, "Пост опубликован в Telegram.", "success")
+    success_text = f"Пост опубликован в Telegram-каналы: {len(sent_messages)}."
+    if send_errors:
+        success_text = f"{success_text} Не удалось отправить в: {'; '.join(send_errors)}"
+    add_flash(request, success_text, "success")
     return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
 
 
