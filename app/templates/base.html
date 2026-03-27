@@ -98,32 +98,52 @@
     <div class="pigeon-popup-card">
       <button type="button" id="pigeon-popup-close" class="btn btn-small pigeon-popup-close" aria-label="Закрыть">✕</button>
       <h3 id="pigeon-popup-title">🕊 Курлык!</h3>
-      <p id="pigeon-popup-body"></p>
+      <div id="pigeon-popup-body" class="notes-block"></div>
+      <div class="actions-inline top-offset">
+        <button type="button" id="pigeon-popup-delete" class="btn btn-danger btn-small">Удалить</button>
+      </div>
     </div>
   </div>
   <script>
     (function () {
       const popup = document.getElementById("pigeon-popup");
       const closeBtn = document.getElementById("pigeon-popup-close");
+      const deleteBtn = document.getElementById("pigeon-popup-delete");
       const titleNode = document.getElementById("pigeon-popup-title");
       const bodyNode = document.getElementById("pigeon-popup-body");
-      if (!popup || !closeBtn || !titleNode || !bodyNode) {
+      if (!popup || !closeBtn || !deleteBtn || !titleNode || !bodyNode) {
         return;
       }
 
       let currentId = null;
       let pollBusy = false;
 
+      function rememberShown(notificationId) {
+        if (!notificationId) return;
+        try {
+          window.localStorage.setItem("lastShownPigeonId", String(notificationId));
+        } catch (_) {
+          // Ignore storage issues, backend seen-mark still prevents repeats in normal flow.
+        }
+      }
+
+      function wasShown(notificationId) {
+        if (!notificationId) return false;
+        try {
+          return window.localStorage.getItem("lastShownPigeonId") === String(notificationId);
+        } catch (_) {
+          return false;
+        }
+      }
+
       function hidePopup() {
         popup.hidden = true;
       }
 
-      async function markSeen() {
-        if (!currentId) return;
-        const id = currentId;
-        currentId = null;
+      async function markSeen(notificationId) {
+        if (!notificationId) return;
         try {
-          await fetch(`/notifications/pigeon/${id}/seen`, {
+          await fetch(`/notifications/pigeon/${notificationId}/seen`, {
             method: "POST",
             credentials: "same-origin",
             headers: { "X-Requested-With": "XMLHttpRequest" }
@@ -135,7 +155,23 @@
 
       async function closePopup() {
         hidePopup();
-        await markSeen();
+        currentId = null;
+      }
+
+      async function deleteCurrentPopupPigeon() {
+        if (!currentId) return;
+        const id = currentId;
+        currentId = null;
+        hidePopup();
+        try {
+          await fetch(`/notifications/pigeon/${id}/delete`, {
+            method: "POST",
+            credentials: "same-origin",
+            headers: { "X-Requested-With": "XMLHttpRequest" }
+          });
+        } catch (_) {
+          // Ignore transient network errors for UX continuity.
+        }
       }
 
       async function pollPigeon() {
@@ -153,10 +189,16 @@
           if (!payload || !payload.ok || !payload.notification) return;
 
           const note = payload.notification;
+          if (wasShown(note.id)) {
+            await markSeen(note.id);
+            return;
+          }
           currentId = note.id;
+          rememberShown(note.id);
           titleNode.textContent = `🕊 Курлык! (@${note.sender_alias || "unknown"})`;
           bodyNode.innerHTML = note.body_html || "";
           popup.hidden = false;
+          await markSeen(note.id);
         } catch (_) {
           // Silently retry on next interval.
         } finally {
@@ -165,6 +207,7 @@
       }
 
       closeBtn.addEventListener("click", closePopup);
+      deleteBtn.addEventListener("click", deleteCurrentPopupPigeon);
       popup.addEventListener("click", function (event) {
         if (event.target === popup) {
           closePopup();

@@ -4611,6 +4611,18 @@ def get_latest_unread_pigeon(db: Session, user_id: int) -> dict[str, Any] | None
     return None
 
 
+def get_user_pigeon_notification(db: Session, user_id: int, notification_id: int) -> FestivalNotification | None:
+    notification = db.execute(
+        select(FestivalNotification).where(
+            FestivalNotification.id == notification_id,
+            FestivalNotification.user_id == user_id,
+        )
+    ).scalar_one_or_none()
+    if not notification or not is_pigeon_message(notification.message):
+        return None
+    return notification
+
+
 def _render_article_inline(text: str) -> str:
     rendered = html.escape(text)
 
@@ -5234,18 +5246,6 @@ def replace_user_option_values(db: Session, user_id: int, group: str, values: li
         db.add(UserOption(user_id=user_id, group=group, value=value))
 
 
-def encode_content_premium_emoji_value(emoji: str, emoji_id: str) -> str:
-    return json.dumps({"emoji": emoji, "emoji_id": emoji_id}, ensure_ascii=False, separators=(",", ":"))
-
-
-def decode_content_premium_emoji_value(value: str) -> dict[str, str] | None:
-    raw = (value or "").strip()
-    if not raw:
-        return None
-    try:
-        payload = json.loads(raw)
-    except ValueError:
-        return None
 def encode_content_telegram_channel_value(title: str, chat_id: str) -> str:
     return json.dumps({"title": title, "chat_id": chat_id}, ensure_ascii=False, separators=(",", ":"))
 
@@ -5344,6 +5344,18 @@ def resolve_content_telegram_channels(
     return resolved
 
 
+def encode_content_premium_emoji_value(emoji: str, emoji_id: str) -> str:
+    return json.dumps({"emoji": emoji, "emoji_id": emoji_id}, ensure_ascii=False, separators=(",", ":"))
+
+
+def decode_content_premium_emoji_value(value: str) -> dict[str, str] | None:
+    raw = (value or "").strip()
+    if not raw:
+        return None
+    try:
+        payload = json.loads(raw)
+    except ValueError:
+        return None
     if not isinstance(payload, dict):
         return None
     emoji = str(payload.get("emoji") or "").strip()
@@ -8861,6 +8873,12 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
         .order_by(ContentPlanPost.publish_date, ContentPlanPost.publish_time, ContentPlanPost.id)
     ).scalars().all()
     telegram_settings = get_content_telegram_settings(user, db)
+    telegram_channels = list(telegram_settings.get("channels") or [])
+    telegram_channels_by_id = {
+        str(channel.get("chat_id") or "").strip(): channel
+        for channel in telegram_channels
+        if str(channel.get("chat_id") or "").strip()
+    }
     rubric_tags = get_content_rubric_tags(db, user.id)
     rubric_options = merge_unique(
         get_options(db, user.id, "content_rubric"),
@@ -8871,14 +8889,13 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
     for post in content_posts:
         row_rubric = post.rubric or "Общее"
         row_color = rubric_colors.get(row_rubric, CONTENT_RUBRIC_PALETTE[0])
+        row_telegram_channels = [
+            telegram_channels_by_id[channel_id]
+            for channel_id in as_list(post.telegram_channels_json)
+            if channel_id in telegram_channels_by_id
+        ]
         content_rows.append(
             {
-    telegram_channels = list(telegram_settings.get("channels") or [])
-    telegram_channels_by_id = {
-        str(channel.get("chat_id") or "").strip(): channel
-        for channel in telegram_channels
-        if str(channel.get("chat_id") or "").strip()
-    }
                 "post_id": post.id,
                 "date": post.publish_date,
                 "time": post.publish_time or "",
@@ -8889,11 +8906,11 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
                 "rubric_color": row_color,
                 "status": normalize_content_status(post.status),
                 "status_label": CONTENT_STATUS_LABELS.get(normalize_content_status(post.status), "План"),
-        row_telegram_channels = [
-            telegram_channels_by_id[channel_id]
-            for channel_id in as_list(post.telegram_channels_json)
-            if channel_id in telegram_channels_by_id
-        ]
+                "telegram_channels_text": ", ".join(
+                    str(channel.get("title") or channel.get("chat_id") or "").strip()
+                    for channel in row_telegram_channels
+                    if str(channel.get("title") or channel.get("chat_id") or "").strip()
+                ) or "—",
                 "telegram_published_at": post.telegram_published_at,
             }
         )
@@ -8906,11 +8923,6 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
         content_by_month[(publish_date.year, publish_date.month)].append(row)
 
     content_month_groups: list[dict[str, Any]] = []
-                "telegram_channels_text": ", ".join(
-                    str(channel.get("title") or channel.get("chat_id") or "").strip()
-                    for channel in row_telegram_channels
-                    if str(channel.get("title") or channel.get("chat_id") or "").strip()
-                ) or "—",
     for year_month in sorted(content_by_month.keys()):
         year, month = year_month
         month_date = date(year, month, 1)
@@ -9322,6 +9334,15 @@ async def my_calendar_content_telegram_connect(request: Request, db: Session = D
     replace_user_option_values(
         db,
         user.id,
+        CONTENT_TELEGRAM_CHANNEL_GROUP,
+        [
+            encode_content_telegram_channel_value(entry["title"], entry["chat_id"])
+            for entry in channel_entries
+        ],
+    )
+    replace_user_option_values(
+        db,
+        user.id,
         CONTENT_TELEGRAM_PREMIUM_EMOJI_GROUP,
         [encode_content_premium_emoji_value(entry["emoji"], entry["emoji_id"]) for entry in premium_entries],
     )
@@ -9331,15 +9352,6 @@ async def my_calendar_content_telegram_connect(request: Request, db: Session = D
 
 
 @app.post("/my-calendar/content/telegram/disconnect")
-    replace_user_option_values(
-        db,
-        user.id,
-        CONTENT_TELEGRAM_CHANNEL_GROUP,
-        [
-            encode_content_telegram_channel_value(entry["title"], entry["chat_id"])
-            for entry in channel_entries
-        ],
-    )
 def my_calendar_content_telegram_disconnect(request: Request, db: Session = Depends(get_db)):
     user = current_user(request, db)
     if not user:
@@ -12656,18 +12668,36 @@ def notifications_pigeon_seen(notification_id: int, request: Request, db: Sessio
     if not user:
         return {"ok": False}
 
-    notification = db.execute(
-        select(FestivalNotification).where(
-            FestivalNotification.id == notification_id,
-            FestivalNotification.user_id == user.id,
-        )
-    ).scalar_one_or_none()
+    notification = get_user_pigeon_notification(db, user.id, notification_id)
     if not notification:
         return {"ok": False}
 
     notification.is_read = True
     db.commit()
     return {"ok": True}
+
+
+@app.post("/notifications/pigeon/{notification_id}/delete")
+async def notifications_pigeon_delete(notification_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    is_ajax = request.headers.get("X-Requested-With") == "XMLHttpRequest"
+    if not user:
+        return {"ok": False} if is_ajax else redirect("/login")
+
+    notification = get_user_pigeon_notification(db, user.id, notification_id)
+    if not notification:
+        return {"ok": False} if is_ajax else redirect("/")
+
+    db.delete(notification)
+    db.commit()
+
+    if is_ajax:
+        return {"ok": True}
+
+    form = await request.form()
+    next_url = safe_redirect_target(str(form.get("next", "")).strip(), "/")
+    add_flash(request, "Голубь удален.", "success")
+    return redirect(next_url)
 
 
 @app.post("/notifications/pigeon")

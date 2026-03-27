@@ -147,39 +147,45 @@
             {% endif %}
           </p>
           <div class="notes-block">{{ note.body_html }}</div>
-          {% if note.sender_alias %}
-            <details class="top-offset">
-              <summary>Ответить</summary>
-              <form method="post" action="/notifications/pigeon" class="grid one-col top-offset">
-                <input type="hidden" name="next" value="/" />
-                <input type="hidden" name="recipient_alias" value="{{ note.sender_alias }}" />
-                <input type="hidden" name="reply_to_notification_id" value="{{ note.id }}" />
-                <label>
-                  Сообщение
-                  <textarea
-                    name="message"
-                    id="pigeon-reply-{{ note.id }}"
-                    rows="3"
-                    maxlength="1500"
-                    placeholder="Ответ пользователю @{{ note.sender_alias }}"
-                    required
-                  ></textarea>
-                </label>
-                {% if pixel_emoji_catalog %}
-                  <div class="emoji-picker-grid" data-emoji-target="pigeon-reply-{{ note.id }}">
-                    {% for emoji in pixel_emoji_catalog[:24] %}
-                      <button type="button" class="emoji-picker-btn" data-emoji-code="{{ emoji.code }}" title="{{ emoji.label }}">
-                        <img src="{{ emoji.url }}" alt="{{ emoji.label }}" loading="lazy" />
-                      </button>
-                    {% endfor %}
+          <div class="actions-inline top-offset">
+            {% if note.sender_alias %}
+              <details class="card-expand">
+                <summary>Ответить</summary>
+                <form method="post" action="/notifications/pigeon" class="grid one-col top-offset">
+                  <input type="hidden" name="next" value="/" />
+                  <input type="hidden" name="recipient_alias" value="{{ note.sender_alias }}" />
+                  <input type="hidden" name="reply_to_notification_id" value="{{ note.id }}" />
+                  <label>
+                    Сообщение
+                    <textarea
+                      name="message"
+                      id="pigeon-reply-{{ note.id }}"
+                      rows="3"
+                      maxlength="1500"
+                      placeholder="Ответ пользователю @{{ note.sender_alias }}"
+                      required
+                    ></textarea>
+                  </label>
+                  {% if pixel_emoji_catalog %}
+                    <div class="emoji-picker-grid" data-emoji-target="pigeon-reply-{{ note.id }}">
+                      {% for emoji in pixel_emoji_catalog[:24] %}
+                        <button type="button" class="emoji-picker-btn" data-emoji-code="{{ emoji.code }}" title="{{ emoji.label }}">
+                          <img src="{{ emoji.url }}" alt="{{ emoji.label }}" loading="lazy" />
+                        </button>
+                      {% endfor %}
+                    </div>
+                  {% endif %}
+                  <div class="actions-inline">
+                    <button type="submit" class="btn btn-accent">Отправить ответ</button>
                   </div>
-                {% endif %}
-                <div class="actions-inline">
-                  <button type="submit" class="btn btn-accent">Отправить ответ</button>
-                </div>
-              </form>
-            </details>
-          {% endif %}
+                </form>
+              </details>
+            {% endif %}
+            <form method="post" action="/notifications/pigeon/{{ note.id }}/delete" onsubmit="return confirm('Удалить этого голубя?');">
+              <input type="hidden" name="next" value="/" />
+              <button type="submit" class="btn btn-danger btn-small">Удалить</button>
+            </form>
+          </div>
         </article>
       {% endfor %}
     </div>
