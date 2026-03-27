@@ -271,6 +271,9 @@ TELEGRAM_BOT_ENABLED = bool(TELEGRAM_BOT_TOKEN) and to_bool(os.getenv("TELEGRAM_
 TELEGRAM_POLL_TIMEOUT_SECONDS = max(5, min(60, int(os.getenv("TELEGRAM_POLL_TIMEOUT", "20"))))
 TELEGRAM_LOOP_SLEEP_SECONDS = max(1, min(30, int(os.getenv("TELEGRAM_LOOP_SLEEP", "2"))))
 TELEGRAM_DISPATCH_LIMIT = max(10, min(200, int(os.getenv("TELEGRAM_DISPATCH_LIMIT", "80"))))
+TELEGRAM_NOTIFICATIONS_BOT_USERNAME = (
+    os.getenv("TELEGRAM_BOT_USERNAME", "cosplay_planner_bot") or "cosplay_planner_bot"
+).strip().lstrip("@")
 BRFOX_BOT_TOKEN = os.getenv("BRFOX_BOT_TOKEN", "").strip()
 BRFOX_BOT_USERNAME = (os.getenv("BRFOX_BOT_USERNAME", "brfox_cosplaybot") or "brfox_cosplaybot").strip().lstrip("@")
 BRFOX_CONTENT_CHANNEL = (os.getenv("BRFOX_CONTENT_CHANNEL", "@brfox_cosplay") or "@brfox_cosplay").strip() or "@brfox_cosplay"
@@ -2538,6 +2541,19 @@ def telegram_membership_is_active(status: str | None) -> bool:
     return normalized in {"member", "administrator", "creator", "restricted"}
 
 
+def get_telegram_custom_bot_identity(token: str) -> tuple[int | None, str]:
+    if not token:
+        return None, ""
+    payload = telegram_custom_request(token, "getMe")
+    result = payload.get("result") or {}
+    bot_id_raw = result.get("id")
+    bot_username = normalize_username(result.get("username"))
+    if isinstance(bot_id_raw, int) and bot_id_raw > 0:
+        return bot_id_raw, bot_username
+    bot_id = parse_positive_int(str(bot_id_raw or "").strip())
+    return bot_id, bot_username
+
+
 def check_brfox_content_subscription(user: User) -> tuple[bool, str]:
     telegram_user_id = parse_positive_int(user.telegram_chat_id)
     if not telegram_user_id:
@@ -2545,12 +2561,37 @@ def check_brfox_content_subscription(user: User) -> tuple[bool, str]:
     if not BRFOX_BOT_TOKEN:
         return False, "Проверка подписки временно недоступна."
 
+    channel_target = normalize_telegram_target(BRFOX_CONTENT_CHANNEL) or "@brfox_cosplay"
+    try:
+        bot_user_id, _bot_username = get_telegram_custom_bot_identity(BRFOX_BOT_TOKEN)
+    except RuntimeError as exc:
+        return False, str(exc)
+    if not bot_user_id:
+        return False, "Не удалось определить служебного бота проверки."
+
+    try:
+        bot_payload = telegram_custom_request(
+            BRFOX_BOT_TOKEN,
+            "getChatMember",
+            json_payload={
+                "chat_id": channel_target,
+                "user_id": bot_user_id,
+            },
+        )
+    except RuntimeError as exc:
+        return False, f"Не удалось проверить права служебного бота в канале: {exc}"
+
+    bot_member = bot_payload.get("result") or {}
+    bot_status = str(bot_member.get("status") or "").strip().lower()
+    if bot_status not in {"administrator", "creator"}:
+        return False, f"Служебный бот проверки должен быть администратором канала {channel_target}."
+
     try:
         payload = telegram_custom_request(
             BRFOX_BOT_TOKEN,
             "getChatMember",
             json_payload={
-                "chat_id": normalize_telegram_target(BRFOX_CONTENT_CHANNEL) or "@brfox_cosplay",
+                "chat_id": channel_target,
                 "user_id": telegram_user_id,
             },
         )
@@ -2561,20 +2602,18 @@ def check_brfox_content_subscription(user: User) -> tuple[bool, str]:
     status = str(member.get("status") or "").strip().lower()
     if telegram_membership_is_active(status):
         return True, ""
-    return False, "Подписка на канал Братца Лиса не найдена."
+    return False, f"Telegram не подтвердил подписку на канал {channel_target} (status: {status or 'unknown'})."
 
 
 def build_content_plan_access_state(user: User, db: Session) -> dict[str, Any]:
-    telegram_username = normalize_username(user.telegram_username)
     has_access = user_has_content_plan_access(db, user)
     return {
         "has_access": has_access,
         "channel_url": "https://t.me/brfox_cosplay",
         "channel_handle": normalize_telegram_target(BRFOX_CONTENT_CHANNEL) or "@brfox_cosplay",
-        "bot_username": BRFOX_BOT_USERNAME,
-        "bot_url": f"https://t.me/{BRFOX_BOT_USERNAME}",
+        "notifications_bot_url": f"https://t.me/{TELEGRAM_NOTIFICATIONS_BOT_USERNAME}",
+        "notifications_bot_handle": f"@{TELEGRAM_NOTIFICATIONS_BOT_USERNAME}",
         "requires_telegram_link": not bool(parse_positive_int(user.telegram_chat_id)),
-        "telegram_username": telegram_username,
     }
 
 
@@ -3645,7 +3684,13 @@ def verify_user_telegram_secret_code(user: User, raw_code: str) -> bool:
         return False
 
 
-def handle_telegram_auth_message(chat_id: str, text_value: str, *, telegram_username: str = "") -> bool:
+def handle_telegram_auth_message(
+    chat_id: str,
+    text_value: str,
+    *,
+    telegram_username: str = "",
+    telegram_user_id: str = "",
+) -> bool:
     state = get_telegram_auth_step(chat_id)
     step = state.get("step", "")
     if step == "username":
@@ -3663,6 +3708,9 @@ def handle_telegram_auth_message(chat_id: str, text_value: str, *, telegram_user
         if not username:
             start_telegram_auth(chat_id)
             return True
+        linked_telegram_user_id = str(telegram_user_id or "").strip()
+        if not parse_positive_int(linked_telegram_user_id):
+            linked_telegram_user_id = str(chat_id or "").strip()
         with SessionLocal() as db:
             user = resolve_user_for_telegram_login(db, username)
             if not user:
@@ -3680,7 +3728,7 @@ def handle_telegram_auth_message(chat_id: str, text_value: str, *, telegram_user
 
             linked_users = db.execute(
                 select(User).where(
-                    User.telegram_chat_id == chat_id,
+                    User.telegram_chat_id == linked_telegram_user_id,
                     User.id != user.id,
                 )
             ).scalars().all()
@@ -3690,7 +3738,7 @@ def handle_telegram_auth_message(chat_id: str, text_value: str, *, telegram_user
                 linked_user.telegram_linked_at = None
                 set_user_option_value(db, linked_user.id, CONTENT_PLAN_ACCESS_VERIFIED_GROUP, "")
 
-            user.telegram_chat_id = chat_id
+            user.telegram_chat_id = linked_telegram_user_id
             user.telegram_username = normalize_username(telegram_username) or None
             user.telegram_linked_at = datetime.utcnow()
             set_user_option_value(db, user.id, CONTENT_PLAN_ACCESS_VERIFIED_GROUP, "")
@@ -3748,6 +3796,8 @@ def handle_telegram_update(update: dict[str, Any]) -> None:
     chat_id = str(chat_id_raw)
     message_id = int(message.get("message_id") or 0)
     sender_username = normalize_username(sender.get("username") if isinstance(sender, dict) else "")
+    sender_id = str(sender.get("id") or "").strip() if isinstance(sender, dict) else ""
+    linked_telegram_user_id = sender_id if parse_positive_int(sender_id) else chat_id
 
     text_value = str(message.get("text") or "").strip()
     if not text_value:
@@ -3763,7 +3813,9 @@ def handle_telegram_update(update: dict[str, Any]) -> None:
         return
     if lowered == "/logout":
         with SessionLocal() as db:
-            linked_users = db.execute(select(User).where(User.telegram_chat_id == chat_id)).scalars().all()
+            linked_users = db.execute(
+                select(User).where(User.telegram_chat_id == linked_telegram_user_id)
+            ).scalars().all()
             for linked_user in linked_users:
                 linked_user.telegram_chat_id = None
                 linked_user.telegram_username = None
@@ -3783,7 +3835,12 @@ def handle_telegram_update(update: dict[str, Any]) -> None:
     if state.get("step") == "secret_code" and message_id > 0:
         telegram_delete_message(chat_id, message_id)
 
-    if handle_telegram_auth_message(chat_id, text_value, telegram_username=sender_username):
+    if handle_telegram_auth_message(
+        chat_id,
+        text_value,
+        telegram_username=sender_username,
+        telegram_user_id=linked_telegram_user_id,
+    ):
         return
 
     telegram_send_message(
@@ -9513,25 +9570,10 @@ async def my_calendar_content_access_check(request: Request, db: Session = Depen
     if not user:
         return redirect("/login")
 
-    form = await request.form()
-    entered_username = normalize_username(str(form.get("telegram_username", "")).strip())
-    if not entered_username:
-        add_flash(request, "Введите ваш ник в Telegram.", "error")
-        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
-
     if not parse_positive_int(user.telegram_chat_id):
         add_flash(
             request,
-            f"Сначала привяжите Telegram к профилю через бота @{BRFOX_BOT_USERNAME} и повторите проверку.",
-            "error",
-        )
-        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
-
-    stored_username = normalize_username(user.telegram_username)
-    if stored_username and stored_username.casefold() != entered_username.casefold():
-        add_flash(
-            request,
-            f"Введите Telegram-ник, привязанный к вашему профилю: @{stored_username}.",
+            "Сначала привяжите Telegram к профилю и повторите проверку.",
             "error",
         )
         return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
@@ -9547,8 +9589,6 @@ async def my_calendar_content_access_check(request: Request, db: Session = Depen
         )
         return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
 
-    if not stored_username:
-        user.telegram_username = entered_username
     set_user_option_value(db, user.id, CONTENT_PLAN_ACCESS_VERIFIED_GROUP, datetime.utcnow().isoformat())
     db.commit()
     add_flash(request, "Подписка подтверждена. Контент-план открыт.", "success")
