@@ -261,11 +261,12 @@
         <li>Создайте бота через BotFather и получите токен.</li>
         <li>Добавьте этого бота администратором в ваш Telegram-канал.</li>
         <li>Укажите здесь токен бота и @канал или chat_id канала.</li>
-        <li>Если пользуетесь премиум-эмодзи, сохраните ID пака как памятку, а в тексте вставляйте конкретные emoji-id через кнопку редактора.</li>
+        <li>Если пользуетесь премиум-эмодзи, можно сохранить несколько эмодзи из разных паков в формате «💃 — 5327958075158568158» по одному на строку.</li>
+        <li>ID эмодзи удобно получать через бота <code>@Emoji_ID_Extractor_bot</code>.</li>
       </ol>
     </details>
     <form method="post" action="/my-calendar/content/telegram/connect" class="grid one-col top-offset">
-      <div class="grid three-col">
+      <div class="grid two-col">
         <label>
           Токен бота
           <input type="password" name="bot_token" value="{{ telegram_settings.bot_token }}" placeholder="123456:ABC..." required />
@@ -277,11 +278,12 @@
           Канал / chat_id
           <input type="text" name="chat_id" value="{{ telegram_settings.chat_id }}" placeholder="@my_channel или -100..." required />
         </label>
-        <label>
-          ID пака премиум-эмодзи
-          <input type="text" name="premium_pack_id" value="{{ telegram_settings.premium_pack_id }}" placeholder="Необязательно" />
-        </label>
       </div>
+      <label>
+        Премиум-эмодзи для быстрого вставления
+        <textarea name="premium_emojis_text" rows="5" placeholder="💃 — 5327958075158568158&#10;🖤 — 5327849271711964241">{{ telegram_settings.premium_emojis_text }}</textarea>
+        <small class="muted">Можно смешивать эмодзи из разных паков. Формат: один эмодзи и его ID на каждой новой строке. ID можно узнать через <code>@Emoji_ID_Extractor_bot</code>.</small>
+      </label>
       <div class="actions-inline">
         <button type="submit" class="btn btn-accent">Сохранить Telegram</button>
       </div>
@@ -317,14 +319,24 @@
       </label>
       <section class="top-offset">
         <h3>Оформление для Telegram</h3>
-        <p class="muted">Редактор использует HTML-разметку Telegram Bot API. Обычные эмодзи можно вставлять прямо в текст. Кнопка премиум-эмодзи добавляет тег <code>&lt;tg-emoji&gt;</code>.</p>
+        <p class="muted">Редактор использует HTML-разметку Telegram Bot API. Обычные эмодзи можно вставлять прямо в текст. Для премиум-эмодзи можно использовать сохраненные кнопки ниже или вставить тег <code>&lt;tg-emoji&gt;</code> вручную. ID удобно брать через <code>@Emoji_ID_Extractor_bot</code>.</p>
         <div class="actions-inline wrap top-offset">
           <button type="button" class="btn btn-small content-format-btn" data-tag-open="<b>" data-tag-close="</b>" data-target="telegram_body_html">Жирный</button>
           <button type="button" class="btn btn-small content-format-btn" data-tag-open="<i>" data-tag-close="</i>" data-target="telegram_body_html">Курсив</button>
           <button type="button" class="btn btn-small content-link-btn" data-target="telegram_body_html">Ссылка</button>
-          <button type="button" class="btn btn-small content-premium-emoji-btn" data-target="telegram_body_html">Премиум-эмодзи</button>
+          <button type="button" class="btn btn-small content-premium-emoji-btn" data-target="telegram_body_html">Премиум вручную</button>
           {% for emoji in ['✨','🔥','🖤','🌸','🎭','📸','🕊️','⭐'] %}
             <button type="button" class="btn btn-small content-insert-btn" data-target="telegram_body_html" data-insert="{{ emoji }}">{{ emoji }}</button>
+          {% endfor %}
+          {% for premium_emoji in telegram_settings.premium_emojis %}
+            <button
+              type="button"
+              class="btn btn-small content-premium-emoji-entry-btn"
+              data-target="telegram_body_html"
+              data-emoji-id="{{ premium_emoji.emoji_id }}"
+              data-fallback="{{ premium_emoji.emoji }}"
+              title="emoji-id: {{ premium_emoji.emoji_id }}"
+            >{{ premium_emoji.emoji }}</button>
           {% endfor %}
         </div>
         <label class="top-offset">
@@ -340,6 +352,7 @@
           <button type="button" class="btn" id="telegram_photo_upload_btn">Загрузить фото</button>
           <span class="muted" id="telegram_photo_upload_status"></span>
         </div>
+        <p class="muted">Фото для Telegram не ужимаются по размеру файла. Если большая сторона больше 2000 px, изображение уменьшается до 2000 px; если меньше, сохраняется без сжатия. Через 24 часа после отправки поста в Telegram локально загруженные картинки удаляются с сервера.</p>
         <div class="reference-grid comment-images" id="telegram_photos_preview"></div>
       </section>
       <div class="grid two-col">
@@ -352,6 +365,7 @@
           <input type="time" name="publish_time" value="{{ content_form.publish_time }}" />
         </label>
       </div>
+      <p class="muted">Если отмечена соцсеть <strong>ТГ</strong>, пост отправится в Telegram автоматически по указанным дате и времени.</p>
       <div>
         <p class="muted">Соцсеть</p>
         <div class="chips-wrap">
@@ -373,7 +387,11 @@
           <select name="rubric_existing">
             <option value="">Выберите</option>
             {% for rubric in content_rubric_options %}
-              <option value="{{ rubric }}" {% if content_form.rubric_existing == rubric %}selected{% endif %}>{{ rubric }}</option>
+              <option
+                value="{{ rubric }}"
+                data-rubric-tag="{{ content_rubric_tags.get(rubric, '') }}"
+                {% if content_form.rubric_existing == rubric %}selected{% endif %}
+              >{{ rubric }}</option>
             {% endfor %}
           </select>
         </label>
@@ -382,6 +400,11 @@
           <input type="text" name="rubric_new" value="{{ content_form.rubric_new }}" maxlength="120" placeholder="Если нужна новая" />
         </label>
       </div>
+      <label>
+        Тег рубрики
+        <input type="text" name="rubric_tag_value" value="{{ content_form.rubric_tag_value }}" maxlength="120" placeholder="#анонс" />
+        <small class="muted">Нужен для автоподстановки в конец Telegram-публикации. Для новой рубрики заполните это поле при первом создании; для старой можно дописать тег позже здесь же.</small>
+      </label>
       <div class="actions-inline">
         <button type="submit" class="btn btn-accent">{{ "Сохранить" if editing_content_post else "Добавить пост" }}</button>
         {% if editing_content_post %}
@@ -395,12 +418,12 @@
   </section>
 
   <section class="box top-offset">
-    <h2>Цвета рубрик</h2>
+    <h2>Рубрики и теги</h2>
     {% if content_rubric_options %}
       <div class="chips-wrap">
         {% for rubric in content_rubric_options %}
           <span class="chip content-rubric-chip" style="background: {{ content_rubric_colors.get(rubric, '#8ecae6') }}55; border-color: {{ content_rubric_colors.get(rubric, '#8ecae6') }};">
-            {{ rubric }}
+            {{ rubric }}{% if content_rubric_tags.get(rubric) %} · {{ content_rubric_tags.get(rubric) }}{% endif %}
           </span>
         {% endfor %}
       </div>
@@ -463,6 +486,9 @@
               <span class="chip content-rubric-chip" style="background: {{ item.rubric_color }}55; border-color: {{ item.rubric_color }};">
                 {{ item.rubric }}
               </span>
+              {% if content_rubric_tags.get(item.rubric) %}
+                <span class="chip">{{ content_rubric_tags.get(item.rubric) }}</span>
+              {% endif %}
               <span class="chip">{{ item.status_label }}</span>
               <strong>{{ item.title }}</strong>
               <span class="muted">Соцсети: {{ item.socials_text }}</span>
@@ -537,9 +563,20 @@
       button.addEventListener('click', function () {
         const target = document.getElementById(button.dataset.target);
         if (!target) return;
-        const emojiId = window.prompt('Введите emoji-id для Telegram premium emoji');
+        const emojiId = window.prompt('Введите emoji-id для Telegram premium emoji. Если не знаете ID, его можно получить через @Emoji_ID_Extractor_bot');
         if (!emojiId) return;
         const fallback = window.prompt('Введите резервный символ эмодзи', '✨') || '✨';
+        insertAtCursor(target, `<tg-emoji emoji-id="${emojiId}">${fallback}</tg-emoji>`, '');
+      });
+    });
+
+    document.querySelectorAll('.content-premium-emoji-entry-btn').forEach((button) => {
+      button.addEventListener('click', function () {
+        const target = document.getElementById(button.dataset.target);
+        if (!target) return;
+        const emojiId = button.dataset.emojiId || '';
+        const fallback = button.dataset.fallback || '✨';
+        if (!emojiId) return;
         insertAtCursor(target, `<tg-emoji emoji-id="${emojiId}">${fallback}</tg-emoji>`, '');
       });
     });
@@ -601,7 +638,7 @@
         for (const file of files) {
           const formData = new FormData();
           formData.append('image', file);
-          const response = await fetch('/media/upload-image', {
+          const response = await fetch('/media/upload-content-image', {
             method: 'POST',
             body: formData,
             credentials: 'same-origin'
@@ -619,6 +656,21 @@
         telegramUploadFiles.value = '';
         if (telegramUploadStatus) telegramUploadStatus.textContent = `Загружено: ${uploaded.length}`;
       });
+    }
+
+    const rubricSelect = document.querySelector('select[name="rubric_existing"]');
+    const rubricNewInput = document.querySelector('input[name="rubric_new"]');
+    const rubricTagInput = document.querySelector('input[name="rubric_tag_value"]');
+    if (rubricSelect && rubricTagInput) {
+      const syncRubricTag = () => {
+        if (rubricNewInput && rubricNewInput.value.trim()) return;
+        const selectedOption = rubricSelect.options[rubricSelect.selectedIndex];
+        const tagValue = selectedOption ? (selectedOption.dataset.rubricTag || '').trim() : '';
+        if (tagValue) {
+          rubricTagInput.value = tagValue;
+        }
+      };
+      rubricSelect.addEventListener('change', syncRubricTag);
     }
 
     const mode = document.getElementById("shift_mode");

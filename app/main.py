@@ -7,6 +7,7 @@ import hashlib
 import html
 import io
 import json
+import mimetypes
 import os
 import re
 import secrets
@@ -22,6 +23,7 @@ from email.message import EmailMessage
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import parse_qs, quote, unquote, urlparse
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import requests
 from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
@@ -213,6 +215,21 @@ CONTENT_STATUS_LABELS = {
 CONTENT_TELEGRAM_TOKEN_GROUP = "content_telegram_bot_token"
 CONTENT_TELEGRAM_CHAT_GROUP = "content_telegram_chat"
 CONTENT_TELEGRAM_PACK_GROUP = "content_telegram_premium_pack_id"
+CONTENT_TELEGRAM_PREMIUM_EMOJI_GROUP = "content_telegram_premium_emoji"
+CONTENT_RUBRIC_TAG_GROUP = "content_rubric_tag"
+CONTENT_TELEGRAM_IMAGE_MAX_SIDE = 2000
+CONTENT_TELEGRAM_IMAGE_RETENTION_HOURS = max(
+    1,
+    min(168, int(os.getenv("CONTENT_TELEGRAM_IMAGE_RETENTION_HOURS", "24"))),
+)
+CONTENT_TELEGRAM_LOOP_SLEEP_SECONDS = max(
+    15,
+    min(300, int(os.getenv("CONTENT_TELEGRAM_LOOP_SLEEP", "60"))),
+)
+try:
+    SITE_TIMEZONE = ZoneInfo(os.getenv("SITE_TIMEZONE", "Europe/Moscow"))
+except ZoneInfoNotFoundError:
+    SITE_TIMEZONE = ZoneInfo("UTC")
 
 COSPLAYER_COLLAB_OPTIONS = {
     "open": "Открыт(а)",
@@ -323,6 +340,8 @@ telegram_auth_state_lock = threading.Lock()
 telegram_auth_state: dict[str, dict[str, str]] = {}
 telegram_worker_lock = threading.Lock()
 telegram_worker_thread: threading.Thread | None = None
+content_telegram_worker_lock = threading.Lock()
+content_telegram_worker_thread: threading.Thread | None = None
 vk_bot_auth_state_lock = threading.Lock()
 vk_bot_auth_state: dict[str, dict[str, str]] = {}
 vk_bot_worker_lock = threading.Lock()
@@ -658,9 +677,11 @@ def apply_schema_migrations() -> None:
             ("publish_time", "VARCHAR(8)"),
             ("socials_json", "JSON NOT NULL DEFAULT '[]'"),
             ("rubric", "VARCHAR(120) NOT NULL DEFAULT 'Общее'"),
+            ("rubric_tag", "VARCHAR(120)"),
             ("status", "VARCHAR(32) NOT NULL DEFAULT 'plan'"),
             ("telegram_body_html", "TEXT"),
             ("telegram_photos_json", "JSON NOT NULL DEFAULT '[]'"),
+            ("telegram_cleanup_photos_json", "JSON NOT NULL DEFAULT '[]'"),
             ("telegram_message_id", "VARCHAR(64)"),
             ("telegram_published_at", "DATETIME"),
         ],
@@ -776,6 +797,7 @@ def startup() -> None:
     Base.metadata.create_all(bind=engine)
     apply_schema_migrations()
     start_telegram_worker()
+    start_content_telegram_worker()
     start_vk_bot_worker()
     try:
         auto_backup_if_needed()
@@ -834,7 +856,8 @@ def media_file(filename: str):
     file_path = media_storage_path() / safe_name
     if not file_path.exists() or not file_path.is_file():
         raise HTTPException(status_code=404, detail="Файл не найден.")
-    return FileResponse(str(file_path), media_type="image/webp")
+    media_type = mimetypes.guess_type(str(file_path))[0] or "application/octet-stream"
+    return FileResponse(str(file_path), media_type=media_type)
 
 
 @app.post("/media/upload-image")
@@ -880,6 +903,48 @@ async def media_upload_image(
         "width": width,
         "height": height,
         "format": "webp",
+    }
+
+
+@app.post("/media/upload-content-image")
+async def media_upload_content_image(
+    request: Request,
+    image: UploadFile = File(...),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    user = current_user(request, db)
+    if not user:
+        raise HTTPException(status_code=401, detail="Требуется авторизация.")
+
+    if not image.filename:
+        raise HTTPException(status_code=400, detail="Файл не передан.")
+    content_type = (image.content_type or "").lower()
+    if not content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="Нужен файл изображения.")
+
+    raw_bytes = await image.read(MAX_UPLOAD_INPUT_BYTES + 1)
+    if len(raw_bytes) > MAX_UPLOAD_INPUT_BYTES:
+        raise HTTPException(status_code=400, detail="Изображение слишком большое (до 20 МБ).")
+
+    try:
+        prepared_bytes, width, height, file_ext, file_format = prepare_content_image_upload(raw_bytes)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    file_name = f"{datetime.utcnow().strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:14]}{file_ext}"
+    destination = media_storage_path() / file_name
+    destination.write_bytes(prepared_bytes)
+
+    public_path = f"/media/{file_name}"
+    base_url = str(request.base_url).rstrip("/")
+    return {
+        "ok": True,
+        "url": f"{base_url}{public_path}",
+        "path": public_path,
+        "size_bytes": len(prepared_bytes),
+        "width": width,
+        "height": height,
+        "format": file_format,
     }
 
 
@@ -2108,7 +2173,11 @@ def normalize_content_status(raw_status: str | None) -> str:
     return "plan"
 
 
-def get_content_plan_form_values(post: ContentPlanPost | None = None) -> dict[str, Any]:
+def get_content_plan_form_values(
+    post: ContentPlanPost | None = None,
+    rubric_tags: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    tag_map = rubric_tags or {}
     if not post:
         return {
             "title": "",
@@ -2119,6 +2188,7 @@ def get_content_plan_form_values(post: ContentPlanPost | None = None) -> dict[st
             "socials_other": "",
             "rubric_existing": "",
             "rubric_new": "",
+            "rubric_tag_value": "",
             "status": "plan",
             "telegram_body_html": "",
             "telegram_photos_input": "",
@@ -2135,6 +2205,7 @@ def get_content_plan_form_values(post: ContentPlanPost | None = None) -> dict[st
         "socials_other": ", ".join(socials_other_values),
         "rubric_existing": post.rubric or "",
         "rubric_new": "",
+        "rubric_tag_value": normalize_content_rubric_tag(post.rubric_tag) or tag_map.get(post.rubric or "", ""),
         "status": normalize_content_status(post.status),
         "telegram_body_html": post.telegram_body_html or "",
         "telegram_photos_input": "\n".join(as_list(post.telegram_photos_json)),
@@ -2149,10 +2220,12 @@ def save_content_plan_post_from_form(form: Any, post: ContentPlanPost, user: Use
     status = normalize_content_status(str(form.get("status", "")).strip())
     rubric_existing = str(form.get("rubric_existing", "")).strip()
     rubric_new = str(form.get("rubric_new", "")).strip()
+    rubric_tag_value = str(form.get("rubric_tag_value", "")).strip()
     rubric = rubric_new or rubric_existing
     socials = merge_unique(form.getlist("socials"), split_csv(str(form.get("socials_other", "")).strip()))
     telegram_body_html = str(form.get("telegram_body_html", "")).strip()
     telegram_photos = parse_reference_values(str(form.get("telegram_photos_input", "")))[:10]
+    rubric_tags = get_content_rubric_tags(db, user.id)
 
     if not title:
         return False, "Укажите название публикации."
@@ -2168,6 +2241,15 @@ def save_content_plan_post_from_form(form: Any, post: ContentPlanPost, user: Use
         return False, "Краткое описание должно быть не длиннее 4000 символов."
     if len(telegram_body_html) > 12000:
         return False, "Текст для Telegram должен быть не длиннее 12000 символов."
+    if any(item.casefold() == "тг" for item in socials) and not publish_time:
+        return False, "Для автопубликации в Telegram укажите время публикации."
+
+    normalized_tag = normalize_content_rubric_tag(rubric_tag_value)
+    if rubric_new and not normalized_tag:
+        return False, "Для новой рубрики укажите тег рубрики."
+    if rubric_tag_value and not normalized_tag:
+        return False, "Тег рубрики должен содержать буквы, цифры или знак подчеркивания."
+    resolved_rubric_tag = normalized_tag or normalize_content_rubric_tag(rubric_tags.get(rubric, ""))
 
     post.title = title
     post.description = description or None
@@ -2175,19 +2257,26 @@ def save_content_plan_post_from_form(form: Any, post: ContentPlanPost, user: Use
     post.publish_time = publish_time
     post.socials_json = socials
     post.rubric = rubric
+    post.rubric_tag = resolved_rubric_tag or None
     post.status = status
     post.telegram_body_html = telegram_body_html or None
     post.telegram_photos_json = telegram_photos
+
+    if resolved_rubric_tag and (rubric_new or rubric_existing):
+        rubric_tags[rubric] = resolved_rubric_tag
+        save_content_rubric_tags(db, user.id, rubric_tags)
 
     remember_options(db, user.id, "content_rubric", [rubric])
     return True, ""
 
 
-def get_content_telegram_settings(user: User, db: Session) -> dict[str, str]:
+def get_content_telegram_settings(user: User, db: Session) -> dict[str, Any]:
+    premium_entries = get_content_premium_emoji_entries(db, user.id)
     return {
         "bot_token": get_user_option_value(db, user.id, CONTENT_TELEGRAM_TOKEN_GROUP),
         "chat_id": get_user_option_value(db, user.id, CONTENT_TELEGRAM_CHAT_GROUP),
-        "premium_pack_id": get_user_option_value(db, user.id, CONTENT_TELEGRAM_PACK_GROUP),
+        "premium_emojis_text": format_content_premium_emoji_lines(premium_entries),
+        "premium_emojis": premium_entries,
     }
 
 
@@ -2252,16 +2341,101 @@ def strip_telegram_html(text_value: str) -> str:
     return re.sub(r"<[^>]+>", "", text_value or "")
 
 
+def append_rubric_tag_to_message(message_html: str, rubric_tag: str | None) -> str:
+    normalized_tag = normalize_content_rubric_tag(rubric_tag)
+    if not normalized_tag:
+        return message_html
+    plain_text = strip_telegram_html(message_html)
+    if normalized_tag.casefold() in plain_text.casefold():
+        return message_html
+    suffix = html.escape(normalized_tag)
+    if not message_html.strip():
+        return suffix
+    return f"{message_html.rstrip()}\n\n{suffix}"
+
+
+def content_post_targets_telegram(post: ContentPlanPost) -> bool:
+    return any(str(item).strip().casefold() == "тг" for item in as_list(post.socials_json))
+
+
+def content_post_publish_datetime(post: ContentPlanPost) -> datetime | None:
+    if not post.publish_date:
+        return None
+    publish_time = parse_time_hhmm(post.publish_time or "")
+    if not publish_time:
+        return None
+    hour_text, minute_text = publish_time.split(":", 1)
+    return datetime(
+        post.publish_date.year,
+        post.publish_date.month,
+        post.publish_date.day,
+        int(hour_text),
+        int(minute_text),
+        tzinfo=SITE_TIMEZONE,
+    )
+
+
+def normalize_local_media_reference(value: str | None) -> str:
+    raw = (value or "").strip()
+    if not raw:
+        return ""
+
+    path_value = ""
+    if raw.startswith("/media/"):
+        path_value = raw
+    elif raw.lower().startswith(("http://", "https://")):
+        try:
+            parsed = urlparse(raw)
+            site_parsed = urlparse(SITE_URL)
+        except ValueError:
+            return ""
+        if parsed.netloc and site_parsed.netloc and parsed.netloc.casefold() != site_parsed.netloc.casefold():
+            return ""
+        path_value = parsed.path or ""
+    if not path_value.startswith("/media/"):
+        return ""
+
+    filename = unquote(path_value.removeprefix("/media/")).strip()
+    if not filename or "/" in filename:
+        return ""
+    safe_name = safe_media_filename(filename)
+    return f"/media/{safe_name}"
+
+
+def local_media_reference_to_path(reference: str | None) -> Path | None:
+    normalized_ref = normalize_local_media_reference(reference)
+    if not normalized_ref:
+        return None
+    return media_storage_path() / safe_media_filename(normalized_ref.removeprefix("/media/"))
+
+
+def mark_content_post_telegram_published(
+    post: ContentPlanPost,
+    *,
+    message_id: str | None,
+    rubric_tag: str | None = None,
+) -> None:
+    normalized_tag = normalize_content_rubric_tag(rubric_tag) or normalize_content_rubric_tag(post.rubric_tag)
+    if normalized_tag:
+        post.rubric_tag = normalized_tag
+    post.telegram_message_id = (message_id or "").strip() or None
+    post.telegram_published_at = datetime.utcnow()
+    post.telegram_cleanup_photos_json = as_list(post.telegram_photos_json)
+    if normalize_content_status(post.status) != "published":
+        post.status = "published"
+
+
 def publish_content_post_to_telegram(
     *,
     token: str,
     chat_id: str,
     post: ContentPlanPost,
+    rubric_tag: str | None = None,
 ) -> str:
     html_body = (post.telegram_body_html or "").strip()
     photo_urls = [build_external_url(item) for item in as_list(post.telegram_photos_json) if build_external_url(item)]
     fallback_text = html.escape(post.title or "Пост")
-    message_html = html_body or fallback_text
+    message_html = append_rubric_tag_to_message(html_body or fallback_text, rubric_tag)
     if len(strip_telegram_html(message_html)) > 4096:
         raise RuntimeError("Сообщение для Telegram слишком длинное (максимум 4096 символов без учета HTML-тегов).")
 
@@ -2742,6 +2916,72 @@ def _resize_to_width(image: Image.Image, width: int) -> Image.Image:
     ratio = width / float(image.width)
     new_height = max(1, int(round(image.height * ratio)))
     return image.resize((width, new_height), Image.Resampling.LANCZOS)
+
+
+def _resize_to_max_side(image: Image.Image, max_side: int) -> Image.Image:
+    longest_side = max(image.width, image.height)
+    if longest_side <= max_side:
+        return image.copy()
+    ratio = max_side / float(longest_side)
+    new_width = max(1, int(round(image.width * ratio)))
+    new_height = max(1, int(round(image.height * ratio)))
+    return image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+
+
+def prepare_content_image_upload(raw_bytes: bytes) -> tuple[bytes, int, int, str, str]:
+    if not raw_bytes:
+        raise ValueError("Файл пуст.")
+
+    try:
+        with Image.open(io.BytesIO(raw_bytes)) as source:
+            source_format = (source.format or "").upper()
+            prepared = ImageOps.exif_transpose(source)
+            width, height = prepared.size
+            has_alpha = "A" in prepared.getbands()
+            if max(width, height) <= CONTENT_TELEGRAM_IMAGE_MAX_SIDE and source_format in {"JPEG", "PNG", "WEBP"}:
+                file_ext = ".jpg" if source_format == "JPEG" else f".{source_format.lower()}"
+                return raw_bytes, width, height, file_ext, source_format.lower()
+
+            resized = _resize_to_max_side(prepared, CONTENT_TELEGRAM_IMAGE_MAX_SIDE)
+            save_target = resized
+            if source_format == "PNG":
+                if save_target.mode not in {"RGBA", "LA"}:
+                    save_target = save_target.convert("RGBA")
+                output_format = "PNG"
+                file_ext = ".png"
+                save_kwargs: dict[str, Any] = {"format": output_format}
+            elif source_format == "WEBP":
+                if has_alpha and save_target.mode != "RGBA":
+                    save_target = save_target.convert("RGBA")
+                elif save_target.mode in {"P", "L", "CMYK"}:
+                    save_target = save_target.convert("RGB")
+                elif save_target.mode not in {"RGB", "RGBA"}:
+                    save_target = save_target.convert("RGB")
+                output_format = "WEBP"
+                file_ext = ".webp"
+                save_kwargs = {"format": output_format, "quality": 95, "method": 6}
+            elif has_alpha:
+                if save_target.mode not in {"RGBA", "LA"}:
+                    save_target = save_target.convert("RGBA")
+                output_format = "PNG"
+                file_ext = ".png"
+                save_kwargs = {"format": output_format}
+            else:
+                if save_target.mode in {"P", "L", "CMYK", "RGBA", "LA"}:
+                    save_target = save_target.convert("RGB")
+                elif save_target.mode != "RGB":
+                    save_target = save_target.convert("RGB")
+                output_format = "JPEG"
+                file_ext = ".jpg"
+                save_kwargs = {"format": output_format, "quality": 95, "optimize": True}
+    except UnidentifiedImageError as exc:
+        raise ValueError("Неподдерживаемый формат изображения.") from exc
+    except OSError as exc:
+        raise ValueError("Не удалось прочитать изображение.") from exc
+
+    buffer = io.BytesIO()
+    save_target.save(buffer, **save_kwargs)
+    return buffer.getvalue(), save_target.width, save_target.height, file_ext, output_format.lower()
 
 
 def compress_image_to_webp(
@@ -3325,6 +3565,160 @@ def start_telegram_worker() -> None:
             daemon=True,
         )
         telegram_worker_thread.start()
+
+
+def cleanup_expired_content_telegram_media(db: Session) -> None:
+    cutoff = datetime.utcnow() - timedelta(hours=CONTENT_TELEGRAM_IMAGE_RETENTION_HOURS)
+    posts = db.execute(select(ContentPlanPost)).scalars().all()
+    if not posts:
+        return
+
+    protected_refs: set[str] = set()
+    stale_posts: list[ContentPlanPost] = []
+    for post in posts:
+        current_refs = {
+            normalized
+            for item in as_list(post.telegram_photos_json)
+            if (normalized := normalize_local_media_reference(item))
+        }
+        cleanup_refs = {
+            normalized
+            for item in as_list(post.telegram_cleanup_photos_json)
+            if (normalized := normalize_local_media_reference(item))
+        }
+        if not cleanup_refs:
+            if current_refs:
+                protected_refs.update(current_refs)
+            continue
+        if post.telegram_published_at and post.telegram_published_at <= cutoff:
+            stale_posts.append(post)
+            protected_refs.update(current_refs - cleanup_refs)
+            continue
+        protected_refs.update(current_refs)
+        protected_refs.update(cleanup_refs)
+
+    if not stale_posts:
+        return
+
+    has_changes = False
+    for post in stale_posts:
+        snapshot_items = as_list(post.telegram_cleanup_photos_json)
+        current_items = as_list(post.telegram_photos_json)
+        remaining_snapshot: list[str] = []
+        deleted_refs: set[str] = set()
+        post_changed = False
+
+        for item in snapshot_items:
+            local_ref = normalize_local_media_reference(item)
+            if not local_ref:
+                post_changed = True
+                continue
+            if local_ref in protected_refs:
+                remaining_snapshot.append(item)
+                continue
+            file_path = local_media_reference_to_path(local_ref)
+            if file_path and file_path.exists():
+                try:
+                    file_path.unlink()
+                except OSError:
+                    remaining_snapshot.append(item)
+                    continue
+            deleted_refs.add(local_ref)
+            post_changed = True
+
+        if deleted_refs:
+            kept_current_items = [
+                item for item in current_items if normalize_local_media_reference(item) not in deleted_refs
+            ]
+            if kept_current_items != current_items:
+                post.telegram_photos_json = kept_current_items
+                post_changed = True
+
+        if remaining_snapshot != snapshot_items:
+            post.telegram_cleanup_photos_json = remaining_snapshot
+            post_changed = True
+
+        if post_changed:
+            has_changes = True
+
+    if has_changes:
+        db.commit()
+
+
+def dispatch_scheduled_content_posts() -> None:
+    now_local = datetime.now(SITE_TIMEZONE)
+    with SessionLocal() as db:
+        pending_posts = db.execute(
+            select(ContentPlanPost).where(ContentPlanPost.telegram_published_at.is_(None))
+        ).scalars().all()
+        users_cache: dict[int, User | None] = {}
+        settings_cache: dict[int, dict[str, Any]] = {}
+        rubric_tag_cache: dict[int, dict[str, str]] = {}
+        has_changes = False
+
+        for post in pending_posts:
+            if not content_post_targets_telegram(post):
+                continue
+            publish_at = content_post_publish_datetime(post)
+            if publish_at is None or publish_at > now_local:
+                continue
+
+            if post.user_id not in users_cache:
+                users_cache[post.user_id] = db.get(User, post.user_id)
+            user = users_cache.get(post.user_id)
+            if not user:
+                continue
+
+            if user.id not in settings_cache:
+                settings_cache[user.id] = get_content_telegram_settings(user, db)
+            telegram_settings = settings_cache[user.id]
+            bot_token = str(telegram_settings.get("bot_token") or "").strip()
+            chat_id = str(telegram_settings.get("chat_id") or "").strip()
+            if not bot_token or not chat_id:
+                continue
+
+            if user.id not in rubric_tag_cache:
+                rubric_tag_cache[user.id] = get_content_rubric_tags(db, user.id)
+            rubric_tag = normalize_content_rubric_tag(post.rubric_tag) or rubric_tag_cache[user.id].get(post.rubric or "", "")
+
+            try:
+                message_id = publish_content_post_to_telegram(
+                    token=bot_token,
+                    chat_id=chat_id,
+                    post=post,
+                    rubric_tag=rubric_tag,
+                )
+            except RuntimeError:
+                continue
+
+            mark_content_post_telegram_published(post, message_id=message_id, rubric_tag=rubric_tag)
+            has_changes = True
+
+        if has_changes:
+            db.commit()
+        cleanup_expired_content_telegram_media(db)
+
+
+def content_telegram_loop() -> None:
+    while True:
+        try:
+            dispatch_scheduled_content_posts()
+        except Exception:
+            pass
+        time.sleep(CONTENT_TELEGRAM_LOOP_SLEEP_SECONDS)
+
+
+def start_content_telegram_worker() -> None:
+    global content_telegram_worker_thread
+    with content_telegram_worker_lock:
+        if content_telegram_worker_thread and content_telegram_worker_thread.is_alive():
+            return
+        content_telegram_worker_thread = threading.Thread(
+            target=content_telegram_loop,
+            name="content-telegram-worker",
+            daemon=True,
+        )
+        content_telegram_worker_thread.start()
 
 
 def vk_bot_api_call(method: str, params: dict[str, Any]) -> dict[str, Any]:
@@ -4712,6 +5106,151 @@ def set_user_option_value(db: Session, user_id: int, group: str, value: str | No
             db.add(UserOption(user_id=user_id, group=group, value=normalized))
     elif row:
         db.delete(row)
+
+
+def get_user_option_values(db: Session, user_id: int, group: str) -> list[str]:
+    rows = db.execute(
+        select(UserOption)
+        .where(
+            UserOption.user_id == user_id,
+            UserOption.group == group,
+        )
+        .order_by(UserOption.id.asc())
+    ).scalars().all()
+    return [str(row.value or "").strip() for row in rows if str(row.value or "").strip()]
+
+
+def replace_user_option_values(db: Session, user_id: int, group: str, values: list[str]) -> None:
+    existing_rows = db.execute(
+        select(UserOption).where(
+            UserOption.user_id == user_id,
+            UserOption.group == group,
+        )
+    ).scalars().all()
+    for row in existing_rows:
+        db.delete(row)
+    if existing_rows:
+        db.flush()
+
+    unique_values: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        normalized = str(value or "").strip()
+        if not normalized:
+            continue
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        unique_values.append(normalized)
+
+    for value in unique_values:
+        db.add(UserOption(user_id=user_id, group=group, value=value))
+
+
+def encode_content_premium_emoji_value(emoji: str, emoji_id: str) -> str:
+    return json.dumps({"emoji": emoji, "emoji_id": emoji_id}, ensure_ascii=False, separators=(",", ":"))
+
+
+def decode_content_premium_emoji_value(value: str) -> dict[str, str] | None:
+    raw = (value or "").strip()
+    if not raw:
+        return None
+    try:
+        payload = json.loads(raw)
+    except ValueError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    emoji = str(payload.get("emoji") or "").strip()
+    emoji_id = str(payload.get("emoji_id") or "").strip()
+    if not emoji or not emoji_id.isdigit():
+        return None
+    return {"emoji": emoji, "emoji_id": emoji_id}
+
+
+def parse_content_premium_emoji_lines(raw_text: str) -> tuple[list[dict[str, str]], str]:
+    entries: list[dict[str, str]] = []
+    for index, raw_line in enumerate((raw_text or "").splitlines(), start=1):
+        line = raw_line.strip()
+        if not line:
+            continue
+        match = re.fullmatch(r"(.+?)\s*[—-]\s*(\d+)", line)
+        if not match:
+            return [], f"Строка {index}: используйте формат «💃 — 5327958075158568158»."
+        emoji = match.group(1).strip()
+        emoji_id = match.group(2).strip()
+        if not emoji:
+            return [], f"Строка {index}: укажите эмодзи перед ID."
+        entries.append({"emoji": emoji, "emoji_id": emoji_id})
+    return entries, ""
+
+
+def format_content_premium_emoji_lines(entries: list[dict[str, str]]) -> str:
+    return "\n".join(
+        f"{entry['emoji']} — {entry['emoji_id']}"
+        for entry in entries
+        if entry.get("emoji") and entry.get("emoji_id")
+    )
+
+
+def get_content_premium_emoji_entries(db: Session, user_id: int) -> list[dict[str, str]]:
+    result: list[dict[str, str]] = []
+    for value in get_user_option_values(db, user_id, CONTENT_TELEGRAM_PREMIUM_EMOJI_GROUP):
+        decoded = decode_content_premium_emoji_value(value)
+        if decoded:
+            result.append(decoded)
+    return result
+
+
+def normalize_content_rubric_tag(value: str | None) -> str:
+    raw = (value or "").strip()
+    if not raw:
+        return ""
+    normalized = raw.replace("-", "_")
+    normalized = re.sub(r"\s+", "_", normalized)
+    normalized = normalized.lstrip("#")
+    normalized = re.sub(r"[^\w_]", "", normalized, flags=re.UNICODE)
+    return f"#{normalized}" if normalized else ""
+
+
+def encode_content_rubric_tag_value(rubric: str, tag: str) -> str:
+    return json.dumps({"rubric": rubric, "tag": tag}, ensure_ascii=False, separators=(",", ":"))
+
+
+def decode_content_rubric_tag_value(value: str) -> tuple[str, str] | None:
+    raw = (value or "").strip()
+    if not raw:
+        return None
+    try:
+        payload = json.loads(raw)
+    except ValueError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    rubric = str(payload.get("rubric") or "").strip()
+    tag = normalize_content_rubric_tag(payload.get("tag"))
+    if not rubric or not tag:
+        return None
+    return rubric, tag
+
+
+def get_content_rubric_tags(db: Session, user_id: int) -> dict[str, str]:
+    tags: dict[str, str] = {}
+    for value in get_user_option_values(db, user_id, CONTENT_RUBRIC_TAG_GROUP):
+        decoded = decode_content_rubric_tag_value(value)
+        if decoded:
+            rubric, tag = decoded
+            tags[rubric] = tag
+    return tags
+
+
+def save_content_rubric_tags(db: Session, user_id: int, tag_map: dict[str, str]) -> None:
+    values = [
+        encode_content_rubric_tag_value(rubric, tag)
+        for rubric, tag in tag_map.items()
+        if rubric and tag
+    ]
+    replace_user_option_values(db, user_id, CONTENT_RUBRIC_TAG_GROUP, values)
 
 
 def smtp_is_configured() -> bool:
@@ -8137,6 +8676,7 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
         .order_by(ContentPlanPost.publish_date, ContentPlanPost.publish_time, ContentPlanPost.id)
     ).scalars().all()
     telegram_settings = get_content_telegram_settings(user, db)
+    rubric_tags = get_content_rubric_tags(db, user.id)
     rubric_options = merge_unique(
         get_options(db, user.id, "content_rubric"),
         [post.rubric for post in content_posts if post.rubric],
@@ -8209,13 +8749,13 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
         content_status_labels=CONTENT_STATUS_LABELS,
         content_rubric_options=rubric_options,
         content_rubric_colors=rubric_colors,
-        content_form=get_content_plan_form_values(editing_content_post),
+        content_rubric_tags=rubric_tags,
+        content_form=get_content_plan_form_values(editing_content_post, rubric_tags),
         editing_content_post=editing_content_post,
         telegram_settings=telegram_settings,
         telegram_settings_masked={
             "bot_token": mask_secret_value(telegram_settings.get("bot_token")),
             "chat_id": telegram_settings.get("chat_id", ""),
-            "premium_pack_id": telegram_settings.get("premium_pack_id", ""),
         },
         telegram_content_connected=bool(telegram_settings.get("bot_token") and telegram_settings.get("chat_id")),
         month_weekday_labels=["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"],
@@ -8556,7 +9096,7 @@ async def my_calendar_content_telegram_connect(request: Request, db: Session = D
     form = await request.form()
     bot_token = str(form.get("bot_token", "")).strip()
     chat_id = normalize_telegram_target(str(form.get("chat_id", "")).strip())
-    premium_pack_id = str(form.get("premium_pack_id", "")).strip()
+    premium_emojis_text = str(form.get("premium_emojis_text", "")).strip()
 
     if not bot_token or ":" not in bot_token:
         add_flash(request, "Укажите корректный токен Telegram-бота.", "error")
@@ -8565,9 +9105,20 @@ async def my_calendar_content_telegram_connect(request: Request, db: Session = D
         add_flash(request, "Укажите @канал или chat_id для публикации.", "error")
         return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
 
+    premium_entries, premium_error = parse_content_premium_emoji_lines(premium_emojis_text)
+    if premium_error:
+        add_flash(request, premium_error, "error")
+        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+
     set_user_option_value(db, user.id, CONTENT_TELEGRAM_TOKEN_GROUP, bot_token)
     set_user_option_value(db, user.id, CONTENT_TELEGRAM_CHAT_GROUP, chat_id)
-    set_user_option_value(db, user.id, CONTENT_TELEGRAM_PACK_GROUP, premium_pack_id)
+    set_user_option_value(db, user.id, CONTENT_TELEGRAM_PACK_GROUP, "")
+    replace_user_option_values(
+        db,
+        user.id,
+        CONTENT_TELEGRAM_PREMIUM_EMOJI_GROUP,
+        [encode_content_premium_emoji_value(entry["emoji"], entry["emoji_id"]) for entry in premium_entries],
+    )
     db.commit()
     add_flash(request, "Настройки Telegram-канала сохранены.", "success")
     return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
@@ -8581,6 +9132,7 @@ def my_calendar_content_telegram_disconnect(request: Request, db: Session = Depe
     set_user_option_value(db, user.id, CONTENT_TELEGRAM_TOKEN_GROUP, "")
     set_user_option_value(db, user.id, CONTENT_TELEGRAM_CHAT_GROUP, "")
     set_user_option_value(db, user.id, CONTENT_TELEGRAM_PACK_GROUP, "")
+    replace_user_option_values(db, user.id, CONTENT_TELEGRAM_PREMIUM_EMOJI_GROUP, [])
     db.commit()
     add_flash(request, "Настройки Telegram-канала удалены.", "info")
     return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
@@ -8610,15 +9162,18 @@ def my_calendar_content_publish_telegram(post_id: int, request: Request, db: Ses
         return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
 
     try:
-        message_id = publish_content_post_to_telegram(token=bot_token, chat_id=chat_id, post=post)
+        rubric_tag = normalize_content_rubric_tag(post.rubric_tag) or get_content_rubric_tags(db, user.id).get(post.rubric or "", "")
+        message_id = publish_content_post_to_telegram(
+            token=bot_token,
+            chat_id=chat_id,
+            post=post,
+            rubric_tag=rubric_tag,
+        )
     except RuntimeError as exc:
         add_flash(request, str(exc), "error")
         return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
 
-    post.telegram_message_id = message_id or None
-    post.telegram_published_at = datetime.utcnow()
-    if normalize_content_status(post.status) != "published":
-        post.status = "published"
+    mark_content_post_telegram_published(post, message_id=message_id, rubric_tag=rubric_tag)
     db.commit()
     add_flash(request, "Пост опубликован в Telegram.", "success")
     return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
@@ -11875,8 +12430,6 @@ def notifications_pigeon_seen(notification_id: int, request: Request, db: Sessio
         )
     ).scalar_one_or_none()
     if not notification:
-        return {"ok": False}
-    if not is_pigeon_message(notification.message):
         return {"ok": False}
 
     notification.is_read = True
