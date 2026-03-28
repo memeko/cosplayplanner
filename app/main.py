@@ -2630,18 +2630,21 @@ def normalize_telegram_custom_emoji_html(
     emoji_fallback_by_id: dict[str, str] | None = None,
 ) -> str:
     normalized = text_value or ""
+    fallback_map = emoji_fallback_by_id or {}
 
     def replace_open_close(match: re.Match[str]) -> str:
         emoji_id = extract_telegram_custom_emoji_id(match.group("attrs"))
         if not emoji_id:
             return match.group(0)
-        return f'<tg-emoji emoji-id="{emoji_id}"></tg-emoji>'
+        body = re.sub(r"<[^>]+>", "", match.group("body") or "").strip() or fallback_map.get(emoji_id, "").strip() or "✨"
+        return f'<tg-emoji emoji-id="{emoji_id}">{html.escape(body)}</tg-emoji>'
 
     def replace_self_closing(match: re.Match[str]) -> str:
         emoji_id = extract_telegram_custom_emoji_id(match.group("attrs"))
         if not emoji_id:
             return match.group(0)
-        return f'<tg-emoji emoji-id="{emoji_id}"></tg-emoji>'
+        body = fallback_map.get(emoji_id, "").strip() or "✨"
+        return f'<tg-emoji emoji-id="{emoji_id}">{html.escape(body)}</tg-emoji>'
 
     normalized = TELEGRAM_CUSTOM_EMOJI_TAG_RE.sub(replace_open_close, normalized)
     normalized = TELEGRAM_CUSTOM_EMOJI_SELF_CLOSING_RE.sub(replace_self_closing, normalized)
@@ -2940,25 +2943,23 @@ def publish_content_post_to_telegram(
     rubric_tag: str | None = None,
     premium_emoji_map: dict[str, str] | None = None,
 ) -> str:
-    html_body = normalize_telegram_custom_emoji_html((post.telegram_body_html or "").strip(), premium_emoji_map)
+    resolved_premium_emoji_map = resolve_telegram_custom_emoji_fallback_map(
+        token,
+        (post.telegram_body_html or "").strip(),
+        premium_emoji_map,
+    )
+    html_body = normalize_telegram_custom_emoji_html((post.telegram_body_html or "").strip(), resolved_premium_emoji_map)
     photo_refs = [str(item).strip() for item in as_list(post.telegram_photos_json) if str(item).strip()]
     fallback_text = html.escape(post.title or "Пост")
     message_html = append_rubric_tag_to_message(html_body or fallback_text, rubric_tag)
-    resolved_premium_emoji_map = resolve_telegram_custom_emoji_fallback_map(
-        token,
-        message_html,
-        premium_emoji_map,
-    )
-    message_text, message_entities = build_telegram_text_entities(message_html, resolved_premium_emoji_map)
-    if len(message_text) > 4096:
+    if len(strip_telegram_html(message_html)) > 4096:
         raise RuntimeError("Сообщение для Telegram слишком длинное (максимум 4096 символов без учета HTML-тегов).")
 
     last_message_id = ""
     if photo_refs:
         first_photo = photo_refs[0]
         remaining = photo_refs[1:]
-        caption_text = message_text if len(message_text) <= 1024 else ""
-        caption_entities = message_entities if caption_text else []
+        caption_text = message_html if len(strip_telegram_html(message_html)) <= 1024 else ""
         first_photo_payload, first_files_payload = build_telegram_photo_request_payload(first_photo)
         if not first_photo_payload:
             raise RuntimeError("Не удалось подготовить первое изображение для Telegram.")
@@ -2968,7 +2969,7 @@ def publish_content_post_to_telegram(
                 "chat_id": chat_id,
                 **first_photo_payload,
                 "caption": caption_text or None,
-                "caption_entities": caption_entities if caption_text else None,
+                "parse_mode": "HTML" if caption_text else None,
             }.items()
             if value is not None
         }
@@ -2998,8 +2999,8 @@ def publish_content_post_to_telegram(
                 "sendMessage",
                 json_payload={
                     "chat_id": chat_id,
-                    "text": message_text,
-                    "entities": message_entities,
+                    "text": message_html,
+                    "parse_mode": "HTML",
                     "disable_web_page_preview": False,
                 },
             )
@@ -3012,8 +3013,8 @@ def publish_content_post_to_telegram(
         "sendMessage",
         json_payload={
             "chat_id": chat_id,
-            "text": message_text,
-            "entities": message_entities,
+            "text": message_html,
+            "parse_mode": "HTML",
             "disable_web_page_preview": False,
         },
     )
