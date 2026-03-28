@@ -2249,8 +2249,14 @@ def save_content_plan_post_from_form(form: Any, post: ContentPlanPost, user: Use
         for entry in get_content_premium_emoji_entries(db, user.id)
         if str(entry.get("emoji_id") or "").strip() and str(entry.get("emoji") or "").strip()
     }
+    raw_telegram_body_html = str(form.get("telegram_body_html", "")).strip()
+    premium_emoji_map = resolve_telegram_custom_emoji_fallback_map(
+        str(get_user_option_value(db, user.id, CONTENT_TELEGRAM_TOKEN_GROUP) or "").strip(),
+        raw_telegram_body_html,
+        premium_emoji_map,
+    )
     telegram_body_html = normalize_telegram_custom_emoji_html(
-        str(form.get("telegram_body_html", "")).strip(),
+        raw_telegram_body_html,
         premium_emoji_map,
     )
     telegram_photos = parse_reference_values(str(form.get("telegram_photos_input", "")))[:10]
@@ -2416,26 +2422,70 @@ def extract_telegram_custom_emoji_id(attrs: str | None) -> str:
     return str(match.group("emoji_id") or "").strip() if match else ""
 
 
+def extract_telegram_custom_emoji_ids(text_value: str | None) -> list[str]:
+    text = text_value or ""
+    ids: list[str] = []
+    seen: set[str] = set()
+    for pattern in (TELEGRAM_CUSTOM_EMOJI_TAG_RE, TELEGRAM_CUSTOM_EMOJI_SELF_CLOSING_RE):
+        for match in pattern.finditer(text):
+            emoji_id = extract_telegram_custom_emoji_id(match.group("attrs"))
+            if emoji_id and emoji_id not in seen:
+                seen.add(emoji_id)
+                ids.append(emoji_id)
+    return ids
+
+
+def resolve_telegram_custom_emoji_fallback_map(
+    token: str,
+    text_value: str | None,
+    emoji_fallback_by_id: dict[str, str] | None = None,
+) -> dict[str, str]:
+    resolved_map = {
+        str(emoji_id).strip(): str(emoji).strip()
+        for emoji_id, emoji in (emoji_fallback_by_id or {}).items()
+        if str(emoji_id).strip() and str(emoji).strip()
+    }
+    emoji_ids = extract_telegram_custom_emoji_ids(text_value)
+    if not token or not emoji_ids:
+        return resolved_map
+    try:
+        payload = telegram_custom_request(
+            token,
+            "getCustomEmojiStickers",
+            json_payload={"custom_emoji_ids": emoji_ids},
+        )
+    except RuntimeError:
+        return resolved_map
+    stickers = payload.get("result")
+    if not isinstance(stickers, list):
+        return resolved_map
+    for sticker in stickers:
+        if not isinstance(sticker, dict):
+            continue
+        emoji_id = str(sticker.get("custom_emoji_id") or "").strip()
+        emoji_value = str(sticker.get("emoji") or "").strip()
+        if emoji_id and emoji_value:
+            resolved_map[emoji_id] = emoji_value
+    return resolved_map
+
+
 def normalize_telegram_custom_emoji_html(
     text_value: str | None,
     emoji_fallback_by_id: dict[str, str] | None = None,
 ) -> str:
     normalized = text_value or ""
-    fallback_map = emoji_fallback_by_id or {}
 
     def replace_open_close(match: re.Match[str]) -> str:
         emoji_id = extract_telegram_custom_emoji_id(match.group("attrs"))
         if not emoji_id:
             return match.group(0)
-        body = re.sub(r"<[^>]+>", "", match.group("body") or "").strip() or fallback_map.get(emoji_id, "").strip() or "✨"
-        return f'<tg-emoji emoji-id="{emoji_id}">{html.escape(body)}</tg-emoji>'
+        return f'<tg-emoji emoji-id="{emoji_id}"></tg-emoji>'
 
     def replace_self_closing(match: re.Match[str]) -> str:
         emoji_id = extract_telegram_custom_emoji_id(match.group("attrs"))
         if not emoji_id:
             return match.group(0)
-        body = fallback_map.get(emoji_id, "").strip() or "✨"
-        return f'<tg-emoji emoji-id="{emoji_id}">{html.escape(body)}</tg-emoji>'
+        return f'<tg-emoji emoji-id="{emoji_id}"></tg-emoji>'
 
     normalized = TELEGRAM_CUSTOM_EMOJI_TAG_RE.sub(replace_open_close, normalized)
     normalized = TELEGRAM_CUSTOM_EMOJI_SELF_CLOSING_RE.sub(replace_self_closing, normalized)
@@ -2817,6 +2867,11 @@ def publish_content_post_to_telegram_channels(
     rubric_tag: str | None = None,
     premium_emoji_map: dict[str, str] | None = None,
 ) -> tuple[list[dict[str, str]], list[str]]:
+    resolved_premium_emoji_map = resolve_telegram_custom_emoji_fallback_map(
+        token,
+        (post.telegram_body_html or "").strip(),
+        premium_emoji_map,
+    )
     successful: list[dict[str, str]] = []
     errors: list[str] = []
     for channel in channels:
@@ -2830,7 +2885,7 @@ def publish_content_post_to_telegram_channels(
                 chat_id=chat_id,
                 post=post,
                 rubric_tag=rubric_tag,
-                premium_emoji_map=premium_emoji_map,
+                premium_emoji_map=resolved_premium_emoji_map,
             )
         except RuntimeError as exc:
             errors.append(f"{title}: {exc}")

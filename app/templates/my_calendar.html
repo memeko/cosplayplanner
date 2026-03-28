@@ -363,7 +363,7 @@
           <textarea name="telegram_body_html" id="telegram_body_html" rows="10" maxlength="12000" placeholder="<b>Заголовок</b>&#10;&#10;Текст публикации...">{{ content_form.telegram_body_html }}</textarea>
         </label>
         <div class="top-offset">
-          <p class="muted">Предпросмотр premium emoji в редакторе</p>
+          <p class="muted">Предпросмотр</p>
           <div id="telegram_body_custom_emoji_preview" class="notes-block telegram-editor-custom-emoji-preview"></div>
         </div>
         <label>
@@ -671,9 +671,7 @@
         if (!target) return;
         const emojiId = window.prompt('Введите emoji-id для Telegram premium emoji. Если не знаете ID, его можно получить через @Emoji_ID_Extractor_bot');
         if (!emojiId) return;
-        const existingEntry = premiumEmojiMap.get(emojiId);
-        const fallback = (window.prompt('Введите сам эмодзи для этого emoji-id', (existingEntry && existingEntry.fallback) || '✨') || '').trim() || '✨';
-        insertAtCursor(target, `<tg-emoji emoji-id="${emojiId}">${fallback}</tg-emoji>`, '');
+        insertAtCursor(target, `<tg-emoji emoji-id="${emojiId}"></tg-emoji>`, '');
         updateTelegramCustomEmojiPreview();
       });
     });
@@ -684,8 +682,7 @@
         if (!target) return;
         const emojiId = button.dataset.emojiId || '';
         if (!emojiId) return;
-        const fallback = (button.dataset.fallback || '✨').trim() || '✨';
-        insertAtCursor(target, `<tg-emoji emoji-id="${emojiId}">${fallback}</tg-emoji>`, '');
+        insertAtCursor(target, `<tg-emoji emoji-id="${emojiId}"></tg-emoji>`, '');
         updateTelegramCustomEmojiPreview();
       });
     });
@@ -699,23 +696,104 @@
       return `<span class="telegram-custom-emoji-fallback" title="emoji-id: ${escapeHtml(emojiId)}">${escapeHtml(fallbackText)}</span>`;
     }
 
+    function sanitizePreviewUrl(value) {
+      const raw = String(value || '').trim();
+      if (!raw) return '';
+      if (raw.startsWith('/') || raw.startsWith('#')) return raw;
+      const lowered = raw.toLowerCase();
+      if (
+        lowered.startsWith('https://') ||
+        lowered.startsWith('http://') ||
+        lowered.startsWith('tg://') ||
+        lowered.startsWith('mailto:')
+      ) {
+        return raw;
+      }
+      return '';
+    }
+
+    function renderTelegramPreviewNode(node) {
+      if (!node) return '';
+      if (node.nodeType === Node.TEXT_NODE) {
+        return escapeHtml(node.textContent || '').replace(/\n/g, '<br>');
+      }
+      if (node.nodeType !== Node.ELEMENT_NODE) {
+        return '';
+      }
+
+      const tagName = String(node.tagName || '').toLowerCase();
+      const childrenHtml = Array.from(node.childNodes || []).map(renderTelegramPreviewNode).join('');
+
+      if (tagName === 'tg-emoji') {
+        const emojiId = node.getAttribute('emoji-id') || '';
+        return emojiId ? renderTelegramCustomEmojiTag(emojiId) : escapeHtml(node.textContent || '');
+      }
+      if (tagName === 'br') {
+        return '<br>';
+      }
+      if (tagName === 'b' || tagName === 'strong') {
+        return `<strong>${childrenHtml}</strong>`;
+      }
+      if (tagName === 'i' || tagName === 'em') {
+        return `<em>${childrenHtml}</em>`;
+      }
+      if (tagName === 'u' || tagName === 'ins') {
+        return `<u>${childrenHtml}</u>`;
+      }
+      if (tagName === 's' || tagName === 'strike' || tagName === 'del') {
+        return `<s>${childrenHtml}</s>`;
+      }
+      if (tagName === 'code') {
+        return `<code>${childrenHtml}</code>`;
+      }
+      if (tagName === 'pre') {
+        return `<pre>${childrenHtml}</pre>`;
+      }
+      if (tagName === 'blockquote') {
+        return `<blockquote class="telegram-preview-blockquote">${childrenHtml}</blockquote>`;
+      }
+      if (tagName === 'tg-spoiler') {
+        return `<span class="telegram-preview-spoiler" tabindex="0">${childrenHtml || '&nbsp;'}</span>`;
+      }
+      if (tagName === 'a') {
+        const href = sanitizePreviewUrl(node.getAttribute('href'));
+        if (!href) {
+          return childrenHtml;
+        }
+        return `<a href="${escapeHtml(href)}" target="_blank" rel="noreferrer">${childrenHtml || escapeHtml(href)}</a>`;
+      }
+
+      return childrenHtml;
+    }
+
+    function bindTelegramPreviewSpoilers(root) {
+      if (!root) return;
+      root.querySelectorAll('.telegram-preview-spoiler').forEach((spoiler) => {
+        if (spoiler.dataset.bound === '1') return;
+        spoiler.dataset.bound = '1';
+        spoiler.addEventListener('click', function () {
+          spoiler.classList.toggle('is-revealed');
+        });
+        spoiler.addEventListener('keydown', function (event) {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            spoiler.classList.toggle('is-revealed');
+          }
+        });
+      });
+    }
+
     function updateTelegramCustomEmojiPreview() {
       const textarea = document.getElementById('telegram_body_html');
       const preview = document.getElementById('telegram_body_custom_emoji_preview');
       if (!textarea || !preview) return;
       const raw = textarea.value || '';
-      const pattern = /<tg-emoji\b[^>]*emoji-id=(["'])(\d+)\1[^>]*>([\s\S]*?)<\/tg-emoji>/gi;
-      let html = '';
-      let lastIndex = 0;
-      let match;
-      while ((match = pattern.exec(raw)) !== null) {
-        html += escapeHtml(raw.slice(lastIndex, match.index)).replace(/\n/g, '<br>');
-        html += renderTelegramCustomEmojiTag(match[2]);
-        lastIndex = match.index + match[0].length;
-      }
-      html += escapeHtml(raw.slice(lastIndex)).replace(/\n/g, '<br>');
-      preview.innerHTML = html || '<span class="muted">Здесь появится предпросмотр premium emoji из текста поста.</span>';
+      const template = document.createElement('template');
+      template.innerHTML = raw;
+      const html = Array.from(template.content.childNodes).map(renderTelegramPreviewNode).join('');
+      preview.innerHTML = html || '<span class="muted">Здесь появится предпросмотр поста.</span>';
       installCustomEmojiImageFallback(preview);
+      bindTelegramPreviewSpoilers(preview);
     }
 
     const telegramBodyField = document.getElementById('telegram_body_html');
