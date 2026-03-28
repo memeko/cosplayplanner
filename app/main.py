@@ -20,6 +20,7 @@ from collections import defaultdict
 from datetime import date, datetime, timedelta
 from difflib import SequenceMatcher
 from email.message import EmailMessage
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import parse_qs, quote, unquote, urlparse
@@ -2385,7 +2386,15 @@ def telegram_custom_request(
     normalized_data_payload = None
     if data_payload is not None:
         normalized_data_payload = {
-            str(key): ("true" if value is True else "false" if value is False else str(value))
+            str(key): (
+                "true"
+                if value is True
+                else "false"
+                if value is False
+                else json.dumps(value, ensure_ascii=False)
+                if isinstance(value, (dict, list))
+                else str(value)
+            )
             for key, value in data_payload.items()
             if value is not None
         }
@@ -2467,6 +2476,153 @@ def resolve_telegram_custom_emoji_fallback_map(
         if emoji_id and emoji_value:
             resolved_map[emoji_id] = emoji_value
     return resolved_map
+
+
+def utf16_length(text_value: str | None) -> int:
+    return len(str(text_value or "").encode("utf-16-le")) // 2
+
+
+def sanitize_telegram_entity_url(value: str | None) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    lowered = raw.lower()
+    if lowered.startswith(("http://", "https://", "tg://", "mailto:")):
+        return raw
+    normalized = build_external_url(raw)
+    return normalized if normalized and normalized != SITE_URL else ""
+
+
+class TelegramHTMLToEntitiesParser(HTMLParser):
+    TAG_TO_ENTITY_TYPE = {
+        "b": "bold",
+        "strong": "bold",
+        "i": "italic",
+        "em": "italic",
+        "u": "underline",
+        "ins": "underline",
+        "s": "strikethrough",
+        "strike": "strikethrough",
+        "del": "strikethrough",
+        "tg-spoiler": "spoiler",
+        "code": "code",
+        "pre": "pre",
+        "blockquote": "blockquote",
+    }
+
+    def __init__(self, emoji_fallback_by_id: dict[str, str] | None = None) -> None:
+        super().__init__(convert_charrefs=True)
+        self.emoji_fallback_by_id = emoji_fallback_by_id or {}
+        self.output_parts: list[str] = []
+        self.entities: list[dict[str, Any]] = []
+        self.entity_stack: list[dict[str, Any]] = []
+        self.current_utf16_offset = 0
+        self.skip_custom_emoji_depth = 0
+
+    def append_text(self, value: str) -> None:
+        if not value:
+            return
+        self.output_parts.append(value)
+        self.current_utf16_offset += utf16_length(value)
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        normalized_tag = str(tag or "").lower()
+        attrs_map = {str(key).lower(): (value or "") for key, value in attrs}
+
+        if self.skip_custom_emoji_depth and normalized_tag != "tg-emoji":
+            return
+        if normalized_tag == "br":
+            self.append_text("\n")
+            return
+        if normalized_tag == "tg-emoji":
+            emoji_id = extract_telegram_custom_emoji_id(
+                " ".join(f'{key}="{value}"' for key, value in attrs if value is not None)
+            )
+            emoji_value = self.emoji_fallback_by_id.get(emoji_id, "").strip() or "🙂"
+            start_offset = self.current_utf16_offset
+            self.append_text(emoji_value)
+            self.entities.append(
+                {
+                    "type": "custom_emoji",
+                    "offset": start_offset,
+                    "length": utf16_length(emoji_value),
+                    "custom_emoji_id": emoji_id,
+                }
+            )
+            self.skip_custom_emoji_depth += 1
+            return
+
+        entity_type = self.TAG_TO_ENTITY_TYPE.get(normalized_tag)
+        if entity_type:
+            self.entity_stack.append(
+                {
+                    "tag": normalized_tag,
+                    "type": entity_type,
+                    "offset": self.current_utf16_offset,
+                }
+            )
+            return
+
+        if normalized_tag == "a":
+            href = sanitize_telegram_entity_url(attrs_map.get("href"))
+            self.entity_stack.append(
+                {
+                    "tag": normalized_tag,
+                    "type": "text_link" if href else "",
+                    "offset": self.current_utf16_offset,
+                    "url": href,
+                }
+            )
+
+    def handle_endtag(self, tag: str) -> None:
+        normalized_tag = str(tag or "").lower()
+        if normalized_tag == "tg-emoji":
+            self.skip_custom_emoji_depth = max(0, self.skip_custom_emoji_depth - 1)
+            return
+        for index in range(len(self.entity_stack) - 1, -1, -1):
+            item = self.entity_stack[index]
+            if item.get("tag") != normalized_tag:
+                continue
+            self.entity_stack.pop(index)
+            entity_type = str(item.get("type") or "").strip()
+            if not entity_type:
+                return
+            offset = int(item.get("offset") or 0)
+            length = self.current_utf16_offset - offset
+            if length <= 0:
+                return
+            entity_payload: dict[str, Any] = {
+                "type": entity_type,
+                "offset": offset,
+                "length": length,
+            }
+            if entity_type == "text_link":
+                url = str(item.get("url") or "").strip()
+                if not url:
+                    return
+                entity_payload["url"] = url
+            self.entities.append(entity_payload)
+            return
+
+    def handle_data(self, data: str) -> None:
+        if self.skip_custom_emoji_depth:
+            return
+        self.append_text(data)
+
+    def build(self) -> tuple[str, list[dict[str, Any]]]:
+        text_value = "".join(self.output_parts)
+        entities = sorted(self.entities, key=lambda item: (int(item.get("offset") or 0), -int(item.get("length") or 0)))
+        return text_value, entities
+
+
+def build_telegram_text_entities(
+    html_text: str | None,
+    emoji_fallback_by_id: dict[str, str] | None = None,
+) -> tuple[str, list[dict[str, Any]]]:
+    parser = TelegramHTMLToEntitiesParser(emoji_fallback_by_id)
+    parser.feed(str(html_text or ""))
+    parser.close()
+    return parser.build()
 
 
 def normalize_telegram_custom_emoji_html(
@@ -2788,14 +2944,21 @@ def publish_content_post_to_telegram(
     photo_refs = [str(item).strip() for item in as_list(post.telegram_photos_json) if str(item).strip()]
     fallback_text = html.escape(post.title or "Пост")
     message_html = append_rubric_tag_to_message(html_body or fallback_text, rubric_tag)
-    if len(strip_telegram_html(message_html)) > 4096:
+    resolved_premium_emoji_map = resolve_telegram_custom_emoji_fallback_map(
+        token,
+        message_html,
+        premium_emoji_map,
+    )
+    message_text, message_entities = build_telegram_text_entities(message_html, resolved_premium_emoji_map)
+    if len(message_text) > 4096:
         raise RuntimeError("Сообщение для Telegram слишком длинное (максимум 4096 символов без учета HTML-тегов).")
 
     last_message_id = ""
     if photo_refs:
         first_photo = photo_refs[0]
         remaining = photo_refs[1:]
-        caption_text = message_html if len(strip_telegram_html(message_html)) <= 1024 else ""
+        caption_text = message_text if len(message_text) <= 1024 else ""
+        caption_entities = message_entities if caption_text else []
         first_photo_payload, first_files_payload = build_telegram_photo_request_payload(first_photo)
         if not first_photo_payload:
             raise RuntimeError("Не удалось подготовить первое изображение для Telegram.")
@@ -2804,9 +2967,8 @@ def publish_content_post_to_telegram(
             for key, value in {
                 "chat_id": chat_id,
                 **first_photo_payload,
-                "caption": caption_text,
-                "parse_mode": "HTML" if caption_text else None,
-                "show_caption_above_media": True if caption_text else None,
+                "caption": caption_text or None,
+                "caption_entities": caption_entities if caption_text else None,
             }.items()
             if value is not None
         }
@@ -2836,8 +2998,8 @@ def publish_content_post_to_telegram(
                 "sendMessage",
                 json_payload={
                     "chat_id": chat_id,
-                    "text": message_html,
-                    "parse_mode": "HTML",
+                    "text": message_text,
+                    "entities": message_entities,
                     "disable_web_page_preview": False,
                 },
             )
@@ -2850,8 +3012,8 @@ def publish_content_post_to_telegram(
         "sendMessage",
         json_payload={
             "chat_id": chat_id,
-            "text": message_html,
-            "parse_mode": "HTML",
+            "text": message_text,
+            "entities": message_entities,
             "disable_web_page_preview": False,
         },
     )
