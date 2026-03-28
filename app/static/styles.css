@@ -382,6 +382,16 @@ textarea {
   flex-wrap: wrap;
 }
 
+.inline-field-action {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.inline-field-action input {
+  flex: 1 1 auto;
+}
+
 .wrap {
   justify-content: flex-end;
 }

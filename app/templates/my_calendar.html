@@ -304,30 +304,31 @@
 
     <div class="content-platform-panel" data-platform-panel="vk" hidden>
       <p class="muted">
-        Подключите свой VK API токен и одно или несколько сообществ, в которые нужно публиковать именно ваши записи.
-        Токен хранится на сайте в зашифрованном виде, а посты уходят только в отмеченные вами сообщества.
+        Для VK у каждого сообщества свой ключ доступа. Поэтому здесь сохраняются пары «адрес сообщества — ключ сообщества»,
+        и посты уходят только в отмеченные вами сообщества.
       </p>
+      <div class="notes-block telegram-editor-note">
+        VK не поддерживает расширенную разметку шрифта для таких постов: полужирный, курсив, подчёркивание, зачёркивание, спойлеры и premium-эмодзи в VK не рендерятся так же, как в Telegram. Для VK используется plain-text версия вашего текста.
+      </div>
       <details class="top-offset">
         <summary>Как подключить VK</summary>
         <ol class="notes-list top-offset">
-          <li>Получите VK API токен пользователя или приложения с правами на публикацию в ваших сообществах.</li>
-          <li>Убедитесь, что этот аккаунт является администратором или редактором нужных сообществ.</li>
-          <li>Укажите здесь токен и список сообществ в формате «Название — vk.com/my_group», «Название — club123456» или просто «my_group».</li>
+          <li>Доступ дается к одному (!) сообществу в VK на один ключ.</li>
+          <li>Зайдите в своё сообщество. Далее перейдите в «Управление» → «Дополнительно» и создайте ключ.</li>
+          <li>Разрешите отправку сообщений, добавление фотографий и документов. Остальные разрешения не нужны.</li>
+          <li>Ниже укажите пары в формате «vk.com/my_group — ключ_сообщества» по одной строке на каждое сообщество.</li>
           <li>После сохранения посты с галочкой <strong>VK</strong> смогут публиковаться в выбранные сообщества вручную и по расписанию.</li>
         </ol>
       </details>
       <form method="post" action="/my-calendar/content/vk/connect" class="grid one-col top-offset">
         <label>
-          VK API токен
-          <input type="password" name="api_token" value="" placeholder="vk1.a...." />
-          {% if vk_settings_masked.api_token %}
-            <small class="muted">Сейчас сохранено: {{ vk_settings_masked.api_token }}. Оставьте поле пустым, если менять токен не нужно.</small>
+          Сообщества VK и ключи
+          <textarea name="vk_groups_text" rows="6" placeholder="vk.com/my_public — ключ_сообщества&#10;club123456 — ключ_сообщества&#10;Название — vk.com/my_group — ключ_сообщества">{{ vk_settings.groups_text }}</textarea>
+          <small class="muted">По одному сообществу на строку. Можно писать просто адрес сообщества и его ключ, либо добавить имя перед ними. Если настройки уже сохранены и менять их не нужно, оставьте поле пустым.</small>
+          {% if vk_settings_masked.groups_text %}
+            <small class="muted">Сейчас сохранено:
+{{ vk_settings_masked.groups_text }}</small>
           {% endif %}
-        </label>
-        <label>
-          Сообщества VK пользователя
-          <textarea name="vk_groups_text" rows="5" placeholder="Основное сообщество — vk.com/my_public&#10;Анонсы — club123456&#10;my_group" required>{{ vk_settings.groups_text }}</textarea>
-          <small class="muted">По одному сообществу на строку. Можно писать с названием или без него. В редакторе поста потом можно выбрать несколько сообществ сразу.</small>
         </label>
         <div class="actions-inline">
           <button type="submit" class="btn btn-accent">Сохранить VK</button>
@@ -438,11 +439,17 @@
       <div class="grid two-col">
         <label>
           Дата публикации
-          <input type="date" name="publish_date" value="{{ content_form.publish_date }}" required />
+          <div class="inline-field-action">
+            <input type="date" name="publish_date" id="content_publish_date" value="{{ content_form.publish_date }}" required />
+            <button type="button" class="btn btn-small" id="content_publish_today_btn">Сегодня</button>
+          </div>
         </label>
         <label>
           Время публикации
-          <input type="time" name="publish_time" value="{{ content_form.publish_time }}" />
+          <div class="inline-field-action">
+            <input type="time" name="publish_time" id="content_publish_time" value="{{ content_form.publish_time }}" />
+            <button type="button" class="btn btn-small" id="content_publish_now_btn">Сейчас</button>
+          </div>
         </label>
       </div>
       <p class="muted">Если отмечены соцсети <strong>ТГ</strong> и/или <strong>VK</strong>, пост отправится в выбранные Telegram-каналы и VK-сообщества автоматически по указанным дате и времени.</p>
@@ -525,7 +532,7 @@
       <label>
         Тег рубрики
         <input type="text" name="rubric_tag_value" value="{{ content_form.rubric_tag_value }}" maxlength="120" placeholder="#анонс" />
-        <small class="muted">Нужен для автоподстановки в конец публикации. Для новой рубрики заполните это поле при первом создании; для старой можно дописать тег позже здесь же.</small>
+        <small class="muted">Необязательное поле. Если заполнить, тег будет автоматически добавляться в конец публикации. Если рубрика не выбрана, в календаре будет стоять «Неизвестно».</small>
       </label>
       <div class="actions-inline">
         <button type="submit" class="btn btn-accent">{{ "Сохранить" if editing_content_post else "Добавить пост" }}</button>
@@ -759,6 +766,34 @@
     }
 
     initializeContentPlatformTabs();
+
+    function padTimePart(value) {
+      return String(value).padStart(2, '0');
+    }
+
+    function initializeContentScheduleHelpers() {
+      const dateField = document.getElementById('content_publish_date');
+      const timeField = document.getElementById('content_publish_time');
+      const todayButton = document.getElementById('content_publish_today_btn');
+      const nowButton = document.getElementById('content_publish_now_btn');
+
+      if (todayButton && dateField) {
+        todayButton.addEventListener('click', function () {
+          const now = new Date();
+          dateField.value = `${now.getFullYear()}-${padTimePart(now.getMonth() + 1)}-${padTimePart(now.getDate())}`;
+        });
+      }
+
+      if (nowButton && timeField) {
+        nowButton.addEventListener('click', function () {
+          const now = new Date();
+          now.setMinutes(now.getMinutes() + 2);
+          timeField.value = `${padTimePart(now.getHours())}:${padTimePart(now.getMinutes())}`;
+        });
+      }
+    }
+
+    initializeContentScheduleHelpers();
 
     document.querySelectorAll('.content-format-btn').forEach((button) => {
       button.addEventListener('click', function () {
