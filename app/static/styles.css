@@ -1613,6 +1613,40 @@ textarea {
   line-height: 1.45;
 }
 
+.calendar-spoiler {
+  width: 100%;
+}
+
+.calendar-spoiler summary {
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 1.18rem;
+  font-weight: 700;
+  list-style: none;
+}
+
+.calendar-spoiler summary::-webkit-details-marker {
+  display: none;
+}
+
+.calendar-spoiler summary::after {
+  content: "▾";
+  font-size: 0.95rem;
+  color: var(--muted);
+  transition: transform 0.18s ease;
+}
+
+.calendar-spoiler[open] summary::after {
+  transform: rotate(180deg);
+}
+
+.calendar-spoiler-body {
+  margin-top: 14px;
+}
+
 .landing-hero {
   min-height: 50vh;
   display: grid;

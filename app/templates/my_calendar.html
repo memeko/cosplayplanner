@@ -252,53 +252,56 @@
   {% endif %}
 {% else %}
   {% if content_access_state.has_access %}
-  <section class="box">
-    <h2>Telegram-бот и каналы</h2>
-    <p class="muted">
-      Подключите своего Telegram-бота и один или несколько каналов, чтобы публиковать посты прямо из контент-плана.
-      Для публикации в другие сети используйте сторонний автопостинг.
-    </p>
-    <details class="top-offset">
-      <summary>Как подключить канал</summary>
-      <ol class="notes-list top-offset">
-        <li>Создайте бота через BotFather и получите токен.</li>
-        <li>Добавьте этого бота администратором во все Telegram-каналы, куда планируете публиковать.</li>
-        <li>Укажите здесь токен бота и список каналов в формате «Название — @channel» или просто «@channel».</li>
-        <li>Если пользуетесь премиум-эмодзи, можно сохранить несколько эмодзи из разных паков в формате «💃 — 5327958075158568158» по одному на строку.</li>
-        <li>ID эмодзи удобно получать через бота <code>@Emoji_ID_Extractor_bot</code>.</li>
-      </ol>
-    </details>
-    <form method="post" action="/my-calendar/content/telegram/connect" class="grid one-col top-offset">
-      <label>
-        Токен бота
-        <input type="password" name="bot_token" value="{{ telegram_settings.bot_token }}" placeholder="123456:ABC..." required />
-        {% if telegram_settings_masked.bot_token %}
-          <small class="muted">Сейчас сохранено: {{ telegram_settings_masked.bot_token }}</small>
-        {% endif %}
-      </label>
-      <label>
-        Telegram-каналы пользователя
-        <textarea name="telegram_channels_text" rows="5" placeholder="Основной канал — @my_channel&#10;Лента анонсов — @my_second_channel&#10;-1001234567890" required>{{ telegram_settings.channels_text }}</textarea>
-        <small class="muted">По одному каналу на строку. Можно писать с названием или без него. В редакторе поста потом можно выбрать несколько каналов сразу.</small>
-      </label>
-      <label>
-        Библиотека premium-эмодзи пользователя
-        <textarea name="premium_emojis_text" rows="5" placeholder="💃 — 5327958075158568158&#10;🖤 — 5327849271711964241">{{ telegram_settings.premium_emojis_text }}</textarea>
-        <small class="muted">Эти эмодзи сохраняются в библиотеке пользователя и доступны как быстрые кнопки в редакторе. Можно смешивать эмодзи из разных паков. Формат: один эмодзи и его ID на каждой новой строке. ID можно узнать через <code>@Emoji_ID_Extractor_bot</code>.</small>
-      </label>
-      <div class="actions-inline">
-        <button type="submit" class="btn btn-accent">Сохранить Telegram</button>
-      </div>
-    </form>
-    {% if telegram_content_connected %}
-      <form method="post" action="/my-calendar/content/telegram/disconnect" class="top-offset" onsubmit="return confirm('Удалить настройки Telegram-каналов?');">
-        <button type="submit" class="btn btn-danger">Отключить Telegram-каналы</button>
+  <details class="box calendar-spoiler" {% if not telegram_content_connected %}open{% endif %}>
+    <summary>Telegram-бот и каналы</summary>
+    <div class="calendar-spoiler-body">
+      <p class="muted">
+        Подключите своего Telegram-бота и один или несколько каналов, чтобы публиковать посты прямо из контент-плана.
+        Для публикации в другие сети используйте сторонний автопостинг.
+      </p>
+      <details class="top-offset">
+        <summary>Как подключить канал</summary>
+        <ol class="notes-list top-offset">
+          <li>Создайте бота через BotFather и получите токен.</li>
+          <li>Добавьте этого бота администратором во все Telegram-каналы, куда планируете публиковать.</li>
+          <li>Укажите здесь токен бота и список каналов в формате «Название — @channel» или просто «@channel».</li>
+          <li>Если пользуетесь премиум-эмодзи, можно сохранить несколько эмодзи из разных паков в формате «💃 — 5327958075158568158» по одному на строку.</li>
+          <li>ID эмодзи удобно получать через бота <code>@Emoji_ID_Extractor_bot</code>.</li>
+        </ol>
+      </details>
+      <form method="post" action="/my-calendar/content/telegram/connect" class="grid one-col top-offset">
+        <label>
+          Токен бота
+          <input type="password" name="bot_token" value="{{ telegram_settings.bot_token }}" placeholder="123456:ABC..." required />
+          {% if telegram_settings_masked.bot_token %}
+            <small class="muted">Сейчас сохранено: {{ telegram_settings_masked.bot_token }}</small>
+          {% endif %}
+        </label>
+        <label>
+          Telegram-каналы пользователя
+          <textarea name="telegram_channels_text" rows="5" placeholder="Основной канал — @my_channel&#10;Лента анонсов — @my_second_channel&#10;-1001234567890" required>{{ telegram_settings.channels_text }}</textarea>
+          <small class="muted">По одному каналу на строку. Можно писать с названием или без него. В редакторе поста потом можно выбрать несколько каналов сразу.</small>
+        </label>
+        <label>
+          Библиотека premium-эмодзи пользователя
+          <textarea name="premium_emojis_text" rows="5" placeholder="💃 — 5327958075158568158&#10;🖤 — 5327849271711964241">{{ telegram_settings.premium_emojis_text }}</textarea>
+          <small class="muted">Эти эмодзи сохраняются в библиотеке пользователя и доступны как быстрые кнопки в редакторе. Можно смешивать эмодзи из разных паков. Формат: один эмодзи и его ID на каждой новой строке. ID можно узнать через <code>@Emoji_ID_Extractor_bot</code>.</small>
+        </label>
+        <div class="actions-inline">
+          <button type="submit" class="btn btn-accent">Сохранить Telegram</button>
+        </div>
       </form>
-    {% endif %}
-  </section>
+      {% if telegram_content_connected %}
+        <form method="post" action="/my-calendar/content/telegram/disconnect" class="top-offset" onsubmit="return confirm('Удалить настройки Telegram-каналов?');">
+          <button type="submit" class="btn btn-danger">Отключить Telegram-каналы</button>
+        </form>
+      {% endif %}
+    </div>
+  </details>
 
-  <section class="box" id="content-form">
-    <h2>{{ "Редактировать пост" if editing_content_post else "Добавить пост в контент-план" }}</h2>
+  <details class="box calendar-spoiler" id="content-form" {% if editing_content_post %}open{% endif %}>
+    <summary>{{ "Редактировать пост" if editing_content_post else "Добавить пост в контент-план" }}</summary>
+    <div class="calendar-spoiler-body">
     <form method="post" action="{{ '/my-calendar/content/' ~ editing_content_post.id ~ '/edit' if editing_content_post else '/my-calendar/content/new' }}" class="grid one-col">
       <input type="hidden" name="next_view" value="content" />
       <div class="grid two-col">
@@ -325,6 +328,11 @@
         <div class="actions-inline wrap top-offset">
           <button type="button" class="btn btn-small content-format-btn" data-tag-open="<b>" data-tag-close="</b>" data-target="telegram_body_html">Жирный</button>
           <button type="button" class="btn btn-small content-format-btn" data-tag-open="<i>" data-tag-close="</i>" data-target="telegram_body_html">Курсив</button>
+          <button type="button" class="btn btn-small content-format-btn" data-tag-open="<u>" data-tag-close="</u>" data-target="telegram_body_html">Подчеркнутый</button>
+          <button type="button" class="btn btn-small content-format-btn" data-tag-open="<s>" data-tag-close="</s>" data-target="telegram_body_html">Зачеркнутый</button>
+          <button type="button" class="btn btn-small content-format-btn" data-tag-open="<tg-spoiler>" data-tag-close="</tg-spoiler>" data-target="telegram_body_html">Скрытый</button>
+          <button type="button" class="btn btn-small content-format-btn" data-tag-open="<code>" data-tag-close="</code>" data-target="telegram_body_html">Моноширинный</button>
+          <button type="button" class="btn btn-small content-format-btn" data-tag-open="<blockquote>" data-tag-close="</blockquote>" data-target="telegram_body_html">Цитата</button>
           <button type="button" class="btn btn-small content-link-btn" data-target="telegram_body_html">Ссылка</button>
           <button type="button" class="btn btn-small content-premium-emoji-btn" data-target="telegram_body_html">Премиум вручную</button>
           {% for emoji in ['✨','🔥','🖤','🌸','🎭','📸','🕊️','⭐'] %}
@@ -451,7 +459,8 @@
         {% endif %}
       </div>
     </form>
-  </section>
+    </div>
+  </details>
 
   <section class="box top-offset">
     <h2>Рубрики и теги</h2>
@@ -522,9 +531,6 @@
               <span class="chip content-rubric-chip" style="background: {{ item.rubric_color }}55; border-color: {{ item.rubric_color }};">
                 {{ item.rubric }}
               </span>
-              {% if content_rubric_tags.get(item.rubric) %}
-                <span class="chip">{{ content_rubric_tags.get(item.rubric) }}</span>
-              {% endif %}
               <span class="chip">{{ item.status_label }}</span>
               <strong>{{ item.title }}</strong>
               <span class="muted">Соцсети: {{ item.socials_text }}</span>
