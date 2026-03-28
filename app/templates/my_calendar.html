@@ -252,12 +252,16 @@
   {% endif %}
 {% else %}
   {% if content_access_state.has_access %}
-  <details class="box calendar-spoiler" {% if not telegram_content_connected %}open{% endif %}>
-    <summary>Telegram-бот и каналы</summary>
-    <div class="calendar-spoiler-body">
+  <section class="box content-platform-settings" data-initial-platform="{{ 'vk' if not telegram_content_connected and vk_content_connected else 'telegram' }}">
+    <div class="calendar-tabs">
+      <button type="button" class="tab active" data-platform-tab="telegram">Telegram</button>
+      <button type="button" class="tab" data-platform-tab="vk">VK</button>
+    </div>
+
+    <div class="content-platform-panel" data-platform-panel="telegram">
       <p class="muted">
         Подключите своего Telegram-бота и один или несколько каналов, чтобы публиковать посты прямо из контент-плана.
-        Для публикации в другие сети используйте сторонний автопостинг.
+        Один и тот же запланированный пост можно отправлять сразу в Telegram и VK.
       </p>
       <details class="top-offset">
         <summary>Как подключить канал</summary>
@@ -272,9 +276,9 @@
       <form method="post" action="/my-calendar/content/telegram/connect" class="grid one-col top-offset">
         <label>
           Токен бота
-          <input type="password" name="bot_token" value="{{ telegram_settings.bot_token }}" placeholder="123456:ABC..." required />
+          <input type="password" name="bot_token" value="" placeholder="123456:ABC..." />
           {% if telegram_settings_masked.bot_token %}
-            <small class="muted">Сейчас сохранено: {{ telegram_settings_masked.bot_token }}</small>
+            <small class="muted">Сейчас сохранено: {{ telegram_settings_masked.bot_token }}. Оставьте поле пустым, если менять токен не нужно.</small>
           {% endif %}
         </label>
         <label>
@@ -297,7 +301,45 @@
         </form>
       {% endif %}
     </div>
-  </details>
+
+    <div class="content-platform-panel" data-platform-panel="vk" hidden>
+      <p class="muted">
+        Подключите свой VK API токен и одно или несколько сообществ, в которые нужно публиковать именно ваши записи.
+        Токен хранится на сайте в зашифрованном виде, а посты уходят только в отмеченные вами сообщества.
+      </p>
+      <details class="top-offset">
+        <summary>Как подключить VK</summary>
+        <ol class="notes-list top-offset">
+          <li>Получите VK API токен пользователя или приложения с правами на публикацию в ваших сообществах.</li>
+          <li>Убедитесь, что этот аккаунт является администратором или редактором нужных сообществ.</li>
+          <li>Укажите здесь токен и список сообществ в формате «Название — vk.com/my_group», «Название — club123456» или просто «my_group».</li>
+          <li>После сохранения посты с галочкой <strong>VK</strong> смогут публиковаться в выбранные сообщества вручную и по расписанию.</li>
+        </ol>
+      </details>
+      <form method="post" action="/my-calendar/content/vk/connect" class="grid one-col top-offset">
+        <label>
+          VK API токен
+          <input type="password" name="api_token" value="" placeholder="vk1.a...." />
+          {% if vk_settings_masked.api_token %}
+            <small class="muted">Сейчас сохранено: {{ vk_settings_masked.api_token }}. Оставьте поле пустым, если менять токен не нужно.</small>
+          {% endif %}
+        </label>
+        <label>
+          Сообщества VK пользователя
+          <textarea name="vk_groups_text" rows="5" placeholder="Основное сообщество — vk.com/my_public&#10;Анонсы — club123456&#10;my_group" required>{{ vk_settings.groups_text }}</textarea>
+          <small class="muted">По одному сообществу на строку. Можно писать с названием или без него. В редакторе поста потом можно выбрать несколько сообществ сразу.</small>
+        </label>
+        <div class="actions-inline">
+          <button type="submit" class="btn btn-accent">Сохранить VK</button>
+        </div>
+      </form>
+      {% if vk_content_connected %}
+        <form method="post" action="/my-calendar/content/vk/disconnect" class="top-offset" onsubmit="return confirm('Удалить настройки VK-сообществ?');">
+          <button type="submit" class="btn btn-danger">Отключить VK-сообщества</button>
+        </form>
+      {% endif %}
+    </div>
+  </section>
 
   <details class="box calendar-spoiler" id="content-form" {% if editing_content_post %}open{% endif %}>
     <summary>{{ "Редактировать пост" if editing_content_post else "Добавить пост в контент-план" }}</summary>
@@ -361,10 +403,10 @@
             </button>
           {% endfor %}
         </div>
-        <details class="top-offset">
-          <summary>Без премиум (не-эмодзи)</summary>
+        <details class="top-offset telegram-symbol-picker">
+          <summary><span class="btn btn-small telegram-symbol-picker-toggle">Без премиум (не-эмодзи)</span></summary>
           <div class="actions-inline wrap top-offset">
-            {% for symbol in ['✧','✦','✩','☆','★','✪','❋','❈','❀','✿','❁','❃','❥','❣','♡','♢','◈','⊹','✶','✷'] %}
+            {% for symbol in ['✧','✦','✩','☆','★','✪','❋','❈','❀','✿','❁','❃','❥','❣','♡','♢','◈','⊹','✶','✷','•','∙','●','◦','○','◉','◌','▪','▫','■','□','⬛','⬜','◾','◽','→','↗','↘','➜','➤','➝','➞','➣'] %}
               <button type="button" class="btn btn-small content-insert-btn" data-target="telegram_body_html" data-insert="{{ symbol }}">{{ symbol }}</button>
             {% endfor %}
           </div>
@@ -403,7 +445,7 @@
           <input type="time" name="publish_time" value="{{ content_form.publish_time }}" />
         </label>
       </div>
-      <p class="muted">Если отмечена соцсеть <strong>ТГ</strong>, пост отправится в Telegram автоматически по указанным дате и времени.</p>
+      <p class="muted">Если отмечены соцсети <strong>ТГ</strong> и/или <strong>VK</strong>, пост отправится в выбранные Telegram-каналы и VK-сообщества автоматически по указанным дате и времени.</p>
       <div>
         <p class="muted">Telegram-каналы для публикации</p>
         {% if telegram_settings.channels %}
@@ -423,6 +465,27 @@
           <small class="muted">Можно выбрать несколько каналов: пост уйдет во все отмеченные.</small>
         {% else %}
           <p class="muted">Сначала добавьте Telegram-каналы в блоке выше.</p>
+        {% endif %}
+      </div>
+      <div>
+        <p class="muted">VK-сообщества для публикации</p>
+        {% if vk_settings.groups %}
+          <div class="chips-wrap">
+            {% for group in vk_settings.groups %}
+              <label class="chip-check">
+                <input
+                  type="checkbox"
+                  name="vk_group_ids"
+                  value="{{ group.owner_id }}"
+                  {% if group.owner_id in content_form.vk_group_ids %}checked{% endif %}
+                />
+                {{ group.title or group.screen_name or group.owner_id }}
+              </label>
+            {% endfor %}
+          </div>
+          <small class="muted">Можно выбрать несколько сообществ: пост уйдет во все отмеченные сообщества VK.</small>
+        {% else %}
+          <p class="muted">Сначала добавьте VK-сообщества в блоке выше.</p>
         {% endif %}
       </div>
       <div>
@@ -462,13 +525,16 @@
       <label>
         Тег рубрики
         <input type="text" name="rubric_tag_value" value="{{ content_form.rubric_tag_value }}" maxlength="120" placeholder="#анонс" />
-        <small class="muted">Нужен для автоподстановки в конец Telegram-публикации. Для новой рубрики заполните это поле при первом создании; для старой можно дописать тег позже здесь же.</small>
+        <small class="muted">Нужен для автоподстановки в конец публикации. Для новой рубрики заполните это поле при первом создании; для старой можно дописать тег позже здесь же.</small>
       </label>
       <div class="actions-inline">
         <button type="submit" class="btn btn-accent">{{ "Сохранить" if editing_content_post else "Добавить пост" }}</button>
         {% if editing_content_post %}
           {% if telegram_content_connected %}
             <button type="submit" class="btn" formaction="/my-calendar/content/{{ editing_content_post.id }}/telegram-publish" formmethod="post">Опубликовать в Telegram</button>
+          {% endif %}
+          {% if vk_content_connected %}
+            <button type="submit" class="btn" formaction="/my-calendar/content/{{ editing_content_post.id }}/vk-publish" formmethod="post">Опубликовать в VK</button>
           {% endif %}
           <a href="/my-calendar?view=content" class="btn">Отмена</a>
         {% endif %}
@@ -558,10 +624,21 @@
               {% if item.telegram_channels_text and item.telegram_channels_text != "—" %}
                 <span class="muted">TG-каналы: {{ item.telegram_channels_text }}</span>
               {% endif %}
+              {% if item.vk_published_at %}
+                <span class="muted">VK: {{ item.vk_published_at.strftime('%d-%m-%Y %H:%M') }}</span>
+              {% endif %}
+              {% if item.vk_groups_text and item.vk_groups_text != "—" %}
+                <span class="muted">VK-сообщества: {{ item.vk_groups_text }}</span>
+              {% endif %}
               <a class="btn btn-small" href="/my-calendar?view=content&edit_post_id={{ item.post_id }}#content-form">Редактировать</a>
               {% if telegram_content_connected %}
                 <form method="post" action="/my-calendar/content/{{ item.post_id }}/telegram-publish">
                   <button type="submit" class="btn btn-small">В Telegram</button>
+                </form>
+              {% endif %}
+              {% if vk_content_connected %}
+                <form method="post" action="/my-calendar/content/{{ item.post_id }}/vk-publish">
+                  <button type="submit" class="btn btn-small">В VK</button>
                 </form>
               {% endif %}
               <form method="post" action="/my-calendar/content/{{ item.post_id }}/delete?view=content" onsubmit="return confirm('Удалить этот пост из контент-плана?');">
@@ -654,6 +731,34 @@
       });
     });
     installCustomEmojiImageFallback(document);
+
+    function initializeContentPlatformTabs() {
+      const root = document.querySelector('.content-platform-settings');
+      if (!root) return;
+      const tabs = Array.from(root.querySelectorAll('[data-platform-tab]'));
+      const panels = Array.from(root.querySelectorAll('[data-platform-panel]'));
+      if (!tabs.length || !panels.length) return;
+
+      function activate(platform) {
+        tabs.forEach((tab) => {
+          const isActive = tab.dataset.platformTab === platform;
+          tab.classList.toggle('active', isActive);
+        });
+        panels.forEach((panel) => {
+          panel.hidden = panel.dataset.platformPanel !== platform;
+        });
+      }
+
+      tabs.forEach((tab) => {
+        tab.addEventListener('click', function () {
+          activate(tab.dataset.platformTab || 'telegram');
+        });
+      });
+
+      activate(root.dataset.initialPlatform || 'telegram');
+    }
+
+    initializeContentPlatformTabs();
 
     document.querySelectorAll('.content-format-btn').forEach((button) => {
       button.addEventListener('click', function () {

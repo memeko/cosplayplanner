@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import calendar
 import colorsys
+import base64
 import hashlib
 import html
 import io
@@ -27,6 +28,7 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import requests
+from cryptography.fernet import Fernet, InvalidToken
 from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -125,6 +127,8 @@ SEO_KEYWORDS = (
 app = FastAPI(title=PROJECT_NAME)
 
 secret_key = load_secret_key()
+secret_key_hash = hashlib.sha256(secret_key.encode("utf-8")).digest()
+content_secret_fernet = Fernet(base64.urlsafe_b64encode(secret_key_hash))
 session_https_only = to_bool(os.getenv("SESSION_HTTPS_ONLY", "0"))
 trusted_hosts = [item.strip() for item in os.getenv("TRUSTED_HOSTS", "").split(",") if item.strip()]
 
@@ -218,6 +222,8 @@ CONTENT_TELEGRAM_CHAT_GROUP = "content_telegram_chat"
 CONTENT_TELEGRAM_PACK_GROUP = "content_telegram_premium_pack_id"
 CONTENT_TELEGRAM_CHANNEL_GROUP = "content_telegram_channel"
 CONTENT_TELEGRAM_PREMIUM_EMOJI_GROUP = "content_telegram_premium_emoji"
+CONTENT_VK_TOKEN_GROUP = "content_vk_api_token"
+CONTENT_VK_GROUP_GROUP = "content_vk_group"
 CONTENT_RUBRIC_TAG_GROUP = "content_rubric_tag"
 CONTENT_PLAN_ACCESS_VERIFIED_GROUP = "content_plan_brfox_subscription_verified_at"
 CONTENT_TELEGRAM_IMAGE_MAX_SIDE = 2000
@@ -696,6 +702,9 @@ def apply_schema_migrations() -> None:
             ("telegram_message_id", "VARCHAR(64)"),
             ("telegram_message_ids_json", "JSON NOT NULL DEFAULT '[]'"),
             ("telegram_published_at", "DATETIME"),
+            ("vk_groups_json", "JSON NOT NULL DEFAULT '[]'"),
+            ("vk_post_ids_json", "JSON NOT NULL DEFAULT '[]'"),
+            ("vk_published_at", "DATETIME"),
         ],
     }
 
@@ -2189,13 +2198,20 @@ def get_content_plan_form_values(
     post: ContentPlanPost | None = None,
     rubric_tags: dict[str, str] | None = None,
     telegram_channels: list[dict[str, str]] | None = None,
+    vk_groups: list[dict[str, str]] | None = None,
     premium_emoji_map: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     tag_map = rubric_tags or {}
     available_telegram_channels = telegram_channels or []
+    available_vk_groups = vk_groups or []
     default_channel_ids = (
         [available_telegram_channels[0]["chat_id"]]
         if len(available_telegram_channels) == 1 and available_telegram_channels[0].get("chat_id")
+        else []
+    )
+    default_vk_group_ids = (
+        [available_vk_groups[0]["owner_id"]]
+        if len(available_vk_groups) == 1 and available_vk_groups[0].get("owner_id")
         else []
     )
     if not post:
@@ -2207,6 +2223,7 @@ def get_content_plan_form_values(
             "socials_json": [],
             "socials_other": "",
             "telegram_channel_ids": default_channel_ids,
+            "vk_group_ids": default_vk_group_ids,
             "rubric_existing": "",
             "rubric_new": "",
             "rubric_tag_value": "",
@@ -2225,6 +2242,7 @@ def get_content_plan_form_values(
         "socials_json": [value for value in socials if value in CONTENT_SOCIAL_OPTIONS],
         "socials_other": ", ".join(socials_other_values),
         "telegram_channel_ids": as_list(post.telegram_channels_json) or default_channel_ids,
+        "vk_group_ids": as_list(post.vk_groups_json) or default_vk_group_ids,
         "rubric_existing": post.rubric or "",
         "rubric_new": "",
         "rubric_tag_value": normalize_content_rubric_tag(post.rubric_tag) or tag_map.get(post.rubric or "", ""),
@@ -2252,7 +2270,7 @@ def save_content_plan_post_from_form(form: Any, post: ContentPlanPost, user: Use
     }
     raw_telegram_body_html = str(form.get("telegram_body_html", "")).strip()
     premium_emoji_map = resolve_telegram_custom_emoji_fallback_map(
-        str(get_user_option_value(db, user.id, CONTENT_TELEGRAM_TOKEN_GROUP) or "").strip(),
+        str(get_secret_user_option_value(db, user.id, CONTENT_TELEGRAM_TOKEN_GROUP) or "").strip(),
         raw_telegram_body_html,
         premium_emoji_map,
     )
@@ -2262,11 +2280,17 @@ def save_content_plan_post_from_form(form: Any, post: ContentPlanPost, user: Use
     )
     telegram_photos = parse_reference_values(str(form.get("telegram_photos_input", "")))[:10]
     available_telegram_channels = get_content_telegram_channels(db, user.id)
+    available_vk_groups = get_content_vk_groups(db, user.id)
     selected_telegram_channels = resolve_content_telegram_channels(
         form.getlist("telegram_channel_ids"),
         available_telegram_channels,
     )
+    selected_vk_groups = resolve_content_vk_groups(
+        form.getlist("vk_group_ids"),
+        available_vk_groups,
+    )
     selected_telegram_channel_ids = [channel["chat_id"] for channel in selected_telegram_channels]
+    selected_vk_group_ids = [group["owner_id"] for group in selected_vk_groups]
     rubric_tags = get_content_rubric_tags(db, user.id)
 
     if not title:
@@ -2283,8 +2307,8 @@ def save_content_plan_post_from_form(form: Any, post: ContentPlanPost, user: Use
         return False, "Краткое описание должно быть не длиннее 4000 символов."
     if len(telegram_body_html) > 12000:
         return False, "Текст для Telegram должен быть не длиннее 12000 символов."
-    if any(item.casefold() == "тг" for item in socials) and not publish_time:
-        return False, "Для автопубликации в Telegram укажите время публикации."
+    if any(item.casefold() in {"тг", "vk"} for item in socials) and not publish_time:
+        return False, "Для автопубликации в Telegram и VK укажите время публикации."
     if any(item.casefold() == "тг" for item in socials):
         if not available_telegram_channels:
             return False, "Сначала добавьте хотя бы один Telegram-канал в настройках."
@@ -2293,6 +2317,14 @@ def save_content_plan_post_from_form(form: Any, post: ContentPlanPost, user: Use
                 selected_telegram_channel_ids = [available_telegram_channels[0]["chat_id"]]
             else:
                 return False, "Выберите хотя бы один Telegram-канал для публикации."
+    if any(item.casefold() == "vk" for item in socials):
+        if not available_vk_groups:
+            return False, "Сначала добавьте хотя бы одно сообщество VK в настройках."
+        if not selected_vk_group_ids:
+            if len(available_vk_groups) == 1:
+                selected_vk_group_ids = [available_vk_groups[0]["owner_id"]]
+            else:
+                return False, "Выберите хотя бы одно сообщество VK для публикации."
 
     normalized_tag = normalize_content_rubric_tag(rubric_tag_value)
     if rubric_new and not normalized_tag:
@@ -2312,6 +2344,7 @@ def save_content_plan_post_from_form(form: Any, post: ContentPlanPost, user: Use
     post.telegram_body_html = telegram_body_html or None
     post.telegram_photos_json = telegram_photos
     post.telegram_channels_json = selected_telegram_channel_ids
+    post.vk_groups_json = selected_vk_group_ids
 
     if resolved_rubric_tag and (rubric_new or rubric_existing):
         rubric_tags[rubric] = resolved_rubric_tag
@@ -2324,7 +2357,7 @@ def save_content_plan_post_from_form(form: Any, post: ContentPlanPost, user: Use
 def get_content_telegram_settings(user: User, db: Session) -> dict[str, Any]:
     premium_entries = get_content_premium_emoji_entries(db, user.id)
     channels = get_content_telegram_channels(db, user.id)
-    bot_token = get_user_option_value(db, user.id, CONTENT_TELEGRAM_TOKEN_GROUP)
+    bot_token = get_secret_user_option_value(db, user.id, CONTENT_TELEGRAM_TOKEN_GROUP)
     return {
         "bot_token": bot_token,
         "chat_id": channels[0]["chat_id"] if channels else get_user_option_value(db, user.id, CONTENT_TELEGRAM_CHAT_GROUP),
@@ -2333,6 +2366,16 @@ def get_content_telegram_settings(user: User, db: Session) -> dict[str, Any]:
         "premium_emoji_preview_base_url": "/my-calendar/content/telegram/custom-emoji",
         "premium_emojis_text": format_content_premium_emoji_lines(premium_entries),
         "premium_emojis": premium_entries,
+    }
+
+
+def get_content_vk_settings(user: User, db: Session) -> dict[str, Any]:
+    groups = get_content_vk_groups(db, user.id)
+    api_token = get_secret_user_option_value(db, user.id, CONTENT_VK_TOKEN_GROUP)
+    return {
+        "api_token": api_token,
+        "groups_text": format_content_vk_group_lines(groups),
+        "groups": groups,
     }
 
 
@@ -2846,6 +2889,10 @@ def content_post_targets_telegram(post: ContentPlanPost) -> bool:
     return any(str(item).strip().casefold() == "тг" for item in as_list(post.socials_json))
 
 
+def content_post_targets_vk(post: ContentPlanPost) -> bool:
+    return any(str(item).strip().casefold() == "vk" for item in as_list(post.socials_json))
+
+
 def content_post_publish_datetime(post: ContentPlanPost) -> datetime | None:
     if not post.publish_date:
         return None
@@ -2940,6 +2987,144 @@ def mark_content_post_telegram_published(
         post.status = "published"
 
 
+def append_rubric_tag_to_plain_message(message_text: str, rubric_tag: str | None) -> str:
+    normalized_tag = normalize_content_rubric_tag(rubric_tag)
+    if not normalized_tag:
+        return message_text
+    if normalized_tag.casefold() in str(message_text or "").casefold():
+        return message_text
+    if not str(message_text or "").strip():
+        return normalized_tag
+    return f"{str(message_text).rstrip()}\n\n{normalized_tag}"
+
+
+def build_content_post_plain_message(post: ContentPlanPost, rubric_tag: str | None = None) -> str:
+    plain_body = strip_telegram_html(post.telegram_body_html or "").strip()
+    if plain_body:
+        return append_rubric_tag_to_plain_message(plain_body, rubric_tag)
+
+    parts = [str(post.title or "").strip()]
+    description = str(post.description or "").strip()
+    if description:
+        parts.append(description)
+    fallback_message = "\n\n".join(part for part in parts if part)
+    return append_rubric_tag_to_plain_message(fallback_message.strip(), rubric_tag)
+
+
+def load_content_photo_binary(photo_ref: str) -> tuple[str, bytes, str]:
+    local_path = local_media_reference_to_path(photo_ref)
+    if local_path and local_path.exists() and local_path.is_file():
+        media_type = mimetypes.guess_type(str(local_path))[0] or "application/octet-stream"
+        return local_path.name, local_path.read_bytes(), media_type
+
+    external_url = build_external_url(photo_ref)
+    if not external_url:
+        raise RuntimeError("Не удалось подготовить изображение для VK.")
+    try:
+        response = requests.get(external_url, timeout=20)
+    except requests.RequestException as exc:
+        raise RuntimeError("Не удалось загрузить изображение для VK.") from exc
+    if not response.ok or not response.content:
+        raise RuntimeError("Не удалось загрузить изображение для VK.")
+
+    parsed = urlparse(external_url)
+    filename = Path(parsed.path or "").name or "photo"
+    media_type = (response.headers.get("Content-Type") or "").split(";", 1)[0].strip()
+    if not media_type:
+        media_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+    if "." not in filename:
+        extension = mimetypes.guess_extension(media_type) or ".jpg"
+        filename = f"{filename}{extension}"
+    return filename, response.content, media_type
+
+
+def upload_content_photo_to_vk(token: str, group_id: str, photo_ref: str) -> str:
+    upload_payload = vk_content_api_call(
+        token,
+        "photos.getWallUploadServer",
+        {"group_id": group_id},
+    )
+    if not isinstance(upload_payload, dict):
+        raise RuntimeError("VK не вернул сервер загрузки изображений.")
+    upload_url = str(upload_payload.get("upload_url") or upload_payload.get("uploadUrl") or "").strip()
+    if not upload_url:
+        raise RuntimeError("VK не вернул upload_url для изображений.")
+
+    filename, file_bytes, media_type = load_content_photo_binary(photo_ref)
+    try:
+        upload_response = requests.post(
+            upload_url,
+            files={"photo": (filename, file_bytes, media_type)},
+            timeout=max(10, HTTP_TIMEOUT_SECONDS * 2),
+        )
+    except requests.RequestException as exc:
+        raise RuntimeError("Не удалось отправить изображение на сервер VK.") from exc
+    if upload_response.status_code != 200:
+        raise RuntimeError(f"Сервер загрузки VK недоступен (HTTP {upload_response.status_code}).")
+    try:
+        upload_result = upload_response.json() if upload_response.content else {}
+    except ValueError as exc:
+        raise RuntimeError("Сервер загрузки VK вернул некорректный ответ.") from exc
+    if not isinstance(upload_result, dict):
+        raise RuntimeError("Сервер загрузки VK вернул неожиданный формат данных.")
+
+    photo_value = str(upload_result.get("photo") or "").strip()
+    server_value = str(upload_result.get("server") or "").strip()
+    hash_value = str(upload_result.get("hash") or "").strip()
+    if not photo_value or not server_value or not hash_value:
+        raise RuntimeError("VK не вернул все данные для сохранения изображения.")
+
+    save_payload = vk_content_api_call(
+        token,
+        "photos.saveWallPhoto",
+        {
+            "group_id": group_id,
+            "photo": photo_value,
+            "server": server_value,
+            "hash": hash_value,
+        },
+    )
+    items = save_payload if isinstance(save_payload, list) else [save_payload] if isinstance(save_payload, dict) else []
+    photo_item = next((item for item in items if isinstance(item, dict)), None)
+    if not photo_item:
+        raise RuntimeError("VK не вернул сохранённое изображение.")
+    owner_id = str(photo_item.get("owner_id") or "").strip()
+    photo_id = str(photo_item.get("id") or "").strip()
+    access_key = str(photo_item.get("access_key") or "").strip()
+    if not owner_id or not photo_id:
+        raise RuntimeError("VK вернул неполные данные по изображению.")
+    attachment = f"photo{owner_id}_{photo_id}"
+    if access_key:
+        attachment = f"{attachment}_{access_key}"
+    return attachment
+
+
+def mark_content_post_vk_published(
+    post: ContentPlanPost,
+    *,
+    group_post_ids: list[dict[str, str]],
+    rubric_tag: str | None = None,
+) -> None:
+    normalized_tag = normalize_content_rubric_tag(rubric_tag) or normalize_content_rubric_tag(post.rubric_tag)
+    if normalized_tag:
+        post.rubric_tag = normalized_tag
+    post.vk_post_ids_json = [
+        {
+            "owner_id": str(item.get("owner_id") or "").strip(),
+            "group_id": str(item.get("group_id") or "").strip(),
+            "title": str(item.get("title") or "").strip(),
+            "post_id": str(item.get("post_id") or "").strip(),
+        }
+        for item in as_list(group_post_ids)
+        if isinstance(item, dict)
+        and str(item.get("owner_id") or "").strip()
+        and str(item.get("post_id") or "").strip()
+    ]
+    post.vk_published_at = datetime.utcnow()
+    if normalize_content_status(post.status) != "published":
+        post.status = "published"
+
+
 def publish_content_post_to_telegram(
     *,
     token: str,
@@ -3025,6 +3210,80 @@ def publish_content_post_to_telegram(
     )
     text_result = text_payload.get("result") or {}
     return str(text_result.get("message_id") or "")
+
+
+def publish_content_post_to_vk(
+    *,
+    token: str,
+    group: dict[str, str],
+    post: ContentPlanPost,
+    rubric_tag: str | None = None,
+) -> str:
+    owner_id = str(group.get("owner_id") or "").strip()
+    group_id = str(group.get("group_id") or "").strip()
+    if not owner_id or not group_id:
+        raise RuntimeError("VK-сообщество задано некорректно.")
+
+    message_text = build_content_post_plain_message(post, rubric_tag).strip()
+    photo_refs = [str(item).strip() for item in as_list(post.telegram_photos_json) if str(item).strip()]
+    attachments: list[str] = []
+    for photo_ref in photo_refs:
+        attachments.append(upload_content_photo_to_vk(token, group_id, photo_ref))
+
+    params: dict[str, Any] = {
+        "owner_id": owner_id,
+        "from_group": 1,
+    }
+    if message_text:
+        params["message"] = message_text
+    if attachments:
+        params["attachments"] = ",".join(attachments)
+    if not message_text and not attachments:
+        raise RuntimeError("Для VK-публикации нужен текст или хотя бы одно изображение.")
+
+    payload = vk_content_api_call(token, "wall.post", params)
+    if isinstance(payload, dict):
+        post_id = str(payload.get("post_id") or payload.get("id") or "").strip()
+    else:
+        post_id = str(payload or "").strip()
+    if not post_id:
+        raise RuntimeError("VK не вернул идентификатор опубликованного поста.")
+    return post_id
+
+
+def publish_content_post_to_vk_groups(
+    *,
+    token: str,
+    groups: list[dict[str, str]],
+    post: ContentPlanPost,
+    rubric_tag: str | None = None,
+) -> tuple[list[dict[str, str]], list[str]]:
+    successful: list[dict[str, str]] = []
+    errors: list[str] = []
+    for group in groups:
+        owner_id = str(group.get("owner_id") or "").strip()
+        title = str(group.get("title") or group.get("screen_name") or owner_id).strip() or owner_id
+        if not owner_id:
+            continue
+        try:
+            post_id = publish_content_post_to_vk(
+                token=token,
+                group=group,
+                post=post,
+                rubric_tag=rubric_tag,
+            )
+        except RuntimeError as exc:
+            errors.append(f"{title}: {exc}")
+            continue
+        successful.append(
+            {
+                "owner_id": owner_id,
+                "group_id": str(group.get("group_id") or "").strip(),
+                "title": title,
+                "post_id": post_id,
+            }
+        )
+    return successful, errors
 
 
 def publish_content_post_to_telegram_channels(
@@ -4268,16 +4527,17 @@ def cleanup_expired_content_telegram_media(db: Session) -> None:
 def dispatch_scheduled_content_posts() -> None:
     now_local = datetime.now(SITE_TIMEZONE)
     with SessionLocal() as db:
-        pending_posts = db.execute(
-            select(ContentPlanPost).where(ContentPlanPost.telegram_published_at.is_(None))
-        ).scalars().all()
+        pending_posts = db.execute(select(ContentPlanPost)).scalars().all()
         users_cache: dict[int, User | None] = {}
-        settings_cache: dict[int, dict[str, Any]] = {}
+        telegram_settings_cache: dict[int, dict[str, Any]] = {}
+        vk_settings_cache: dict[int, dict[str, Any]] = {}
         rubric_tag_cache: dict[int, dict[str, str]] = {}
         has_changes = False
 
         for post in pending_posts:
-            if not content_post_targets_telegram(post):
+            should_publish_telegram = content_post_targets_telegram(post) and post.telegram_published_at is None
+            should_publish_vk = content_post_targets_vk(post) and post.vk_published_at is None
+            if not should_publish_telegram and not should_publish_vk:
                 continue
             publish_at = content_post_publish_datetime(post)
             if publish_at is None or publish_at > now_local:
@@ -4291,44 +4551,64 @@ def dispatch_scheduled_content_posts() -> None:
             if not user_has_content_plan_access(db, user):
                 continue
 
-            if user.id not in settings_cache:
-                settings_cache[user.id] = get_content_telegram_settings(user, db)
-            telegram_settings = settings_cache[user.id]
-            bot_token = str(telegram_settings.get("bot_token") or "").strip()
-            available_channels = list(telegram_settings.get("channels") or [])
-            if not bot_token or not available_channels:
-                continue
-
-            selected_channels = resolve_content_telegram_channels(as_list(post.telegram_channels_json), available_channels)
-            if not selected_channels and len(available_channels) == 1:
-                selected_channels = [available_channels[0]]
-            if not selected_channels:
-                continue
-
             if user.id not in rubric_tag_cache:
                 rubric_tag_cache[user.id] = get_content_rubric_tags(db, user.id)
             rubric_tag = normalize_content_rubric_tag(post.rubric_tag) or rubric_tag_cache[user.id].get(post.rubric or "", "")
 
-            sent_messages, _ = publish_content_post_to_telegram_channels(
-                token=bot_token,
-                channels=selected_channels,
-                post=post,
-                rubric_tag=rubric_tag,
-                premium_emoji_map={
-                    str(entry.get("emoji_id") or "").strip(): str(entry.get("emoji") or "").strip()
-                    for entry in list(telegram_settings.get("premium_emojis") or [])
-                    if str(entry.get("emoji_id") or "").strip() and str(entry.get("emoji") or "").strip()
-                },
-            )
-            if not sent_messages:
-                continue
+            if should_publish_telegram:
+                if user.id not in telegram_settings_cache:
+                    telegram_settings_cache[user.id] = get_content_telegram_settings(user, db)
+                telegram_settings = telegram_settings_cache[user.id]
+                bot_token = str(telegram_settings.get("bot_token") or "").strip()
+                available_channels = list(telegram_settings.get("channels") or [])
+                if bot_token and available_channels:
+                    selected_channels = resolve_content_telegram_channels(as_list(post.telegram_channels_json), available_channels)
+                    if not selected_channels and len(available_channels) == 1:
+                        selected_channels = [available_channels[0]]
+                    if selected_channels:
+                        sent_messages, _ = publish_content_post_to_telegram_channels(
+                            token=bot_token,
+                            channels=selected_channels,
+                            post=post,
+                            rubric_tag=rubric_tag,
+                            premium_emoji_map={
+                                str(entry.get("emoji_id") or "").strip(): str(entry.get("emoji") or "").strip()
+                                for entry in list(telegram_settings.get("premium_emojis") or [])
+                                if str(entry.get("emoji_id") or "").strip() and str(entry.get("emoji") or "").strip()
+                            },
+                        )
+                        if sent_messages:
+                            mark_content_post_telegram_published(
+                                post,
+                                channel_message_ids=sent_messages,
+                                rubric_tag=rubric_tag,
+                            )
+                            has_changes = True
 
-            mark_content_post_telegram_published(
-                post,
-                channel_message_ids=sent_messages,
-                rubric_tag=rubric_tag,
-            )
-            has_changes = True
+            if should_publish_vk:
+                if user.id not in vk_settings_cache:
+                    vk_settings_cache[user.id] = get_content_vk_settings(user, db)
+                vk_settings = vk_settings_cache[user.id]
+                api_token = str(vk_settings.get("api_token") or "").strip()
+                available_groups = list(vk_settings.get("groups") or [])
+                if api_token and available_groups:
+                    selected_groups = resolve_content_vk_groups(as_list(post.vk_groups_json), available_groups)
+                    if not selected_groups and len(available_groups) == 1:
+                        selected_groups = [available_groups[0]]
+                    if selected_groups:
+                        sent_posts, _ = publish_content_post_to_vk_groups(
+                            token=api_token,
+                            groups=selected_groups,
+                            post=post,
+                            rubric_tag=rubric_tag,
+                        )
+                        if sent_posts:
+                            mark_content_post_vk_published(
+                                post,
+                                group_post_ids=sent_posts,
+                                rubric_tag=rubric_tag,
+                            )
+                            has_changes = True
 
         if has_changes:
             db.commit()
@@ -5729,6 +6009,32 @@ def current_user(request: Request, db: Session) -> User | None:
     return db.get(User, int(user_id))
 
 
+SECRET_OPTION_PREFIX = "enc1:"
+
+
+def encrypt_secret_option_value(value: str | None) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    encrypted = content_secret_fernet.encrypt(raw.encode("utf-8")).decode("utf-8")
+    return f"{SECRET_OPTION_PREFIX}{encrypted}"
+
+
+def decrypt_secret_option_value(value: str | None) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    if not raw.startswith(SECRET_OPTION_PREFIX):
+        return raw
+    encrypted = raw[len(SECRET_OPTION_PREFIX):].strip()
+    if not encrypted:
+        return ""
+    try:
+        return content_secret_fernet.decrypt(encrypted.encode("utf-8")).decode("utf-8").strip()
+    except (InvalidToken, ValueError):
+        return ""
+
+
 def get_user_option_value(db: Session, user_id: int, group: str) -> str:
     row = db.execute(
         select(UserOption).where(
@@ -5737,6 +6043,10 @@ def get_user_option_value(db: Session, user_id: int, group: str) -> str:
         )
     ).scalar_one_or_none()
     return str(row.value or "").strip() if row else ""
+
+
+def get_secret_user_option_value(db: Session, user_id: int, group: str) -> str:
+    return decrypt_secret_option_value(get_user_option_value(db, user_id, group))
 
 
 def set_user_option_value(db: Session, user_id: int, group: str, value: str | None) -> None:
@@ -5754,6 +6064,10 @@ def set_user_option_value(db: Session, user_id: int, group: str, value: str | No
             db.add(UserOption(user_id=user_id, group=group, value=normalized))
     elif row:
         db.delete(row)
+
+
+def set_secret_user_option_value(db: Session, user_id: int, group: str, value: str | None) -> None:
+    set_user_option_value(db, user_id, group, encrypt_secret_option_value(value))
 
 
 def get_user_option_values(db: Session, user_id: int, group: str) -> list[str]:
@@ -5890,6 +6204,235 @@ def resolve_content_telegram_channels(
             continue
         seen_chat_ids.add(chat_id)
         resolved.append(channel)
+    return resolved
+
+
+def normalize_vk_group_target(value: str | None) -> str:
+    raw = (value or "").strip()
+    if not raw:
+        return ""
+    if raw.lower().startswith(("https://vk.com/", "http://vk.com/", "vk.com/")):
+        normalized = build_external_url(raw)
+        try:
+            raw = (urlparse(normalized).path or "").strip("/")
+        except ValueError:
+            raw = ""
+        if "/" in raw:
+            raw = raw.split("/", 1)[0]
+    raw = raw.strip().strip("/").lstrip("@")
+    if not raw:
+        return ""
+    lowered = raw.casefold()
+    if lowered.startswith("club") and raw[4:].isdigit():
+        return raw[4:]
+    if lowered.startswith("public") and raw[6:].isdigit():
+        return raw[6:]
+    if raw.startswith("-") and raw[1:].isdigit():
+        return raw[1:]
+    if raw.isdigit():
+        return raw
+    if re.fullmatch(r"[A-Za-z0-9_.]{3,}", raw):
+        return raw
+    return ""
+
+
+def encode_content_vk_group_value(title: str, group_id: str, owner_id: str, screen_name: str) -> str:
+    return json.dumps(
+        {
+            "title": title,
+            "group_id": group_id,
+            "owner_id": owner_id,
+            "screen_name": screen_name,
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
+def decode_content_vk_group_value(value: str) -> dict[str, str] | None:
+    raw = (value or "").strip()
+    if not raw:
+        return None
+    try:
+        payload = json.loads(raw)
+    except ValueError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    group_id = str(payload.get("group_id") or "").strip()
+    owner_id = str(payload.get("owner_id") or "").strip()
+    screen_name = str(payload.get("screen_name") or "").strip()
+    title = str(payload.get("title") or "").strip()
+    if not group_id.isdigit():
+        return None
+    if owner_id != f"-{group_id}":
+        owner_id = f"-{group_id}"
+    if not title:
+        title = f"vk.com/{screen_name}" if screen_name else f"Сообщество {group_id}"
+    return {
+        "title": title[:120],
+        "group_id": group_id,
+        "owner_id": owner_id,
+        "screen_name": screen_name,
+    }
+
+
+def vk_content_api_call(
+    token: str,
+    method: str,
+    params: dict[str, Any] | None = None,
+) -> Any:
+    access_token = str(token or "").strip()
+    if not access_token:
+        raise RuntimeError("Не задан VK API токен.")
+
+    payload = dict(params or {})
+    payload["access_token"] = access_token
+    payload["v"] = VK_API_VERSION
+    try:
+        response = requests.post(
+            f"https://api.vk.com/method/{method}",
+            data=payload,
+            timeout=max(10, HTTP_TIMEOUT_SECONDS * 2),
+        )
+    except requests.RequestException as exc:
+        raise RuntimeError(f"Не удалось связаться с VK API ({method}).") from exc
+
+    if response.status_code != 200:
+        raise RuntimeError(f"VK API ({method}) временно недоступен (HTTP {response.status_code}).")
+    try:
+        result = response.json() if response.content else {}
+    except ValueError as exc:
+        raise RuntimeError(f"VK API ({method}) вернул некорректный ответ.") from exc
+    if not isinstance(result, dict):
+        raise RuntimeError(f"VK API ({method}) вернул неожиданный формат данных.")
+
+    error_payload = result.get("error")
+    if isinstance(error_payload, dict):
+        message = str(error_payload.get("error_msg") or "Неизвестная ошибка VK API").strip()
+        raise RuntimeError(f"VK API ({method}): {message}")
+    if "response" not in result:
+        raise RuntimeError(f"VK API ({method}) не вернул ожидаемого поля response.")
+    return result.get("response")
+
+
+def extract_vk_group_list(payload: Any) -> list[dict[str, Any]]:
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    if isinstance(payload, dict):
+        for key in ("groups", "items"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                return [item for item in value if isinstance(item, dict)]
+        return [payload]
+    return []
+
+
+def resolve_content_vk_group_entry(token: str, title: str, target: str) -> dict[str, str]:
+    payload = vk_content_api_call(
+        token,
+        "groups.getById",
+        {
+            "group_id": target,
+        },
+    )
+    groups = extract_vk_group_list(payload)
+    group = groups[0] if groups else {}
+    group_id_value = parse_positive_int(str(group.get("id") or "").strip())
+    if not group_id_value:
+        raise RuntimeError(f"VK не нашёл сообщество «{target}».")
+    screen_name = str(group.get("screen_name") or group.get("screenName") or "").strip()
+    resolved_title = title or str(group.get("name") or "").strip() or (f"vk.com/{screen_name}" if screen_name else "")
+    if not resolved_title:
+        resolved_title = f"Сообщество {group_id_value}"
+    group_id = str(group_id_value)
+    return {
+        "title": resolved_title[:120],
+        "group_id": group_id,
+        "owner_id": f"-{group_id}",
+        "screen_name": screen_name,
+    }
+
+
+def parse_content_vk_group_lines(raw_text: str, token: str) -> tuple[list[dict[str, str]], str]:
+    entries: list[dict[str, str]] = []
+    seen_owner_ids: set[str] = set()
+    for index, raw_line in enumerate((raw_text or "").splitlines(), start=1):
+        line = raw_line.strip()
+        if not line:
+            continue
+        title = ""
+        group_raw = line
+        match = re.fullmatch(r"(.+?)\s+[—-]\s+(.+)", line)
+        if match:
+            title = match.group(1).strip()
+            group_raw = match.group(2).strip()
+        target = normalize_vk_group_target(group_raw)
+        if not target:
+            return [], (
+                f"Строка {index}: укажите сообщество VK в формате «Название — vk.com/my_group», "
+                "«Название — club123456» или просто «my_group»."
+            )
+        try:
+            entry = resolve_content_vk_group_entry(token, title, target)
+        except RuntimeError as exc:
+            return [], f"Строка {index}: {exc}"
+        owner_id = str(entry.get("owner_id") or "").strip()
+        if not owner_id or owner_id in seen_owner_ids:
+            continue
+        seen_owner_ids.add(owner_id)
+        entries.append(entry)
+    return entries, ""
+
+
+def format_content_vk_group_lines(entries: list[dict[str, str]]) -> str:
+    lines: list[str] = []
+    for entry in entries:
+        owner_id = str(entry.get("owner_id") or "").strip()
+        if not owner_id:
+            continue
+        screen_name = str(entry.get("screen_name") or "").strip()
+        target = f"vk.com/{screen_name}" if screen_name else owner_id
+        title = str(entry.get("title") or "").strip()
+        lines.append(f"{title} — {target}" if title and title != target else target)
+    return "\n".join(lines)
+
+
+def get_content_vk_groups(db: Session, user_id: int) -> list[dict[str, str]]:
+    result: list[dict[str, str]] = []
+    seen_owner_ids: set[str] = set()
+    for value in get_user_option_values(db, user_id, CONTENT_VK_GROUP_GROUP):
+        decoded = decode_content_vk_group_value(value)
+        if not decoded:
+            continue
+        owner_id = decoded["owner_id"]
+        if owner_id in seen_owner_ids:
+            continue
+        seen_owner_ids.add(owner_id)
+        result.append(decoded)
+    return result
+
+
+def resolve_content_vk_groups(
+    selected_owner_ids: list[str] | tuple[str, ...],
+    available_groups: list[dict[str, str]],
+) -> list[dict[str, str]]:
+    available_by_owner_id = {
+        str(group.get("owner_id") or "").strip(): group
+        for group in available_groups
+        if str(group.get("owner_id") or "").strip()
+    }
+    resolved: list[dict[str, str]] = []
+    seen_owner_ids: set[str] = set()
+    for raw_owner_id in selected_owner_ids:
+        owner_id = str(raw_owner_id or "").strip()
+        if not owner_id or owner_id in seen_owner_ids:
+            continue
+        group = available_by_owner_id.get(owner_id)
+        if not group:
+            continue
+        seen_owner_ids.add(owner_id)
+        resolved.append(group)
     return resolved
 
 
@@ -9425,16 +9968,23 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
         .order_by(ContentPlanPost.publish_date, ContentPlanPost.publish_time, ContentPlanPost.id)
     ).scalars().all()
     telegram_settings = get_content_telegram_settings(user, db)
+    vk_settings = get_content_vk_settings(user, db)
     premium_emoji_map = {
         str(entry.get("emoji_id") or "").strip(): str(entry.get("emoji") or "").strip()
         for entry in list(telegram_settings.get("premium_emojis") or [])
         if str(entry.get("emoji_id") or "").strip() and str(entry.get("emoji") or "").strip()
     }
     telegram_channels = list(telegram_settings.get("channels") or [])
+    vk_groups = list(vk_settings.get("groups") or [])
     telegram_channels_by_id = {
         str(channel.get("chat_id") or "").strip(): channel
         for channel in telegram_channels
         if str(channel.get("chat_id") or "").strip()
+    }
+    vk_groups_by_owner_id = {
+        str(group.get("owner_id") or "").strip(): group
+        for group in vk_groups
+        if str(group.get("owner_id") or "").strip()
     }
     rubric_tags = get_content_rubric_tags(db, user.id)
     rubric_options = merge_unique(
@@ -9450,6 +10000,11 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
             telegram_channels_by_id[channel_id]
             for channel_id in as_list(post.telegram_channels_json)
             if channel_id in telegram_channels_by_id
+        ]
+        row_vk_groups = [
+            vk_groups_by_owner_id[group_id]
+            for group_id in as_list(post.vk_groups_json)
+            if group_id in vk_groups_by_owner_id
         ]
         content_rows.append(
             {
@@ -9469,6 +10024,12 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
                     if str(channel.get("title") or channel.get("chat_id") or "").strip()
                 ) or "—",
                 "telegram_published_at": post.telegram_published_at,
+                "vk_groups_text": ", ".join(
+                    str(group.get("title") or group.get("screen_name") or group.get("owner_id") or "").strip()
+                    for group in row_vk_groups
+                    if str(group.get("title") or group.get("screen_name") or group.get("owner_id") or "").strip()
+                ) or "—",
+                "vk_published_at": post.vk_published_at,
             }
         )
 
@@ -9520,14 +10081,20 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
         content_rubric_options=rubric_options,
         content_rubric_colors=rubric_colors,
         content_rubric_tags=rubric_tags,
-        content_form=get_content_plan_form_values(editing_content_post, rubric_tags, telegram_channels, premium_emoji_map),
+        content_form=get_content_plan_form_values(editing_content_post, rubric_tags, telegram_channels, vk_groups, premium_emoji_map),
         editing_content_post=editing_content_post,
         telegram_settings=telegram_settings,
+        vk_settings=vk_settings,
         telegram_settings_masked={
             "bot_token": mask_secret_value(telegram_settings.get("bot_token")),
             "channels_text": telegram_settings.get("channels_text", ""),
         },
+        vk_settings_masked={
+            "api_token": mask_secret_value(vk_settings.get("api_token")),
+            "groups_text": vk_settings.get("groups_text", ""),
+        },
         telegram_content_connected=bool(telegram_settings.get("bot_token") and telegram_channels),
+        vk_content_connected=bool(vk_settings.get("api_token") and vk_groups),
         content_access_state=content_access_state,
         month_weekday_labels=["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"],
     )
@@ -9908,7 +10475,7 @@ def my_calendar_content_telegram_custom_emoji_preview(emoji_id: str, request: Re
     if not str(emoji_id or "").isdigit():
         raise HTTPException(status_code=404, detail="Эмодзи не найден.")
 
-    token = str(get_user_option_value(db, user.id, CONTENT_TELEGRAM_TOKEN_GROUP) or "").strip()
+    token = str(get_secret_user_option_value(db, user.id, CONTENT_TELEGRAM_TOKEN_GROUP) or "").strip()
     if not token:
         raise HTTPException(status_code=404, detail="Telegram не подключен.")
 
@@ -9937,7 +10504,8 @@ async def my_calendar_content_telegram_connect(request: Request, db: Session = D
         return access_redirect
 
     form = await request.form()
-    bot_token = str(form.get("bot_token", "")).strip()
+    existing_token = get_secret_user_option_value(db, user.id, CONTENT_TELEGRAM_TOKEN_GROUP)
+    bot_token = str(form.get("bot_token", "")).strip() or existing_token
     telegram_channels_text = str(form.get("telegram_channels_text", "")).strip()
     premium_emojis_text = str(form.get("premium_emojis_text", "")).strip()
 
@@ -9958,7 +10526,7 @@ async def my_calendar_content_telegram_connect(request: Request, db: Session = D
         add_flash(request, premium_error, "error")
         return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
 
-    set_user_option_value(db, user.id, CONTENT_TELEGRAM_TOKEN_GROUP, bot_token)
+    set_secret_user_option_value(db, user.id, CONTENT_TELEGRAM_TOKEN_GROUP, bot_token)
     set_user_option_value(db, user.id, CONTENT_TELEGRAM_CHAT_GROUP, channel_entries[0]["chat_id"])
     set_user_option_value(db, user.id, CONTENT_TELEGRAM_PACK_GROUP, "")
     replace_user_option_values(
@@ -9989,12 +10557,74 @@ def my_calendar_content_telegram_disconnect(request: Request, db: Session = Depe
     access_redirect = ensure_content_plan_access(request, user, db)
     if access_redirect:
         return access_redirect
-    set_user_option_value(db, user.id, CONTENT_TELEGRAM_TOKEN_GROUP, "")
+    set_secret_user_option_value(db, user.id, CONTENT_TELEGRAM_TOKEN_GROUP, "")
     set_user_option_value(db, user.id, CONTENT_TELEGRAM_CHAT_GROUP, "")
     set_user_option_value(db, user.id, CONTENT_TELEGRAM_PACK_GROUP, "")
     replace_user_option_values(db, user.id, CONTENT_TELEGRAM_CHANNEL_GROUP, [])
     db.commit()
     add_flash(request, "Настройки Telegram-каналов удалены. Библиотека premium-эмодзи сохранена.", "info")
+    return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+
+
+@app.post("/my-calendar/content/vk/connect")
+async def my_calendar_content_vk_connect(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    access_redirect = ensure_content_plan_access(request, user, db)
+    if access_redirect:
+        return access_redirect
+
+    form = await request.form()
+    existing_token = get_secret_user_option_value(db, user.id, CONTENT_VK_TOKEN_GROUP)
+    api_token = str(form.get("api_token", "")).strip() or existing_token
+    vk_groups_text = str(form.get("vk_groups_text", "")).strip()
+
+    if not api_token:
+        add_flash(request, "Укажите VK API токен для публикации.", "error")
+        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+
+    group_entries, group_error = parse_content_vk_group_lines(vk_groups_text, api_token)
+    if group_error:
+        add_flash(request, group_error, "error")
+        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+    if not group_entries:
+        add_flash(request, "Добавьте хотя бы одно сообщество VK для публикации.", "error")
+        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+
+    set_secret_user_option_value(db, user.id, CONTENT_VK_TOKEN_GROUP, api_token)
+    replace_user_option_values(
+        db,
+        user.id,
+        CONTENT_VK_GROUP_GROUP,
+        [
+            encode_content_vk_group_value(
+                entry["title"],
+                entry["group_id"],
+                entry["owner_id"],
+                entry.get("screen_name", ""),
+            )
+            for entry in group_entries
+        ],
+    )
+    db.commit()
+    add_flash(request, "Настройки VK-сообществ сохранены.", "success")
+    return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+
+
+@app.post("/my-calendar/content/vk/disconnect")
+def my_calendar_content_vk_disconnect(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    access_redirect = ensure_content_plan_access(request, user, db)
+    if access_redirect:
+        return access_redirect
+
+    set_secret_user_option_value(db, user.id, CONTENT_VK_TOKEN_GROUP, "")
+    replace_user_option_values(db, user.id, CONTENT_VK_GROUP_GROUP, [])
+    db.commit()
+    add_flash(request, "Настройки VK-сообществ удалены.", "info")
     return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
 
 
@@ -10059,6 +10689,68 @@ def my_calendar_content_publish_telegram(post_id: int, request: Request, db: Ses
     )
     db.commit()
     success_text = f"Пост опубликован в Telegram-каналы: {len(sent_messages)}."
+    if send_errors:
+        success_text = f"{success_text} Не удалось отправить в: {'; '.join(send_errors)}"
+    add_flash(request, success_text, "success")
+    return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+
+
+@app.post("/my-calendar/content/{post_id}/vk-publish")
+def my_calendar_content_publish_vk(post_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    access_redirect = ensure_content_plan_access(request, user, db)
+    if access_redirect:
+        return access_redirect
+
+    post = db.execute(
+        select(ContentPlanPost).where(
+            ContentPlanPost.id == post_id,
+            ContentPlanPost.user_id == user.id,
+        )
+    ).scalar_one_or_none()
+    if not post:
+        add_flash(request, "Пост контент-плана не найден.", "error")
+        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+
+    vk_settings = get_content_vk_settings(user, db)
+    api_token = str(vk_settings.get("api_token") or "").strip()
+    available_groups = list(vk_settings.get("groups") or [])
+    if not api_token or not available_groups:
+        add_flash(request, "Сначала подключите VK-сообщества в настройках контент-плана.", "error")
+        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+
+    selected_groups = resolve_content_vk_groups(as_list(post.vk_groups_json), available_groups)
+    if not selected_groups and len(available_groups) == 1:
+        selected_groups = [available_groups[0]]
+    if not selected_groups:
+        add_flash(request, "Выберите хотя бы одно сообщество VK в карточке поста.", "error")
+        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+
+    try:
+        rubric_tag = normalize_content_rubric_tag(post.rubric_tag) or get_content_rubric_tags(db, user.id).get(post.rubric or "", "")
+        sent_posts, send_errors = publish_content_post_to_vk_groups(
+            token=api_token,
+            groups=selected_groups,
+            post=post,
+            rubric_tag=rubric_tag,
+        )
+    except Exception as exc:
+        add_flash(request, str(exc), "error")
+        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+
+    if not sent_posts:
+        add_flash(request, send_errors[0] if send_errors else "Не удалось опубликовать пост в VK.", "error")
+        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+
+    mark_content_post_vk_published(
+        post,
+        group_post_ids=sent_posts,
+        rubric_tag=rubric_tag,
+    )
+    db.commit()
+    success_text = f"Пост опубликован в VK-сообщества: {len(sent_posts)}."
     if send_errors:
         success_text = f"{success_text} Не удалось отправить в: {'; '.join(send_errors)}"
     add_flash(request, success_text, "success")

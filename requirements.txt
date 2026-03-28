@@ -7,3 +7,4 @@ python-multipart==0.0.19
 requests==2.32.3
 itsdangerous==2.2.0
 Pillow==11.1.0
+cryptography==46.0.5

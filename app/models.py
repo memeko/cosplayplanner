@@ -457,6 +457,9 @@ class ContentPlanPost(Base):
     telegram_message_id = Column(String(64), nullable=True)
     telegram_message_ids_json = Column(JSON, nullable=False, default=list)
     telegram_published_at = Column(DateTime(timezone=True), nullable=True)
+    vk_groups_json = Column(JSON, nullable=False, default=list)
+    vk_post_ids_json = Column(JSON, nullable=False, default=list)
+    vk_published_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
