@@ -361,6 +361,15 @@
             </button>
           {% endfor %}
         </div>
+        <details class="top-offset">
+          <summary>Без премиум (не-эмодзи)</summary>
+          <div class="actions-inline wrap top-offset">
+            {% for symbol in ['✧','✦','✩','☆','★','✪','❋','❈','❀','✿','❁','❃','❥','❣','♡','♢','◈','⊹','✶','✷'] %}
+              <button type="button" class="btn btn-small content-insert-btn" data-target="telegram_body_html" data-insert="{{ symbol }}">{{ symbol }}</button>
+            {% endfor %}
+          </div>
+          <small class="muted">Эти символы не зависят от premium-функций Telegram и помогают красиво оформить текст поста.</small>
+        </details>
         <label class="top-offset">
           Текст поста для Telegram
           <textarea name="telegram_body_html" id="telegram_body_html" rows="10" maxlength="12000" placeholder="<b>Заголовок</b>&#10;&#10;Текст публикации...">{{ content_form.telegram_body_html }}</textarea>
