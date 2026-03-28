@@ -24,7 +24,7 @@ from email.message import EmailMessage
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Callable
-from urllib.parse import parse_qs, quote, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlencode, urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import requests
@@ -210,7 +210,7 @@ CALENDAR_VIEW_BUDGET = "budget"
 CALENDAR_VIEW_CONTENT = "content"
 CALENDAR_VIEW_OPTIONS = {CALENDAR_VIEW_MY, CALENDAR_VIEW_BUDGET, CALENDAR_VIEW_CONTENT}
 
-CONTENT_SOCIAL_OPTIONS = ["ТГ", "IT", "VK", "tw", "rednote", "boosty", "другое"]
+CONTENT_SOCIAL_OPTIONS = ["ТГ", "IT", "VK", "Pinterest", "tw", "rednote", "boosty", "другое"]
 CONTENT_STATUS_OPTIONS = ["plan", "draft", "published"]
 CONTENT_STATUS_LABELS = {
     "plan": "План",
@@ -224,8 +224,14 @@ CONTENT_TELEGRAM_CHANNEL_GROUP = "content_telegram_channel"
 CONTENT_TELEGRAM_PREMIUM_EMOJI_GROUP = "content_telegram_premium_emoji"
 CONTENT_VK_TOKEN_GROUP = "content_vk_api_token"
 CONTENT_VK_GROUP_GROUP = "content_vk_group"
+CONTENT_PINTEREST_ACCESS_TOKEN_GROUP = "content_pinterest_access_token"
+CONTENT_PINTEREST_REFRESH_TOKEN_GROUP = "content_pinterest_refresh_token"
+CONTENT_PINTEREST_SCOPE_GROUP = "content_pinterest_scope"
+CONTENT_PINTEREST_PROFILE_GROUP = "content_pinterest_profile"
+CONTENT_PINTEREST_BOARD_GROUP = "content_pinterest_board"
 CONTENT_RUBRIC_TAG_GROUP = "content_rubric_tag"
 CONTENT_PLAN_ACCESS_VERIFIED_GROUP = "content_plan_brfox_subscription_verified_at"
+CONTENT_PINTEREST_OAUTH_STATE_SESSION_KEY = "content_pinterest_oauth_state"
 CONTENT_TELEGRAM_IMAGE_MAX_SIDE = 2000
 CONTENT_TELEGRAM_IMAGE_RETENTION_HOURS = max(
     1,
@@ -239,6 +245,24 @@ try:
     SITE_TIMEZONE = ZoneInfo(os.getenv("SITE_TIMEZONE", "Europe/Moscow"))
 except ZoneInfoNotFoundError:
     SITE_TIMEZONE = ZoneInfo("UTC")
+
+PINTEREST_APP_ID = str(os.getenv("PINTEREST_APP_ID", "")).strip()
+PINTEREST_APP_SECRET = str(os.getenv("PINTEREST_APP_SECRET", "")).strip()
+PINTEREST_API_URI = str(os.getenv("PINTEREST_API_URI", "https://api.pinterest.com")).strip().rstrip("/")
+PINTEREST_OAUTH_URI = str(os.getenv("PINTEREST_OAUTH_URI", "https://www.pinterest.com")).strip().rstrip("/")
+PINTEREST_REDIRECT_URI = str(
+    os.getenv("PINTEREST_REDIRECT_URI", f"{SITE_URL}/my-calendar/content/pinterest/oauth/callback")
+).strip()
+PINTEREST_OAUTH_SCOPES = [
+    scope.strip()
+    for scope in str(
+        os.getenv(
+            "PINTEREST_OAUTH_SCOPES",
+            "boards:read,pins:read,pins:write,user_accounts:read",
+        )
+    ).split(",")
+    if scope.strip()
+]
 
 COSPLAYER_COLLAB_OPTIONS = {
     "open": "Открыт(а)",
@@ -705,6 +729,9 @@ def apply_schema_migrations() -> None:
             ("vk_groups_json", "JSON NOT NULL DEFAULT '[]'"),
             ("vk_post_ids_json", "JSON NOT NULL DEFAULT '[]'"),
             ("vk_published_at", "DATETIME"),
+            ("pinterest_boards_json", "JSON NOT NULL DEFAULT '[]'"),
+            ("pinterest_pin_ids_json", "JSON NOT NULL DEFAULT '[]'"),
+            ("pinterest_published_at", "DATETIME"),
         ],
     }
 
@@ -2199,11 +2226,13 @@ def get_content_plan_form_values(
     rubric_tags: dict[str, str] | None = None,
     telegram_channels: list[dict[str, str]] | None = None,
     vk_groups: list[dict[str, str]] | None = None,
+    pinterest_boards: list[dict[str, str]] | None = None,
     premium_emoji_map: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     tag_map = rubric_tags or {}
     available_telegram_channels = telegram_channels or []
     available_vk_groups = vk_groups or []
+    available_pinterest_boards = pinterest_boards or []
     default_channel_ids = (
         [available_telegram_channels[0]["chat_id"]]
         if len(available_telegram_channels) == 1 and available_telegram_channels[0].get("chat_id")
@@ -2212,6 +2241,11 @@ def get_content_plan_form_values(
     default_vk_group_ids = (
         [available_vk_groups[0]["owner_id"]]
         if len(available_vk_groups) == 1 and available_vk_groups[0].get("owner_id")
+        else []
+    )
+    default_pinterest_board_ids = (
+        [available_pinterest_boards[0]["id"]]
+        if len(available_pinterest_boards) == 1 and available_pinterest_boards[0].get("id")
         else []
     )
     if not post:
@@ -2224,6 +2258,7 @@ def get_content_plan_form_values(
             "socials_other": "",
             "telegram_channel_ids": default_channel_ids,
             "vk_group_ids": default_vk_group_ids,
+            "pinterest_board_ids": default_pinterest_board_ids,
             "rubric_existing": "",
             "rubric_new": "",
             "rubric_tag_value": "",
@@ -2243,6 +2278,7 @@ def get_content_plan_form_values(
         "socials_other": ", ".join(socials_other_values),
         "telegram_channel_ids": as_list(post.telegram_channels_json) or default_channel_ids,
         "vk_group_ids": as_list(post.vk_groups_json) or default_vk_group_ids,
+        "pinterest_board_ids": as_list(post.pinterest_boards_json) or default_pinterest_board_ids,
         "rubric_existing": post.rubric or "",
         "rubric_new": "",
         "rubric_tag_value": normalize_content_rubric_tag(post.rubric_tag) or tag_map.get(post.rubric or "", ""),
@@ -2281,6 +2317,7 @@ def save_content_plan_post_from_form(form: Any, post: ContentPlanPost, user: Use
     telegram_photos = parse_reference_values(str(form.get("telegram_photos_input", "")))[:10]
     available_telegram_channels = get_content_telegram_channels(db, user.id)
     available_vk_groups = get_content_vk_groups(db, user.id)
+    available_pinterest_boards = get_content_pinterest_boards(db, user.id)
     selected_telegram_channels = resolve_content_telegram_channels(
         form.getlist("telegram_channel_ids"),
         available_telegram_channels,
@@ -2289,8 +2326,13 @@ def save_content_plan_post_from_form(form: Any, post: ContentPlanPost, user: Use
         form.getlist("vk_group_ids"),
         available_vk_groups,
     )
+    selected_pinterest_boards = resolve_content_pinterest_boards(
+        form.getlist("pinterest_board_ids"),
+        available_pinterest_boards,
+    )
     selected_telegram_channel_ids = [channel["chat_id"] for channel in selected_telegram_channels]
     selected_vk_group_ids = [group["owner_id"] for group in selected_vk_groups]
+    selected_pinterest_board_ids = [board["id"] for board in selected_pinterest_boards]
     rubric_tags = get_content_rubric_tags(db, user.id)
 
     if not title:
@@ -2305,8 +2347,8 @@ def save_content_plan_post_from_form(form: Any, post: ContentPlanPost, user: Use
         return False, "Краткое описание должно быть не длиннее 4000 символов."
     if len(telegram_body_html) > 12000:
         return False, "Текст для Telegram должен быть не длиннее 12000 символов."
-    if any(item.casefold() in {"тг", "vk"} for item in socials) and not publish_time:
-        return False, "Для автопубликации в Telegram и VK укажите время публикации."
+    if any(item.casefold() in {"тг", "vk", "pinterest"} for item in socials) and not publish_time:
+        return False, "Для автопубликации в Telegram, VK и Pinterest укажите время публикации."
     if any(item.casefold() == "тг" for item in socials):
         if not available_telegram_channels:
             return False, "Сначала добавьте хотя бы один Telegram-канал в настройках."
@@ -2323,6 +2365,16 @@ def save_content_plan_post_from_form(form: Any, post: ContentPlanPost, user: Use
                 selected_vk_group_ids = [available_vk_groups[0]["owner_id"]]
             else:
                 return False, "Выберите хотя бы одно сообщество VK для публикации."
+    if any(item.casefold() == "pinterest" for item in socials):
+        if not available_pinterest_boards:
+            return False, "Сначала подключите Pinterest и подтяните хотя бы одну доску."
+        if not telegram_photos:
+            return False, "Для Pinterest нужен хотя бы один пин-изображение в блоке фотографий."
+        if not selected_pinterest_board_ids:
+            if len(available_pinterest_boards) == 1:
+                selected_pinterest_board_ids = [available_pinterest_boards[0]["id"]]
+            else:
+                return False, "Выберите хотя бы одну доску Pinterest для публикации."
 
     normalized_tag = normalize_content_rubric_tag(rubric_tag_value)
     if rubric_tag_value and not normalized_tag:
@@ -2341,6 +2393,7 @@ def save_content_plan_post_from_form(form: Any, post: ContentPlanPost, user: Use
     post.telegram_photos_json = telegram_photos
     post.telegram_channels_json = selected_telegram_channel_ids
     post.vk_groups_json = selected_vk_group_ids
+    post.pinterest_boards_json = selected_pinterest_board_ids
 
     if resolved_rubric_tag and (rubric_new or rubric_existing):
         rubric_tags[rubric] = resolved_rubric_tag
@@ -2372,6 +2425,358 @@ def get_content_vk_settings(user: User, db: Session) -> dict[str, Any]:
         "groups_text": "",
         "groups_masked_text": format_content_vk_group_lines(groups, masked_tokens=True),
         "groups": groups,
+    }
+
+
+class PinterestUnauthorizedError(RuntimeError):
+    pass
+
+
+def pinterest_app_configured() -> bool:
+    return bool(PINTEREST_APP_ID and PINTEREST_APP_SECRET and PINTEREST_REDIRECT_URI)
+
+
+def pinterest_authorize_url(state: str) -> str:
+    query = urlencode(
+        {
+            "consumer_id": PINTEREST_APP_ID,
+            "redirect_uri": PINTEREST_REDIRECT_URI,
+            "response_type": "code",
+            "scope": ",".join(PINTEREST_OAUTH_SCOPES),
+            "refreshable": "true",
+            "state": state,
+        }
+    )
+    return f"{PINTEREST_OAUTH_URI}/oauth/?{query}"
+
+
+def pinterest_basic_auth_header() -> str:
+    raw = f"{PINTEREST_APP_ID}:{PINTEREST_APP_SECRET}".encode("utf-8")
+    return "Basic " + base64.b64encode(raw).decode("ascii")
+
+
+def pinterest_token_request(payload: dict[str, Any]) -> dict[str, Any]:
+    if not pinterest_app_configured():
+        raise RuntimeError("Pinterest OAuth пока не настроен на сервере.")
+    try:
+        response = requests.post(
+            f"{PINTEREST_API_URI}/v5/oauth/token",
+            headers={
+                "Authorization": pinterest_basic_auth_header(),
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
+            data={key: str(value) for key, value in payload.items() if value is not None and str(value) != ""},
+            timeout=max(10, HTTP_TIMEOUT_SECONDS * 2),
+        )
+    except requests.RequestException as exc:
+        raise RuntimeError("Не удалось связаться с Pinterest OAuth.") from exc
+    try:
+        response_payload = response.json() if response.content else {}
+    except ValueError as exc:
+        raise RuntimeError("Pinterest OAuth вернул некорректный ответ.") from exc
+    if not response.ok or not isinstance(response_payload, dict) or not str(response_payload.get("access_token") or "").strip():
+        message = str(response_payload.get("message") or response_payload.get("error") or response.reason or "").strip()
+        raise RuntimeError(message or "Pinterest не выдал access token.")
+    return response_payload
+
+
+def store_content_pinterest_token_payload(db: Session, user_id: int, payload: dict[str, Any]) -> None:
+    access_token = str(payload.get("access_token") or "").strip()
+    refresh_token = str(payload.get("refresh_token") or "").strip()
+    scope = str(payload.get("scope") or "").strip()
+    if access_token:
+        set_secret_user_option_value(db, user_id, CONTENT_PINTEREST_ACCESS_TOKEN_GROUP, access_token)
+    if refresh_token:
+        set_secret_user_option_value(db, user_id, CONTENT_PINTEREST_REFRESH_TOKEN_GROUP, refresh_token)
+    if scope:
+        set_user_option_value(db, user_id, CONTENT_PINTEREST_SCOPE_GROUP, scope)
+
+
+def refresh_content_pinterest_access_token(db: Session, user_id: int) -> str:
+    refresh_token = str(get_secret_user_option_value(db, user_id, CONTENT_PINTEREST_REFRESH_TOKEN_GROUP) or "").strip()
+    if not refresh_token:
+        raise RuntimeError("Сессия Pinterest истекла. Подключите Pinterest заново.")
+    payload = pinterest_token_request(
+        {
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token,
+            "refresh_on": "true",
+        }
+    )
+    store_content_pinterest_token_payload(db, user_id, payload)
+    db.commit()
+    return str(payload.get("access_token") or "").strip()
+
+
+def pinterest_content_api_call(
+    access_token: str,
+    method: str,
+    path: str,
+    *,
+    params: dict[str, Any] | None = None,
+    json_payload: dict[str, Any] | None = None,
+) -> Any:
+    token = str(access_token or "").strip()
+    if not token:
+        raise RuntimeError("Pinterest не подключен.")
+    request_headers = {"Authorization": f"Bearer {token}"}
+    if json_payload is not None:
+        request_headers["Content-Type"] = "application/json"
+    try:
+        response = requests.request(
+            method.upper(),
+            f"{PINTEREST_API_URI}/v5{path}",
+            headers=request_headers,
+            params=params,
+            json=json_payload,
+            timeout=max(10, HTTP_TIMEOUT_SECONDS * 2),
+        )
+    except requests.RequestException as exc:
+        raise RuntimeError("Не удалось связаться с Pinterest API.") from exc
+    if response.status_code == 401:
+        raise PinterestUnauthorizedError("Pinterest отклонил access token.")
+    try:
+        payload = response.json() if response.content else {}
+    except ValueError as exc:
+        raise RuntimeError("Pinterest API вернул некорректный ответ.") from exc
+    if not response.ok:
+        message = ""
+        if isinstance(payload, dict):
+            message = str(payload.get("message") or payload.get("error") or "").strip()
+        raise RuntimeError(message or f"Pinterest API временно недоступен (HTTP {response.status_code}).")
+    return payload
+
+
+def pinterest_authorized_api_call(
+    db: Session,
+    user_id: int,
+    method: str,
+    path: str,
+    *,
+    params: dict[str, Any] | None = None,
+    json_payload: dict[str, Any] | None = None,
+) -> Any:
+    access_token = str(get_secret_user_option_value(db, user_id, CONTENT_PINTEREST_ACCESS_TOKEN_GROUP) or "").strip()
+    if not access_token:
+        raise RuntimeError("Сначала подключите Pinterest.")
+    try:
+        return pinterest_content_api_call(
+            access_token,
+            method,
+            path,
+            params=params,
+            json_payload=json_payload,
+        )
+    except PinterestUnauthorizedError:
+        refreshed_token = refresh_content_pinterest_access_token(db, user_id)
+        return pinterest_content_api_call(
+            refreshed_token,
+            method,
+            path,
+            params=params,
+            json_payload=json_payload,
+        )
+
+
+def encode_content_pinterest_profile_value(profile: dict[str, Any]) -> str:
+    return json.dumps(
+        {
+            "account_id": str(profile.get("account_id") or "").strip(),
+            "username": str(profile.get("username") or "").strip(),
+            "account_type": str(profile.get("account_type") or "").strip(),
+            "profile_image": str(profile.get("profile_image") or "").strip(),
+            "website_url": str(profile.get("website_url") or "").strip(),
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
+def decode_content_pinterest_profile_value(value: str) -> dict[str, str] | None:
+    raw = (value or "").strip()
+    if not raw:
+        return None
+    try:
+        payload = json.loads(raw)
+    except ValueError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    username = str(payload.get("username") or "").strip()
+    account_id = str(payload.get("account_id") or "").strip()
+    if not username and not account_id:
+        return None
+    return {
+        "account_id": account_id,
+        "username": username,
+        "account_type": str(payload.get("account_type") or "").strip(),
+        "profile_image": str(payload.get("profile_image") or "").strip(),
+        "website_url": str(payload.get("website_url") or "").strip(),
+    }
+
+
+def encode_content_pinterest_board_value(name: str, board_id: str, privacy: str = "") -> str:
+    return json.dumps(
+        {
+            "id": str(board_id or "").strip(),
+            "name": str(name or "").strip(),
+            "privacy": str(privacy or "").strip(),
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
+def decode_content_pinterest_board_value(value: str) -> dict[str, str] | None:
+    raw = (value or "").strip()
+    if not raw:
+        return None
+    try:
+        payload = json.loads(raw)
+    except ValueError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    board_id = str(payload.get("id") or "").strip()
+    name = str(payload.get("name") or "").strip()
+    if not board_id:
+        return None
+    return {
+        "id": board_id,
+        "name": name[:120] or f"Доска {board_id}",
+        "privacy": str(payload.get("privacy") or "").strip(),
+    }
+
+
+def get_content_pinterest_profile(db: Session, user_id: int) -> dict[str, str] | None:
+    return decode_content_pinterest_profile_value(get_user_option_value(db, user_id, CONTENT_PINTEREST_PROFILE_GROUP))
+
+
+def get_content_pinterest_boards(db: Session, user_id: int) -> list[dict[str, str]]:
+    boards: list[dict[str, str]] = []
+    seen_ids: set[str] = set()
+    for value in get_user_option_values(db, user_id, CONTENT_PINTEREST_BOARD_GROUP):
+        decoded = decode_content_pinterest_board_value(value)
+        if not decoded:
+            continue
+        board_id = str(decoded.get("id") or "").strip()
+        if not board_id or board_id in seen_ids:
+            continue
+        seen_ids.add(board_id)
+        boards.append(decoded)
+    return boards
+
+
+def extract_pinterest_board_list(payload: Any) -> tuple[list[dict[str, Any]], str]:
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)], ""
+    if isinstance(payload, dict):
+        items = payload.get("items")
+        bookmark = str(payload.get("bookmark") or "").strip()
+        if isinstance(items, list):
+            return [item for item in items if isinstance(item, dict)], bookmark
+        return [payload], bookmark
+    return [], ""
+
+
+def fetch_content_pinterest_profile(db: Session, user_id: int) -> dict[str, str]:
+    payload = pinterest_authorized_api_call(db, user_id, "GET", "/user_account")
+    if not isinstance(payload, dict):
+        raise RuntimeError("Pinterest не вернул профиль пользователя.")
+    return {
+        "account_id": str(payload.get("id") or payload.get("account_id") or payload.get("username") or "").strip(),
+        "username": str(payload.get("username") or "").strip(),
+        "account_type": str(payload.get("account_type") or "").strip(),
+        "profile_image": str(payload.get("profile_image") or "").strip(),
+        "website_url": str(payload.get("website_url") or "").strip(),
+    }
+
+
+def fetch_content_pinterest_boards(db: Session, user_id: int) -> list[dict[str, str]]:
+    boards: list[dict[str, str]] = []
+    seen_ids: set[str] = set()
+    bookmark = ""
+    for _ in range(10):
+        params: dict[str, Any] = {"page_size": 100}
+        if bookmark:
+            params["bookmark"] = bookmark
+        payload = pinterest_authorized_api_call(db, user_id, "GET", "/boards", params=params)
+        items, next_bookmark = extract_pinterest_board_list(payload)
+        for item in items:
+            board_id = str(item.get("id") or "").strip()
+            if not board_id or board_id in seen_ids:
+                continue
+            seen_ids.add(board_id)
+            boards.append(
+                {
+                    "id": board_id,
+                    "name": str(item.get("name") or item.get("title") or "").strip()[:120] or f"Доска {board_id}",
+                    "privacy": str(item.get("privacy") or "").strip(),
+                }
+            )
+        if not next_bookmark:
+            break
+        bookmark = next_bookmark
+    return boards
+
+
+def sync_content_pinterest_remote_data(user: User, db: Session) -> tuple[dict[str, str], list[dict[str, str]]]:
+    profile = fetch_content_pinterest_profile(db, user.id)
+    boards = fetch_content_pinterest_boards(db, user.id)
+    set_user_option_value(db, user.id, CONTENT_PINTEREST_PROFILE_GROUP, encode_content_pinterest_profile_value(profile))
+    replace_user_option_values(
+        db,
+        user.id,
+        CONTENT_PINTEREST_BOARD_GROUP,
+        [encode_content_pinterest_board_value(board["name"], board["id"], board.get("privacy", "")) for board in boards],
+    )
+    db.commit()
+    return profile, boards
+
+
+def resolve_content_pinterest_boards(
+    selected_board_ids: list[str] | tuple[str, ...],
+    available_boards: list[dict[str, str]],
+) -> list[dict[str, str]]:
+    available_by_id = {
+        str(board.get("id") or "").strip(): board
+        for board in available_boards
+        if str(board.get("id") or "").strip()
+    }
+    resolved: list[dict[str, str]] = []
+    seen_ids: set[str] = set()
+    for raw_board_id in selected_board_ids:
+        board_id = str(raw_board_id or "").strip()
+        if not board_id or board_id in seen_ids:
+            continue
+        board = available_by_id.get(board_id)
+        if not board:
+            continue
+        seen_ids.add(board_id)
+        resolved.append(board)
+    return resolved
+
+
+def get_content_pinterest_settings(user: User, db: Session) -> dict[str, Any]:
+    access_token = str(get_secret_user_option_value(db, user.id, CONTENT_PINTEREST_ACCESS_TOKEN_GROUP) or "").strip()
+    refresh_token = str(get_secret_user_option_value(db, user.id, CONTENT_PINTEREST_REFRESH_TOKEN_GROUP) or "").strip()
+    profile = get_content_pinterest_profile(db, user.id)
+    boards = get_content_pinterest_boards(db, user.id)
+    if access_token and (not profile or not boards):
+        try:
+            profile, boards = sync_content_pinterest_remote_data(user, db)
+        except RuntimeError:
+            pass
+    return {
+        "app_configured": pinterest_app_configured(),
+        "redirect_uri": PINTEREST_REDIRECT_URI,
+        "connect_url": "/my-calendar/content/pinterest/oauth/start",
+        "sync_url": "/my-calendar/content/pinterest/sync",
+        "profile": profile,
+        "boards": boards,
+        "scope": str(get_user_option_value(db, user.id, CONTENT_PINTEREST_SCOPE_GROUP) or "").strip(),
+        "connected": bool(access_token),
+        "has_refresh_token": bool(refresh_token),
     }
 
 
@@ -2889,6 +3294,10 @@ def content_post_targets_vk(post: ContentPlanPost) -> bool:
     return any(str(item).strip().casefold() == "vk" for item in as_list(post.socials_json))
 
 
+def content_post_targets_pinterest(post: ContentPlanPost) -> bool:
+    return any(str(item).strip().casefold() == "pinterest" for item in as_list(post.socials_json))
+
+
 def content_post_publish_datetime(post: ContentPlanPost) -> datetime | None:
     if not post.publish_date:
         return None
@@ -3007,6 +3416,16 @@ def build_content_post_plain_message(post: ContentPlanPost, rubric_tag: str | No
     return append_rubric_tag_to_plain_message(fallback_message.strip(), rubric_tag)
 
 
+def first_content_post_external_link(post: ContentPlanPost) -> str:
+    candidates = extract_urls_from_text(post.telegram_body_html or "") + extract_urls_from_text(post.description or "")
+    for candidate in candidates:
+        normalized = build_external_url(candidate)
+        if not normalized or normalized.startswith(f"{SITE_URL}/media/"):
+            continue
+        return normalized
+    return ""
+
+
 def load_content_photo_binary(photo_ref: str) -> tuple[str, bytes, str]:
     local_path = local_media_reference_to_path(photo_ref)
     if local_path and local_path.exists() and local_path.is_file():
@@ -3119,6 +3538,137 @@ def mark_content_post_vk_published(
     post.vk_published_at = datetime.utcnow()
     if normalize_content_status(post.status) != "published":
         post.status = "published"
+
+
+def mark_content_post_pinterest_published(
+    post: ContentPlanPost,
+    *,
+    board_pin_ids: list[dict[str, str]],
+    rubric_tag: str | None = None,
+) -> None:
+    normalized_tag = normalize_content_rubric_tag(rubric_tag) or normalize_content_rubric_tag(post.rubric_tag)
+    if normalized_tag:
+        post.rubric_tag = normalized_tag
+    post.pinterest_pin_ids_json = [
+        {
+            "board_id": str(item.get("board_id") or "").strip(),
+            "board_name": str(item.get("board_name") or "").strip(),
+            "pin_id": str(item.get("pin_id") or "").strip(),
+        }
+        for item in as_list(board_pin_ids)
+        if isinstance(item, dict)
+        and str(item.get("board_id") or "").strip()
+        and str(item.get("pin_id") or "").strip()
+    ]
+    post.pinterest_published_at = datetime.utcnow()
+    if normalize_content_status(post.status) != "published":
+        post.status = "published"
+
+
+def build_content_post_pinterest_payload(
+    post: ContentPlanPost,
+    board_id: str,
+    rubric_tag: str | None = None,
+) -> dict[str, Any]:
+    photo_refs = [str(item).strip() for item in as_list(post.telegram_photos_json) if str(item).strip()][:5]
+    if not photo_refs:
+        raise RuntimeError("Для Pinterest нужен хотя бы один загруженный или указанный URL изображения.")
+
+    photo_urls = [build_external_url(photo_ref) for photo_ref in photo_refs]
+    photo_urls = [url for url in photo_urls if url]
+    if not photo_urls:
+        raise RuntimeError("Не удалось подготовить изображения для Pinterest.")
+
+    message_text = build_content_post_plain_message(post, rubric_tag).strip()
+    title_text = str(post.title or "").strip()[:100] or None
+    description_text = message_text[:800] or None
+    alt_text = (str(post.description or "").strip() or message_text or str(post.title or "").strip())[:500] or None
+    link_value = first_content_post_external_link(post) or None
+
+    media_source: dict[str, Any]
+    if len(photo_urls) == 1:
+        media_source = {
+            "source_type": "image_url",
+            "url": photo_urls[0],
+        }
+    else:
+        media_source = {
+            "source_type": "multiple_image_urls",
+            "items": [{"url": url} for url in photo_urls],
+        }
+
+    payload = {
+        "board_id": board_id,
+        "title": title_text,
+        "description": description_text,
+        "alt_text": alt_text,
+        "link": link_value,
+        "media_source": media_source,
+    }
+    return {key: value for key, value in payload.items() if value not in (None, "", [], {})}
+
+
+def publish_content_post_to_pinterest(
+    *,
+    db: Session,
+    user_id: int,
+    board: dict[str, str],
+    post: ContentPlanPost,
+    rubric_tag: str | None = None,
+) -> str:
+    board_id = str(board.get("id") or "").strip()
+    if not board_id:
+        raise RuntimeError("Доска Pinterest указана некорректно.")
+    payload = build_content_post_pinterest_payload(post, board_id, rubric_tag)
+    response_payload = pinterest_authorized_api_call(
+        db,
+        user_id,
+        "POST",
+        "/pins",
+        json_payload=payload,
+    )
+    if not isinstance(response_payload, dict):
+        raise RuntimeError("Pinterest не вернул данные опубликованного Pin.")
+    pin_id = str(response_payload.get("id") or "").strip()
+    if not pin_id:
+        raise RuntimeError("Pinterest не вернул идентификатор опубликованного Pin.")
+    return pin_id
+
+
+def publish_content_post_to_pinterest_boards(
+    *,
+    db: Session,
+    user_id: int,
+    boards: list[dict[str, str]],
+    post: ContentPlanPost,
+    rubric_tag: str | None = None,
+) -> tuple[list[dict[str, str]], list[str]]:
+    successful: list[dict[str, str]] = []
+    errors: list[str] = []
+    for board in boards:
+        board_id = str(board.get("id") or "").strip()
+        board_name = str(board.get("name") or "").strip() or board_id
+        if not board_id:
+            continue
+        try:
+            pin_id = publish_content_post_to_pinterest(
+                db=db,
+                user_id=user_id,
+                board=board,
+                post=post,
+                rubric_tag=rubric_tag,
+            )
+        except RuntimeError as exc:
+            errors.append(f"{board_name}: {exc}")
+            continue
+        successful.append(
+            {
+                "board_id": board_id,
+                "board_name": board_name,
+                "pin_id": pin_id,
+            }
+        )
+    return successful, errors
 
 
 def publish_content_post_to_telegram(
@@ -4525,13 +5075,15 @@ def dispatch_scheduled_content_posts() -> None:
         users_cache: dict[int, User | None] = {}
         telegram_settings_cache: dict[int, dict[str, Any]] = {}
         vk_settings_cache: dict[int, dict[str, Any]] = {}
+        pinterest_settings_cache: dict[int, dict[str, Any]] = {}
         rubric_tag_cache: dict[int, dict[str, str]] = {}
         has_changes = False
 
         for post in pending_posts:
             should_publish_telegram = content_post_targets_telegram(post) and post.telegram_published_at is None
             should_publish_vk = content_post_targets_vk(post) and post.vk_published_at is None
-            if not should_publish_telegram and not should_publish_vk:
+            should_publish_pinterest = content_post_targets_pinterest(post) and post.pinterest_published_at is None
+            if not should_publish_telegram and not should_publish_vk and not should_publish_pinterest:
                 continue
             publish_at = content_post_publish_datetime(post)
             if publish_at is None or publish_at > now_local:
@@ -4598,6 +5150,31 @@ def dispatch_scheduled_content_posts() -> None:
                             mark_content_post_vk_published(
                                 post,
                                 group_post_ids=sent_posts,
+                                rubric_tag=rubric_tag,
+                            )
+                            has_changes = True
+
+            if should_publish_pinterest:
+                if user.id not in pinterest_settings_cache:
+                    pinterest_settings_cache[user.id] = get_content_pinterest_settings(user, db)
+                pinterest_settings = pinterest_settings_cache[user.id]
+                available_boards = list(pinterest_settings.get("boards") or [])
+                if pinterest_settings.get("connected") and available_boards:
+                    selected_boards = resolve_content_pinterest_boards(as_list(post.pinterest_boards_json), available_boards)
+                    if not selected_boards and len(available_boards) == 1:
+                        selected_boards = [available_boards[0]]
+                    if selected_boards:
+                        sent_pins, _ = publish_content_post_to_pinterest_boards(
+                            db=db,
+                            user_id=user.id,
+                            boards=selected_boards,
+                            post=post,
+                            rubric_tag=rubric_tag,
+                        )
+                        if sent_pins:
+                            mark_content_post_pinterest_published(
+                                post,
+                                board_pin_ids=sent_pins,
                                 rubric_tag=rubric_tag,
                             )
                             has_changes = True
@@ -9980,6 +10557,7 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
     ).scalars().all()
     telegram_settings = get_content_telegram_settings(user, db)
     vk_settings = get_content_vk_settings(user, db)
+    pinterest_settings = get_content_pinterest_settings(user, db)
     premium_emoji_map = {
         str(entry.get("emoji_id") or "").strip(): str(entry.get("emoji") or "").strip()
         for entry in list(telegram_settings.get("premium_emojis") or [])
@@ -9987,6 +10565,7 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
     }
     telegram_channels = list(telegram_settings.get("channels") or [])
     vk_groups = list(vk_settings.get("groups") or [])
+    pinterest_boards = list(pinterest_settings.get("boards") or [])
     telegram_channels_by_id = {
         str(channel.get("chat_id") or "").strip(): channel
         for channel in telegram_channels
@@ -9996,6 +10575,11 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
         str(group.get("owner_id") or "").strip(): group
         for group in vk_groups
         if str(group.get("owner_id") or "").strip()
+    }
+    pinterest_boards_by_id = {
+        str(board.get("id") or "").strip(): board
+        for board in pinterest_boards
+        if str(board.get("id") or "").strip()
     }
     rubric_tags = get_content_rubric_tags(db, user.id)
     rubric_options = merge_unique(
@@ -10016,6 +10600,11 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
             vk_groups_by_owner_id[group_id]
             for group_id in as_list(post.vk_groups_json)
             if group_id in vk_groups_by_owner_id
+        ]
+        row_pinterest_boards = [
+            pinterest_boards_by_id[board_id]
+            for board_id in as_list(post.pinterest_boards_json)
+            if board_id in pinterest_boards_by_id
         ]
         content_rows.append(
             {
@@ -10041,6 +10630,12 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
                     if str(group.get("title") or group.get("screen_name") or group.get("owner_id") or "").strip()
                 ) or "—",
                 "vk_published_at": post.vk_published_at,
+                "pinterest_boards_text": ", ".join(
+                    str(board.get("name") or board.get("id") or "").strip()
+                    for board in row_pinterest_boards
+                    if str(board.get("name") or board.get("id") or "").strip()
+                ) or "—",
+                "pinterest_published_at": post.pinterest_published_at,
             }
         )
 
@@ -10092,10 +10687,18 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
         content_rubric_options=rubric_options,
         content_rubric_colors=rubric_colors,
         content_rubric_tags=rubric_tags,
-        content_form=get_content_plan_form_values(editing_content_post, rubric_tags, telegram_channels, vk_groups, premium_emoji_map),
+        content_form=get_content_plan_form_values(
+            editing_content_post,
+            rubric_tags,
+            telegram_channels,
+            vk_groups,
+            pinterest_boards,
+            premium_emoji_map,
+        ),
         editing_content_post=editing_content_post,
         telegram_settings=telegram_settings,
         vk_settings=vk_settings,
+        pinterest_settings=pinterest_settings,
         telegram_settings_masked={
             "bot_token": mask_secret_value(telegram_settings.get("bot_token")),
             "channels_text": telegram_settings.get("channels_text", ""),
@@ -10105,6 +10708,14 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
         },
         telegram_content_connected=bool(telegram_settings.get("bot_token") and telegram_channels),
         vk_content_connected=bool(vk_groups),
+        pinterest_content_connected=bool(pinterest_settings.get("connected")),
+        content_initial_platform=(
+            "pinterest"
+            if pinterest_settings.get("connected") and not (telegram_settings.get("bot_token") and telegram_channels) and not vk_groups
+            else "vk"
+            if not (telegram_settings.get("bot_token") and telegram_channels) and vk_groups
+            else "telegram"
+        ),
         content_access_state=content_access_state,
         month_weekday_labels=["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"],
     )
@@ -10640,6 +11251,110 @@ def my_calendar_content_vk_disconnect(request: Request, db: Session = Depends(ge
     return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
 
 
+@app.get("/my-calendar/content/pinterest/oauth/start")
+def my_calendar_content_pinterest_oauth_start(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    access_redirect = ensure_content_plan_access(request, user, db)
+    if access_redirect:
+        return access_redirect
+    if not pinterest_app_configured():
+        add_flash(
+            request,
+            "Pinterest OAuth пока не настроен на сервере. Сначала добавьте PINTEREST_APP_ID и PINTEREST_APP_SECRET.",
+            "error",
+        )
+        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+    state = secrets.token_urlsafe(24)
+    request.session[CONTENT_PINTEREST_OAUTH_STATE_SESSION_KEY] = state
+    return RedirectResponse(pinterest_authorize_url(state), status_code=302)
+
+
+@app.get("/my-calendar/content/pinterest/oauth/callback")
+def my_calendar_content_pinterest_oauth_callback(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    expected_state = str(request.session.pop(CONTENT_PINTEREST_OAUTH_STATE_SESSION_KEY, "") or "").strip()
+    returned_state = str(request.query_params.get("state", "") or "").strip()
+    error_code = str(request.query_params.get("error", "") or "").strip()
+    error_description = str(request.query_params.get("error_description", "") or "").strip()
+    auth_code = str(request.query_params.get("code", "") or "").strip()
+
+    if error_code:
+        add_flash(request, error_description or f"Pinterest OAuth вернул ошибку: {error_code}", "error")
+        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+    if not expected_state or returned_state != expected_state:
+        add_flash(request, "Pinterest OAuth завершился с неверным state. Повторите подключение.", "error")
+        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+    if not auth_code:
+        add_flash(request, "Pinterest не вернул код авторизации.", "error")
+        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+
+    try:
+        token_payload = pinterest_token_request(
+            {
+                "grant_type": "authorization_code",
+                "code": auth_code,
+                "redirect_uri": PINTEREST_REDIRECT_URI,
+            }
+        )
+        store_content_pinterest_token_payload(db, user.id, token_payload)
+        db.commit()
+        profile, boards = sync_content_pinterest_remote_data(user, db)
+    except RuntimeError as exc:
+        add_flash(request, str(exc), "error")
+        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+
+    profile_label = str(profile.get("username") or "аккаунт").strip()
+    add_flash(
+        request,
+        f"Pinterest подключён ({profile_label}). Досок найдено: {len(boards)}.",
+        "success",
+    )
+    return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+
+
+@app.post("/my-calendar/content/pinterest/sync")
+def my_calendar_content_pinterest_sync(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    access_redirect = ensure_content_plan_access(request, user, db)
+    if access_redirect:
+        return access_redirect
+
+    try:
+        _, boards = sync_content_pinterest_remote_data(user, db)
+    except RuntimeError as exc:
+        add_flash(request, str(exc), "error")
+        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+
+    add_flash(request, f"Список досок Pinterest обновлён: {len(boards)}.", "success")
+    return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+
+
+@app.post("/my-calendar/content/pinterest/disconnect")
+def my_calendar_content_pinterest_disconnect(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    access_redirect = ensure_content_plan_access(request, user, db)
+    if access_redirect:
+        return access_redirect
+
+    set_secret_user_option_value(db, user.id, CONTENT_PINTEREST_ACCESS_TOKEN_GROUP, "")
+    set_secret_user_option_value(db, user.id, CONTENT_PINTEREST_REFRESH_TOKEN_GROUP, "")
+    set_user_option_value(db, user.id, CONTENT_PINTEREST_SCOPE_GROUP, "")
+    set_user_option_value(db, user.id, CONTENT_PINTEREST_PROFILE_GROUP, "")
+    replace_user_option_values(db, user.id, CONTENT_PINTEREST_BOARD_GROUP, [])
+    db.commit()
+    add_flash(request, "Pinterest отключён.", "info")
+    return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+
+
 @app.post("/my-calendar/content/{post_id}/telegram-publish")
 def my_calendar_content_publish_telegram(post_id: int, request: Request, db: Session = Depends(get_db)):
     user = current_user(request, db)
@@ -10761,6 +11476,71 @@ def my_calendar_content_publish_vk(post_id: int, request: Request, db: Session =
     )
     db.commit()
     success_text = f"Пост опубликован в VK-сообщества: {len(sent_posts)}."
+    if send_errors:
+        success_text = f"{success_text} Не удалось отправить в: {'; '.join(send_errors)}"
+    add_flash(request, success_text, "success")
+    return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+
+
+@app.post("/my-calendar/content/{post_id}/pinterest-publish")
+def my_calendar_content_publish_pinterest(post_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    access_redirect = ensure_content_plan_access(request, user, db)
+    if access_redirect:
+        return access_redirect
+
+    post = db.execute(
+        select(ContentPlanPost).where(
+            ContentPlanPost.id == post_id,
+            ContentPlanPost.user_id == user.id,
+        )
+    ).scalar_one_or_none()
+    if not post:
+        add_flash(request, "Пост контент-плана не найден.", "error")
+        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+
+    pinterest_settings = get_content_pinterest_settings(user, db)
+    available_boards = list(pinterest_settings.get("boards") or [])
+    if not pinterest_settings.get("connected"):
+        add_flash(request, "Сначала подключите Pinterest в настройках контент-плана.", "error")
+        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+    if not available_boards:
+        add_flash(request, "Сначала подтяните хотя бы одну доску Pinterest.", "error")
+        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+
+    selected_boards = resolve_content_pinterest_boards(as_list(post.pinterest_boards_json), available_boards)
+    if not selected_boards and len(available_boards) == 1:
+        selected_boards = [available_boards[0]]
+    if not selected_boards:
+        add_flash(request, "Выберите хотя бы одну доску Pinterest в карточке поста.", "error")
+        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+
+    try:
+        rubric_tag = normalize_content_rubric_tag(post.rubric_tag) or get_content_rubric_tags(db, user.id).get(post.rubric or "", "")
+        sent_pins, send_errors = publish_content_post_to_pinterest_boards(
+            db=db,
+            user_id=user.id,
+            boards=selected_boards,
+            post=post,
+            rubric_tag=rubric_tag,
+        )
+    except Exception as exc:
+        add_flash(request, str(exc), "error")
+        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+
+    if not sent_pins:
+        add_flash(request, send_errors[0] if send_errors else "Не удалось опубликовать пост в Pinterest.", "error")
+        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+
+    mark_content_post_pinterest_published(
+        post,
+        board_pin_ids=sent_pins,
+        rubric_tag=rubric_tag,
+    )
+    db.commit()
+    success_text = f"Пост опубликован в Pinterest-доски: {len(sent_pins)}."
     if send_errors:
         success_text = f"{success_text} Не удалось отправить в: {'; '.join(send_errors)}"
     add_flash(request, success_text, "success")

@@ -252,16 +252,17 @@
   {% endif %}
 {% else %}
   {% if content_access_state.has_access %}
-  <section class="box content-platform-settings" data-initial-platform="{{ 'vk' if not telegram_content_connected and vk_content_connected else 'telegram' }}">
+  <section class="box content-platform-settings" data-initial-platform="{{ content_initial_platform }}">
     <div class="calendar-tabs">
       <button type="button" class="tab active" data-platform-tab="telegram">Telegram</button>
       <button type="button" class="tab" data-platform-tab="vk">VK</button>
+      <button type="button" class="tab" data-platform-tab="pinterest">Pinterest</button>
     </div>
 
     <div class="content-platform-panel" data-platform-panel="telegram">
       <p class="muted">
         Подключите своего Telegram-бота и один или несколько каналов, чтобы публиковать посты прямо из контент-плана.
-        Один и тот же запланированный пост можно отправлять сразу в Telegram и VK.
+        Один и тот же запланированный пост можно отправлять сразу в Telegram, VK и Pinterest.
       </p>
       <details class="top-offset">
         <summary>Как подключить канал</summary>
@@ -338,6 +339,58 @@
         <form method="post" action="/my-calendar/content/vk/disconnect" class="top-offset" onsubmit="return confirm('Удалить настройки VK-сообществ?');">
           <button type="submit" class="btn btn-danger">Отключить VK-сообщества</button>
         </form>
+      {% endif %}
+    </div>
+
+    <div class="content-platform-panel" data-platform-panel="pinterest" hidden>
+      <p class="muted">
+        Pinterest подключается через OAuth: пользователь авторизует именно свой Pinterest-аккаунт, после чего мы подтягиваем его доски,
+        а в карточке поста можно выбрать одну или несколько досок для публикации.
+      </p>
+      <div class="notes-block telegram-editor-note">
+        Для Pinterest в первой версии используется plain-text представление поста и изображения из блока фотографий. Разметка Telegram вроде полужирного, курсива и premium-эмодзи в Pinterest как отдельное форматирование не поддерживается.
+      </div>
+      <details class="top-offset">
+        <summary>Как подключить Pinterest</summary>
+        <ol class="notes-list top-offset">
+          <li>Создайте приложение в Pinterest Developers и получите <code>App ID</code> и <code>App secret</code>.</li>
+          <li>В настройках приложения добавьте redirect URI: <code>{{ pinterest_settings.redirect_uri }}</code>.</li>
+          <li>После этого нажмите кнопку подключения ниже и подтвердите доступ к доскам и публикации Pin-ов.</li>
+          <li>После успешного подключения появится список ваших досок, а один и тот же пост можно будет публиковать одновременно в Telegram, VK и Pinterest.</li>
+        </ol>
+      </details>
+      {% if not pinterest_settings.app_configured %}
+        <div class="notes-block telegram-editor-note telegram-editor-note-warning top-offset">
+          Pinterest OAuth появится после того, как на сервере будут заданы <code>PINTEREST_APP_ID</code> и <code>PINTEREST_APP_SECRET</code>.
+        </div>
+      {% endif %}
+      {% if pinterest_settings.connected and pinterest_settings.profile %}
+        <p class="muted top-offset">
+          Подключён аккаунт:
+          <strong>{{ pinterest_settings.profile.username or pinterest_settings.profile.account_id }}</strong>
+          {% if pinterest_settings.profile.account_type %}· {{ pinterest_settings.profile.account_type }}{% endif %}
+        </p>
+      {% endif %}
+      {% if pinterest_settings.boards %}
+        <p class="muted">Доски Pinterest: {{ pinterest_settings.boards|length }}</p>
+      {% endif %}
+      <div class="actions-inline top-offset wrap">
+        <a href="{{ pinterest_settings.connect_url }}" class="btn btn-accent {% if not pinterest_settings.app_configured %}disabled{% endif %}">Подключить Pinterest через OAuth</a>
+        {% if pinterest_content_connected %}
+          <form method="post" action="{{ pinterest_settings.sync_url }}">
+            <button type="submit" class="btn">Обновить доски</button>
+          </form>
+          <form method="post" action="/my-calendar/content/pinterest/disconnect" onsubmit="return confirm('Отключить Pinterest и удалить сохранённые токены?');">
+            <button type="submit" class="btn btn-danger">Отключить Pinterest</button>
+          </form>
+        {% endif %}
+      </div>
+      {% if pinterest_settings.boards %}
+        <div class="chips-wrap top-offset">
+          {% for board in pinterest_settings.boards %}
+            <span class="chip">{{ board.name or board.id }}</span>
+          {% endfor %}
+        </div>
       {% endif %}
     </div>
   </section>
@@ -452,7 +505,7 @@
           </div>
         </label>
       </div>
-      <p class="muted">Если отмечены соцсети <strong>ТГ</strong> и/или <strong>VK</strong>, пост отправится в выбранные Telegram-каналы и VK-сообщества автоматически по указанным дате и времени.</p>
+      <p class="muted">Если отмечены соцсети <strong>ТГ</strong>, <strong>VK</strong> и/или <strong>Pinterest</strong>, пост отправится в выбранные Telegram-каналы, VK-сообщества и Pinterest-доски автоматически по указанным дате и времени.</p>
       <div>
         <p class="muted">Telegram-каналы для публикации</p>
         {% if telegram_settings.channels %}
@@ -493,6 +546,27 @@
           <small class="muted">Можно выбрать несколько сообществ: пост уйдет во все отмеченные сообщества VK.</small>
         {% else %}
           <p class="muted">Сначала добавьте VK-сообщества в блоке выше.</p>
+        {% endif %}
+      </div>
+      <div>
+        <p class="muted">Pinterest-доски для публикации</p>
+        {% if pinterest_settings.boards %}
+          <div class="chips-wrap">
+            {% for board in pinterest_settings.boards %}
+              <label class="chip-check">
+                <input
+                  type="checkbox"
+                  name="pinterest_board_ids"
+                  value="{{ board.id }}"
+                  {% if board.id in content_form.pinterest_board_ids %}checked{% endif %}
+                />
+                {{ board.name or board.id }}
+              </label>
+            {% endfor %}
+          </div>
+          <small class="muted">Можно выбрать несколько досок: один и тот же пост уйдёт во все отмеченные Pinterest-доски.</small>
+        {% else %}
+          <p class="muted">Сначала подключите Pinterest и подтяните доски в блоке выше.</p>
         {% endif %}
       </div>
       <div>
@@ -542,6 +616,9 @@
           {% endif %}
           {% if vk_content_connected %}
             <button type="submit" class="btn" formaction="/my-calendar/content/{{ editing_content_post.id }}/vk-publish" formmethod="post">Опубликовать в VK</button>
+          {% endif %}
+          {% if pinterest_content_connected %}
+            <button type="submit" class="btn" formaction="/my-calendar/content/{{ editing_content_post.id }}/pinterest-publish" formmethod="post">Опубликовать в Pinterest</button>
           {% endif %}
           <a href="/my-calendar?view=content" class="btn">Отмена</a>
         {% endif %}
@@ -637,6 +714,12 @@
               {% if item.vk_groups_text and item.vk_groups_text != "—" %}
                 <span class="muted">VK-сообщества: {{ item.vk_groups_text }}</span>
               {% endif %}
+              {% if item.pinterest_published_at %}
+                <span class="muted">Pinterest: {{ item.pinterest_published_at.strftime('%d-%m-%Y %H:%M') }}</span>
+              {% endif %}
+              {% if item.pinterest_boards_text and item.pinterest_boards_text != "—" %}
+                <span class="muted">Pinterest-доски: {{ item.pinterest_boards_text }}</span>
+              {% endif %}
               <a class="btn btn-small" href="/my-calendar?view=content&edit_post_id={{ item.post_id }}#content-form">Редактировать</a>
               {% if telegram_content_connected %}
                 <form method="post" action="/my-calendar/content/{{ item.post_id }}/telegram-publish">
@@ -646,6 +729,11 @@
               {% if vk_content_connected %}
                 <form method="post" action="/my-calendar/content/{{ item.post_id }}/vk-publish">
                   <button type="submit" class="btn btn-small">В VK</button>
+                </form>
+              {% endif %}
+              {% if pinterest_content_connected %}
+                <form method="post" action="/my-calendar/content/{{ item.post_id }}/pinterest-publish">
+                  <button type="submit" class="btn btn-small">В Pinterest</button>
                 </form>
               {% endif %}
               <form method="post" action="/my-calendar/content/{{ item.post_id }}/delete?view=content" onsubmit="return confirm('Удалить этот пост из контент-плана?');">

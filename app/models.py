@@ -460,6 +460,9 @@ class ContentPlanPost(Base):
     vk_groups_json = Column(JSON, nullable=False, default=list)
     vk_post_ids_json = Column(JSON, nullable=False, default=list)
     vk_published_at = Column(DateTime(timezone=True), nullable=True)
+    pinterest_boards_json = Column(JSON, nullable=False, default=list)
+    pinterest_pin_ids_json = Column(JSON, nullable=False, default=list)
+    pinterest_published_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
