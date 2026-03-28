@@ -1499,6 +1499,19 @@ textarea {
   word-break: break-word;
 }
 
+.telegram-editor-note {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid rgba(15, 23, 42, 0.1);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.5);
+}
+
+.telegram-editor-note-warning {
+  background: rgba(245, 158, 11, 0.12);
+  border-color: rgba(217, 119, 6, 0.22);
+}
+
 .telegram-editor-custom-emoji-preview a {
   color: var(--accent);
   text-decoration: underline;

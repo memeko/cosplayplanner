@@ -2630,18 +2630,26 @@ def normalize_telegram_custom_emoji_html(
     emoji_fallback_by_id: dict[str, str] | None = None,
 ) -> str:
     normalized = text_value or ""
+    fallback_map = {
+        str(emoji_id).strip(): str(emoji_value).strip()
+        for emoji_id, emoji_value in (emoji_fallback_by_id or {}).items()
+        if str(emoji_id).strip() and str(emoji_value).strip()
+    }
 
     def replace_open_close(match: re.Match[str]) -> str:
         emoji_id = extract_telegram_custom_emoji_id(match.group("attrs"))
         if not emoji_id:
             return match.group(0)
-        return f'<tg-emoji emoji-id="{emoji_id}"></tg-emoji>'
+        existing_body = re.sub(r"<[^>]+>", "", match.group("body") or "").strip()
+        body = fallback_map.get(emoji_id, "").strip() or existing_body or "🙂"
+        return f'<tg-emoji emoji-id="{emoji_id}">{html.escape(body)}</tg-emoji>'
 
     def replace_self_closing(match: re.Match[str]) -> str:
         emoji_id = extract_telegram_custom_emoji_id(match.group("attrs"))
         if not emoji_id:
             return match.group(0)
-        return f'<tg-emoji emoji-id="{emoji_id}"></tg-emoji>'
+        body = fallback_map.get(emoji_id, "").strip() or "🙂"
+        return f'<tg-emoji emoji-id="{emoji_id}">{html.escape(body)}</tg-emoji>'
 
     normalized = TELEGRAM_CUSTOM_EMOJI_TAG_RE.sub(replace_open_close, normalized)
     normalized = TELEGRAM_CUSTOM_EMOJI_SELF_CLOSING_RE.sub(replace_self_closing, normalized)

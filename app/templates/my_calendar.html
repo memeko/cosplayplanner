@@ -325,6 +325,9 @@
       <section class="top-offset">
         <h3>Оформление для Telegram</h3>
         <p class="muted">Редактор использует HTML-разметку Telegram Bot API. Обычные эмодзи можно вставлять прямо в текст. Для премиум-эмодзи можно использовать сохраненные кнопки ниже или вставить тег <code>&lt;tg-emoji&gt;</code> вручную. ID удобно брать через <code>@Emoji_ID_Extractor_bot</code>.</p>
+        <div class="notes-block telegram-editor-note telegram-editor-note-warning">
+          Premium-эмодзи в Telegram пока корректно отображаются только у небольшой части пользователей. Это ограничение со стороны Telegram, поэтому в пост мы сохраняем тег вида <code>&lt;tg-emoji emoji-id="5368324170671202286"&gt;👍&lt;/tg-emoji&gt;</code> с обычным emoji внутри как fallback.
+        </div>
         <div class="actions-inline wrap top-offset">
           <button type="button" class="btn btn-small content-format-btn" data-tag-open="<b>" data-tag-close="</b>" data-target="telegram_body_html">Жирный</button>
           <button type="button" class="btn btn-small content-format-btn" data-tag-open="<i>" data-tag-close="</i>" data-target="telegram_body_html">Курсив</button>
@@ -365,6 +368,9 @@
         <div class="top-offset">
           <p class="muted">Предпросмотр</p>
           <div id="telegram_body_custom_emoji_preview" class="notes-block telegram-editor-custom-emoji-preview"></div>
+          <div class="notes-block telegram-editor-note">
+            В предпросмотре premium-эмодзи показаны для лучшей визуализации. После публикации Telegram может заменить их на обычные emoji, поэтому этот блок помогает быстрее подготовить пост и при необходимости вручную подправить итоговый текст в канале.
+          </div>
         </div>
         <label>
           Фотографии для Telegram (URL, по одной на строку)
@@ -671,7 +677,8 @@
         if (!target) return;
         const emojiId = window.prompt('Введите emoji-id для Telegram premium emoji. Если не знаете ID, его можно получить через @Emoji_ID_Extractor_bot');
         if (!emojiId) return;
-        insertAtCursor(target, `<tg-emoji emoji-id="${emojiId}"></tg-emoji>`, '');
+        const fallbackEmoji = (window.prompt('Введите обычный emoji для подстановки в тег', '👍') || '👍').trim() || '👍';
+        insertAtCursor(target, `<tg-emoji emoji-id="${emojiId}">${fallbackEmoji}</tg-emoji>`, '');
         updateTelegramCustomEmojiPreview();
       });
     });
@@ -681,18 +688,19 @@
         const target = document.getElementById(button.dataset.target);
         if (!target) return;
         const emojiId = button.dataset.emojiId || '';
+        const fallbackEmoji = (button.dataset.fallback || '👍').trim() || '👍';
         if (!emojiId) return;
-        insertAtCursor(target, `<tg-emoji emoji-id="${emojiId}"></tg-emoji>`, '');
+        insertAtCursor(target, `<tg-emoji emoji-id="${emojiId}">${fallbackEmoji}</tg-emoji>`, '');
         updateTelegramCustomEmojiPreview();
       });
     });
 
-    function renderTelegramCustomEmojiTag(emojiId) {
+    function renderTelegramCustomEmojiTag(emojiId, inlineFallback) {
       const entry = premiumEmojiMap.get(emojiId);
       if (entry && entry.previewUrl) {
         return `<img src="${escapeHtml(entry.previewUrl)}" alt="${escapeHtml(entry.fallback || 'premium')}" class="telegram-custom-emoji-inline-img" data-fallback="${escapeHtml(entry.fallback || '✨')}" loading="lazy" />`;
       }
-      const fallbackText = (entry && entry.fallback) || 'premium';
+      const fallbackText = (entry && entry.fallback) || inlineFallback || '👍';
       return `<span class="telegram-custom-emoji-fallback" title="emoji-id: ${escapeHtml(emojiId)}">${escapeHtml(fallbackText)}</span>`;
     }
 
@@ -726,7 +734,8 @@
 
       if (tagName === 'tg-emoji') {
         const emojiId = node.getAttribute('emoji-id') || '';
-        return emojiId ? renderTelegramCustomEmojiTag(emojiId) : escapeHtml(node.textContent || '');
+        const fallbackText = (node.textContent || '').trim();
+        return emojiId ? renderTelegramCustomEmojiTag(emojiId, fallbackText) : escapeHtml(fallbackText);
       }
       if (tagName === 'br') {
         return '<br>';
