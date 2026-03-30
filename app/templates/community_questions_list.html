@@ -6,11 +6,24 @@
   <h1>Вопрос-ответ</h1>
   <div class="actions-inline">
     <form method="get" action="/community/questions" class="search-inline">
+      {% if selected_topic %}
+        <input type="hidden" name="topic" value="{{ selected_topic }}" />
+      {% endif %}
       <input type="text" name="q" value="{{ q }}" placeholder="Поиск по вопросам" />
       <button type="submit" class="btn">Найти</button>
       <a href="/community/questions" class="btn">Сброс</a>
     </form>
     <a href="/community/questions/new" class="btn btn-accent">Задать вопрос</a>
+  </div>
+</section>
+
+<section class="box">
+  <p class="muted">Фильтр по темам</p>
+  <div class="chips-wrap top-offset">
+    <a href="/community/questions{% if q %}?q={{ q|urlencode }}{% endif %}" class="chip {% if not selected_topic %}chip-active{% endif %}">Все темы</a>
+    {% for topic in question_topic_options %}
+      <a href="/community/questions?topic={{ topic|urlencode }}{% if q %}&q={{ q|urlencode }}{% endif %}" class="chip {% if selected_topic == topic %}chip-active{% endif %}">{{ topic }}</a>
+    {% endfor %}
   </div>
 </section>
 
@@ -23,20 +36,34 @@
         <h3><a href="/community/questions/{{ question.id }}" class="card-title-link">{{ question.title }}</a></h3>
         <span class="chip">{{ question_status_labels.get(question.status or 'open', question.status or 'open') }}</span>
       </div>
-      <p class="meta">
-        Автор:
-        {% if owner %}
-          <span class="{% if user_is_special(owner) %}nick-special{% endif %}">@{{ owner.cosplay_nick or owner.username }}</span>
-        {% else %}
-          @unknown
-        {% endif %}
-      </p>
+      {% if question.topics_json %}
+        <div class="chips-wrap top-offset">
+          {% for topic in question.topics_json %}
+            <span class="chip">{{ topic }}</span>
+          {% endfor %}
+        </div>
+      {% endif %}
+      {% if question.is_anonymous %}
+        <p class="meta">Анонимный вопрос</p>
+      {% else %}
+        <p class="meta">
+          Автор:
+          {% if owner %}
+            <span class="{% if user_is_special(owner) %}nick-special{% endif %}">@{{ owner.cosplay_nick or owner.username }}</span>
+          {% else %}
+            @unknown
+          {% endif %}
+        </p>
+      {% endif %}
       <p class="meta">Комментариев: {{ comment_counts.get(question.id, 0) }}</p>
       <p class="notes-block">{{ question.body|preview_text(280)|render_text }}</p>
       <div class="actions-inline">
         <a href="/community/questions/{{ question.id }}" class="btn">Подробнее</a>
-        {% if user and user.id == question.user_id %}
+        {% if user and (user.id == question.user_id or user_is_special(user)) %}
           <a href="/community/questions/{{ question.id }}/edit" class="btn">Редактировать</a>
+          <form method="post" action="/community/questions/{{ question.id }}/delete" onsubmit="return confirm('Удалить этот вопрос?');">
+            <button type="submit" class="btn btn-danger">Удалить</button>
+          </form>
         {% endif %}
       </div>
     </article>

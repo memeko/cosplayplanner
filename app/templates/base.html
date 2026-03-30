@@ -48,13 +48,17 @@
       <a class="brand" href="/">{{ project_name or "Cosplay Planner" }}</a>
       {% if user %}
       <nav class="tabs">
-        <a href="/cosplan" class="tab {% if active_tab == 'cosplan' %}active{% endif %}">Косплан</a>
-        <a href="/in-progress" class="tab {% if active_tab == 'in-progress' %}active{% endif %}">В работе</a>
-        <a href="/rehearsals" class="tab {% if active_tab == 'rehearsals' %}active{% endif %}">Репетиции</a>
-        <a href="/my-projects" class="tab {% if active_tab == 'my-projects' %}active{% endif %}">Мои проекты</a>
-        <a href="/community" class="tab {% if active_tab == 'community' %}active{% endif %}">Сообщество</a>
-        <a href="/my-calendar" class="tab {% if active_tab == 'calendars' %}active{% endif %}">Календари</a>
-        <a href="/festivals" class="tab {% if active_tab == 'festivals' %}active{% endif %}">Фестивали</a>
+        {% if is_smm_manager_user(user) %}
+          <a href="/my-calendar?view=content" class="tab {% if active_tab == 'calendars' %}active{% endif %}">Контент-план</a>
+        {% else %}
+          <a href="/cosplan" class="tab {% if active_tab == 'cosplan' %}active{% endif %}">Косплан</a>
+          <a href="/in-progress" class="tab {% if active_tab == 'in-progress' %}active{% endif %}">В работе</a>
+          <a href="/rehearsals" class="tab {% if active_tab == 'rehearsals' %}active{% endif %}">Репетиции</a>
+          <a href="/my-projects" class="tab {% if active_tab == 'my-projects' %}active{% endif %}">Мои проекты</a>
+          <a href="/community" class="tab {% if active_tab == 'community' %}active{% endif %}">Сообщество</a>
+          <a href="/my-calendar" class="tab {% if active_tab == 'calendars' %}active{% endif %}">Календари</a>
+          <a href="/festivals" class="tab {% if active_tab == 'festivals' %}active{% endif %}">Фестивали</a>
+        {% endif %}
         <a href="/profile" class="tab {% if active_tab == 'profile' %}active{% endif %}">Профиль</a>
       </nav>
       <form method="post" action="/logout">

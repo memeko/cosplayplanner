@@ -19,6 +19,23 @@
       <textarea name="body" rows="10" maxlength="6000" required>{{ form.body }}</textarea>
     </label>
 
+    <label class="inline-check">
+      <input type="checkbox" name="is_anonymous" value="1" {% if form.is_anonymous %}checked{% endif %} />
+      Опубликовать анонимно
+    </label>
+
+    <div>
+      <p class="muted">Темы вопроса</p>
+      <div class="chips-wrap">
+        {% for topic in question_topic_options %}
+          <label class="chip-check">
+            <input type="checkbox" name="topics" value="{{ topic }}" {% if topic in form.topics_json %}checked{% endif %} />
+            {{ topic }}
+          </label>
+        {% endfor %}
+      </div>
+    </div>
+
     {% if editing %}
     <label>
       Статус

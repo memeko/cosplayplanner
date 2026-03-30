@@ -4,16 +4,18 @@
   <h1>Календари</h1>
   <div class="actions-inline">
     <a href="/my-calendar/export.ics" class="btn">Экспорт «Мой календарь» (.ics)</a>
-    {% if content_access_state.has_access %}
-      <a href="/my-calendar/content/export.ics" class="btn">Экспорт контент-плана (.ics)</a>
+    {% if content_access_state.has_access and (not is_smm_manager_user(user) or content_owner_id) %}
+      <a href="/my-calendar/content/export.ics{% if is_smm_manager_user(user) and content_owner_id %}?content_owner_id={{ content_owner_id }}{% endif %}" class="btn">Экспорт контент-плана (.ics)</a>
     {% endif %}
   </div>
 </section>
 
 <nav class="calendar-tabs">
-  <a href="/my-calendar?view=my" class="tab {% if active_calendar_view == 'my' %}active{% endif %}">Мой календарь</a>
-  <a href="/my-calendar?view=budget" class="tab {% if active_calendar_view == 'budget' %}active{% endif %}">Бюджет</a>
-  <a href="/my-calendar?view=content" class="tab {% if active_calendar_view == 'content' %}active{% endif %}">Контент-план</a>
+  {% if not is_smm_manager_user(user) %}
+    <a href="/my-calendar?view=my" class="tab {% if active_calendar_view == 'my' %}active{% endif %}">Мой календарь</a>
+    <a href="/my-calendar?view=budget" class="tab {% if active_calendar_view == 'budget' %}active{% endif %}">Бюджет</a>
+  {% endif %}
+  <a href="/my-calendar?view=content{% if is_smm_manager_user(user) and content_owner_id %}&content_owner_id={{ content_owner_id }}{% endif %}" class="tab {% if active_calendar_view == 'content' %}active{% endif %}">Контент-план</a>
 </nav>
 
 {% if active_calendar_view == "my" %}
@@ -252,6 +254,60 @@
   {% endif %}
 {% else %}
   {% if content_access_state.has_access %}
+  {% if is_smm_manager_user(user) %}
+  <section class="box">
+    <h2>Контент-план клиента</h2>
+    {% if content_owner_candidates %}
+      <form method="get" action="/my-calendar" class="grid one-col top-offset">
+        <input type="hidden" name="view" value="content" />
+        <label>
+          Чей контент-план открыт
+          <select name="content_owner_id" onchange="this.form.submit()">
+            {% for owner in content_owner_candidates %}
+              <option value="{{ owner.id }}" {% if content_owner and owner.id == content_owner.id %}selected{% endif %}>@{{ owner.cosplay_nick or owner.username }}</option>
+            {% endfor %}
+          </select>
+        </label>
+      </form>
+    {% else %}
+      <p class="muted">Пока ни один косплеер не выдал вам доступ к своему контент-плану.</p>
+    {% endif %}
+  </section>
+  {% endif %}
+
+  {% if content_can_manage_connections %}
+  <section class="box top-offset">
+    <h2>Добавить менеджера</h2>
+    <p class="muted">Укажите ник на сайте. Доступ получат только аккаунты, зарегистрированные как СММ-менеджеры.</p>
+    <form method="post" action="/my-calendar/content/managers/save" class="grid one-col top-offset">
+      <label>
+        Ник менеджера
+        <input type="text" name="manager_alias" placeholder="@username или cosplay_nick" />
+      </label>
+      {% if content_manager_users %}
+        <div>
+          <p class="muted">Активные менеджеры</p>
+          <div class="chips-wrap">
+            {% for manager_user in content_manager_users %}
+              <label class="chip-check">
+                <input type="checkbox" name="manager_user_ids" value="{{ manager_user.id }}" checked />
+                @{{ manager_user.cosplay_nick or manager_user.username }}
+              </label>
+            {% endfor %}
+          </div>
+          <small class="muted">Снимите галочку и сохраните, чтобы отозвать доступ.</small>
+        </div>
+      {% else %}
+        <p class="muted">Пока менеджеров нет.</p>
+      {% endif %}
+      <div class="actions-inline">
+        <button type="submit" class="btn btn-accent">Сохранить менеджеров</button>
+      </div>
+    </form>
+  </section>
+  {% endif %}
+
+  {% if content_owner %}
   <section class="box content-platform-settings" data-initial-platform="{{ content_initial_platform }}">
     <div class="calendar-tabs">
       <button type="button" class="tab active" data-platform-tab="telegram">Telegram</button>
@@ -274,6 +330,11 @@
           <li>ID эмодзи удобно получать через бота <code>@Emoji_ID_Extractor_bot</code>.</li>
         </ol>
       </details>
+      {% if not content_can_manage_connections %}
+        <div class="notes-block telegram-editor-note top-offset">
+          Настройки Telegram-бота и каналов меняет только владелец этого контент-плана.
+        </div>
+      {% else %}
       <form method="post" action="/my-calendar/content/telegram/connect" class="grid one-col top-offset">
         <label>
           Токен бота
@@ -301,6 +362,7 @@
           <button type="submit" class="btn btn-danger">Отключить Telegram-каналы</button>
         </form>
       {% endif %}
+      {% endif %}
     </div>
 
     <div class="content-platform-panel" data-platform-panel="vk" hidden>
@@ -321,6 +383,11 @@
           <li>После сохранения посты с галочкой <strong>VK</strong> смогут публиковаться в выбранные сообщества вручную и по расписанию.</li>
         </ol>
       </details>
+      {% if not content_can_manage_connections %}
+        <div class="notes-block telegram-editor-note top-offset">
+          Настройки VK-сообществ меняет только владелец этого контент-плана.
+        </div>
+      {% else %}
       <form method="post" action="/my-calendar/content/vk/connect" class="grid one-col top-offset">
         <label>
           Сообщества VK и ключи
@@ -340,6 +407,7 @@
           <button type="submit" class="btn btn-danger">Отключить VK-сообщества</button>
         </form>
       {% endif %}
+      {% endif %}
     </div>
 
     <div class="content-platform-panel" data-platform-panel="pinterest" hidden>
@@ -353,15 +421,14 @@
       <details class="top-offset">
         <summary>Как подключить Pinterest</summary>
         <ol class="notes-list top-offset">
-          <li>Создайте приложение в Pinterest Developers и получите <code>App ID</code> и <code>App secret</code>.</li>
-          <li>В настройках приложения добавьте redirect URI: <code>{{ pinterest_settings.redirect_uri }}</code>.</li>
-          <li>После этого нажмите кнопку подключения ниже и подтвердите доступ к доскам и публикации Pin-ов.</li>
-          <li>После успешного подключения появится список ваших досок, а один и тот же пост можно будет публиковать одновременно в Telegram, VK и Pinterest.</li>
+          <li>Нажмите кнопку подключения ниже и подтвердите доступ к своим доскам и публикации Pin-ов.</li>
+          <li>После успешного подключения здесь появится список ваших досок.</li>
+          <li>Дальше в карточке поста можно выбрать одну или несколько досок, и тот же запланированный пост уйдёт одновременно в Telegram, VK и Pinterest.</li>
         </ol>
       </details>
       {% if not pinterest_settings.app_configured %}
         <div class="notes-block telegram-editor-note telegram-editor-note-warning top-offset">
-          Pinterest OAuth появится после того, как на сервере будут заданы <code>PINTEREST_APP_ID</code> и <code>PINTEREST_APP_SECRET</code>.
+          Pinterest-подключение сейчас временно недоступно. Попробуйте позже.
         </div>
       {% endif %}
       {% if pinterest_settings.connected and pinterest_settings.profile %}
@@ -374,6 +441,11 @@
       {% if pinterest_settings.boards %}
         <p class="muted">Доски Pinterest: {{ pinterest_settings.boards|length }}</p>
       {% endif %}
+      {% if not content_can_manage_connections %}
+        <div class="notes-block telegram-editor-note top-offset">
+          Настройки Pinterest меняет только владелец этого контент-плана.
+        </div>
+      {% else %}
       <div class="actions-inline top-offset wrap">
         <a href="{{ pinterest_settings.connect_url }}" class="btn btn-accent {% if not pinterest_settings.app_configured %}disabled{% endif %}">Подключить Pinterest через OAuth</a>
         {% if pinterest_content_connected %}
@@ -385,6 +457,7 @@
           </form>
         {% endif %}
       </div>
+      {% endif %}
       {% if pinterest_settings.boards %}
         <div class="chips-wrap top-offset">
           {% for board in pinterest_settings.boards %}
@@ -400,6 +473,9 @@
     <div class="calendar-spoiler-body">
     <form method="post" action="{{ '/my-calendar/content/' ~ editing_content_post.id ~ '/edit' if editing_content_post else '/my-calendar/content/new' }}" class="grid one-col">
       <input type="hidden" name="next_view" value="content" />
+      {% if content_owner_id %}
+        <input type="hidden" name="content_owner_id" value="{{ content_owner_id }}" />
+      {% endif %}
       <div class="grid two-col">
         <label>
           Название
@@ -444,11 +520,11 @@
               data-target="telegram_body_html"
               data-emoji-id="{{ premium_emoji.emoji_id }}"
               data-fallback="{{ premium_emoji.emoji }}"
-              data-preview-url="{{ telegram_settings.premium_emoji_preview_base_url }}/{{ premium_emoji.emoji_id }}"
+              data-preview-url="{{ telegram_settings.premium_emoji_preview_base_url }}/{{ premium_emoji.emoji_id }}{% if content_owner_id %}?content_owner_id={{ content_owner_id }}{% endif %}"
               title="emoji-id: {{ premium_emoji.emoji_id }}"
             >
               <img
-                src="{{ telegram_settings.premium_emoji_preview_base_url }}/{{ premium_emoji.emoji_id }}"
+                src="{{ telegram_settings.premium_emoji_preview_base_url }}/{{ premium_emoji.emoji_id }}{% if content_owner_id %}?content_owner_id={{ content_owner_id }}{% endif %}"
                 alt="{{ premium_emoji.emoji }}"
                 class="telegram-custom-emoji-button-img"
                 data-fallback="{{ premium_emoji.emoji }}"
@@ -612,15 +688,15 @@
         <button type="submit" class="btn btn-accent">{{ "Сохранить" if editing_content_post else "Добавить пост" }}</button>
         {% if editing_content_post %}
           {% if telegram_content_connected %}
-            <button type="submit" class="btn" formaction="/my-calendar/content/{{ editing_content_post.id }}/telegram-publish" formmethod="post">Опубликовать в Telegram</button>
+            <button type="submit" class="btn" formaction="/my-calendar/content/{{ editing_content_post.id }}/telegram-publish{% if content_owner_id %}?content_owner_id={{ content_owner_id }}{% endif %}" formmethod="post">Опубликовать в Telegram</button>
           {% endif %}
           {% if vk_content_connected %}
-            <button type="submit" class="btn" formaction="/my-calendar/content/{{ editing_content_post.id }}/vk-publish" formmethod="post">Опубликовать в VK</button>
+            <button type="submit" class="btn" formaction="/my-calendar/content/{{ editing_content_post.id }}/vk-publish{% if content_owner_id %}?content_owner_id={{ content_owner_id }}{% endif %}" formmethod="post">Опубликовать в VK</button>
           {% endif %}
           {% if pinterest_content_connected %}
-            <button type="submit" class="btn" formaction="/my-calendar/content/{{ editing_content_post.id }}/pinterest-publish" formmethod="post">Опубликовать в Pinterest</button>
+            <button type="submit" class="btn" formaction="/my-calendar/content/{{ editing_content_post.id }}/pinterest-publish{% if content_owner_id %}?content_owner_id={{ content_owner_id }}{% endif %}" formmethod="post">Опубликовать в Pinterest</button>
           {% endif %}
-          <a href="/my-calendar?view=content" class="btn">Отмена</a>
+          <a href="/my-calendar?view=content{% if content_owner_id %}&content_owner_id={{ content_owner_id }}{% endif %}" class="btn">Отмена</a>
         {% endif %}
       </div>
     </form>
@@ -720,23 +796,23 @@
               {% if item.pinterest_boards_text and item.pinterest_boards_text != "—" %}
                 <span class="muted">Pinterest-доски: {{ item.pinterest_boards_text }}</span>
               {% endif %}
-              <a class="btn btn-small" href="/my-calendar?view=content&edit_post_id={{ item.post_id }}#content-form">Редактировать</a>
+              <a class="btn btn-small" href="/my-calendar?view=content{% if content_owner_id %}&content_owner_id={{ content_owner_id }}{% endif %}&edit_post_id={{ item.post_id }}#content-form">Редактировать</a>
               {% if telegram_content_connected %}
-                <form method="post" action="/my-calendar/content/{{ item.post_id }}/telegram-publish">
+                <form method="post" action="/my-calendar/content/{{ item.post_id }}/telegram-publish{% if content_owner_id %}?content_owner_id={{ content_owner_id }}{% endif %}">
                   <button type="submit" class="btn btn-small">В Telegram</button>
                 </form>
               {% endif %}
               {% if vk_content_connected %}
-                <form method="post" action="/my-calendar/content/{{ item.post_id }}/vk-publish">
+                <form method="post" action="/my-calendar/content/{{ item.post_id }}/vk-publish{% if content_owner_id %}?content_owner_id={{ content_owner_id }}{% endif %}">
                   <button type="submit" class="btn btn-small">В VK</button>
                 </form>
               {% endif %}
               {% if pinterest_content_connected %}
-                <form method="post" action="/my-calendar/content/{{ item.post_id }}/pinterest-publish">
+                <form method="post" action="/my-calendar/content/{{ item.post_id }}/pinterest-publish{% if content_owner_id %}?content_owner_id={{ content_owner_id }}{% endif %}">
                   <button type="submit" class="btn btn-small">В Pinterest</button>
                 </form>
               {% endif %}
-              <form method="post" action="/my-calendar/content/{{ item.post_id }}/delete?view=content" onsubmit="return confirm('Удалить этот пост из контент-плана?');">
+              <form method="post" action="/my-calendar/content/{{ item.post_id }}/delete?view=content{% if content_owner_id %}&content_owner_id={{ content_owner_id }}{% endif %}" onsubmit="return confirm('Удалить этот пост из контент-плана?');">
                 <button type="submit" class="btn btn-danger btn-small">Удалить</button>
               </form>
             </li>
@@ -747,6 +823,11 @@
   {% else %}
     <section class="box">
       <p class="muted">Постов в контент-плане пока нет.</p>
+    </section>
+  {% endif %}
+  {% else %}
+    <section class="box top-offset">
+      <p class="muted">Пока нет выбранного владельца контент-плана. Попросите косплеера выдать вам доступ как менеджеру.</p>
     </section>
   {% endif %}
   {% else %}

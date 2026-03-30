@@ -5,6 +5,7 @@ import calendar
 import colorsys
 import base64
 import hashlib
+import hmac
 import html
 import io
 import json
@@ -204,11 +205,23 @@ PROJECT_BOARD_STATUS_INACTIVE = "inactive"
 
 QUESTION_STATUS_OPEN = "open"
 QUESTION_STATUS_RESOLVED = "resolved"
+QUESTION_TOPIC_OPTIONS = [
+    "вопрос по крафту",
+    "фестиваль",
+    "отзыв",
+    "материалы",
+    "вопрос фотографам",
+    "постановка дефиле",
+    "вопрос швеям",
+    "этический вопрос",
+]
 
 CALENDAR_VIEW_MY = "my"
 CALENDAR_VIEW_BUDGET = "budget"
 CALENDAR_VIEW_CONTENT = "content"
 CALENDAR_VIEW_OPTIONS = {CALENDAR_VIEW_MY, CALENDAR_VIEW_BUDGET, CALENDAR_VIEW_CONTENT}
+CONTENT_SCOPE_CLIENT = "client"
+CONTENT_SCOPE_PERSONAL = "personal"
 
 CONTENT_SOCIAL_OPTIONS = ["ТГ", "IT", "VK", "Pinterest", "tw", "rednote", "boosty", "другое"]
 CONTENT_STATUS_OPTIONS = ["plan", "draft", "published"]
@@ -231,7 +244,9 @@ CONTENT_PINTEREST_PROFILE_GROUP = "content_pinterest_profile"
 CONTENT_PINTEREST_BOARD_GROUP = "content_pinterest_board"
 CONTENT_RUBRIC_TAG_GROUP = "content_rubric_tag"
 CONTENT_PLAN_ACCESS_VERIFIED_GROUP = "content_plan_brfox_subscription_verified_at"
-CONTENT_PINTEREST_OAUTH_STATE_SESSION_KEY = "content_pinterest_oauth_state"
+SMM_MANAGER_ROLE_GROUP = "profile_is_smm_manager"
+CONTENT_MANAGER_OWNER_GROUP = "content_manager_owner"
+CONTENT_MANAGER_USER_GROUP = "content_manager_user"
 CONTENT_TELEGRAM_IMAGE_MAX_SIDE = 2000
 CONTENT_TELEGRAM_IMAGE_RETENTION_HOURS = max(
     1,
@@ -263,6 +278,10 @@ PINTEREST_OAUTH_SCOPES = [
     ).split(",")
     if scope.strip()
 ]
+PINTEREST_OAUTH_STATE_MAX_AGE_SECONDS = max(
+    300,
+    min(86400, int(os.getenv("PINTEREST_OAUTH_STATE_MAX_AGE_SECONDS", "3600"))),
+)
 
 COSPLAYER_COLLAB_OPTIONS = {
     "open": "Открыт(а)",
@@ -712,6 +731,10 @@ def apply_schema_migrations() -> None:
             ("import_external_id", "VARCHAR(128)"),
             ("import_url", "TEXT"),
         ],
+        "community_questions": [
+            ("is_anonymous", "BOOLEAN NOT NULL DEFAULT 0"),
+            ("topics_json", "JSON NOT NULL DEFAULT '[]'"),
+        ],
         "content_plan_posts": [
             ("description", "TEXT"),
             ("publish_time", "VARCHAR(8)"),
@@ -885,6 +908,42 @@ async def ensure_daily_backup(request: Request, call_next):
     except RuntimeError:
         pass
     return await call_next(request)
+
+
+@app.middleware("http")
+async def restrict_smm_manager_scope(request: Request, call_next):
+    path = request.url.path or "/"
+    if (
+        path in {"/healthz", "/readyz", "/privacy-policy", "/logout", "/"}
+        or path.startswith("/static/")
+        or path.startswith("/profile")
+        or path.startswith("/my-calendar/content")
+        or path.startswith("/notifications/pigeon")
+        or path.startswith("/festivals/notifications")
+        or path.startswith("/media/")
+    ):
+        return await call_next(request)
+
+    user_id = request.session.get("user_id")
+    if not user_id:
+        return await call_next(request)
+
+    try:
+        normalized_user_id = int(user_id)
+    except (TypeError, ValueError):
+        return await call_next(request)
+
+    with SessionLocal() as db:
+        if not bool(get_user_option_value(db, normalized_user_id, SMM_MANAGER_ROLE_GROUP)):
+            return await call_next(request)
+
+    if path == "/my-calendar":
+        requested_view = normalize_calendar_view(request.query_params.get("view"))
+        if requested_view == CALENDAR_VIEW_CONTENT:
+            return await call_next(request)
+        return RedirectResponse("/my-calendar?view=content", status_code=302)
+
+    return RedirectResponse("/", status_code=302)
 
 
 @app.get("/healthz")
@@ -1090,6 +1149,10 @@ def user_is_special(user: User | None) -> bool:
 
 def is_moderator_user(user: User | None) -> bool:
     return user_is_special(user)
+
+
+def is_smm_manager_user(user: User | None) -> bool:
+    return bool(getattr(user, "_is_smm_manager", False)) if user else False
 
 
 def can_manage_master(user: User | None, master: CommunityMaster | None) -> bool:
@@ -2088,11 +2151,21 @@ def normalize_calendar_view(raw: str | None) -> str:
     return CALENDAR_VIEW_MY
 
 
-def calendar_redirect_for_view(raw_view: str | None = None) -> RedirectResponse:
+def calendar_redirect_for_view(
+    raw_view: str | None = None,
+    *,
+    content_owner_id: int | None = None,
+    content_scope: str | None = None,
+) -> RedirectResponse:
     view = normalize_calendar_view(raw_view)
     if view == CALENDAR_VIEW_MY:
         return redirect("/my-calendar")
-    return redirect(f"/my-calendar?view={view}")
+    query_params: dict[str, str] = {"view": view}
+    if view == CALENDAR_VIEW_CONTENT and content_owner_id:
+        query_params["content_owner_id"] = str(content_owner_id)
+    if view == CALENDAR_VIEW_CONTENT and content_scope:
+        query_params["content_scope"] = content_scope
+    return redirect(f"/my-calendar?{urlencode(query_params)}")
 
 
 def shift_months_safe(base_date: date, month_delta: int) -> date:
@@ -2448,6 +2521,49 @@ def pinterest_authorize_url(state: str) -> str:
         }
     )
     return f"{PINTEREST_OAUTH_URI}/oauth/?{query}"
+
+
+def build_pinterest_oauth_state(user_id: int) -> str:
+    timestamp = str(int(time.time()))
+    nonce = secrets.token_urlsafe(12)
+    payload = f"{int(user_id)}:{timestamp}:{nonce}"
+    signature = hmac.new(secret_key_hash, payload.encode("utf-8"), hashlib.sha256).hexdigest()
+    encoded = base64.urlsafe_b64encode(f"{payload}:{signature}".encode("utf-8")).decode("ascii")
+    return encoded.rstrip("=")
+
+
+def verify_pinterest_oauth_state(state: str, user_id: int) -> bool:
+    raw_state = str(state or "").strip()
+    if not raw_state:
+        return False
+    padding = "=" * (-len(raw_state) % 4)
+    try:
+        decoded = base64.urlsafe_b64decode(f"{raw_state}{padding}".encode("ascii")).decode("utf-8")
+    except (ValueError, UnicodeDecodeError):
+        return False
+    parts = decoded.split(":")
+    if len(parts) != 4:
+        return False
+    state_user_id, timestamp_text, nonce, signature = parts
+    if not state_user_id.isdigit() or int(state_user_id) != int(user_id):
+        return False
+    if not timestamp_text.isdigit() or not nonce or not signature:
+        return False
+    expected_payload = f"{state_user_id}:{timestamp_text}:{nonce}"
+    expected_signature = hmac.new(
+        secret_key_hash,
+        expected_payload.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    if not hmac.compare_digest(signature, expected_signature):
+        return False
+    created_at = int(timestamp_text)
+    now_ts = int(time.time())
+    if created_at > now_ts + 60:
+        return False
+    if now_ts - created_at > PINTEREST_OAUTH_STATE_MAX_AGE_SECONDS:
+        return False
+    return True
 
 
 def pinterest_basic_auth_header() -> str:
@@ -3192,6 +3308,28 @@ def cache_telegram_custom_emoji_preview(token: str, emoji_id: str) -> Path | Non
 
 def user_has_content_plan_access(db: Session, user: User) -> bool:
     return bool(str(get_user_option_value(db, user.id, CONTENT_PLAN_ACCESS_VERIFIED_GROUP) or "").strip())
+
+
+def content_connections_editable(user: User | None, content_owner: User | None) -> bool:
+    return bool(user and content_owner and user.id == content_owner.id and not is_smm_manager_user(user))
+
+
+def ensure_content_owner_for_action(
+    request: Request,
+    user: User,
+    db: Session,
+    *,
+    form: Any | None = None,
+) -> tuple[User | None, RedirectResponse | None]:
+    content_owner = resolve_content_owner_for_request(request, user, db, form=form)
+    if content_owner:
+        return content_owner, None
+    add_flash(
+        request,
+        "Пока ни один косплеер не выдал вам доступ к своему контент-плану.",
+        "error",
+    )
+    return None, calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
 
 
 def telegram_membership_is_active(status: str | None) -> bool:
@@ -5869,6 +6007,26 @@ def question_status_label(status: str) -> str:
     return mapping.get(status, status)
 
 
+def normalize_question_topics(raw_values: list[str] | tuple[str, ...] | None) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw_value in raw_values or []:
+        value = str(raw_value or "").strip()
+        if value not in QUESTION_TOPIC_OPTIONS or value in seen:
+            continue
+        seen.add(value)
+        normalized.append(value)
+    return normalized
+
+
+def can_manage_question(user: User | None, question: CommunityQuestion | None) -> bool:
+    if not user or not question:
+        return False
+    if question.user_id == user.id:
+        return True
+    return user_is_special(user)
+
+
 def announcement_status_label(status: str) -> str:
     mapping = {
         ANNOUNCEMENT_STATUS_PENDING: "На модерации",
@@ -6575,7 +6733,10 @@ def current_user(request: Request, db: Session) -> User | None:
     user_id = request.session.get("user_id")
     if not user_id:
         return None
-    return db.get(User, int(user_id))
+    user = db.get(User, int(user_id))
+    if user:
+        setattr(user, "_is_smm_manager", bool(get_user_option_value(db, user.id, SMM_MANAGER_ROLE_GROUP)))
+    return user
 
 
 SECRET_OPTION_PREFIX = "enc1:"
@@ -6676,6 +6837,133 @@ def replace_user_option_values(db: Session, user_id: int, group: str, values: li
 
     for value in unique_values:
         db.add(UserOption(user_id=user_id, group=group, value=value))
+
+
+def get_user_option_positive_int_values(db: Session, user_id: int, group: str) -> list[int]:
+    result: list[int] = []
+    seen: set[int] = set()
+    for value in get_user_option_values(db, user_id, group):
+        parsed = parse_positive_int(value)
+        if not parsed or parsed in seen:
+            continue
+        seen.add(parsed)
+        result.append(parsed)
+    return result
+
+
+def get_content_manager_owner_ids(db: Session, manager_user_id: int) -> list[int]:
+    return get_user_option_positive_int_values(db, manager_user_id, CONTENT_MANAGER_OWNER_GROUP)
+
+
+def get_content_manager_user_ids(db: Session, owner_user_id: int) -> list[int]:
+    return get_user_option_positive_int_values(db, owner_user_id, CONTENT_MANAGER_USER_GROUP)
+
+
+def get_users_by_ids(db: Session, user_ids: list[int]) -> list[User]:
+    if not user_ids:
+        return []
+    users = db.execute(select(User).where(User.id.in_(user_ids))).scalars().all()
+    users_by_id = {user.id: user for user in users}
+    ordered_users: list[User] = []
+    for user_id in user_ids:
+        user = users_by_id.get(user_id)
+        if user:
+            ordered_users.append(user)
+    return ordered_users
+
+
+def get_content_manager_owners(db: Session, manager_user_id: int) -> list[User]:
+    return get_users_by_ids(db, get_content_manager_owner_ids(db, manager_user_id))
+
+
+def get_content_managers(db: Session, owner_user_id: int) -> list[User]:
+    return get_users_by_ids(db, get_content_manager_user_ids(db, owner_user_id))
+
+
+def sync_content_manager_links(db: Session, owner_user_id: int, manager_user_ids: list[int]) -> None:
+    normalized_manager_ids: list[int] = []
+    seen_manager_ids: set[int] = set()
+    for manager_user_id in manager_user_ids:
+        if not manager_user_id or manager_user_id == owner_user_id or manager_user_id in seen_manager_ids:
+            continue
+        seen_manager_ids.add(manager_user_id)
+        normalized_manager_ids.append(manager_user_id)
+
+    current_manager_ids = get_content_manager_user_ids(db, owner_user_id)
+    replace_user_option_values(
+        db,
+        owner_user_id,
+        CONTENT_MANAGER_USER_GROUP,
+        [str(item) for item in normalized_manager_ids],
+    )
+
+    removed_manager_ids = set(current_manager_ids) - set(normalized_manager_ids)
+    added_manager_ids = set(normalized_manager_ids) - set(current_manager_ids)
+
+    for manager_user_id in removed_manager_ids:
+        owner_ids = [
+            item
+            for item in get_content_manager_owner_ids(db, manager_user_id)
+            if item != owner_user_id
+        ]
+        replace_user_option_values(
+            db,
+            manager_user_id,
+            CONTENT_MANAGER_OWNER_GROUP,
+            [str(item) for item in owner_ids],
+        )
+
+    for manager_user_id in added_manager_ids:
+        owner_ids = get_content_manager_owner_ids(db, manager_user_id)
+        if owner_user_id not in owner_ids:
+            owner_ids.append(owner_user_id)
+        replace_user_option_values(
+            db,
+            manager_user_id,
+            CONTENT_MANAGER_OWNER_GROUP,
+            [str(item) for item in owner_ids],
+        )
+
+
+def find_user_by_site_alias(db: Session, raw_alias: str | None) -> User | None:
+    cleaned = normalize_username(raw_alias)
+    if not cleaned:
+        return None
+    alias_to_username, users_by_username, _ = build_user_alias_lookup(db)
+    canonical_username = resolve_alias_to_username(cleaned, alias_to_username)
+    return users_by_username.get(canonical_username.casefold())
+
+
+def get_content_owner_candidates(db: Session, user: User) -> list[User]:
+    if is_smm_manager_user(user):
+        return get_content_manager_owners(db, user.id)
+    return [user]
+
+
+def resolve_content_owner_for_request(
+    request: Request,
+    user: User,
+    db: Session,
+    *,
+    form: Any | None = None,
+) -> User | None:
+    candidates = get_content_owner_candidates(db, user)
+    if not candidates:
+        return None
+    if not is_smm_manager_user(user):
+        return candidates[0]
+
+    raw_owner_id = ""
+    if form is not None:
+        raw_owner_id = str(form.get("content_owner_id", "")).strip()
+    if not raw_owner_id:
+        raw_owner_id = str(request.query_params.get("content_owner_id", "")).strip()
+    selected_owner_id = parse_positive_int(raw_owner_id)
+    if selected_owner_id:
+        for candidate in candidates:
+            if candidate.id == selected_owner_id:
+                return candidate
+    return candidates[0]
 
 
 def encode_content_telegram_channel_value(title: str, chat_id: str) -> str:
@@ -7446,6 +7734,7 @@ def template_response(
         "project_name": PROJECT_NAME,
         "nick_is_special": nick_is_special,
         "user_is_special": user_is_special,
+        "is_smm_manager_user": is_smm_manager_user,
         "notification_conflict_subject": conflict_subject_from_message,
         "external_contact_buttons": external_contact_buttons,
         "build_external_url": build_external_url,
@@ -8084,7 +8373,7 @@ def privacy_policy_page(request: Request, db: Session = Depends(get_db)):
 def register_page(request: Request, db: Session = Depends(get_db)):
     user = current_user(request, db)
     if user:
-        return redirect("/cosplan")
+        return redirect("/my-calendar?view=content" if is_smm_manager_user(user) else "/cosplan")
     return template_response(request, "register.html", user=None)
 
 
@@ -8095,6 +8384,7 @@ async def register_submit(request: Request, db: Session = Depends(get_db)):
     email = str(form.get("email", "")).strip().lower()
     password = str(form.get("password", ""))
     password2 = str(form.get("password_confirm", ""))
+    is_smm_manager = str(form.get("is_smm_manager", "")).strip().lower() in {"1", "true", "on", "yes"}
 
     if not username or not email or not password:
         add_flash(request, "Заполните все обязательные поля.", "error")
@@ -8119,6 +8409,8 @@ async def register_submit(request: Request, db: Session = Depends(get_db)):
     db.add(user)
     db.commit()
     db.refresh(user)
+    if is_smm_manager:
+        set_user_option_value(db, user.id, SMM_MANAGER_ROLE_GROUP, "1")
 
     approved_announcements = db.execute(
         select(FestivalAnnouncement).where(FestivalAnnouncement.status == ANNOUNCEMENT_STATUS_APPROVED)
@@ -8129,14 +8421,14 @@ async def register_submit(request: Request, db: Session = Depends(get_db)):
 
     request.session["user_id"] = user.id
     add_flash(request, "welcome", "welcome")
-    return redirect("/cosplan")
+    return redirect("/my-calendar?view=content" if is_smm_manager else "/cosplan")
 
 
 @app.get("/login", response_class=HTMLResponse)
 def login_page(request: Request, db: Session = Depends(get_db)):
     user = current_user(request, db)
     if user:
-        return redirect("/cosplan")
+        return redirect("/my-calendar?view=content" if is_smm_manager_user(user) else "/cosplan")
     return template_response(request, "login_vkid.html", user=None)
 
 
@@ -8343,7 +8635,7 @@ async def login_submit(request: Request, db: Session = Depends(get_db)):
 
     request.session["user_id"] = user.id
     add_flash(request, "Вход выполнен.", "success")
-    return redirect("/cosplan")
+    return redirect("/my-calendar?view=content" if bool(get_user_option_value(db, user.id, SMM_MANAGER_ROLE_GROUP)) else "/cosplan")
 
 
 @app.post("/logout")
@@ -10549,43 +10841,88 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
 
     budget_month_groups = build_budget_month_groups(user, db)
     content_access_state = build_content_plan_access_state(user, db)
-
-    content_posts = db.execute(
-        select(ContentPlanPost)
-        .where(ContentPlanPost.user_id == user.id)
-        .order_by(ContentPlanPost.publish_date, ContentPlanPost.publish_time, ContentPlanPost.id)
-    ).scalars().all()
-    telegram_settings = get_content_telegram_settings(user, db)
-    vk_settings = get_content_vk_settings(user, db)
-    pinterest_settings = get_content_pinterest_settings(user, db)
-    premium_emoji_map = {
-        str(entry.get("emoji_id") or "").strip(): str(entry.get("emoji") or "").strip()
-        for entry in list(telegram_settings.get("premium_emojis") or [])
-        if str(entry.get("emoji_id") or "").strip() and str(entry.get("emoji") or "").strip()
-    }
-    telegram_channels = list(telegram_settings.get("channels") or [])
-    vk_groups = list(vk_settings.get("groups") or [])
-    pinterest_boards = list(pinterest_settings.get("boards") or [])
-    telegram_channels_by_id = {
-        str(channel.get("chat_id") or "").strip(): channel
-        for channel in telegram_channels
-        if str(channel.get("chat_id") or "").strip()
-    }
-    vk_groups_by_owner_id = {
-        str(group.get("owner_id") or "").strip(): group
-        for group in vk_groups
-        if str(group.get("owner_id") or "").strip()
-    }
-    pinterest_boards_by_id = {
-        str(board.get("id") or "").strip(): board
-        for board in pinterest_boards
-        if str(board.get("id") or "").strip()
-    }
-    rubric_tags = get_content_rubric_tags(db, user.id)
-    rubric_options = merge_unique(
-        get_options(db, user.id, "content_rubric"),
-        [post.rubric for post in content_posts if post.rubric],
+    content_owner_candidates = get_content_owner_candidates(db, user) if active_view == CALENDAR_VIEW_CONTENT else [user]
+    content_owner = (
+        resolve_content_owner_for_request(request, user, db)
+        if active_view == CALENDAR_VIEW_CONTENT
+        else user
     )
+    content_can_manage_connections = content_connections_editable(user, content_owner)
+    content_manager_users = get_content_managers(db, user.id) if content_can_manage_connections else []
+
+    content_posts: list[ContentPlanPost] = []
+    telegram_settings: dict[str, Any] = {
+        "bot_token": "",
+        "chat_id": "",
+        "channels_text": "",
+        "channels": [],
+        "premium_emoji_preview_base_url": "/my-calendar/content/telegram/custom-emoji",
+        "premium_emojis_text": "",
+        "premium_emojis": [],
+    }
+    vk_settings: dict[str, Any] = {
+        "groups_text": "",
+        "groups_masked_text": "",
+        "groups": [],
+    }
+    pinterest_settings: dict[str, Any] = {
+        "app_configured": pinterest_app_configured(),
+        "redirect_uri": PINTEREST_REDIRECT_URI,
+        "connect_url": "/my-calendar/content/pinterest/oauth/start",
+        "sync_url": "/my-calendar/content/pinterest/sync",
+        "profile": None,
+        "boards": [],
+        "scope": "",
+        "connected": False,
+        "has_refresh_token": False,
+    }
+    premium_emoji_map: dict[str, str] = {}
+    telegram_channels: list[dict[str, str]] = []
+    vk_groups: list[dict[str, str]] = []
+    pinterest_boards: list[dict[str, str]] = []
+    telegram_channels_by_id: dict[str, dict[str, str]] = {}
+    vk_groups_by_owner_id: dict[str, dict[str, str]] = {}
+    pinterest_boards_by_id: dict[str, dict[str, str]] = {}
+    rubric_tags: dict[str, str] = {}
+    rubric_options: list[str] = []
+
+    if content_owner:
+        content_posts = db.execute(
+            select(ContentPlanPost)
+            .where(ContentPlanPost.user_id == content_owner.id)
+            .order_by(ContentPlanPost.publish_date, ContentPlanPost.publish_time, ContentPlanPost.id)
+        ).scalars().all()
+        telegram_settings = get_content_telegram_settings(content_owner, db)
+        vk_settings = get_content_vk_settings(content_owner, db)
+        pinterest_settings = get_content_pinterest_settings(content_owner, db)
+        premium_emoji_map = {
+            str(entry.get("emoji_id") or "").strip(): str(entry.get("emoji") or "").strip()
+            for entry in list(telegram_settings.get("premium_emojis") or [])
+            if str(entry.get("emoji_id") or "").strip() and str(entry.get("emoji") or "").strip()
+        }
+        telegram_channels = list(telegram_settings.get("channels") or [])
+        vk_groups = list(vk_settings.get("groups") or [])
+        pinterest_boards = list(pinterest_settings.get("boards") or [])
+        telegram_channels_by_id = {
+            str(channel.get("chat_id") or "").strip(): channel
+            for channel in telegram_channels
+            if str(channel.get("chat_id") or "").strip()
+        }
+        vk_groups_by_owner_id = {
+            str(group.get("owner_id") or "").strip(): group
+            for group in vk_groups
+            if str(group.get("owner_id") or "").strip()
+        }
+        pinterest_boards_by_id = {
+            str(board.get("id") or "").strip(): board
+            for board in pinterest_boards
+            if str(board.get("id") or "").strip()
+        }
+        rubric_tags = get_content_rubric_tags(db, content_owner.id)
+        rubric_options = merge_unique(
+            get_options(db, content_owner.id, "content_rubric"),
+            [post.rubric for post in content_posts if post.rubric],
+        )
     rubric_colors = rubric_color_map(rubric_options)
     content_rows: list[dict[str, Any]] = []
     for post in content_posts:
@@ -10663,11 +11000,11 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
         )
 
     editing_content_post = None
-    if edit_post_id:
+    if edit_post_id and content_owner:
         editing_content_post = db.execute(
             select(ContentPlanPost).where(
                 ContentPlanPost.id == edit_post_id,
-                ContentPlanPost.user_id == user.id,
+                ContentPlanPost.user_id == content_owner.id,
             )
         ).scalar_one_or_none()
 
@@ -10684,6 +11021,7 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
         content_social_options=CONTENT_SOCIAL_OPTIONS,
         content_status_options=CONTENT_STATUS_OPTIONS,
         content_status_labels=CONTENT_STATUS_LABELS,
+        question_topic_options=QUESTION_TOPIC_OPTIONS,
         content_rubric_options=rubric_options,
         content_rubric_colors=rubric_colors,
         content_rubric_tags=rubric_tags,
@@ -10696,15 +11034,20 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
             premium_emoji_map,
         ),
         editing_content_post=editing_content_post,
+        content_owner=content_owner,
+        content_owner_id=(content_owner.id if content_owner else None),
+        content_owner_candidates=content_owner_candidates,
+        content_manager_users=content_manager_users,
+        content_can_manage_connections=content_can_manage_connections,
         telegram_settings=telegram_settings,
         vk_settings=vk_settings,
         pinterest_settings=pinterest_settings,
         telegram_settings_masked={
-            "bot_token": mask_secret_value(telegram_settings.get("bot_token")),
-            "channels_text": telegram_settings.get("channels_text", ""),
+            "bot_token": mask_secret_value(telegram_settings.get("bot_token")) if content_can_manage_connections else "",
+            "channels_text": telegram_settings.get("channels_text", "") if content_can_manage_connections else "",
         },
         vk_settings_masked={
-            "groups_text": vk_settings.get("groups_masked_text", ""),
+            "groups_text": vk_settings.get("groups_masked_text", "") if content_can_manage_connections else "",
         },
         telegram_content_connected=bool(telegram_settings.get("bot_token") and telegram_channels),
         vk_content_connected=bool(vk_groups),
@@ -11006,6 +11349,50 @@ async def my_calendar_content_access_check(request: Request, db: Session = Depen
     return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
 
 
+@app.post("/my-calendar/content/managers/save")
+async def my_calendar_content_managers_save(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    access_redirect = ensure_content_plan_access(request, user, db)
+    if access_redirect:
+        return access_redirect
+    if is_smm_manager_user(user):
+        add_flash(request, "Менеджеров может настраивать только владелец контент-плана.", "error")
+        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+
+    form = await request.form()
+    current_manager_ids = set(get_content_manager_user_ids(db, user.id))
+    next_manager_ids: list[int] = []
+    seen_manager_ids: set[int] = set()
+    for raw_value in form.getlist("manager_user_ids"):
+        manager_id = parse_positive_int(raw_value)
+        if not manager_id or manager_id not in current_manager_ids or manager_id in seen_manager_ids:
+            continue
+        seen_manager_ids.add(manager_id)
+        next_manager_ids.append(manager_id)
+
+    manager_alias = str(form.get("manager_alias", "")).strip()
+    if manager_alias:
+        manager_user = find_user_by_site_alias(db, manager_alias)
+        if not manager_user:
+            add_flash(request, "Пользователь с таким ником не найден.", "error")
+            return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+        if manager_user.id == user.id:
+            add_flash(request, "Нельзя назначить менеджером самого себя.", "error")
+            return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+        if not bool(get_user_option_value(db, manager_user.id, SMM_MANAGER_ROLE_GROUP)):
+            add_flash(request, "Этот пользователь не зарегистрирован как СММ-менеджер.", "error")
+            return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+        if manager_user.id not in seen_manager_ids:
+            next_manager_ids.append(manager_user.id)
+
+    sync_content_manager_links(db, user.id, next_manager_ids)
+    db.commit()
+    add_flash(request, "Список менеджеров обновлён.", "success")
+    return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+
+
 @app.post("/my-calendar/content/new")
 async def my_calendar_content_create(request: Request, db: Session = Depends(get_db)):
     user = current_user(request, db)
@@ -11017,16 +11404,20 @@ async def my_calendar_content_create(request: Request, db: Session = Depends(get
 
     form = await request.form()
     next_view = normalize_calendar_view(str(form.get("next_view", CALENDAR_VIEW_CONTENT)))
-    post = ContentPlanPost(user_id=user.id, title="", publish_date=date.today(), rubric="Неизвестно")
-    ok, error_text = save_content_plan_post_from_form(form, post, user, db)
+    content_owner, owner_redirect = ensure_content_owner_for_action(request, user, db, form=form)
+    if owner_redirect or not content_owner:
+        return owner_redirect or calendar_redirect_for_view(next_view)
+
+    post = ContentPlanPost(user_id=content_owner.id, title="", publish_date=date.today(), rubric="Неизвестно")
+    ok, error_text = save_content_plan_post_from_form(form, post, content_owner, db)
     if not ok:
         add_flash(request, error_text, "error")
-        return calendar_redirect_for_view(next_view)
+        return calendar_redirect_for_view(next_view, content_owner_id=content_owner.id)
 
     db.add(post)
     db.commit()
     add_flash(request, "Пост добавлен в контент-план.", "success")
-    return calendar_redirect_for_view(next_view)
+    return calendar_redirect_for_view(next_view, content_owner_id=content_owner.id)
 
 
 @app.post("/my-calendar/content/{post_id}/edit")
@@ -11038,26 +11429,30 @@ async def my_calendar_content_update(post_id: int, request: Request, db: Session
     if access_redirect:
         return access_redirect
 
+    form = await request.form()
+    next_view = normalize_calendar_view(str(form.get("next_view", CALENDAR_VIEW_CONTENT)))
+    content_owner, owner_redirect = ensure_content_owner_for_action(request, user, db, form=form)
+    if owner_redirect or not content_owner:
+        return owner_redirect or calendar_redirect_for_view(next_view)
+
     post = db.execute(
         select(ContentPlanPost).where(
             ContentPlanPost.id == post_id,
-            ContentPlanPost.user_id == user.id,
+            ContentPlanPost.user_id == content_owner.id,
         )
     ).scalar_one_or_none()
     if not post:
         add_flash(request, "Пост контент-плана не найден.", "error")
-        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT, content_owner_id=content_owner.id)
 
-    form = await request.form()
-    next_view = normalize_calendar_view(str(form.get("next_view", CALENDAR_VIEW_CONTENT)))
-    ok, error_text = save_content_plan_post_from_form(form, post, user, db)
+    ok, error_text = save_content_plan_post_from_form(form, post, content_owner, db)
     if not ok:
         add_flash(request, error_text, "error")
-        return calendar_redirect_for_view(next_view)
+        return calendar_redirect_for_view(next_view, content_owner_id=content_owner.id)
 
     db.commit()
     add_flash(request, "Пост контент-плана обновлен.", "success")
-    return calendar_redirect_for_view(next_view)
+    return calendar_redirect_for_view(next_view, content_owner_id=content_owner.id)
 
 
 @app.post("/my-calendar/content/{post_id}/delete")
@@ -11070,20 +11465,24 @@ def my_calendar_content_delete(post_id: int, request: Request, db: Session = Dep
         return access_redirect
 
     next_view = normalize_calendar_view(str(request.query_params.get("view", CALENDAR_VIEW_CONTENT)))
+    content_owner, owner_redirect = ensure_content_owner_for_action(request, user, db)
+    if owner_redirect or not content_owner:
+        return owner_redirect or calendar_redirect_for_view(next_view)
+
     post = db.execute(
         select(ContentPlanPost).where(
             ContentPlanPost.id == post_id,
-            ContentPlanPost.user_id == user.id,
+            ContentPlanPost.user_id == content_owner.id,
         )
     ).scalar_one_or_none()
     if not post:
         add_flash(request, "Пост контент-плана не найден.", "error")
-        return calendar_redirect_for_view(next_view)
+        return calendar_redirect_for_view(next_view, content_owner_id=content_owner.id)
 
     db.delete(post)
     db.commit()
     add_flash(request, "Пост удален из контент-плана.", "info")
-    return calendar_redirect_for_view(next_view)
+    return calendar_redirect_for_view(next_view, content_owner_id=content_owner.id)
 
 
 @app.get("/my-calendar/content/telegram/custom-emoji/{emoji_id}", include_in_schema=False)
@@ -11096,7 +11495,11 @@ def my_calendar_content_telegram_custom_emoji_preview(emoji_id: str, request: Re
     if not str(emoji_id or "").isdigit():
         raise HTTPException(status_code=404, detail="Эмодзи не найден.")
 
-    token = str(get_secret_user_option_value(db, user.id, CONTENT_TELEGRAM_TOKEN_GROUP) or "").strip()
+    content_owner = resolve_content_owner_for_request(request, user, db)
+    if not content_owner:
+        raise HTTPException(status_code=404, detail="Контент-план пока не выдан.")
+
+    token = str(get_secret_user_option_value(db, content_owner.id, CONTENT_TELEGRAM_TOKEN_GROUP) or "").strip()
     if not token:
         raise HTTPException(status_code=404, detail="Telegram не подключен.")
 
@@ -11123,6 +11526,9 @@ async def my_calendar_content_telegram_connect(request: Request, db: Session = D
     access_redirect = ensure_content_plan_access(request, user, db)
     if access_redirect:
         return access_redirect
+    if is_smm_manager_user(user):
+        add_flash(request, "Настройки Telegram может менять только владелец контент-плана.", "error")
+        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
 
     form = await request.form()
     existing_token = get_secret_user_option_value(db, user.id, CONTENT_TELEGRAM_TOKEN_GROUP)
@@ -11178,6 +11584,9 @@ def my_calendar_content_telegram_disconnect(request: Request, db: Session = Depe
     access_redirect = ensure_content_plan_access(request, user, db)
     if access_redirect:
         return access_redirect
+    if is_smm_manager_user(user):
+        add_flash(request, "Настройки Telegram может менять только владелец контент-плана.", "error")
+        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
     set_secret_user_option_value(db, user.id, CONTENT_TELEGRAM_TOKEN_GROUP, "")
     set_user_option_value(db, user.id, CONTENT_TELEGRAM_CHAT_GROUP, "")
     set_user_option_value(db, user.id, CONTENT_TELEGRAM_PACK_GROUP, "")
@@ -11195,6 +11604,9 @@ async def my_calendar_content_vk_connect(request: Request, db: Session = Depends
     access_redirect = ensure_content_plan_access(request, user, db)
     if access_redirect:
         return access_redirect
+    if is_smm_manager_user(user):
+        add_flash(request, "Настройки VK может менять только владелец контент-плана.", "error")
+        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
 
     form = await request.form()
     existing_groups = get_content_vk_settings(user, db).get("groups") or []
@@ -11243,6 +11655,9 @@ def my_calendar_content_vk_disconnect(request: Request, db: Session = Depends(ge
     access_redirect = ensure_content_plan_access(request, user, db)
     if access_redirect:
         return access_redirect
+    if is_smm_manager_user(user):
+        add_flash(request, "Настройки VK может менять только владелец контент-плана.", "error")
+        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
 
     set_secret_user_option_value(db, user.id, CONTENT_VK_TOKEN_GROUP, "")
     replace_user_option_values(db, user.id, CONTENT_VK_GROUP_GROUP, [])
@@ -11259,15 +11674,17 @@ def my_calendar_content_pinterest_oauth_start(request: Request, db: Session = De
     access_redirect = ensure_content_plan_access(request, user, db)
     if access_redirect:
         return access_redirect
+    if is_smm_manager_user(user):
+        add_flash(request, "Настройки Pinterest может менять только владелец контент-плана.", "error")
+        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
     if not pinterest_app_configured():
         add_flash(
             request,
-            "Pinterest OAuth пока не настроен на сервере. Сначала добавьте PINTEREST_APP_ID и PINTEREST_APP_SECRET.",
+            "Pinterest-подключение сейчас временно недоступно. Попробуйте позже.",
             "error",
         )
         return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
-    state = secrets.token_urlsafe(24)
-    request.session[CONTENT_PINTEREST_OAUTH_STATE_SESSION_KEY] = state
+    state = build_pinterest_oauth_state(user.id)
     return RedirectResponse(pinterest_authorize_url(state), status_code=302)
 
 
@@ -11277,7 +11694,6 @@ def my_calendar_content_pinterest_oauth_callback(request: Request, db: Session =
     if not user:
         return redirect("/login")
 
-    expected_state = str(request.session.pop(CONTENT_PINTEREST_OAUTH_STATE_SESSION_KEY, "") or "").strip()
     returned_state = str(request.query_params.get("state", "") or "").strip()
     error_code = str(request.query_params.get("error", "") or "").strip()
     error_description = str(request.query_params.get("error_description", "") or "").strip()
@@ -11286,7 +11702,7 @@ def my_calendar_content_pinterest_oauth_callback(request: Request, db: Session =
     if error_code:
         add_flash(request, error_description or f"Pinterest OAuth вернул ошибку: {error_code}", "error")
         return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
-    if not expected_state or returned_state != expected_state:
+    if not verify_pinterest_oauth_state(returned_state, user.id):
         add_flash(request, "Pinterest OAuth завершился с неверным state. Повторите подключение.", "error")
         return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
     if not auth_code:
@@ -11325,6 +11741,9 @@ def my_calendar_content_pinterest_sync(request: Request, db: Session = Depends(g
     access_redirect = ensure_content_plan_access(request, user, db)
     if access_redirect:
         return access_redirect
+    if is_smm_manager_user(user):
+        add_flash(request, "Настройки Pinterest может менять только владелец контент-плана.", "error")
+        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
 
     try:
         _, boards = sync_content_pinterest_remote_data(user, db)
@@ -11344,6 +11763,9 @@ def my_calendar_content_pinterest_disconnect(request: Request, db: Session = Dep
     access_redirect = ensure_content_plan_access(request, user, db)
     if access_redirect:
         return access_redirect
+    if is_smm_manager_user(user):
+        add_flash(request, "Настройки Pinterest может менять только владелец контент-плана.", "error")
+        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
 
     set_secret_user_option_value(db, user.id, CONTENT_PINTEREST_ACCESS_TOKEN_GROUP, "")
     set_secret_user_option_value(db, user.id, CONTENT_PINTEREST_REFRESH_TOKEN_GROUP, "")
@@ -11364,32 +11786,36 @@ def my_calendar_content_publish_telegram(post_id: int, request: Request, db: Ses
     if access_redirect:
         return access_redirect
 
+    content_owner, owner_redirect = ensure_content_owner_for_action(request, user, db)
+    if owner_redirect or not content_owner:
+        return owner_redirect or calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+
     post = db.execute(
         select(ContentPlanPost).where(
             ContentPlanPost.id == post_id,
-            ContentPlanPost.user_id == user.id,
+            ContentPlanPost.user_id == content_owner.id,
         )
     ).scalar_one_or_none()
     if not post:
         add_flash(request, "Пост контент-плана не найден.", "error")
-        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT, content_owner_id=content_owner.id)
 
-    telegram_settings = get_content_telegram_settings(user, db)
+    telegram_settings = get_content_telegram_settings(content_owner, db)
     bot_token = telegram_settings.get("bot_token", "")
     available_channels = list(telegram_settings.get("channels") or [])
     if not bot_token or not available_channels:
         add_flash(request, "Сначала подключите Telegram-каналы в настройках контент-плана.", "error")
-        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT, content_owner_id=content_owner.id)
 
     selected_channels = resolve_content_telegram_channels(as_list(post.telegram_channels_json), available_channels)
     if not selected_channels and len(available_channels) == 1:
         selected_channels = [available_channels[0]]
     if not selected_channels:
         add_flash(request, "Выберите хотя бы один Telegram-канал в карточке поста.", "error")
-        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT, content_owner_id=content_owner.id)
 
     try:
-        rubric_tag = normalize_content_rubric_tag(post.rubric_tag) or get_content_rubric_tags(db, user.id).get(post.rubric or "", "")
+        rubric_tag = normalize_content_rubric_tag(post.rubric_tag) or get_content_rubric_tags(db, content_owner.id).get(post.rubric or "", "")
         sent_messages, send_errors = publish_content_post_to_telegram_channels(
             token=bot_token,
             channels=selected_channels,
@@ -11403,11 +11829,11 @@ def my_calendar_content_publish_telegram(post_id: int, request: Request, db: Ses
         )
     except Exception as exc:
         add_flash(request, str(exc), "error")
-        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT, content_owner_id=content_owner.id)
 
     if not sent_messages:
         add_flash(request, send_errors[0] if send_errors else "Не удалось опубликовать пост в Telegram.", "error")
-        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT, content_owner_id=content_owner.id)
 
     mark_content_post_telegram_published(
         post,
@@ -11419,7 +11845,7 @@ def my_calendar_content_publish_telegram(post_id: int, request: Request, db: Ses
     if send_errors:
         success_text = f"{success_text} Не удалось отправить в: {'; '.join(send_errors)}"
     add_flash(request, success_text, "success")
-    return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+    return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT, content_owner_id=content_owner.id)
 
 
 @app.post("/my-calendar/content/{post_id}/vk-publish")
@@ -11431,31 +11857,35 @@ def my_calendar_content_publish_vk(post_id: int, request: Request, db: Session =
     if access_redirect:
         return access_redirect
 
+    content_owner, owner_redirect = ensure_content_owner_for_action(request, user, db)
+    if owner_redirect or not content_owner:
+        return owner_redirect or calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+
     post = db.execute(
         select(ContentPlanPost).where(
             ContentPlanPost.id == post_id,
-            ContentPlanPost.user_id == user.id,
+            ContentPlanPost.user_id == content_owner.id,
         )
     ).scalar_one_or_none()
     if not post:
         add_flash(request, "Пост контент-плана не найден.", "error")
-        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT, content_owner_id=content_owner.id)
 
-    vk_settings = get_content_vk_settings(user, db)
+    vk_settings = get_content_vk_settings(content_owner, db)
     available_groups = list(vk_settings.get("groups") or [])
     if not available_groups:
         add_flash(request, "Сначала подключите VK-сообщества в настройках контент-плана.", "error")
-        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT, content_owner_id=content_owner.id)
 
     selected_groups = resolve_content_vk_groups(as_list(post.vk_groups_json), available_groups)
     if not selected_groups and len(available_groups) == 1:
         selected_groups = [available_groups[0]]
     if not selected_groups:
         add_flash(request, "Выберите хотя бы одно сообщество VK в карточке поста.", "error")
-        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT, content_owner_id=content_owner.id)
 
     try:
-        rubric_tag = normalize_content_rubric_tag(post.rubric_tag) or get_content_rubric_tags(db, user.id).get(post.rubric or "", "")
+        rubric_tag = normalize_content_rubric_tag(post.rubric_tag) or get_content_rubric_tags(db, content_owner.id).get(post.rubric or "", "")
         sent_posts, send_errors = publish_content_post_to_vk_groups(
             groups=selected_groups,
             post=post,
@@ -11463,11 +11893,11 @@ def my_calendar_content_publish_vk(post_id: int, request: Request, db: Session =
         )
     except Exception as exc:
         add_flash(request, str(exc), "error")
-        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT, content_owner_id=content_owner.id)
 
     if not sent_posts:
         add_flash(request, send_errors[0] if send_errors else "Не удалось опубликовать пост в VK.", "error")
-        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT, content_owner_id=content_owner.id)
 
     mark_content_post_vk_published(
         post,
@@ -11479,7 +11909,7 @@ def my_calendar_content_publish_vk(post_id: int, request: Request, db: Session =
     if send_errors:
         success_text = f"{success_text} Не удалось отправить в: {'; '.join(send_errors)}"
     add_flash(request, success_text, "success")
-    return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+    return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT, content_owner_id=content_owner.id)
 
 
 @app.post("/my-calendar/content/{post_id}/pinterest-publish")
@@ -11491,48 +11921,52 @@ def my_calendar_content_publish_pinterest(post_id: int, request: Request, db: Se
     if access_redirect:
         return access_redirect
 
+    content_owner, owner_redirect = ensure_content_owner_for_action(request, user, db)
+    if owner_redirect or not content_owner:
+        return owner_redirect or calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+
     post = db.execute(
         select(ContentPlanPost).where(
             ContentPlanPost.id == post_id,
-            ContentPlanPost.user_id == user.id,
+            ContentPlanPost.user_id == content_owner.id,
         )
     ).scalar_one_or_none()
     if not post:
         add_flash(request, "Пост контент-плана не найден.", "error")
-        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT, content_owner_id=content_owner.id)
 
-    pinterest_settings = get_content_pinterest_settings(user, db)
+    pinterest_settings = get_content_pinterest_settings(content_owner, db)
     available_boards = list(pinterest_settings.get("boards") or [])
     if not pinterest_settings.get("connected"):
         add_flash(request, "Сначала подключите Pinterest в настройках контент-плана.", "error")
-        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT, content_owner_id=content_owner.id)
     if not available_boards:
         add_flash(request, "Сначала подтяните хотя бы одну доску Pinterest.", "error")
-        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT, content_owner_id=content_owner.id)
 
     selected_boards = resolve_content_pinterest_boards(as_list(post.pinterest_boards_json), available_boards)
     if not selected_boards and len(available_boards) == 1:
         selected_boards = [available_boards[0]]
     if not selected_boards:
         add_flash(request, "Выберите хотя бы одну доску Pinterest в карточке поста.", "error")
-        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT, content_owner_id=content_owner.id)
 
     try:
-        rubric_tag = normalize_content_rubric_tag(post.rubric_tag) or get_content_rubric_tags(db, user.id).get(post.rubric or "", "")
+        rubric_tag = normalize_content_rubric_tag(post.rubric_tag) or get_content_rubric_tags(db, content_owner.id).get(post.rubric or "", "")
         sent_pins, send_errors = publish_content_post_to_pinterest_boards(
             db=db,
-            user_id=user.id,
+            user_id=content_owner.id,
             boards=selected_boards,
             post=post,
             rubric_tag=rubric_tag,
         )
     except Exception as exc:
         add_flash(request, str(exc), "error")
-        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT, content_owner_id=content_owner.id)
 
     if not sent_pins:
         add_flash(request, send_errors[0] if send_errors else "Не удалось опубликовать пост в Pinterest.", "error")
-        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT, content_owner_id=content_owner.id)
 
     mark_content_post_pinterest_published(
         post,
@@ -11544,7 +11978,7 @@ def my_calendar_content_publish_pinterest(post_id: int, request: Request, db: Se
     if send_errors:
         success_text = f"{success_text} Не удалось отправить в: {'; '.join(send_errors)}"
     add_flash(request, success_text, "success")
-    return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+    return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT, content_owner_id=content_owner.id)
 
 
 def ics_calendar_header() -> list[str]:
@@ -11751,11 +12185,15 @@ def my_calendar_content_export_ics(request: Request, db: Session = Depends(get_d
     if access_redirect:
         return access_redirect
 
+    content_owner, owner_redirect = ensure_content_owner_for_action(request, user, db)
+    if owner_redirect or not content_owner:
+        return owner_redirect or calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+
     today = date.today()
     posts = db.execute(
         select(ContentPlanPost)
         .where(
-            ContentPlanPost.user_id == user.id,
+            ContentPlanPost.user_id == content_owner.id,
             ContentPlanPost.publish_date.is_not(None),
             ContentPlanPost.publish_date >= today,
         )
@@ -12110,11 +12548,15 @@ def get_question_form_values(question: CommunityQuestion | None = None) -> dict[
             "title": "",
             "body": "",
             "status": QUESTION_STATUS_OPEN,
+            "is_anonymous": False,
+            "topics_json": [],
         }
     return {
         "title": question.title or "",
         "body": question.body or "",
         "status": question.status or QUESTION_STATUS_OPEN,
+        "is_anonymous": bool(question.is_anonymous),
+        "topics_json": normalize_question_topics(as_list(question.topics_json)),
     }
 
 
@@ -12122,6 +12564,8 @@ def save_question_from_form(form: Any, question: CommunityQuestion) -> tuple[boo
     title = str(form.get("title", "")).strip()
     body = str(form.get("body", "")).strip()
     status = str(form.get("status", QUESTION_STATUS_OPEN)).strip()
+    is_anonymous = str(form.get("is_anonymous", "")).strip().lower() in {"1", "true", "on", "yes"}
+    topics = normalize_question_topics(form.getlist("topics"))
 
     if not title:
         return False, "Укажите заголовок вопроса."
@@ -12135,6 +12579,8 @@ def save_question_from_form(form: Any, question: CommunityQuestion) -> tuple[boo
     question.title = title
     question.body = body
     question.status = status
+    question.is_anonymous = is_anonymous
+    question.topics_json = topics
     return True, ""
 
 
@@ -12145,6 +12591,9 @@ def community_questions_list(request: Request, db: Session = Depends(get_db)):
         return redirect("/login")
 
     q = request.query_params.get("q", "").strip()
+    selected_topic = request.query_params.get("topic", "").strip()
+    if selected_topic not in QUESTION_TOPIC_OPTIONS:
+        selected_topic = ""
     questions = db.execute(
         select(CommunityQuestion).order_by(CommunityQuestion.updated_at.desc(), CommunityQuestion.id.desc())
     ).scalars().all()
@@ -12154,6 +12603,12 @@ def community_questions_list(request: Request, db: Session = Depends(get_db)):
             item
             for item in questions
             if needle in (item.title or "").casefold() or needle in (item.body or "").casefold()
+        ]
+    if selected_topic:
+        questions = [
+            item
+            for item in questions
+            if selected_topic in normalize_question_topics(as_list(item.topics_json))
         ]
 
     owner_ids = {item.user_id for item in questions}
@@ -12178,6 +12633,8 @@ def community_questions_list(request: Request, db: Session = Depends(get_db)):
         owners_by_id=owners_by_id,
         comment_counts=comment_counts,
         q=q,
+        selected_topic=selected_topic,
+        question_topic_options=QUESTION_TOPIC_OPTIONS,
         question_status_labels={
             QUESTION_STATUS_OPEN: question_status_label(QUESTION_STATUS_OPEN),
             QUESTION_STATUS_RESOLVED: question_status_label(QUESTION_STATUS_RESOLVED),
@@ -12199,6 +12656,7 @@ def community_questions_new(request: Request, db: Session = Depends(get_db)):
         editing=False,
         question_id=None,
         form=get_question_form_values(),
+        question_topic_options=QUESTION_TOPIC_OPTIONS,
         question_status_labels={
             QUESTION_STATUS_OPEN: question_status_label(QUESTION_STATUS_OPEN),
             QUESTION_STATUS_RESOLVED: question_status_label(QUESTION_STATUS_RESOLVED),
@@ -12255,6 +12713,7 @@ def community_questions_detail(question_id: int, request: Request, db: Session =
         question=question,
         comments=comments,
         authors_by_id=authors_by_id,
+        question_topic_options=QUESTION_TOPIC_OPTIONS,
         question_status_labels={
             QUESTION_STATUS_OPEN: question_status_label(QUESTION_STATUS_OPEN),
             QUESTION_STATUS_RESOLVED: question_status_label(QUESTION_STATUS_RESOLVED),
@@ -12272,8 +12731,8 @@ def community_questions_edit(question_id: int, request: Request, db: Session = D
     if not question:
         add_flash(request, "Вопрос не найден.", "error")
         return redirect("/community/questions")
-    if question.user_id != user.id:
-        add_flash(request, "Редактировать можно только свой вопрос.", "error")
+    if not can_manage_question(user, question):
+        add_flash(request, "Редактировать может только автор вопроса или brfox_cosplay.", "error")
         return redirect(f"/community/questions/{question_id}")
 
     return template_response(
@@ -12285,6 +12744,7 @@ def community_questions_edit(question_id: int, request: Request, db: Session = D
         editing=True,
         question_id=question.id,
         form=get_question_form_values(question),
+        question_topic_options=QUESTION_TOPIC_OPTIONS,
         question_status_labels={
             QUESTION_STATUS_OPEN: question_status_label(QUESTION_STATUS_OPEN),
             QUESTION_STATUS_RESOLVED: question_status_label(QUESTION_STATUS_RESOLVED),
@@ -12302,8 +12762,8 @@ async def community_questions_update(question_id: int, request: Request, db: Ses
     if not question:
         add_flash(request, "Вопрос не найден.", "error")
         return redirect("/community/questions")
-    if question.user_id != user.id:
-        add_flash(request, "Редактировать можно только свой вопрос.", "error")
+    if not can_manage_question(user, question):
+        add_flash(request, "Редактировать может только автор вопроса или brfox_cosplay.", "error")
         return redirect(f"/community/questions/{question_id}")
 
     form = await request.form()
@@ -12327,8 +12787,8 @@ async def community_questions_update_status(question_id: int, request: Request, 
     if not question:
         add_flash(request, "Вопрос не найден.", "error")
         return redirect("/community/questions")
-    if question.user_id != user.id:
-        add_flash(request, "Изменять статус может только автор вопроса.", "error")
+    if not can_manage_question(user, question):
+        add_flash(request, "Изменять статус может только автор вопроса или brfox_cosplay.", "error")
         return redirect(f"/community/questions/{question_id}")
 
     form = await request.form()
@@ -12341,6 +12801,26 @@ async def community_questions_update_status(question_id: int, request: Request, 
     db.commit()
     add_flash(request, "Статус вопроса обновлен.", "success")
     return redirect(f"/community/questions/{question_id}")
+
+
+@app.post("/community/questions/{question_id}/delete")
+def community_questions_delete(question_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    question = db.get(CommunityQuestion, question_id)
+    if not question:
+        add_flash(request, "Вопрос не найден.", "error")
+        return redirect("/community/questions")
+    if not can_manage_question(user, question):
+        add_flash(request, "Удалять вопрос может только автор или brfox_cosplay.", "error")
+        return redirect(f"/community/questions/{question_id}")
+
+    db.delete(question)
+    db.commit()
+    add_flash(request, "Вопрос удалён.", "info")
+    return redirect("/community/questions")
 
 
 @app.post("/community/questions/{question_id}/comments")

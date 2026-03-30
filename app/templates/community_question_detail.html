@@ -7,26 +7,40 @@
   <h1>{{ question.title }}</h1>
   <div class="actions-inline">
     <a href="/community/questions" class="btn">Назад к вопросам</a>
-    {% if user and user.id == question.user_id %}
+    {% if user and (user.id == question.user_id or user_is_special(user)) %}
       <a href="/community/questions/{{ question.id }}/edit" class="btn">Редактировать</a>
+      <form method="post" action="/community/questions/{{ question.id }}/delete" onsubmit="return confirm('Удалить этот вопрос?');">
+        <button type="submit" class="btn btn-danger">Удалить</button>
+      </form>
     {% endif %}
   </div>
 </section>
 
 <section class="box {% if question.status == 'resolved' %}card-question-resolved{% endif %}">
   <div class="row-between">
-    <p class="meta">
-      Автор:
-      {% if author %}
-        <span class="{% if user_is_special(author) %}nick-special{% endif %}">@{{ author.cosplay_nick or author.username }}</span>
-      {% else %}
-        @unknown
-      {% endif %}
-    </p>
+    {% if question.is_anonymous %}
+      <p class="meta">Анонимный вопрос</p>
+    {% else %}
+      <p class="meta">
+        Автор:
+        {% if author %}
+          <span class="{% if user_is_special(author) %}nick-special{% endif %}">@{{ author.cosplay_nick or author.username }}</span>
+        {% else %}
+          @unknown
+        {% endif %}
+      </p>
+    {% endif %}
     <span class="chip">{{ question_status_labels.get(question.status or 'open', question.status or 'open') }}</span>
   </div>
+  {% if question.topics_json %}
+    <div class="chips-wrap top-offset">
+      {% for topic in question.topics_json %}
+        <span class="chip">{{ topic }}</span>
+      {% endfor %}
+    </div>
+  {% endif %}
   <p class="notes-block">{{ question.body|render_text }}</p>
-  {% if user and user.id == question.user_id %}
+  {% if user and (user.id == question.user_id or user_is_special(user)) %}
   <div class="actions-inline top-offset">
     <form method="post" action="/community/questions/{{ question.id }}/status">
       <input type="hidden" name="status" value="resolved" />

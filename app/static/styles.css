@@ -572,6 +572,12 @@ textarea {
   box-shadow: var(--glass-highlight-soft);
 }
 
+.chip-active {
+  background: rgba(21, 119, 179, 0.92);
+  border-color: rgba(21, 119, 179, 0.92);
+  color: #fff;
+}
+
 .chip-alert {
   background: #fff1f2;
   border-color: #fecdd3;
