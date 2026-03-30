@@ -34,6 +34,7 @@ from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from itsdangerous import BadSignature, TimestampSigner
 from markupsafe import Markup
 from passlib.context import CryptContext
 from PIL import Image, ImageOps, UnidentifiedImageError
@@ -132,6 +133,9 @@ secret_key_hash = hashlib.sha256(secret_key.encode("utf-8")).digest()
 content_secret_fernet = Fernet(base64.urlsafe_b64encode(secret_key_hash))
 session_https_only = to_bool(os.getenv("SESSION_HTTPS_ONLY", "0"))
 trusted_hosts = [item.strip() for item in os.getenv("TRUSTED_HOSTS", "").split(",") if item.strip()]
+SESSION_COOKIE_NAME = "cosplay_session"
+SESSION_COOKIE_MAX_AGE_SECONDS = 60 * 60 * 24 * 30
+session_cookie_signer = TimestampSigner(secret_key)
 
 if trusted_hosts:
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=trusted_hosts)
@@ -140,10 +144,10 @@ app.add_middleware(GZipMiddleware, minimum_size=1024)
 app.add_middleware(
     SessionMiddleware,
     secret_key=secret_key,
-    max_age=60 * 60 * 24 * 30,
+    max_age=SESSION_COOKIE_MAX_AGE_SECONDS,
     same_site="lax",
     https_only=session_https_only,
-    session_cookie="cosplay_session",
+    session_cookie=SESSION_COOKIE_NAME,
 )
 
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
@@ -910,6 +914,23 @@ async def ensure_daily_backup(request: Request, call_next):
     return await call_next(request)
 
 
+def read_session_user_id_from_cookie(request: Request) -> int | None:
+    raw_cookie = str(request.cookies.get(SESSION_COOKIE_NAME) or "").strip()
+    if not raw_cookie:
+        return None
+    try:
+        unsigned_payload = session_cookie_signer.unsign(
+            raw_cookie.encode("utf-8"),
+            max_age=SESSION_COOKIE_MAX_AGE_SECONDS,
+        )
+        session_payload = json.loads(base64.b64decode(unsigned_payload))
+    except (BadSignature, ValueError, TypeError, json.JSONDecodeError):
+        return None
+    if not isinstance(session_payload, dict):
+        return None
+    return parse_positive_int(str(session_payload.get("user_id", "")).strip())
+
+
 @app.middleware("http")
 async def restrict_smm_manager_scope(request: Request, call_next):
     path = request.url.path or "/"
@@ -924,13 +945,8 @@ async def restrict_smm_manager_scope(request: Request, call_next):
     ):
         return await call_next(request)
 
-    user_id = request.session.get("user_id")
-    if not user_id:
-        return await call_next(request)
-
-    try:
-        normalized_user_id = int(user_id)
-    except (TypeError, ValueError):
+    normalized_user_id = read_session_user_id_from_cookie(request)
+    if not normalized_user_id:
         return await call_next(request)
 
     with SessionLocal() as db:
