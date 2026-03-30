@@ -941,7 +941,7 @@ async def restrict_smm_manager_scope(request: Request, call_next):
         requested_view = normalize_calendar_view(request.query_params.get("view"))
         if requested_view == CALENDAR_VIEW_CONTENT:
             return await call_next(request)
-        return RedirectResponse("/my-calendar?view=content", status_code=302)
+        return RedirectResponse("/my-calendar?view=content&content_scope=client", status_code=302)
 
     return RedirectResponse("/", status_code=302)
 
@@ -2151,6 +2151,41 @@ def normalize_calendar_view(raw: str | None) -> str:
     return CALENDAR_VIEW_MY
 
 
+def normalize_content_scope(raw: str | None, user: User | None = None) -> str:
+    value = str(raw or "").strip().lower()
+    if is_smm_manager_user(user):
+        if value == CONTENT_SCOPE_PERSONAL:
+            return CONTENT_SCOPE_PERSONAL
+        return CONTENT_SCOPE_CLIENT
+    return CONTENT_SCOPE_PERSONAL
+
+
+def get_content_scope_for_request(
+    request: Request,
+    user: User | None,
+    *,
+    form: Any | None = None,
+) -> str:
+    raw_scope = ""
+    if form is not None:
+        raw_scope = str(form.get("content_scope", "")).strip()
+    if not raw_scope:
+        raw_scope = str(request.query_params.get("content_scope", "")).strip()
+    return normalize_content_scope(raw_scope, user)
+
+
+def selected_content_owner_id_for_scope(
+    user: User | None,
+    content_owner: User | None,
+    content_scope: str,
+) -> int | None:
+    if not user or not content_owner or content_scope != CONTENT_SCOPE_CLIENT:
+        return None
+    if content_owner.id == user.id:
+        return None
+    return content_owner.id
+
+
 def calendar_redirect_for_view(
     raw_view: str | None = None,
     *,
@@ -2166,6 +2201,21 @@ def calendar_redirect_for_view(
     if view == CALENDAR_VIEW_CONTENT and content_scope:
         query_params["content_scope"] = content_scope
     return redirect(f"/my-calendar?{urlencode(query_params)}")
+
+
+def content_calendar_redirect(
+    request: Request,
+    user: User | None,
+    *,
+    form: Any | None = None,
+    content_owner: User | None = None,
+) -> RedirectResponse:
+    content_scope = get_content_scope_for_request(request, user, form=form)
+    return calendar_redirect_for_view(
+        CALENDAR_VIEW_CONTENT,
+        content_owner_id=selected_content_owner_id_for_scope(user, content_owner, content_scope),
+        content_scope=content_scope,
+    )
 
 
 def shift_months_safe(base_date: date, month_delta: int) -> date:
@@ -3311,6 +3361,10 @@ def user_has_content_plan_access(db: Session, user: User) -> bool:
 
 
 def content_connections_editable(user: User | None, content_owner: User | None) -> bool:
+    return bool(user and content_owner and user.id == content_owner.id)
+
+
+def content_manager_access_editable(user: User | None, content_owner: User | None) -> bool:
     return bool(user and content_owner and user.id == content_owner.id and not is_smm_manager_user(user))
 
 
@@ -3321,6 +3375,7 @@ def ensure_content_owner_for_action(
     *,
     form: Any | None = None,
 ) -> tuple[User | None, RedirectResponse | None]:
+    content_scope = get_content_scope_for_request(request, user, form=form)
     content_owner = resolve_content_owner_for_request(request, user, db, form=form)
     if content_owner:
         return content_owner, None
@@ -3329,7 +3384,7 @@ def ensure_content_owner_for_action(
         "Пока ни один косплеер не выдал вам доступ к своему контент-плану.",
         "error",
     )
-    return None, calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+    return None, calendar_redirect_for_view(CALENDAR_VIEW_CONTENT, content_scope=content_scope)
 
 
 def telegram_membership_is_active(status: str | None) -> bool:
@@ -3421,7 +3476,7 @@ def ensure_content_plan_access(request: Request, user: User, db: Session) -> Red
         "Доступ к контент-плану откроется после проверки подписки на канал Братца Лиса.",
         "error",
     )
-    return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+    return content_calendar_redirect(request, user)
 
 
 def content_post_targets_telegram(post: ContentPlanPost) -> bool:
@@ -6934,8 +6989,9 @@ def find_user_by_site_alias(db: Session, raw_alias: str | None) -> User | None:
     return users_by_username.get(canonical_username.casefold())
 
 
-def get_content_owner_candidates(db: Session, user: User) -> list[User]:
-    if is_smm_manager_user(user):
+def get_content_owner_candidates(db: Session, user: User, *, content_scope: str | None = None) -> list[User]:
+    scope = normalize_content_scope(content_scope, user)
+    if is_smm_manager_user(user) and scope == CONTENT_SCOPE_CLIENT:
         return get_content_manager_owners(db, user.id)
     return [user]
 
@@ -6947,11 +7003,15 @@ def resolve_content_owner_for_request(
     *,
     form: Any | None = None,
 ) -> User | None:
-    candidates = get_content_owner_candidates(db, user)
+    content_scope = get_content_scope_for_request(request, user, form=form)
+    if not is_smm_manager_user(user):
+        return user
+    if content_scope == CONTENT_SCOPE_PERSONAL:
+        return user
+
+    candidates = get_content_owner_candidates(db, user, content_scope=content_scope)
     if not candidates:
         return None
-    if not is_smm_manager_user(user):
-        return candidates[0]
 
     raw_owner_id = ""
     if form is not None:
@@ -8373,7 +8433,7 @@ def privacy_policy_page(request: Request, db: Session = Depends(get_db)):
 def register_page(request: Request, db: Session = Depends(get_db)):
     user = current_user(request, db)
     if user:
-        return redirect("/my-calendar?view=content" if is_smm_manager_user(user) else "/cosplan")
+        return redirect("/my-calendar?view=content&content_scope=client" if is_smm_manager_user(user) else "/cosplan")
     return template_response(request, "register.html", user=None)
 
 
@@ -8421,14 +8481,14 @@ async def register_submit(request: Request, db: Session = Depends(get_db)):
 
     request.session["user_id"] = user.id
     add_flash(request, "welcome", "welcome")
-    return redirect("/my-calendar?view=content" if is_smm_manager else "/cosplan")
+    return redirect("/my-calendar?view=content&content_scope=client" if is_smm_manager else "/cosplan")
 
 
 @app.get("/login", response_class=HTMLResponse)
 def login_page(request: Request, db: Session = Depends(get_db)):
     user = current_user(request, db)
     if user:
-        return redirect("/my-calendar?view=content" if is_smm_manager_user(user) else "/cosplan")
+        return redirect("/my-calendar?view=content&content_scope=client" if is_smm_manager_user(user) else "/cosplan")
     return template_response(request, "login_vkid.html", user=None)
 
 
@@ -8456,7 +8516,14 @@ async def auth_vk_complete(request: Request, db: Session = Depends(get_db)) -> d
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     request.session["user_id"] = user.id
-    return {"ok": True, "redirect": "/cosplan"}
+    return {
+        "ok": True,
+        "redirect": (
+            "/my-calendar?view=content&content_scope=client"
+            if bool(get_user_option_value(db, user.id, SMM_MANAGER_ROLE_GROUP))
+            else "/cosplan"
+        ),
+    }
 
 
 @app.post("/profile/vk/link")
@@ -8635,7 +8702,11 @@ async def login_submit(request: Request, db: Session = Depends(get_db)):
 
     request.session["user_id"] = user.id
     add_flash(request, "Вход выполнен.", "success")
-    return redirect("/my-calendar?view=content" if bool(get_user_option_value(db, user.id, SMM_MANAGER_ROLE_GROUP)) else "/cosplan")
+    return redirect(
+        "/my-calendar?view=content&content_scope=client"
+        if bool(get_user_option_value(db, user.id, SMM_MANAGER_ROLE_GROUP))
+        else "/cosplan"
+    )
 
 
 @app.post("/logout")
@@ -10841,14 +10912,40 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
 
     budget_month_groups = build_budget_month_groups(user, db)
     content_access_state = build_content_plan_access_state(user, db)
-    content_owner_candidates = get_content_owner_candidates(db, user) if active_view == CALENDAR_VIEW_CONTENT else [user]
+    content_scope = (
+        get_content_scope_for_request(request, user)
+        if active_view == CALENDAR_VIEW_CONTENT
+        else normalize_content_scope(None, user)
+    )
+    content_owner_candidates = (
+        get_content_owner_candidates(db, user, content_scope=CONTENT_SCOPE_CLIENT)
+        if active_view == CALENDAR_VIEW_CONTENT and is_smm_manager_user(user)
+        else [user]
+    )
     content_owner = (
         resolve_content_owner_for_request(request, user, db)
         if active_view == CALENDAR_VIEW_CONTENT
         else user
     )
+    content_owner_id = selected_content_owner_id_for_scope(user, content_owner, content_scope)
     content_can_manage_connections = content_connections_editable(user, content_owner)
-    content_manager_users = get_content_managers(db, user.id) if content_can_manage_connections else []
+    content_can_manage_manager_access = content_manager_access_editable(user, content_owner)
+    content_manager_users = get_content_managers(db, user.id) if content_can_manage_manager_access else []
+    content_action_query_params: dict[str, str] = {"content_scope": content_scope}
+    if content_owner_id:
+        content_action_query_params["content_owner_id"] = str(content_owner_id)
+    content_action_query = urlencode(content_action_query_params)
+    content_view_query = urlencode({"view": CALENDAR_VIEW_CONTENT, **content_action_query_params})
+    content_client_view_query = urlencode({"view": CALENDAR_VIEW_CONTENT, "content_scope": CONTENT_SCOPE_CLIENT})
+    if content_owner_id:
+        content_client_view_query = urlencode(
+            {
+                "view": CALENDAR_VIEW_CONTENT,
+                "content_scope": CONTENT_SCOPE_CLIENT,
+                "content_owner_id": str(content_owner_id),
+            }
+        )
+    content_personal_view_query = urlencode({"view": CALENDAR_VIEW_CONTENT, "content_scope": CONTENT_SCOPE_PERSONAL})
 
     content_posts: list[ContentPlanPost] = []
     telegram_settings: dict[str, Any] = {
@@ -10868,8 +10965,8 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
     pinterest_settings: dict[str, Any] = {
         "app_configured": pinterest_app_configured(),
         "redirect_uri": PINTEREST_REDIRECT_URI,
-        "connect_url": "/my-calendar/content/pinterest/oauth/start",
-        "sync_url": "/my-calendar/content/pinterest/sync",
+        "connect_url": f"/my-calendar/content/pinterest/oauth/start?{content_action_query}",
+        "sync_url": f"/my-calendar/content/pinterest/sync?{content_action_query}",
         "profile": None,
         "boards": [],
         "scope": "",
@@ -10895,6 +10992,8 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
         telegram_settings = get_content_telegram_settings(content_owner, db)
         vk_settings = get_content_vk_settings(content_owner, db)
         pinterest_settings = get_content_pinterest_settings(content_owner, db)
+        pinterest_settings["connect_url"] = f"/my-calendar/content/pinterest/oauth/start?{content_action_query}"
+        pinterest_settings["sync_url"] = f"/my-calendar/content/pinterest/sync?{content_action_query}"
         premium_emoji_map = {
             str(entry.get("emoji_id") or "").strip(): str(entry.get("emoji") or "").strip()
             for entry in list(telegram_settings.get("premium_emojis") or [])
@@ -11034,11 +11133,19 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
             premium_emoji_map,
         ),
         editing_content_post=editing_content_post,
+        content_scope=content_scope,
+        content_is_client_scope=(content_scope == CONTENT_SCOPE_CLIENT),
+        content_is_personal_scope=(content_scope == CONTENT_SCOPE_PERSONAL),
+        content_view_query=content_view_query,
+        content_action_query=content_action_query,
+        content_client_view_query=content_client_view_query,
+        content_personal_view_query=content_personal_view_query,
         content_owner=content_owner,
-        content_owner_id=(content_owner.id if content_owner else None),
+        content_owner_id=content_owner_id,
         content_owner_candidates=content_owner_candidates,
         content_manager_users=content_manager_users,
         content_can_manage_connections=content_can_manage_connections,
+        content_can_manage_manager_access=content_can_manage_manager_access,
         telegram_settings=telegram_settings,
         vk_settings=vk_settings,
         pinterest_settings=pinterest_settings,
@@ -11330,7 +11437,7 @@ async def my_calendar_content_access_check(request: Request, db: Session = Depen
             "Сначала привяжите Telegram к профилю и повторите проверку.",
             "error",
         )
-        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+        return content_calendar_redirect(request, user)
 
     ok, error_text = check_brfox_content_subscription(user)
     if not ok:
@@ -11341,12 +11448,12 @@ async def my_calendar_content_access_check(request: Request, db: Session = Depen
             error_text or "Не удалось подтвердить подписку на канал Братца Лиса.",
             "error",
         )
-        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+        return content_calendar_redirect(request, user)
 
     set_user_option_value(db, user.id, CONTENT_PLAN_ACCESS_VERIFIED_GROUP, datetime.utcnow().isoformat())
     db.commit()
     add_flash(request, "Подписка подтверждена. Контент-план открыт.", "success")
-    return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+    return content_calendar_redirect(request, user)
 
 
 @app.post("/my-calendar/content/managers/save")
@@ -11357,12 +11464,13 @@ async def my_calendar_content_managers_save(request: Request, db: Session = Depe
     access_redirect = ensure_content_plan_access(request, user, db)
     if access_redirect:
         return access_redirect
-    if is_smm_manager_user(user):
+    content_owner = resolve_content_owner_for_request(request, user, db)
+    if not content_manager_access_editable(user, content_owner):
         add_flash(request, "Менеджеров может настраивать только владелец контент-плана.", "error")
-        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+        return content_calendar_redirect(request, user, content_owner=content_owner)
 
     form = await request.form()
-    current_manager_ids = set(get_content_manager_user_ids(db, user.id))
+    current_manager_ids = set(get_content_manager_user_ids(db, content_owner.id))
     next_manager_ids: list[int] = []
     seen_manager_ids: set[int] = set()
     for raw_value in form.getlist("manager_user_ids"):
@@ -11377,20 +11485,20 @@ async def my_calendar_content_managers_save(request: Request, db: Session = Depe
         manager_user = find_user_by_site_alias(db, manager_alias)
         if not manager_user:
             add_flash(request, "Пользователь с таким ником не найден.", "error")
-            return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
-        if manager_user.id == user.id:
+            return content_calendar_redirect(request, user, form=form, content_owner=content_owner)
+        if manager_user.id == content_owner.id:
             add_flash(request, "Нельзя назначить менеджером самого себя.", "error")
-            return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+            return content_calendar_redirect(request, user, form=form, content_owner=content_owner)
         if not bool(get_user_option_value(db, manager_user.id, SMM_MANAGER_ROLE_GROUP)):
             add_flash(request, "Этот пользователь не зарегистрирован как СММ-менеджер.", "error")
-            return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+            return content_calendar_redirect(request, user, form=form, content_owner=content_owner)
         if manager_user.id not in seen_manager_ids:
             next_manager_ids.append(manager_user.id)
 
-    sync_content_manager_links(db, user.id, next_manager_ids)
+    sync_content_manager_links(db, content_owner.id, next_manager_ids)
     db.commit()
     add_flash(request, "Список менеджеров обновлён.", "success")
-    return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+    return content_calendar_redirect(request, user, form=form, content_owner=content_owner)
 
 
 @app.post("/my-calendar/content/new")
@@ -11406,18 +11514,18 @@ async def my_calendar_content_create(request: Request, db: Session = Depends(get
     next_view = normalize_calendar_view(str(form.get("next_view", CALENDAR_VIEW_CONTENT)))
     content_owner, owner_redirect = ensure_content_owner_for_action(request, user, db, form=form)
     if owner_redirect or not content_owner:
-        return owner_redirect or calendar_redirect_for_view(next_view)
+        return owner_redirect or content_calendar_redirect(request, user, form=form)
 
     post = ContentPlanPost(user_id=content_owner.id, title="", publish_date=date.today(), rubric="Неизвестно")
     ok, error_text = save_content_plan_post_from_form(form, post, content_owner, db)
     if not ok:
         add_flash(request, error_text, "error")
-        return calendar_redirect_for_view(next_view, content_owner_id=content_owner.id)
+        return content_calendar_redirect(request, user, form=form, content_owner=content_owner)
 
     db.add(post)
     db.commit()
     add_flash(request, "Пост добавлен в контент-план.", "success")
-    return calendar_redirect_for_view(next_view, content_owner_id=content_owner.id)
+    return content_calendar_redirect(request, user, form=form, content_owner=content_owner)
 
 
 @app.post("/my-calendar/content/{post_id}/edit")
@@ -11433,7 +11541,7 @@ async def my_calendar_content_update(post_id: int, request: Request, db: Session
     next_view = normalize_calendar_view(str(form.get("next_view", CALENDAR_VIEW_CONTENT)))
     content_owner, owner_redirect = ensure_content_owner_for_action(request, user, db, form=form)
     if owner_redirect or not content_owner:
-        return owner_redirect or calendar_redirect_for_view(next_view)
+        return owner_redirect or content_calendar_redirect(request, user, form=form)
 
     post = db.execute(
         select(ContentPlanPost).where(
@@ -11443,16 +11551,16 @@ async def my_calendar_content_update(post_id: int, request: Request, db: Session
     ).scalar_one_or_none()
     if not post:
         add_flash(request, "Пост контент-плана не найден.", "error")
-        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT, content_owner_id=content_owner.id)
+        return content_calendar_redirect(request, user, form=form, content_owner=content_owner)
 
     ok, error_text = save_content_plan_post_from_form(form, post, content_owner, db)
     if not ok:
         add_flash(request, error_text, "error")
-        return calendar_redirect_for_view(next_view, content_owner_id=content_owner.id)
+        return content_calendar_redirect(request, user, form=form, content_owner=content_owner)
 
     db.commit()
     add_flash(request, "Пост контент-плана обновлен.", "success")
-    return calendar_redirect_for_view(next_view, content_owner_id=content_owner.id)
+    return content_calendar_redirect(request, user, form=form, content_owner=content_owner)
 
 
 @app.post("/my-calendar/content/{post_id}/delete")
@@ -11467,7 +11575,7 @@ def my_calendar_content_delete(post_id: int, request: Request, db: Session = Dep
     next_view = normalize_calendar_view(str(request.query_params.get("view", CALENDAR_VIEW_CONTENT)))
     content_owner, owner_redirect = ensure_content_owner_for_action(request, user, db)
     if owner_redirect or not content_owner:
-        return owner_redirect or calendar_redirect_for_view(next_view)
+        return owner_redirect or content_calendar_redirect(request, user)
 
     post = db.execute(
         select(ContentPlanPost).where(
@@ -11477,12 +11585,12 @@ def my_calendar_content_delete(post_id: int, request: Request, db: Session = Dep
     ).scalar_one_or_none()
     if not post:
         add_flash(request, "Пост контент-плана не найден.", "error")
-        return calendar_redirect_for_view(next_view, content_owner_id=content_owner.id)
+        return content_calendar_redirect(request, user, content_owner=content_owner)
 
     db.delete(post)
     db.commit()
     add_flash(request, "Пост удален из контент-плана.", "info")
-    return calendar_redirect_for_view(next_view, content_owner_id=content_owner.id)
+    return content_calendar_redirect(request, user, content_owner=content_owner)
 
 
 @app.get("/my-calendar/content/telegram/custom-emoji/{emoji_id}", include_in_schema=False)
@@ -11526,39 +11634,42 @@ async def my_calendar_content_telegram_connect(request: Request, db: Session = D
     access_redirect = ensure_content_plan_access(request, user, db)
     if access_redirect:
         return access_redirect
-    if is_smm_manager_user(user):
-        add_flash(request, "Настройки Telegram может менять только владелец контент-плана.", "error")
-        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
-
     form = await request.form()
-    existing_token = get_secret_user_option_value(db, user.id, CONTENT_TELEGRAM_TOKEN_GROUP)
+    content_owner, owner_redirect = ensure_content_owner_for_action(request, user, db, form=form)
+    if owner_redirect or not content_owner:
+        return owner_redirect or content_calendar_redirect(request, user, form=form)
+    if not content_connections_editable(user, content_owner):
+        add_flash(request, "Настройки Telegram может менять только владелец контент-плана.", "error")
+        return content_calendar_redirect(request, user, form=form, content_owner=content_owner)
+
+    existing_token = get_secret_user_option_value(db, content_owner.id, CONTENT_TELEGRAM_TOKEN_GROUP)
     bot_token = str(form.get("bot_token", "")).strip() or existing_token
     telegram_channels_text = str(form.get("telegram_channels_text", "")).strip()
     premium_emojis_text = str(form.get("premium_emojis_text", "")).strip()
 
     if not bot_token or ":" not in bot_token:
         add_flash(request, "Укажите корректный токен Telegram-бота.", "error")
-        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+        return content_calendar_redirect(request, user, form=form, content_owner=content_owner)
 
     channel_entries, channel_error = parse_content_telegram_channel_lines(telegram_channels_text)
     if channel_error:
         add_flash(request, channel_error, "error")
-        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+        return content_calendar_redirect(request, user, form=form, content_owner=content_owner)
     if not channel_entries:
         add_flash(request, "Добавьте хотя бы один Telegram-канал для публикации.", "error")
-        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+        return content_calendar_redirect(request, user, form=form, content_owner=content_owner)
 
     premium_entries, premium_error = parse_content_premium_emoji_lines(premium_emojis_text)
     if premium_error:
         add_flash(request, premium_error, "error")
-        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+        return content_calendar_redirect(request, user, form=form, content_owner=content_owner)
 
-    set_secret_user_option_value(db, user.id, CONTENT_TELEGRAM_TOKEN_GROUP, bot_token)
-    set_user_option_value(db, user.id, CONTENT_TELEGRAM_CHAT_GROUP, channel_entries[0]["chat_id"])
-    set_user_option_value(db, user.id, CONTENT_TELEGRAM_PACK_GROUP, "")
+    set_secret_user_option_value(db, content_owner.id, CONTENT_TELEGRAM_TOKEN_GROUP, bot_token)
+    set_user_option_value(db, content_owner.id, CONTENT_TELEGRAM_CHAT_GROUP, channel_entries[0]["chat_id"])
+    set_user_option_value(db, content_owner.id, CONTENT_TELEGRAM_PACK_GROUP, "")
     replace_user_option_values(
         db,
-        user.id,
+        content_owner.id,
         CONTENT_TELEGRAM_CHANNEL_GROUP,
         [
             encode_content_telegram_channel_value(entry["title"], entry["chat_id"])
@@ -11567,13 +11678,13 @@ async def my_calendar_content_telegram_connect(request: Request, db: Session = D
     )
     replace_user_option_values(
         db,
-        user.id,
+        content_owner.id,
         CONTENT_TELEGRAM_PREMIUM_EMOJI_GROUP,
         [encode_content_premium_emoji_value(entry["emoji"], entry["emoji_id"]) for entry in premium_entries],
     )
     db.commit()
     add_flash(request, "Настройки Telegram-канала сохранены.", "success")
-    return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+    return content_calendar_redirect(request, user, form=form, content_owner=content_owner)
 
 
 @app.post("/my-calendar/content/telegram/disconnect")
@@ -11584,16 +11695,19 @@ def my_calendar_content_telegram_disconnect(request: Request, db: Session = Depe
     access_redirect = ensure_content_plan_access(request, user, db)
     if access_redirect:
         return access_redirect
-    if is_smm_manager_user(user):
+    content_owner, owner_redirect = ensure_content_owner_for_action(request, user, db)
+    if owner_redirect or not content_owner:
+        return owner_redirect or content_calendar_redirect(request, user)
+    if not content_connections_editable(user, content_owner):
         add_flash(request, "Настройки Telegram может менять только владелец контент-плана.", "error")
-        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
-    set_secret_user_option_value(db, user.id, CONTENT_TELEGRAM_TOKEN_GROUP, "")
-    set_user_option_value(db, user.id, CONTENT_TELEGRAM_CHAT_GROUP, "")
-    set_user_option_value(db, user.id, CONTENT_TELEGRAM_PACK_GROUP, "")
-    replace_user_option_values(db, user.id, CONTENT_TELEGRAM_CHANNEL_GROUP, [])
+        return content_calendar_redirect(request, user, content_owner=content_owner)
+    set_secret_user_option_value(db, content_owner.id, CONTENT_TELEGRAM_TOKEN_GROUP, "")
+    set_user_option_value(db, content_owner.id, CONTENT_TELEGRAM_CHAT_GROUP, "")
+    set_user_option_value(db, content_owner.id, CONTENT_TELEGRAM_PACK_GROUP, "")
+    replace_user_option_values(db, content_owner.id, CONTENT_TELEGRAM_CHANNEL_GROUP, [])
     db.commit()
     add_flash(request, "Настройки Telegram-каналов удалены. Библиотека premium-эмодзи сохранена.", "info")
-    return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+    return content_calendar_redirect(request, user, content_owner=content_owner)
 
 
 @app.post("/my-calendar/content/vk/connect")
@@ -11604,32 +11718,35 @@ async def my_calendar_content_vk_connect(request: Request, db: Session = Depends
     access_redirect = ensure_content_plan_access(request, user, db)
     if access_redirect:
         return access_redirect
-    if is_smm_manager_user(user):
-        add_flash(request, "Настройки VK может менять только владелец контент-плана.", "error")
-        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
-
     form = await request.form()
-    existing_groups = get_content_vk_settings(user, db).get("groups") or []
+    content_owner, owner_redirect = ensure_content_owner_for_action(request, user, db, form=form)
+    if owner_redirect or not content_owner:
+        return owner_redirect or content_calendar_redirect(request, user, form=form)
+    if not content_connections_editable(user, content_owner):
+        add_flash(request, "Настройки VK может менять только владелец контент-плана.", "error")
+        return content_calendar_redirect(request, user, form=form, content_owner=content_owner)
+
+    existing_groups = get_content_vk_settings(content_owner, db).get("groups") or []
     vk_groups_text = str(form.get("vk_groups_text", "")).strip()
 
     if vk_groups_text:
         group_entries, group_error = parse_content_vk_group_lines(vk_groups_text)
         if group_error:
             add_flash(request, group_error, "error")
-            return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+            return content_calendar_redirect(request, user, form=form, content_owner=content_owner)
         if not group_entries:
             add_flash(request, "Добавьте хотя бы одно сообщество VK для публикации.", "error")
-            return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+            return content_calendar_redirect(request, user, form=form, content_owner=content_owner)
     else:
         group_entries = list(existing_groups)
         if not group_entries:
             add_flash(request, "Добавьте хотя бы одну пару «сообщество — ключ сообщества» для VK.", "error")
-            return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+            return content_calendar_redirect(request, user, form=form, content_owner=content_owner)
 
-    set_secret_user_option_value(db, user.id, CONTENT_VK_TOKEN_GROUP, "")
+    set_secret_user_option_value(db, content_owner.id, CONTENT_VK_TOKEN_GROUP, "")
     replace_user_option_values(
         db,
-        user.id,
+        content_owner.id,
         CONTENT_VK_GROUP_GROUP,
         [
             encode_content_vk_group_value(
@@ -11644,7 +11761,7 @@ async def my_calendar_content_vk_connect(request: Request, db: Session = Depends
     )
     db.commit()
     add_flash(request, "Настройки VK-сообществ сохранены.", "success")
-    return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+    return content_calendar_redirect(request, user, form=form, content_owner=content_owner)
 
 
 @app.post("/my-calendar/content/vk/disconnect")
@@ -11655,15 +11772,18 @@ def my_calendar_content_vk_disconnect(request: Request, db: Session = Depends(ge
     access_redirect = ensure_content_plan_access(request, user, db)
     if access_redirect:
         return access_redirect
-    if is_smm_manager_user(user):
+    content_owner, owner_redirect = ensure_content_owner_for_action(request, user, db)
+    if owner_redirect or not content_owner:
+        return owner_redirect or content_calendar_redirect(request, user)
+    if not content_connections_editable(user, content_owner):
         add_flash(request, "Настройки VK может менять только владелец контент-плана.", "error")
-        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+        return content_calendar_redirect(request, user, content_owner=content_owner)
 
-    set_secret_user_option_value(db, user.id, CONTENT_VK_TOKEN_GROUP, "")
-    replace_user_option_values(db, user.id, CONTENT_VK_GROUP_GROUP, [])
+    set_secret_user_option_value(db, content_owner.id, CONTENT_VK_TOKEN_GROUP, "")
+    replace_user_option_values(db, content_owner.id, CONTENT_VK_GROUP_GROUP, [])
     db.commit()
     add_flash(request, "Настройки VK-сообществ удалены.", "info")
-    return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+    return content_calendar_redirect(request, user, content_owner=content_owner)
 
 
 @app.get("/my-calendar/content/pinterest/oauth/start")
@@ -11674,16 +11794,19 @@ def my_calendar_content_pinterest_oauth_start(request: Request, db: Session = De
     access_redirect = ensure_content_plan_access(request, user, db)
     if access_redirect:
         return access_redirect
-    if is_smm_manager_user(user):
+    content_owner, owner_redirect = ensure_content_owner_for_action(request, user, db)
+    if owner_redirect or not content_owner:
+        return owner_redirect or content_calendar_redirect(request, user)
+    if not content_connections_editable(user, content_owner):
         add_flash(request, "Настройки Pinterest может менять только владелец контент-плана.", "error")
-        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+        return content_calendar_redirect(request, user, content_owner=content_owner)
     if not pinterest_app_configured():
         add_flash(
             request,
             "Pinterest-подключение сейчас временно недоступно. Попробуйте позже.",
             "error",
         )
-        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+        return content_calendar_redirect(request, user, content_owner=content_owner)
     state = build_pinterest_oauth_state(user.id)
     return RedirectResponse(pinterest_authorize_url(state), status_code=302)
 
@@ -11701,13 +11824,13 @@ def my_calendar_content_pinterest_oauth_callback(request: Request, db: Session =
 
     if error_code:
         add_flash(request, error_description or f"Pinterest OAuth вернул ошибку: {error_code}", "error")
-        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT, content_scope=CONTENT_SCOPE_PERSONAL)
     if not verify_pinterest_oauth_state(returned_state, user.id):
         add_flash(request, "Pinterest OAuth завершился с неверным state. Повторите подключение.", "error")
-        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT, content_scope=CONTENT_SCOPE_PERSONAL)
     if not auth_code:
         add_flash(request, "Pinterest не вернул код авторизации.", "error")
-        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT, content_scope=CONTENT_SCOPE_PERSONAL)
 
     try:
         token_payload = pinterest_token_request(
@@ -11722,7 +11845,7 @@ def my_calendar_content_pinterest_oauth_callback(request: Request, db: Session =
         profile, boards = sync_content_pinterest_remote_data(user, db)
     except RuntimeError as exc:
         add_flash(request, str(exc), "error")
-        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT, content_scope=CONTENT_SCOPE_PERSONAL)
 
     profile_label = str(profile.get("username") or "аккаунт").strip()
     add_flash(
@@ -11730,7 +11853,7 @@ def my_calendar_content_pinterest_oauth_callback(request: Request, db: Session =
         f"Pinterest подключён ({profile_label}). Досок найдено: {len(boards)}.",
         "success",
     )
-    return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+    return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT, content_scope=CONTENT_SCOPE_PERSONAL)
 
 
 @app.post("/my-calendar/content/pinterest/sync")
@@ -11741,18 +11864,21 @@ def my_calendar_content_pinterest_sync(request: Request, db: Session = Depends(g
     access_redirect = ensure_content_plan_access(request, user, db)
     if access_redirect:
         return access_redirect
-    if is_smm_manager_user(user):
+    content_owner, owner_redirect = ensure_content_owner_for_action(request, user, db)
+    if owner_redirect or not content_owner:
+        return owner_redirect or content_calendar_redirect(request, user)
+    if not content_connections_editable(user, content_owner):
         add_flash(request, "Настройки Pinterest может менять только владелец контент-плана.", "error")
-        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+        return content_calendar_redirect(request, user, content_owner=content_owner)
 
     try:
-        _, boards = sync_content_pinterest_remote_data(user, db)
+        _, boards = sync_content_pinterest_remote_data(content_owner, db)
     except RuntimeError as exc:
         add_flash(request, str(exc), "error")
-        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+        return content_calendar_redirect(request, user, content_owner=content_owner)
 
     add_flash(request, f"Список досок Pinterest обновлён: {len(boards)}.", "success")
-    return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+    return content_calendar_redirect(request, user, content_owner=content_owner)
 
 
 @app.post("/my-calendar/content/pinterest/disconnect")
@@ -11763,18 +11889,21 @@ def my_calendar_content_pinterest_disconnect(request: Request, db: Session = Dep
     access_redirect = ensure_content_plan_access(request, user, db)
     if access_redirect:
         return access_redirect
-    if is_smm_manager_user(user):
+    content_owner, owner_redirect = ensure_content_owner_for_action(request, user, db)
+    if owner_redirect or not content_owner:
+        return owner_redirect or content_calendar_redirect(request, user)
+    if not content_connections_editable(user, content_owner):
         add_flash(request, "Настройки Pinterest может менять только владелец контент-плана.", "error")
-        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+        return content_calendar_redirect(request, user, content_owner=content_owner)
 
-    set_secret_user_option_value(db, user.id, CONTENT_PINTEREST_ACCESS_TOKEN_GROUP, "")
-    set_secret_user_option_value(db, user.id, CONTENT_PINTEREST_REFRESH_TOKEN_GROUP, "")
-    set_user_option_value(db, user.id, CONTENT_PINTEREST_SCOPE_GROUP, "")
-    set_user_option_value(db, user.id, CONTENT_PINTEREST_PROFILE_GROUP, "")
-    replace_user_option_values(db, user.id, CONTENT_PINTEREST_BOARD_GROUP, [])
+    set_secret_user_option_value(db, content_owner.id, CONTENT_PINTEREST_ACCESS_TOKEN_GROUP, "")
+    set_secret_user_option_value(db, content_owner.id, CONTENT_PINTEREST_REFRESH_TOKEN_GROUP, "")
+    set_user_option_value(db, content_owner.id, CONTENT_PINTEREST_SCOPE_GROUP, "")
+    set_user_option_value(db, content_owner.id, CONTENT_PINTEREST_PROFILE_GROUP, "")
+    replace_user_option_values(db, content_owner.id, CONTENT_PINTEREST_BOARD_GROUP, [])
     db.commit()
     add_flash(request, "Pinterest отключён.", "info")
-    return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+    return content_calendar_redirect(request, user, content_owner=content_owner)
 
 
 @app.post("/my-calendar/content/{post_id}/telegram-publish")
@@ -11788,7 +11917,7 @@ def my_calendar_content_publish_telegram(post_id: int, request: Request, db: Ses
 
     content_owner, owner_redirect = ensure_content_owner_for_action(request, user, db)
     if owner_redirect or not content_owner:
-        return owner_redirect or calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+        return owner_redirect or content_calendar_redirect(request, user)
 
     post = db.execute(
         select(ContentPlanPost).where(
@@ -11798,21 +11927,21 @@ def my_calendar_content_publish_telegram(post_id: int, request: Request, db: Ses
     ).scalar_one_or_none()
     if not post:
         add_flash(request, "Пост контент-плана не найден.", "error")
-        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT, content_owner_id=content_owner.id)
+        return content_calendar_redirect(request, user, content_owner=content_owner)
 
     telegram_settings = get_content_telegram_settings(content_owner, db)
     bot_token = telegram_settings.get("bot_token", "")
     available_channels = list(telegram_settings.get("channels") or [])
     if not bot_token or not available_channels:
         add_flash(request, "Сначала подключите Telegram-каналы в настройках контент-плана.", "error")
-        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT, content_owner_id=content_owner.id)
+        return content_calendar_redirect(request, user, content_owner=content_owner)
 
     selected_channels = resolve_content_telegram_channels(as_list(post.telegram_channels_json), available_channels)
     if not selected_channels and len(available_channels) == 1:
         selected_channels = [available_channels[0]]
     if not selected_channels:
         add_flash(request, "Выберите хотя бы один Telegram-канал в карточке поста.", "error")
-        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT, content_owner_id=content_owner.id)
+        return content_calendar_redirect(request, user, content_owner=content_owner)
 
     try:
         rubric_tag = normalize_content_rubric_tag(post.rubric_tag) or get_content_rubric_tags(db, content_owner.id).get(post.rubric or "", "")
@@ -11829,11 +11958,11 @@ def my_calendar_content_publish_telegram(post_id: int, request: Request, db: Ses
         )
     except Exception as exc:
         add_flash(request, str(exc), "error")
-        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT, content_owner_id=content_owner.id)
+        return content_calendar_redirect(request, user, content_owner=content_owner)
 
     if not sent_messages:
         add_flash(request, send_errors[0] if send_errors else "Не удалось опубликовать пост в Telegram.", "error")
-        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT, content_owner_id=content_owner.id)
+        return content_calendar_redirect(request, user, content_owner=content_owner)
 
     mark_content_post_telegram_published(
         post,
@@ -11845,7 +11974,7 @@ def my_calendar_content_publish_telegram(post_id: int, request: Request, db: Ses
     if send_errors:
         success_text = f"{success_text} Не удалось отправить в: {'; '.join(send_errors)}"
     add_flash(request, success_text, "success")
-    return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT, content_owner_id=content_owner.id)
+    return content_calendar_redirect(request, user, content_owner=content_owner)
 
 
 @app.post("/my-calendar/content/{post_id}/vk-publish")
@@ -11859,7 +11988,7 @@ def my_calendar_content_publish_vk(post_id: int, request: Request, db: Session =
 
     content_owner, owner_redirect = ensure_content_owner_for_action(request, user, db)
     if owner_redirect or not content_owner:
-        return owner_redirect or calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+        return owner_redirect or content_calendar_redirect(request, user)
 
     post = db.execute(
         select(ContentPlanPost).where(
@@ -11869,20 +11998,20 @@ def my_calendar_content_publish_vk(post_id: int, request: Request, db: Session =
     ).scalar_one_or_none()
     if not post:
         add_flash(request, "Пост контент-плана не найден.", "error")
-        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT, content_owner_id=content_owner.id)
+        return content_calendar_redirect(request, user, content_owner=content_owner)
 
     vk_settings = get_content_vk_settings(content_owner, db)
     available_groups = list(vk_settings.get("groups") or [])
     if not available_groups:
         add_flash(request, "Сначала подключите VK-сообщества в настройках контент-плана.", "error")
-        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT, content_owner_id=content_owner.id)
+        return content_calendar_redirect(request, user, content_owner=content_owner)
 
     selected_groups = resolve_content_vk_groups(as_list(post.vk_groups_json), available_groups)
     if not selected_groups and len(available_groups) == 1:
         selected_groups = [available_groups[0]]
     if not selected_groups:
         add_flash(request, "Выберите хотя бы одно сообщество VK в карточке поста.", "error")
-        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT, content_owner_id=content_owner.id)
+        return content_calendar_redirect(request, user, content_owner=content_owner)
 
     try:
         rubric_tag = normalize_content_rubric_tag(post.rubric_tag) or get_content_rubric_tags(db, content_owner.id).get(post.rubric or "", "")
@@ -11893,11 +12022,11 @@ def my_calendar_content_publish_vk(post_id: int, request: Request, db: Session =
         )
     except Exception as exc:
         add_flash(request, str(exc), "error")
-        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT, content_owner_id=content_owner.id)
+        return content_calendar_redirect(request, user, content_owner=content_owner)
 
     if not sent_posts:
         add_flash(request, send_errors[0] if send_errors else "Не удалось опубликовать пост в VK.", "error")
-        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT, content_owner_id=content_owner.id)
+        return content_calendar_redirect(request, user, content_owner=content_owner)
 
     mark_content_post_vk_published(
         post,
@@ -11909,7 +12038,7 @@ def my_calendar_content_publish_vk(post_id: int, request: Request, db: Session =
     if send_errors:
         success_text = f"{success_text} Не удалось отправить в: {'; '.join(send_errors)}"
     add_flash(request, success_text, "success")
-    return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT, content_owner_id=content_owner.id)
+    return content_calendar_redirect(request, user, content_owner=content_owner)
 
 
 @app.post("/my-calendar/content/{post_id}/pinterest-publish")
@@ -11923,7 +12052,7 @@ def my_calendar_content_publish_pinterest(post_id: int, request: Request, db: Se
 
     content_owner, owner_redirect = ensure_content_owner_for_action(request, user, db)
     if owner_redirect or not content_owner:
-        return owner_redirect or calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+        return owner_redirect or content_calendar_redirect(request, user)
 
     post = db.execute(
         select(ContentPlanPost).where(
@@ -11933,23 +12062,23 @@ def my_calendar_content_publish_pinterest(post_id: int, request: Request, db: Se
     ).scalar_one_or_none()
     if not post:
         add_flash(request, "Пост контент-плана не найден.", "error")
-        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT, content_owner_id=content_owner.id)
+        return content_calendar_redirect(request, user, content_owner=content_owner)
 
     pinterest_settings = get_content_pinterest_settings(content_owner, db)
     available_boards = list(pinterest_settings.get("boards") or [])
     if not pinterest_settings.get("connected"):
         add_flash(request, "Сначала подключите Pinterest в настройках контент-плана.", "error")
-        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT, content_owner_id=content_owner.id)
+        return content_calendar_redirect(request, user, content_owner=content_owner)
     if not available_boards:
         add_flash(request, "Сначала подтяните хотя бы одну доску Pinterest.", "error")
-        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT, content_owner_id=content_owner.id)
+        return content_calendar_redirect(request, user, content_owner=content_owner)
 
     selected_boards = resolve_content_pinterest_boards(as_list(post.pinterest_boards_json), available_boards)
     if not selected_boards and len(available_boards) == 1:
         selected_boards = [available_boards[0]]
     if not selected_boards:
         add_flash(request, "Выберите хотя бы одну доску Pinterest в карточке поста.", "error")
-        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT, content_owner_id=content_owner.id)
+        return content_calendar_redirect(request, user, content_owner=content_owner)
 
     try:
         rubric_tag = normalize_content_rubric_tag(post.rubric_tag) or get_content_rubric_tags(db, content_owner.id).get(post.rubric or "", "")
@@ -11962,11 +12091,11 @@ def my_calendar_content_publish_pinterest(post_id: int, request: Request, db: Se
         )
     except Exception as exc:
         add_flash(request, str(exc), "error")
-        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT, content_owner_id=content_owner.id)
+        return content_calendar_redirect(request, user, content_owner=content_owner)
 
     if not sent_pins:
         add_flash(request, send_errors[0] if send_errors else "Не удалось опубликовать пост в Pinterest.", "error")
-        return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT, content_owner_id=content_owner.id)
+        return content_calendar_redirect(request, user, content_owner=content_owner)
 
     mark_content_post_pinterest_published(
         post,
@@ -11978,7 +12107,7 @@ def my_calendar_content_publish_pinterest(post_id: int, request: Request, db: Se
     if send_errors:
         success_text = f"{success_text} Не удалось отправить в: {'; '.join(send_errors)}"
     add_flash(request, success_text, "success")
-    return calendar_redirect_for_view(CALENDAR_VIEW_CONTENT, content_owner_id=content_owner.id)
+    return content_calendar_redirect(request, user, content_owner=content_owner)
 
 
 def ics_calendar_header() -> list[str]:
@@ -12185,9 +12314,10 @@ def my_calendar_content_export_ics(request: Request, db: Session = Depends(get_d
     if access_redirect:
         return access_redirect
 
+    content_scope = get_content_scope_for_request(request, user)
     content_owner, owner_redirect = ensure_content_owner_for_action(request, user, db)
     if owner_redirect or not content_owner:
-        return owner_redirect or calendar_redirect_for_view(CALENDAR_VIEW_CONTENT)
+        return owner_redirect or content_calendar_redirect(request, user)
 
     today = date.today()
     posts = db.execute(
@@ -12228,7 +12358,13 @@ def my_calendar_content_export_ics(request: Request, db: Session = Depends(get_d
     return PlainTextResponse(
         body,
         media_type="text/calendar; charset=utf-8",
-        headers={"Content-Disposition": 'attachment; filename="cosplay-content-plan.ics"'},
+        headers={
+            "Content-Disposition": (
+                'attachment; filename="cosplay-content-plan-client.ics"'
+                if content_scope == CONTENT_SCOPE_CLIENT
+                else 'attachment; filename="cosplay-content-plan-personal.ics"'
+            )
+        },
     )
 
 
