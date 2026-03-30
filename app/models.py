@@ -665,6 +665,7 @@ class CommunityMaster(Base):
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
 
     nick = Column(String(100), nullable=False, index=True)
+    city = Column(String(255), nullable=True, index=True)
     master_type = Column(String(64), nullable=False, index=True)
     details = Column(Text, nullable=False)
     gallery_json = Column(JSON, nullable=False, default=list)

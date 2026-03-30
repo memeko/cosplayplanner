@@ -731,6 +731,7 @@ def apply_schema_migrations() -> None:
             ("images_json", "JSON NOT NULL DEFAULT '[]'"),
         ],
         "community_masters": [
+            ("city", "VARCHAR(255)"),
             ("import_source", "VARCHAR(64)"),
             ("import_external_id", "VARCHAR(128)"),
             ("import_url", "TEXT"),
@@ -1177,6 +1178,14 @@ def can_manage_master(user: User | None, master: CommunityMaster | None) -> bool
     if master.user_id == user.id:
         return True
     return user_is_special(user) and bool(master.import_source)
+
+
+def can_manage_project_board_post(user: User | None, post: ProjectSearchPost | None) -> bool:
+    if not user or not post:
+        return False
+    if post.user_id == user.id:
+        return True
+    return user_is_special(user)
 
 
 def usernames_match(left: str | None, right: str | None) -> bool:
@@ -2259,12 +2268,24 @@ def card_anchor_date_for_budget(card: CosplanCard, festival_start_by_name: dict[
 
 
 def build_budget_month_groups(user: User, db: Session) -> list[dict[str, Any]]:
+    frozen_card_ids = {
+        int(card_id)
+        for card_id in db.execute(
+            select(InProgressCard.cosplan_card_id).where(
+                InProgressCard.user_id == user.id,
+                InProgressCard.is_frozen.is_(True),
+            )
+        ).scalars().all()
+        if card_id
+    }
     cards = db.execute(
         select(CosplanCard).where(
             CosplanCard.user_id == user.id,
             CosplanCard.is_shared_copy.is_(False),
         )
     ).scalars().all()
+    if frozen_card_ids:
+        cards = [card for card in cards if card.id not in frozen_card_ids]
     festivals = db.execute(
         select(Festival).where(
             Festival.user_id == user.id,
@@ -12440,6 +12461,9 @@ def project_board_list(request: Request, db: Session = Depends(get_db)):
     if not user:
         return redirect("/login")
 
+    board_view = request.query_params.get("view", "active").strip().lower()
+    if board_view not in {"active", "archive"}:
+        board_view = "active"
     q = request.query_params.get("q", "").strip()
     selected_city = request.query_params.get("city", "").strip()
     only_mine = to_bool(request.query_params.get("mine", ""))
@@ -12452,6 +12476,10 @@ def project_board_list(request: Request, db: Session = Depends(get_db)):
         )
     ).scalars().all()
     posts = list(all_posts)
+    if board_view == "archive":
+        posts = [post for post in posts if (post.status or PROJECT_BOARD_STATUS_ACTIVE) == PROJECT_BOARD_STATUS_INACTIVE]
+    else:
+        posts = [post for post in posts if (post.status or PROJECT_BOARD_STATUS_ACTIVE) != PROJECT_BOARD_STATUS_INACTIVE]
     if only_mine:
         posts = [post for post in posts if post.user_id == user.id]
     if selected_city:
@@ -12468,10 +12496,6 @@ def project_board_list(request: Request, db: Session = Depends(get_db)):
             or needle in (post.contact_link or "").casefold()
             or needle in ("фотосет" if post.event_type == "photoset" else "фестиваль")
         ]
-    posts = sorted(
-        posts,
-        key=lambda post: 1 if (post.status or PROJECT_BOARD_STATUS_ACTIVE) == PROJECT_BOARD_STATUS_INACTIVE else 0,
-    )
 
     city_options = project_board_city_options(db, user)
 
@@ -12505,6 +12529,7 @@ def project_board_list(request: Request, db: Session = Depends(get_db)):
         posts=posts,
         owners_by_id=owners_by_id,
         comments_by_post=comments_by_post,
+        board_view=board_view,
         q=q,
         selected_city=selected_city,
         city_options=city_options,
@@ -12568,8 +12593,8 @@ def project_board_edit(post_id: int, request: Request, db: Session = Depends(get
     if not post:
         add_flash(request, "Объявление не найдено.", "error")
         return redirect("/project-board")
-    if post.user_id != user.id:
-        add_flash(request, "Редактировать можно только своё объявление.", "error")
+    if not can_manage_project_board_post(user, post):
+        add_flash(request, "Редактировать может только автор объявления или brfox_cosplay.", "error")
         return redirect("/project-board")
 
     return template_response(
@@ -12596,8 +12621,8 @@ async def project_board_update(post_id: int, request: Request, db: Session = Dep
     if not post:
         add_flash(request, "Объявление не найдено.", "error")
         return redirect("/project-board")
-    if post.user_id != user.id:
-        add_flash(request, "Редактировать можно только своё объявление.", "error")
+    if not can_manage_project_board_post(user, post):
+        add_flash(request, "Редактировать может только автор объявления или brfox_cosplay.", "error")
         return redirect("/project-board")
 
     form = await request.form()
@@ -12623,8 +12648,8 @@ async def project_board_update_status(post_id: int, request: Request, db: Sessio
     if not post:
         add_flash(request, "Объявление не найдено.", "error")
         return redirect("/project-board")
-    if post.user_id != user.id:
-        add_flash(request, "Изменять статус может только автор карточки.", "error")
+    if not can_manage_project_board_post(user, post):
+        add_flash(request, "Изменять статус может только автор карточки или brfox_cosplay.", "error")
         return redirect("/project-board")
 
     form = await request.form()
@@ -12640,6 +12665,26 @@ async def project_board_update_status(post_id: int, request: Request, db: Sessio
     post.status = status
     db.commit()
     add_flash(request, "Статус объявления обновлен.", "success")
+    return redirect("/project-board")
+
+
+@app.post("/project-board/{post_id}/delete")
+def project_board_delete(post_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    post = db.get(ProjectSearchPost, post_id)
+    if not post:
+        add_flash(request, "Объявление не найдено.", "error")
+        return redirect("/project-board")
+    if not can_manage_project_board_post(user, post):
+        add_flash(request, "Удалять может только автор объявления или brfox_cosplay.", "error")
+        return redirect("/project-board")
+
+    db.delete(post)
+    db.commit()
+    add_flash(request, "Объявление удалено.", "info")
     return redirect("/project-board")
 
 
@@ -13002,6 +13047,7 @@ def get_master_form_values(master: CommunityMaster | None = None) -> dict[str, A
     if not master:
         return {
             "nick": "",
+            "city": "",
             "master_type": MASTER_TYPE_OPTIONS[0],
             "details": "",
             "gallery_input": "",
@@ -13010,6 +13056,7 @@ def get_master_form_values(master: CommunityMaster | None = None) -> dict[str, A
 
     return {
         "nick": master.nick or "",
+        "city": master.city or "",
         "master_type": master.master_type or MASTER_TYPE_OPTIONS[0],
         "details": master.details or "",
         "gallery_input": "\n".join(as_list(master.gallery_json)),
@@ -13019,6 +13066,7 @@ def get_master_form_values(master: CommunityMaster | None = None) -> dict[str, A
 
 def save_master_from_form(form: Any, master: CommunityMaster) -> tuple[bool, str]:
     nick = normalize_username(str(form.get("nick", "")).strip())
+    city = str(form.get("city", "")).strip()
     master_type = str(form.get("master_type", "")).strip().lower()
     details = str(form.get("details", "")).strip()
     gallery_input = str(form.get("gallery_input", ""))
@@ -13026,6 +13074,8 @@ def save_master_from_form(form: Any, master: CommunityMaster) -> tuple[bool, str
 
     if not nick:
         return False, "Укажите ник мастера."
+    if len(city) > 255:
+        return False, "Поле «Город» должно быть не длиннее 255 символов."
     if master_type not in MASTER_TYPE_OPTIONS:
         return False, "Выберите корректный тип мастера."
     if not details:
@@ -13034,11 +13084,19 @@ def save_master_from_form(form: Any, master: CommunityMaster) -> tuple[bool, str
         return False, "Поле «Подробнее» должно быть не длиннее 2000 символов."
 
     master.nick = nick
+    master.city = city or None
     master.master_type = master_type
     master.details = details
     master.gallery_json = parse_reference_values(gallery_input)
     master.price_list_json = price_rows
     return True, ""
+
+
+def community_master_city_options(db: Session) -> list[str]:
+    cities = db.execute(
+        select(CommunityMaster.city).where(CommunityMaster.city.is_not(None)).order_by(CommunityMaster.city)
+    ).scalars().all()
+    return merge_unique(cities)
 
 
 def master_rating_maps(
@@ -13089,15 +13147,25 @@ def community_masters_list(request: Request, db: Session = Depends(get_db)):
 
     q = request.query_params.get("q", "").strip()
     master_type = request.query_params.get("type", "").strip().lower()
+    selected_city = request.query_params.get("city", "").strip()
     masters = db.execute(
         select(CommunityMaster).order_by(CommunityMaster.updated_at.desc(), CommunityMaster.id.desc())
     ).scalars().all()
+    city_options = community_master_city_options(db)
 
     if master_type and master_type in MASTER_TYPE_OPTIONS:
         masters = [item for item in masters if (item.master_type or "").strip().lower() == master_type]
+    if selected_city:
+        masters = [item for item in masters if city_matches(selected_city, item.city)]
     if q:
         needle = q.casefold()
-        masters = [item for item in masters if needle in (item.nick or "").casefold()]
+        masters = [
+            item
+            for item in masters
+            if needle in (item.nick or "").casefold()
+            or needle in (item.city or "").casefold()
+            or needle in (item.details or "").casefold()
+        ]
 
     owner_ids = {item.user_id for item in masters}
     owners_by_id: dict[int, User] = {}
@@ -13133,6 +13201,8 @@ def community_masters_list(request: Request, db: Session = Depends(get_db)):
         import_source_labels=IMPORT_SOURCE_LABELS,
         q=q,
         selected_type=master_type,
+        selected_city=selected_city,
+        city_options=city_options,
         master_type_options=MASTER_TYPE_OPTIONS,
     )
 

@@ -18,11 +18,15 @@
 </section>
 
 <section class="box">
+  <p class="muted">Здесь можно публиковать и анонимные вопросы: имя автора в карточке и списке скрывается.</p>
+</section>
+
+<section class="box">
   <p class="muted">Фильтр по темам</p>
   <div class="chips-wrap top-offset">
-    <a href="/community/questions{% if q %}?q={{ q|urlencode }}{% endif %}" class="chip {% if not selected_topic %}chip-active{% endif %}">Все темы</a>
+    <a href="/community/questions{% if q %}?q={{ q|urlencode }}{% endif %}" class="btn btn-small {% if not selected_topic %}btn-accent{% endif %}">Все темы</a>
     {% for topic in question_topic_options %}
-      <a href="/community/questions?topic={{ topic|urlencode }}{% if q %}&q={{ q|urlencode }}{% endif %}" class="chip {% if selected_topic == topic %}chip-active{% endif %}">{{ topic }}</a>
+      <a href="/community/questions?topic={{ topic|urlencode }}{% if q %}&q={{ q|urlencode }}{% endif %}" class="btn btn-small {% if selected_topic == topic %}btn-accent{% endif %}">{{ topic }}</a>
     {% endfor %}
   </div>
 </section>

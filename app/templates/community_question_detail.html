@@ -42,14 +42,17 @@
   <p class="notes-block">{{ question.body|render_text }}</p>
   {% if user and (user.id == question.user_id or user_is_special(user)) %}
   <div class="actions-inline top-offset">
-    <form method="post" action="/community/questions/{{ question.id }}/status">
-      <input type="hidden" name="status" value="resolved" />
-      <button type="submit" class="btn">Вопрос решен</button>
-    </form>
-    <form method="post" action="/community/questions/{{ question.id }}/status">
-      <input type="hidden" name="status" value="open" />
-      <button type="submit" class="btn">Снова открыть</button>
-    </form>
+    {% if (question.status or 'open') == 'open' %}
+      <form method="post" action="/community/questions/{{ question.id }}/status">
+        <input type="hidden" name="status" value="resolved" />
+        <button type="submit" class="btn">Вопрос решен</button>
+      </form>
+    {% else %}
+      <form method="post" action="/community/questions/{{ question.id }}/status">
+        <input type="hidden" name="status" value="open" />
+        <button type="submit" class="btn">Снова открыть</button>
+      </form>
+    {% endif %}
   </div>
   {% endif %}
 </section>

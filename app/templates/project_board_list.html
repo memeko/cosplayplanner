@@ -6,6 +6,7 @@
   <h1>Поиск в проекты</h1>
   <div class="actions-inline">
     <form method="get" action="/project-board" class="search-inline">
+      <input type="hidden" name="view" value="{{ board_view }}" />
       <input type="text" name="q" value="{{ q }}" placeholder="Поиск по тексту объявлений" />
       <label>
         Город
@@ -21,10 +22,21 @@
         Мои запросы
       </label>
       <button type="submit" class="btn">Найти</button>
-      <a href="/project-board" class="btn">Сброс</a>
+      <a href="/project-board?view={{ board_view }}" class="btn">Сброс</a>
     </form>
     <a href="/project-board/new" class="btn btn-accent">Опубликовать объявление</a>
   </div>
+</section>
+
+<section class="calendar-tabs">
+  <a
+    href="/project-board?view=active{% if q %}&q={{ q|urlencode }}{% endif %}{% if selected_city %}&city={{ selected_city|urlencode }}{% endif %}{% if only_mine %}&mine=1{% endif %}"
+    class="tab {% if board_view == 'active' %}active{% endif %}"
+  >Актуальные</a>
+  <a
+    href="/project-board?view=archive{% if q %}&q={{ q|urlencode }}{% endif %}{% if selected_city %}&city={{ selected_city|urlencode }}{% endif %}{% if only_mine %}&mine=1{% endif %}"
+    class="tab {% if board_view == 'archive' %}active{% endif %}"
+  >Архив</a>
 </section>
 
 {% if posts %}
@@ -96,7 +108,7 @@
         <button type="submit" class="btn btn-small">Отправить</button>
       </div>
     </form>
-    {% if user and user.id == post.user_id %}
+    {% if user and (user.id == post.user_id or user_is_special(user)) %}
       <div class="actions-inline">
         <a href="/project-board/{{ post.id }}/edit" class="btn">Редактировать</a>
         <form method="post" action="/project-board/{{ post.id }}/status" class="actions-inline">
@@ -111,6 +123,9 @@
           <input type="hidden" name="status" value="active" />
           <button type="submit" class="btn">Сделать активным</button>
         </form>
+        <form method="post" action="/project-board/{{ post.id }}/delete" class="actions-inline" onsubmit="return confirm('Удалить это объявление?');">
+          <button type="submit" class="btn btn-danger">Удалить</button>
+        </form>
       </div>
     {% endif %}
   </article>
@@ -118,7 +133,13 @@
 </div>
 {% else %}
 <section class="box">
-  <p class="muted">Объявлений пока нет. Опубликуйте первое объявление для поиска в проекты.</p>
+  <p class="muted">
+    {% if board_view == 'archive' %}
+      В архиве пока нет объявлений со статусом «Не актуально».
+    {% else %}
+      Объявлений пока нет. Опубликуйте первое объявление для поиска в проекты.
+    {% endif %}
+  </p>
 </section>
 {% endif %}
 {% endblock %}

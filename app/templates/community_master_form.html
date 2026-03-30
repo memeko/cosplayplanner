@@ -16,6 +16,13 @@
       </label>
 
       <label>
+        Город
+        <input type="text" name="city" value="{{ form.city }}" maxlength="255" />
+      </label>
+    </div>
+
+    <div class="grid two-col">
+      <label>
         Тип мастера *
         <select name="master_type" required>
           {% for option in master_type_options %}

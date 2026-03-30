@@ -28,12 +28,16 @@
       {% endif %}
     </p>
     <div class="chips-wrap">
+      {% if master.city %}
+        <span class="chip">{{ master.city }}</span>
+      {% endif %}
       <span class="chip">{{ master.master_type|capitalize }}</span>
       {% if master.import_source %}
         <span class="chip {% if master.import_source == 'cosplay_team' %}chip-source-cosplay-team{% endif %}">{{ import_source_labels.get(master.import_source, master.import_source) }}</span>
       {% endif %}
     </div>
   </div>
+  <p class="meta">Город: {{ master.city or "—" }}</p>
   <p class="meta">Общий рейтинг: {{ '%.1f'|format(rating_avg or 0) }} / 5 (оценок: {{ rating_count or 0 }})</p>
   <p class="notes-block">{{ master.details|render_text }}</p>
   {% if contact_buttons %}

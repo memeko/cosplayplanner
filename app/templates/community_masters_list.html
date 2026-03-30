@@ -6,7 +6,13 @@
   <h1>Мастера</h1>
   <div class="actions-inline">
     <form method="get" action="/community/masters" class="search-inline">
-      <input type="text" name="q" value="{{ q }}" placeholder="Поиск по нику мастера" />
+      <input type="text" name="q" value="{{ q }}" placeholder="Поиск по нику, городу или описанию" />
+      <select name="city">
+        <option value="">Все города</option>
+        {% for city in city_options %}
+          <option value="{{ city }}" {% if selected_city == city %}selected{% endif %}>{{ city }}</option>
+        {% endfor %}
+      </select>
       <select name="type">
         <option value="">Все типы</option>
         {% for option in master_type_options %}
@@ -49,6 +55,7 @@
           @unknown
         {% endif %}
       </p>
+      <p class="meta">Город: {{ master.city or "—" }}</p>
       {% set avg_rating = rating_avg_by_master.get(master.id, 0) %}
       {% set total_ratings = rating_count_by_master.get(master.id, 0) %}
       <p class="meta">Рейтинг: {{ '%.1f'|format(avg_rating) }} / 5 (оценок: {{ total_ratings }})</p>
