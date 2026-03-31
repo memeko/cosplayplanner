@@ -139,86 +139,95 @@
   </section>
 
   {% if month_groups %}
-    {% for group in month_groups %}
-      <section class="box top-offset">
-        <h2>{{ group.title }}</h2>
+    <section class="box top-offset calendar-carousel" data-calendar-carousel>
+      <div class="calendar-carousel-head">
+        <button type="button" class="calendar-carousel-nav" data-calendar-nav="prev" aria-label="Предыдущий месяц">←</button>
+        <div class="calendar-carousel-meta">
+          <h2 class="calendar-carousel-title" data-calendar-title>{{ month_groups[0].title }}</h2>
+          <p class="muted calendar-carousel-counter" data-calendar-counter></p>
+        </div>
+        <button type="button" class="calendar-carousel-nav" data-calendar-nav="next" aria-label="Следующий месяц">→</button>
+      </div>
 
-        <div class="calendar-grid-wrap">
-          <table class="calendar-grid">
-            <thead>
-              <tr>
-                {% for label in month_weekday_labels %}
-                  <th>{{ label }}</th>
-                {% endfor %}
-              </tr>
-            </thead>
-            <tbody>
-              {% for week in group.grid_weeks %}
+      {% for group in month_groups %}
+        <div class="calendar-carousel-panel" data-calendar-panel data-calendar-label="{{ group.title }}" {% if not loop.first %}hidden{% endif %}>
+          <div class="calendar-grid-wrap">
+            <table class="calendar-grid">
+              <thead>
                 <tr>
-                  {% for cell in week %}
-                    {% if cell.day %}
-                      <td class="calendar-grid-cell {% if cell.has_half_day_shift %}calendar-day-half-split{% elif cell.is_multi %}calendar-day-multi{% elif cell.single_type %}calendar-day-{{ cell.single_type }}{% endif %} {% if cell.has_full_day_shift %}calendar-day-work-shift{% endif %} {% if cell.is_work_shift_only %}calendar-day-shift-only{% endif %}">
-                        {% if cell.has_half_day_shift %}
-                          <div class="calendar-split-bg" aria-hidden="true">
-                            <span class="calendar-split-half split-shift"></span>
-                            <span class="calendar-split-half split-event {% if cell.is_multi %}event-multi{% elif cell.single_type %}event-{{ cell.single_type }}{% endif %}"></span>
-                          </div>
-                        {% endif %}
-                        <span class="day-number">{{ cell.day }}</span>
-                        {% if cell.labels %}
-                          <div class="calendar-cell-items">
-                            {% for label in cell.labels[:2] %}
-                              <div class="calendar-cell-item" title="{{ label }}">{{ label }}</div>
-                            {% endfor %}
-                            {% if cell.labels|length > 2 %}
-                              <div class="calendar-cell-more">+{{ cell.labels|length - 2 }}</div>
-                            {% endif %}
-                          </div>
-                        {% endif %}
-                      </td>
-                    {% else %}
-                      <td class="calendar-grid-cell is-empty"></td>
-                    {% endif %}
+                  {% for label in month_weekday_labels %}
+                    <th>{{ label }}</th>
                   {% endfor %}
                 </tr>
-              {% endfor %}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody>
+                {% for week in group.grid_weeks %}
+                  <tr>
+                    {% for cell in week %}
+                      {% if cell.day %}
+                        <td class="calendar-grid-cell {% if cell.has_half_day_shift %}calendar-day-half-split{% elif cell.is_multi %}calendar-day-multi{% elif cell.single_type %}calendar-day-{{ cell.single_type }}{% endif %} {% if cell.has_full_day_shift %}calendar-day-work-shift{% endif %} {% if cell.is_work_shift_only %}calendar-day-shift-only{% endif %}">
+                          {% if cell.has_half_day_shift %}
+                            <div class="calendar-split-bg" aria-hidden="true">
+                              <span class="calendar-split-half split-shift"></span>
+                              <span class="calendar-split-half split-event {% if cell.is_multi %}event-multi{% elif cell.single_type %}event-{{ cell.single_type }}{% endif %}"></span>
+                            </div>
+                          {% endif %}
+                          <span class="day-number">{{ cell.day }}</span>
+                          {% if cell.labels %}
+                            <div class="calendar-cell-items">
+                              {% for label in cell.labels[:2] %}
+                                <div class="calendar-cell-item" title="{{ label }}">{{ label }}</div>
+                              {% endfor %}
+                              {% if cell.labels|length > 2 %}
+                                <div class="calendar-cell-more">+{{ cell.labels|length - 2 }}</div>
+                              {% endif %}
+                            </div>
+                          {% endif %}
+                        </td>
+                      {% else %}
+                        <td class="calendar-grid-cell is-empty"></td>
+                      {% endif %}
+                    {% endfor %}
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
 
-        {% if group.rows %}
-          <ul class="calendar-list">
-            {% for item in group.rows %}
-              <li class="{% if item.same_date_highlight %}calendar-same-date{% endif %}">
-                <span class="calendar-date">{{ item.date.strftime('%d-%m-%Y') if item.date else "—" }}</span>
-                {% if item.time %}
-                  <span class="chip">{{ item.time }}</span>
-                {% endif %}
-                <span class="chip calendar-chip {{ item.type_key }}">{{ item.kind }}</span>
-                {% if item.same_date_highlight %}
-                  <span class="chip chip-alert">Совпадает по дате ({{ item.same_date_count }})</span>
-                {% endif %}
-                <strong>{{ item.title }}</strong>
-                <span class="muted">Город: {{ item.city or "—" }}</span>
-                {% if item.coproplayers %}
-                  <span class="muted">Сокосплеер: {{ item.coproplayers }}</span>
-                {% endif %}
-                {% if item.details %}
-                  <span class="muted">{{ item.details }}</span>
-                {% endif %}
-                {% if item.personal_event_id %}
-                  <form method="post" action="/my-calendar/events/{{ item.personal_event_id }}/delete?view=my" onsubmit="return confirm('Удалить личное событие?');">
-                    <button type="submit" class="btn btn-danger btn-small">Удалить</button>
-                  </form>
-                {% endif %}
-              </li>
-            {% endfor %}
-          </ul>
-        {% else %}
-          <p class="muted">Текстовых событий в этом месяце нет.</p>
-        {% endif %}
-      </section>
-    {% endfor %}
+          {% if group.rows %}
+            <ul class="calendar-list">
+              {% for item in group.rows %}
+                <li class="{% if item.same_date_highlight %}calendar-same-date{% endif %}">
+                  <span class="calendar-date">{{ item.date.strftime('%d-%m-%Y') if item.date else "—" }}</span>
+                  {% if item.time %}
+                    <span class="chip">{{ item.time }}</span>
+                  {% endif %}
+                  <span class="chip calendar-chip {{ item.type_key }}">{{ item.kind }}</span>
+                  {% if item.same_date_highlight %}
+                    <span class="chip chip-alert">Совпадает по дате ({{ item.same_date_count }})</span>
+                  {% endif %}
+                  <strong>{{ item.title }}</strong>
+                  <span class="muted">Город: {{ item.city or "—" }}</span>
+                  {% if item.coproplayers %}
+                    <span class="muted">Сокосплеер: {{ item.coproplayers }}</span>
+                  {% endif %}
+                  {% if item.details %}
+                    <span class="muted">{{ item.details }}</span>
+                  {% endif %}
+                  {% if item.personal_event_id %}
+                    <form method="post" action="/my-calendar/events/{{ item.personal_event_id }}/delete?view=my" onsubmit="return confirm('Удалить личное событие?');">
+                      <button type="submit" class="btn btn-danger btn-small">Удалить</button>
+                    </form>
+                  {% endif %}
+                </li>
+              {% endfor %}
+            </ul>
+          {% else %}
+            <p class="muted">Текстовых событий в этом месяце нет.</p>
+          {% endif %}
+        </div>
+      {% endfor %}
+    </section>
   {% else %}
     <section class="box">
       <p class="muted">Занятых дат пока нет. Даты появятся, когда добавите фотосеты, фестивали, репетиции или личные события.</p>
@@ -231,22 +240,32 @@
   </section>
 
   {% if budget_month_groups %}
-    {% for group in budget_month_groups %}
-      <section class="box top-offset">
-        <h2>{{ group.title }}</h2>
-        <ul class="budget-list">
-          {% for row in group.rows %}
-            <li>
-              <a href="/cosplan/{{ row.card_id }}">{{ row.card_title }}</a>
-              <strong>{{ '%.0f'|format(row.amount) }} ₽</strong>
-            </li>
-          {% endfor %}
-        </ul>
-        <p class="budget-month-total {% if group.is_over_limit %}budget-over-limit{% endif %}">
-          Итого за месяц: <strong>{{ '%.0f'|format(group.month_total) }} ₽</strong>
-        </p>
-      </section>
-    {% endfor %}
+    <section class="box top-offset calendar-carousel" data-calendar-carousel>
+      <div class="calendar-carousel-head">
+        <button type="button" class="calendar-carousel-nav" data-calendar-nav="prev" aria-label="Предыдущий месяц">←</button>
+        <div class="calendar-carousel-meta">
+          <h2 class="calendar-carousel-title" data-calendar-title>{{ budget_month_groups[0].title }}</h2>
+          <p class="muted calendar-carousel-counter" data-calendar-counter></p>
+        </div>
+        <button type="button" class="calendar-carousel-nav" data-calendar-nav="next" aria-label="Следующий месяц">→</button>
+      </div>
+
+      {% for group in budget_month_groups %}
+        <div class="calendar-carousel-panel" data-calendar-panel data-calendar-label="{{ group.title }}" {% if not loop.first %}hidden{% endif %}>
+          <ul class="budget-list">
+            {% for row in group.rows %}
+              <li>
+                <a href="/cosplan/{{ row.card_id }}">{{ row.card_title }}</a>
+                <strong>{{ '%.0f'|format(row.amount) }} ₽</strong>
+              </li>
+            {% endfor %}
+          </ul>
+          <p class="budget-month-total {% if group.is_over_limit %}budget-over-limit{% endif %}">
+            Итого за месяц: <strong>{{ '%.0f'|format(group.month_total) }} ₽</strong>
+          </p>
+        </div>
+      {% endfor %}
+    </section>
   {% else %}
     <section class="box">
       <p class="muted">Для расчета бюджета пока не хватает дедлайновых трат по карточкам.</p>
@@ -733,107 +752,117 @@
   </section>
 
   {% if content_month_groups %}
-    {% for group in content_month_groups %}
-      <section class="box top-offset">
-        <h2>{{ group.title }}</h2>
-        <div class="calendar-grid-wrap">
-          <table class="calendar-grid">
-            <thead>
-              <tr>
-                {% for label in month_weekday_labels %}
-                  <th>{{ label }}</th>
-                {% endfor %}
-              </tr>
-            </thead>
-            <tbody>
-              {% for week in group.grid_weeks %}
+    <section class="box top-offset calendar-carousel" data-calendar-carousel>
+      <div class="calendar-carousel-head">
+        <button type="button" class="calendar-carousel-nav" data-calendar-nav="prev" aria-label="Предыдущий месяц">←</button>
+        <div class="calendar-carousel-meta">
+          <h2 class="calendar-carousel-title" data-calendar-title>{{ content_month_groups[0].title }}</h2>
+          <p class="muted calendar-carousel-counter" data-calendar-counter></p>
+        </div>
+        <button type="button" class="calendar-carousel-nav" data-calendar-nav="next" aria-label="Следующий месяц">→</button>
+      </div>
+
+      {% for group in content_month_groups %}
+        <div class="calendar-carousel-panel" data-calendar-panel data-calendar-label="{{ group.title }}" {% if not loop.first %}hidden{% endif %}>
+          <div class="calendar-grid-wrap">
+            <table class="calendar-grid">
+              <thead>
                 <tr>
-                  {% for cell in week %}
-                    {% if cell.day %}
-                      <td class="calendar-grid-cell" {% if cell.bg_style %}style="{{ cell.bg_style }}"{% endif %}>
-                        <span class="day-number">{{ cell.day }}</span>
-                        {% if cell.content_items %}
-                          <div class="calendar-cell-items content-cell-items">
-                            {% for content_item in cell.content_items[:2] %}
-                              <div class="calendar-cell-entry" title="{{ content_item.title }} — {{ content_item.schedule }}">
-                                <div class="calendar-cell-item">{{ content_item.title }}</div>
-                                <div class="calendar-cell-social">{{ content_item.schedule }}</div>
-                              </div>
-                            {% endfor %}
-                            {% if cell.content_items|length > 2 %}
-                              <div class="calendar-cell-more">+{{ cell.content_items|length - 2 }}</div>
-                            {% endif %}
-                          </div>
-                        {% endif %}
-                      </td>
-                    {% else %}
-                      <td class="calendar-grid-cell is-empty"></td>
-                    {% endif %}
+                  {% for label in month_weekday_labels %}
+                    <th>{{ label }}</th>
                   {% endfor %}
                 </tr>
-              {% endfor %}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody>
+                {% for week in group.grid_weeks %}
+                  <tr>
+                    {% for cell in week %}
+                      {% if cell.day %}
+                        <td class="calendar-grid-cell" {% if cell.bg_style %}style="{{ cell.bg_style }}"{% endif %}>
+                          <span class="day-number">{{ cell.day }}</span>
+                          {% if cell.content_items %}
+                            <div class="calendar-cell-items content-cell-items">
+                              {% for content_item in cell.content_items[:2] %}
+                                <div class="calendar-cell-entry" title="{{ content_item.title }} — {{ content_item.schedule }}">
+                                  <div class="calendar-cell-item">{{ content_item.title }}</div>
+                                  <div class="calendar-cell-social">{{ content_item.schedule }}</div>
+                                </div>
+                              {% endfor %}
+                              {% if cell.content_items|length > 2 %}
+                                <div class="calendar-cell-more">+{{ cell.content_items|length - 2 }}</div>
+                              {% endif %}
+                            </div>
+                          {% endif %}
+                        </td>
+                      {% else %}
+                        <td class="calendar-grid-cell is-empty"></td>
+                      {% endif %}
+                    {% endfor %}
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
 
-        <ul class="calendar-list">
-          {% for item in group.rows %}
-            <li>
-              <span class="calendar-date">{{ item.date.strftime('%d-%m-%Y') if item.date else "—" }}</span>
-              {% if item.time %}
-                <span class="chip">{{ item.time }}</span>
-              {% endif %}
-              <span class="chip content-rubric-chip" style="background: {{ item.rubric_color }}55; border-color: {{ item.rubric_color }};">
-                {{ item.rubric }}
-              </span>
-              <span class="chip">{{ item.status_label }}</span>
-              <strong>{{ item.title }}</strong>
-              <span class="muted">Соцсети: {{ item.socials_text }}</span>
-              {% if item.description %}
-                <span class="muted">{{ item.description|render_text }}</span>
-              {% endif %}
-              {% if item.telegram_published_at %}
-                <span class="muted">Telegram: {{ item.telegram_published_at.strftime('%d-%m-%Y %H:%M') }}</span>
-              {% endif %}
-              {% if item.telegram_channels_text and item.telegram_channels_text != "—" %}
-                <span class="muted">TG-каналы: {{ item.telegram_channels_text }}</span>
-              {% endif %}
-              {% if item.vk_published_at %}
-                <span class="muted">VK: {{ item.vk_published_at.strftime('%d-%m-%Y %H:%M') }}</span>
-              {% endif %}
-              {% if item.vk_groups_text and item.vk_groups_text != "—" %}
-                <span class="muted">VK-сообщества: {{ item.vk_groups_text }}</span>
-              {% endif %}
-              {% if item.pinterest_published_at %}
-                <span class="muted">Pinterest: {{ item.pinterest_published_at.strftime('%d-%m-%Y %H:%M') }}</span>
-              {% endif %}
-              {% if item.pinterest_boards_text and item.pinterest_boards_text != "—" %}
-                <span class="muted">Pinterest-доски: {{ item.pinterest_boards_text }}</span>
-              {% endif %}
-              <a class="btn btn-small" href="/my-calendar?{{ content_view_query }}&edit_post_id={{ item.post_id }}#content-form">Редактировать</a>
-              {% if telegram_content_connected %}
-                <form method="post" action="/my-calendar/content/{{ item.post_id }}/telegram-publish?{{ content_action_query }}">
-                  <button type="submit" class="btn btn-small">В Telegram</button>
+          <ul class="calendar-list">
+            {% for item in group.rows %}
+              <li>
+                <span class="calendar-date">{{ item.date.strftime('%d-%m-%Y') if item.date else "—" }}</span>
+                {% if item.time %}
+                  <span class="chip">{{ item.time }}</span>
+                {% endif %}
+                <span class="chip content-rubric-chip" style="background: {{ item.rubric_color }}55; border-color: {{ item.rubric_color }};">
+                  {{ item.rubric }}
+                </span>
+                <span class="chip">{{ item.status_label }}</span>
+                <strong>{{ item.title }}</strong>
+                <span class="muted">Соцсети: {{ item.socials_text }}</span>
+                {% if item.description %}
+                  <span class="muted">{{ item.description|render_text }}</span>
+                {% endif %}
+                {% if item.telegram_published_at %}
+                  <span class="muted">Telegram: {{ item.telegram_published_at.strftime('%d-%m-%Y %H:%M') }}</span>
+                {% endif %}
+                {% if item.telegram_channels_text and item.telegram_channels_text != "—" %}
+                  <span class="muted">TG-каналы: {{ item.telegram_channels_text }}</span>
+                {% endif %}
+                {% if item.vk_published_at %}
+                  <span class="muted">VK: {{ item.vk_published_at.strftime('%d-%m-%Y %H:%M') }}</span>
+                {% endif %}
+                {% if item.vk_groups_text and item.vk_groups_text != "—" %}
+                  <span class="muted">VK-сообщества: {{ item.vk_groups_text }}</span>
+                {% endif %}
+                {% if item.pinterest_published_at %}
+                  <span class="muted">Pinterest: {{ item.pinterest_published_at.strftime('%d-%m-%Y %H:%M') }}</span>
+                {% endif %}
+                {% if item.pinterest_boards_text and item.pinterest_boards_text != "—" %}
+                  <span class="muted">Pinterest-доски: {{ item.pinterest_boards_text }}</span>
+                {% endif %}
+                <a class="btn btn-small" href="/my-calendar?{{ content_view_query }}&edit_post_id={{ item.post_id }}#content-form">Редактировать</a>
+                {% if telegram_content_connected %}
+                  <form method="post" action="/my-calendar/content/{{ item.post_id }}/telegram-publish?{{ content_action_query }}">
+                    <button type="submit" class="btn btn-small">В Telegram</button>
+                  </form>
+                {% endif %}
+                {% if vk_content_connected %}
+                  <form method="post" action="/my-calendar/content/{{ item.post_id }}/vk-publish?{{ content_action_query }}">
+                    <button type="submit" class="btn btn-small">В VK</button>
+                  </form>
+                {% endif %}
+                {% if pinterest_content_connected %}
+                  <form method="post" action="/my-calendar/content/{{ item.post_id }}/pinterest-publish?{{ content_action_query }}">
+                    <button type="submit" class="btn btn-small">В Pinterest</button>
+                  </form>
+                {% endif %}
+                <form method="post" action="/my-calendar/content/{{ item.post_id }}/delete?{{ content_action_query }}" onsubmit="return confirm('Удалить этот пост из контент-плана?');">
+                  <button type="submit" class="btn btn-danger btn-small">Удалить</button>
                 </form>
-              {% endif %}
-              {% if vk_content_connected %}
-                <form method="post" action="/my-calendar/content/{{ item.post_id }}/vk-publish?{{ content_action_query }}">
-                  <button type="submit" class="btn btn-small">В VK</button>
-                </form>
-              {% endif %}
-              {% if pinterest_content_connected %}
-                <form method="post" action="/my-calendar/content/{{ item.post_id }}/pinterest-publish?{{ content_action_query }}">
-                  <button type="submit" class="btn btn-small">В Pinterest</button>
-                </form>
-              {% endif %}
-              <form method="post" action="/my-calendar/content/{{ item.post_id }}/delete?{{ content_action_query }}" onsubmit="return confirm('Удалить этот пост из контент-плана?');">
-                <button type="submit" class="btn btn-danger btn-small">Удалить</button>
-              </form>
-            </li>
-          {% endfor %}
-        </ul>
-      </section>
-    {% endfor %}
+              </li>
+            {% endfor %}
+          </ul>
+        </div>
+      {% endfor %}
+    </section>
   {% else %}
     <section class="box">
       <p class="muted">Постов в контент-плане пока нет.</p>
@@ -949,6 +978,51 @@
     }
 
     initializeContentPlatformTabs();
+
+    function initializeCalendarCarousels() {
+      document.querySelectorAll('[data-calendar-carousel]').forEach((carousel) => {
+        const panels = Array.from(carousel.querySelectorAll('[data-calendar-panel]'));
+        const prevButton = carousel.querySelector('[data-calendar-nav="prev"]');
+        const nextButton = carousel.querySelector('[data-calendar-nav="next"]');
+        const titleNode = carousel.querySelector('[data-calendar-title]');
+        const counterNode = carousel.querySelector('[data-calendar-counter]');
+        if (!panels.length || !prevButton || !nextButton || !titleNode || !counterNode) {
+          return;
+        }
+
+        let currentIndex = panels.findIndex((panel) => !panel.hidden);
+        if (currentIndex < 0) {
+          currentIndex = 0;
+        }
+
+        const syncCarousel = () => {
+          panels.forEach((panel, panelIndex) => {
+            panel.hidden = panelIndex !== currentIndex;
+          });
+          titleNode.textContent = panels[currentIndex].dataset.calendarLabel || '';
+          counterNode.textContent = `${currentIndex + 1} / ${panels.length}`;
+          prevButton.disabled = currentIndex === 0;
+          nextButton.disabled = currentIndex === panels.length - 1;
+          carousel.classList.toggle('is-single', panels.length <= 1);
+        };
+
+        prevButton.addEventListener('click', () => {
+          if (currentIndex === 0) return;
+          currentIndex -= 1;
+          syncCarousel();
+        });
+
+        nextButton.addEventListener('click', () => {
+          if (currentIndex >= panels.length - 1) return;
+          currentIndex += 1;
+          syncCarousel();
+        });
+
+        syncCarousel();
+      });
+    }
+
+    initializeCalendarCarousels();
 
     function padTimePart(value) {
       return String(value).padStart(2, '0');

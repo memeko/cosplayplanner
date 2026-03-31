@@ -37,6 +37,11 @@
       <textarea name="details" rows="8" maxlength="2000" required>{{ form.details }}</textarea>
     </label>
 
+    <label class="inline-check">
+      <input type="checkbox" name="allow_site_orders" value="1" {% if form.allow_site_orders %}checked{% endif %} />
+      Разрешить заявки через сайт
+    </label>
+
     <label>
       Галерея (URL изображений, по одному на строку)
       <textarea name="gallery_input" id="gallery_input" rows="5" placeholder="https://...">{{ form.gallery_input }}</textarea>

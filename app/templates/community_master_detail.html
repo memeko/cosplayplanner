@@ -39,6 +39,7 @@
   </div>
   <p class="meta">Город: {{ master.city or "—" }}</p>
   <p class="meta">Общий рейтинг: {{ '%.1f'|format(rating_avg or 0) }} / 5 (оценок: {{ rating_count or 0 }})</p>
+  <p class="meta">Заявки через сайт: {{ "включены" if master.allow_site_orders else "выключены" }}</p>
   <p class="notes-block">{{ master.details|render_text }}</p>
   {% if contact_buttons %}
     <div class="actions-inline top-offset">
@@ -143,7 +144,7 @@
   {% endif %}
 </section>
 
-{% if user and not can_manage_master %}
+{% if user and not can_manage_master and master.allow_site_orders %}
 <section class="box" id="master-order-form">
   <h3>Записаться!</h3>
   <form method="post" action="/community/masters/{{ master.id }}/orders" class="grid one-col top-offset">
@@ -181,6 +182,11 @@
       <button type="submit" class="btn btn-accent">Отправить заявку</button>
     </div>
   </form>
+</section>
+{% elif user and not can_manage_master %}
+<section class="box" id="master-order-form">
+  <h3>Заявки через сайт отключены</h3>
+  <p class="muted top-offset">Этот мастер не принимает заявки через сайт. Для связи используйте кнопки контактов выше.</p>
 </section>
 {% endif %}
 

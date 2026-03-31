@@ -92,10 +92,12 @@
     {% endif %}
     {% block content %}{% endblock %}
   </main>
+  {% if request.url.path == "/" %}
   <footer class="site-footnote">
     По вопросам и предложениям: Братец Лис
     <a href="https://t.me/brfox_cosplay" target="_blank" rel="noreferrer" class="btn btn-small btn-platform">Телеграм</a>
   </footer>
+  {% endif %}
 
   {% if user %}
   <div id="pigeon-popup" class="pigeon-popup" hidden>

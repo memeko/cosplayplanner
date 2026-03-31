@@ -670,6 +670,7 @@ class CommunityMaster(Base):
     details = Column(Text, nullable=False)
     gallery_json = Column(JSON, nullable=False, default=list)
     price_list_json = Column(JSON, nullable=False, default=list)
+    allow_site_orders = Column(Boolean, nullable=False, default=False, server_default="0")
     import_source = Column(String(64), nullable=True, index=True)
     import_external_id = Column(String(128), nullable=True, index=True)
     import_url = Column(Text, nullable=True)

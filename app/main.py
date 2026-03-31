@@ -732,6 +732,7 @@ def apply_schema_migrations() -> None:
         ],
         "community_masters": [
             ("city", "VARCHAR(255)"),
+            ("allow_site_orders", "BOOLEAN NOT NULL DEFAULT 0"),
             ("import_source", "VARCHAR(64)"),
             ("import_external_id", "VARCHAR(128)"),
             ("import_url", "TEXT"),
@@ -817,6 +818,8 @@ def apply_schema_migrations() -> None:
         if "password_reset_tokens" not in existing_tables:
             PasswordResetToken.__table__.create(bind=conn, checkfirst=True)
 
+        community_masters_added_allow_site_orders = False
+
         for table_name, columns in required_columns.items():
             if table_name not in existing_tables and table_name != "festival_notifications":
                 continue
@@ -829,6 +832,11 @@ def apply_schema_migrations() -> None:
                     # Table create handles PK.
                     continue
                 conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}"))
+                if table_name == "community_masters" and column_name == "allow_site_orders":
+                    community_masters_added_allow_site_orders = True
+
+        if community_masters_added_allow_site_orders:
+            conn.execute(text("UPDATE community_masters SET allow_site_orders = 1"))
 
         conn.execute(
             text(
@@ -13052,6 +13060,7 @@ def get_master_form_values(master: CommunityMaster | None = None) -> dict[str, A
             "details": "",
             "gallery_input": "",
             "price_rows": [],
+            "allow_site_orders": False,
         }
 
     return {
@@ -13061,6 +13070,7 @@ def get_master_form_values(master: CommunityMaster | None = None) -> dict[str, A
         "details": master.details or "",
         "gallery_input": "\n".join(as_list(master.gallery_json)),
         "price_rows": format_master_price_rows_for_form(as_list(master.price_list_json)),
+        "allow_site_orders": bool(master.allow_site_orders),
     }
 
 
@@ -13071,6 +13081,7 @@ def save_master_from_form(form: Any, master: CommunityMaster) -> tuple[bool, str
     details = str(form.get("details", "")).strip()
     gallery_input = str(form.get("gallery_input", ""))
     price_rows = parse_master_price_rows_from_form(form)
+    allow_site_orders = to_bool(form.get("allow_site_orders"))
 
     if not nick:
         return False, "Укажите ник мастера."
@@ -13089,6 +13100,7 @@ def save_master_from_form(form: Any, master: CommunityMaster) -> tuple[bool, str
     master.details = details
     master.gallery_json = parse_reference_values(gallery_input)
     master.price_list_json = price_rows
+    master.allow_site_orders = allow_site_orders
     return True, ""
 
 
@@ -13231,7 +13243,13 @@ async def community_masters_create(request: Request, db: Session = Depends(get_d
     if not user:
         return redirect("/login")
     form = await request.form()
-    master = CommunityMaster(user_id=user.id, nick="", master_type=MASTER_TYPE_OPTIONS[0], details="")
+    master = CommunityMaster(
+        user_id=user.id,
+        nick="",
+        master_type=MASTER_TYPE_OPTIONS[0],
+        details="",
+        allow_site_orders=False,
+    )
     ok, error_text = save_master_from_form(form, master)
     if not ok:
         add_flash(request, error_text, "error")
@@ -13412,6 +13430,9 @@ async def community_masters_create_order(master_id: int, request: Request, db: S
         return redirect("/community/masters")
     if master.user_id == user.id:
         add_flash(request, "Нельзя отправить заказ самому себе.", "error")
+        return redirect(f"/community/masters/{master_id}")
+    if not bool(master.allow_site_orders):
+        add_flash(request, "Этот мастер отключил заявки через сайт.", "error")
         return redirect(f"/community/masters/{master_id}")
 
     form = await request.form()

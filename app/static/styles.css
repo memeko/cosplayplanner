@@ -187,6 +187,70 @@ body::after {
   margin-bottom: 14px;
 }
 
+.calendar-carousel {
+  display: grid;
+  gap: 14px;
+}
+
+.calendar-carousel-head {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+}
+
+.calendar-carousel-meta {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+  justify-items: center;
+  text-align: center;
+}
+
+.calendar-carousel-title {
+  justify-content: center;
+}
+
+.calendar-carousel-counter {
+  margin: 0;
+}
+
+.calendar-carousel-nav {
+  appearance: none;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  width: 42px;
+  height: 42px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: #0f172a;
+  background: rgba(255, 255, 255, 0.62);
+  box-shadow: var(--glass-highlight-soft);
+  transition: transform 0.16s ease, background 0.16s ease, box-shadow 0.16s ease, opacity 0.16s ease;
+}
+
+.calendar-carousel-nav:hover:not(:disabled) {
+  transform: translateY(-1px);
+  background: rgba(255, 255, 255, 0.82);
+  box-shadow: 0 8px 18px rgba(6, 33, 57, 0.18), var(--glass-highlight-soft);
+}
+
+.calendar-carousel-nav:disabled {
+  opacity: 0.38;
+  cursor: not-allowed;
+}
+
+.calendar-carousel-panel[hidden] {
+  display: none !important;
+}
+
+.calendar-carousel.is-single .calendar-carousel-counter {
+  display: none;
+}
+
 .content-platform-settings .tab {
   appearance: none;
   font: inherit;
@@ -1968,6 +2032,10 @@ textarea {
 
   .master-price-row {
     grid-template-columns: 1fr;
+  }
+
+  .calendar-carousel-head {
+    grid-template-columns: 42px minmax(0, 1fr) 42px;
   }
 
   .calendar-grid-cell {
