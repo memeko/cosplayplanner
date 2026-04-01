@@ -342,6 +342,7 @@
     <div class="calendar-tabs">
       <button type="button" class="tab active" data-platform-tab="telegram">Telegram</button>
       <button type="button" class="tab" data-platform-tab="vk">VK</button>
+      <button type="button" class="tab" data-platform-tab="rednote">RedNote</button>
       <button type="button" class="tab" data-platform-tab="pinterest">Pinterest</button>
     </div>
 
@@ -439,6 +440,49 @@
       {% if vk_content_connected %}
         <form method="post" action="/my-calendar/content/vk/disconnect?{{ content_action_query }}" class="top-offset" onsubmit="return confirm('Удалить настройки VK-сообществ?');">
           <button type="submit" class="btn btn-danger">Отключить VK-сообщества</button>
+        </form>
+      {% endif %}
+      {% endif %}
+    </div>
+
+    <div class="content-platform-panel" data-platform-panel="rednote" hidden>
+      <p class="muted">
+        Для RedNote / Xiaohongshu мы пока не делаем OAuth и автопубликацию: в официальной документации открыт merchant/mini-app стек,
+        но публичного content publishing API для обычных постов мы не нашли. Поэтому здесь можно сохранить профиль и вести ручной трекинг публикаций из контент-плана.
+      </p>
+      <div class="notes-block telegram-editor-note">
+        Посты с галочкой <strong>RedNote</strong> не уходят автоматически по времени. Их можно отметить опубликованными вручную из карточки поста или из списка ниже.
+      </div>
+      {% if rednote_settings.connected %}
+        <p class="muted top-offset">
+          Сохранённый профиль:
+          {% if rednote_settings.profile_url %}
+            <a href="{{ rednote_settings.profile_url }}" target="_blank" rel="noreferrer"><strong>{{ rednote_settings.profile_value }}</strong></a>
+          {% else %}
+            <strong>{{ rednote_settings.profile_value }}</strong>
+          {% endif %}
+        </p>
+      {% endif %}
+      {% if not content_can_manage_connections %}
+        <div class="notes-block telegram-editor-note top-offset">
+          Настройки RedNote меняет только владелец этого контент-плана.
+        </div>
+      {% else %}
+      <form method="post" action="/my-calendar/content/rednote/connect" class="grid one-col top-offset">
+        <input type="hidden" name="content_scope" value="{{ content_scope }}" />
+        {% if content_owner_id %}<input type="hidden" name="content_owner_id" value="{{ content_owner_id }}" />{% endif %}
+        <label>
+          Профиль / ID / ссылка RedNote
+          <input type="text" name="rednote_profile" value="{{ rednote_settings.profile_value }}" maxlength="500" placeholder="@username, user id или полная ссылка" />
+          <small class="muted">Это справочное поле для команды и менеджеров. На автопубликацию оно не влияет, потому что RedNote сейчас ведём вручную.</small>
+        </label>
+        <div class="actions-inline">
+          <button type="submit" class="btn btn-accent">Сохранить RedNote</button>
+        </div>
+      </form>
+      {% if rednote_content_connected %}
+        <form method="post" action="/my-calendar/content/rednote/disconnect?{{ content_action_query }}" class="top-offset" onsubmit="return confirm('Удалить настройки RedNote?');">
+          <button type="submit" class="btn btn-danger">Очистить RedNote</button>
         </form>
       {% endif %}
       {% endif %}
@@ -614,7 +658,7 @@
           </div>
         </label>
       </div>
-      <p class="muted">Если отмечены соцсети <strong>ТГ</strong>, <strong>VK</strong> и/или <strong>Pinterest</strong>, пост отправится в выбранные Telegram-каналы, VK-сообщества и Pinterest-доски автоматически по указанным дате и времени.</p>
+      <p class="muted">Если отмечены <strong>ТГ</strong>, <strong>VK</strong> и/или <strong>Pinterest</strong>, пост отправится автоматически по указанным дате и времени. Для <strong>RedNote</strong> в текущей версии сохраняется только ручной трекинг публикации без автопоста.</p>
       <div>
         <p class="muted">Telegram-каналы для публикации</p>
         {% if telegram_settings.channels %}
@@ -679,6 +723,22 @@
         {% endif %}
       </div>
       <div>
+        <p class="muted">RedNote</p>
+        {% if rednote_settings.connected %}
+          <p class="muted">
+            Автопубликации нет. Тексты и медиа готовятся здесь, а после ручного постинга можно отметить публикацию в RedNote.
+            {% if rednote_settings.profile_url %}
+              Профиль:
+              <a href="{{ rednote_settings.profile_url }}" target="_blank" rel="noreferrer">{{ rednote_settings.profile_value }}</a>.
+            {% else %}
+              Профиль: {{ rednote_settings.profile_value }}.
+            {% endif %}
+          </p>
+        {% else %}
+          <p class="muted">При необходимости сохраните профиль RedNote в блоке выше, чтобы менеджерам было видно, куда уходит ручная публикация.</p>
+        {% endif %}
+      </div>
+      <div>
         <p class="muted">Соцсеть</p>
         <div class="chips-wrap">
           {% for social in content_social_options %}
@@ -728,6 +788,9 @@
           {% endif %}
           {% if pinterest_content_connected %}
             <button type="submit" class="btn" formaction="/my-calendar/content/{{ editing_content_post.id }}/pinterest-publish?{{ content_action_query }}" formmethod="post">Опубликовать в Pinterest</button>
+          {% endif %}
+          {% if 'RedNote' in content_form.socials_json %}
+            <button type="submit" class="btn" formaction="/my-calendar/content/{{ editing_content_post.id }}/rednote-publish?{{ content_action_query }}" formmethod="post">Отметить в RedNote</button>
           {% endif %}
           <a href="/my-calendar?{{ content_view_query }}" class="btn">Отмена</a>
         {% endif %}
@@ -838,6 +901,9 @@
                 {% if item.pinterest_boards_text and item.pinterest_boards_text != "—" %}
                   <span class="muted">Pinterest-доски: {{ item.pinterest_boards_text }}</span>
                 {% endif %}
+                {% if item.rednote_published_at %}
+                  <span class="muted">RedNote: {{ item.rednote_published_at.strftime('%d-%m-%Y %H:%M') }}</span>
+                {% endif %}
                 <a class="btn btn-small" href="/my-calendar?{{ content_view_query }}&edit_post_id={{ item.post_id }}#content-form">Редактировать</a>
                 {% if telegram_content_connected %}
                   <form method="post" action="/my-calendar/content/{{ item.post_id }}/telegram-publish?{{ content_action_query }}">
@@ -852,6 +918,11 @@
                 {% if pinterest_content_connected %}
                   <form method="post" action="/my-calendar/content/{{ item.post_id }}/pinterest-publish?{{ content_action_query }}">
                     <button type="submit" class="btn btn-small">В Pinterest</button>
+                  </form>
+                {% endif %}
+                {% if item.rednote_targeted %}
+                  <form method="post" action="/my-calendar/content/{{ item.post_id }}/rednote-publish?{{ content_action_query }}">
+                    <button type="submit" class="btn btn-small">В RedNote</button>
                   </form>
                 {% endif %}
                 <form method="post" action="/my-calendar/content/{{ item.post_id }}/delete?{{ content_action_query }}" onsubmit="return confirm('Удалить этот пост из контент-плана?');">

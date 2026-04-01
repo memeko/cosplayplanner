@@ -227,7 +227,25 @@ CALENDAR_VIEW_OPTIONS = {CALENDAR_VIEW_MY, CALENDAR_VIEW_BUDGET, CALENDAR_VIEW_C
 CONTENT_SCOPE_CLIENT = "client"
 CONTENT_SCOPE_PERSONAL = "personal"
 
-CONTENT_SOCIAL_OPTIONS = ["ТГ", "IT", "VK", "Pinterest", "tw", "rednote", "boosty", "другое"]
+CONTENT_SOCIAL_OPTIONS = ["ТГ", "IT", "VK", "Pinterest", "RedNote", "tw", "boosty", "другое"]
+CONTENT_SOCIAL_ALIASES = {
+    "telegram": "ТГ",
+    "tg": "ТГ",
+    "тг": "ТГ",
+    "it": "IT",
+    "vk": "VK",
+    "pinterest": "Pinterest",
+    "rednote": "RedNote",
+    "red note": "RedNote",
+    "xiaohongshu": "RedNote",
+    "xhs": "RedNote",
+    "小红书": "RedNote",
+    "tw": "tw",
+    "twitter": "tw",
+    "x": "tw",
+    "boosty": "boosty",
+    "другое": "другое",
+}
 CONTENT_STATUS_OPTIONS = ["plan", "draft", "published"]
 CONTENT_STATUS_LABELS = {
     "plan": "План",
@@ -246,6 +264,7 @@ CONTENT_PINTEREST_REFRESH_TOKEN_GROUP = "content_pinterest_refresh_token"
 CONTENT_PINTEREST_SCOPE_GROUP = "content_pinterest_scope"
 CONTENT_PINTEREST_PROFILE_GROUP = "content_pinterest_profile"
 CONTENT_PINTEREST_BOARD_GROUP = "content_pinterest_board"
+CONTENT_REDNOTE_PROFILE_GROUP = "content_rednote_profile"
 CONTENT_RUBRIC_TAG_GROUP = "content_rubric_tag"
 CONTENT_PLAN_ACCESS_VERIFIED_GROUP = "content_plan_brfox_subscription_verified_at"
 SMM_MANAGER_ROLE_GROUP = "profile_is_smm_manager"
@@ -761,6 +780,7 @@ def apply_schema_migrations() -> None:
             ("pinterest_boards_json", "JSON NOT NULL DEFAULT '[]'"),
             ("pinterest_pin_ids_json", "JSON NOT NULL DEFAULT '[]'"),
             ("pinterest_published_at", "DATETIME"),
+            ("rednote_published_at", "DATETIME"),
         ],
     }
 
@@ -2389,6 +2409,34 @@ def normalize_content_status(raw_status: str | None) -> str:
     return "plan"
 
 
+def normalize_content_social_value(raw_value: str | None) -> str:
+    value = str(raw_value or "").strip()
+    if not value:
+        return ""
+    alias_key = value.casefold()
+    if alias_key in CONTENT_SOCIAL_ALIASES:
+        return CONTENT_SOCIAL_ALIASES[alias_key]
+    for option in CONTENT_SOCIAL_OPTIONS:
+        if value.casefold() == option.casefold():
+            return option
+    return value
+
+
+def normalize_content_social_values(raw_values: list[Any] | None) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw_value in raw_values or []:
+        value = normalize_content_social_value(str(raw_value or "").strip())
+        if not value:
+            continue
+        lookup_key = value.casefold()
+        if lookup_key in seen:
+            continue
+        seen.add(lookup_key)
+        normalized.append(value)
+    return normalized
+
+
 def get_content_plan_form_values(
     post: ContentPlanPost | None = None,
     rubric_tags: dict[str, str] | None = None,
@@ -2435,7 +2483,7 @@ def get_content_plan_form_values(
             "telegram_photos_input": "",
         }
 
-    socials = as_list(post.socials_json)
+    socials = normalize_content_social_values(as_list(post.socials_json))
     socials_other_values = [value for value in socials if value not in CONTENT_SOCIAL_OPTIONS]
     return {
         "title": post.title or "",
@@ -2466,7 +2514,9 @@ def save_content_plan_post_from_form(form: Any, post: ContentPlanPost, user: Use
     rubric_new = str(form.get("rubric_new", "")).strip()
     rubric_tag_value = str(form.get("rubric_tag_value", "")).strip()
     rubric = rubric_new or rubric_existing or "Неизвестно"
-    socials = merge_unique(form.getlist("socials"), split_csv(str(form.get("socials_other", "")).strip()))
+    socials = normalize_content_social_values(
+        merge_unique(form.getlist("socials"), split_csv(str(form.get("socials_other", "")).strip()))
+    )
     premium_emoji_map = {
         str(entry.get("emoji_id") or "").strip(): str(entry.get("emoji") or "").strip()
         for entry in get_content_premium_emoji_entries(db, user.id)
@@ -2515,9 +2565,9 @@ def save_content_plan_post_from_form(form: Any, post: ContentPlanPost, user: Use
         return False, "Краткое описание должно быть не длиннее 4000 символов."
     if len(telegram_body_html) > 12000:
         return False, "Текст для Telegram должен быть не длиннее 12000 символов."
-    if any(item.casefold() in {"тг", "vk", "pinterest"} for item in socials) and not publish_time:
+    if any(normalize_content_social_value(item).casefold() in {"тг", "vk", "pinterest"} for item in socials) and not publish_time:
         return False, "Для автопубликации в Telegram, VK и Pinterest укажите время публикации."
-    if any(item.casefold() == "тг" for item in socials):
+    if any(normalize_content_social_value(item).casefold() == "тг" for item in socials):
         if not available_telegram_channels:
             return False, "Сначала добавьте хотя бы один Telegram-канал в настройках."
         if not selected_telegram_channel_ids:
@@ -2525,7 +2575,7 @@ def save_content_plan_post_from_form(form: Any, post: ContentPlanPost, user: Use
                 selected_telegram_channel_ids = [available_telegram_channels[0]["chat_id"]]
             else:
                 return False, "Выберите хотя бы один Telegram-канал для публикации."
-    if any(item.casefold() == "vk" for item in socials):
+    if any(normalize_content_social_value(item).casefold() == "vk" for item in socials):
         if not available_vk_groups:
             return False, "Сначала добавьте хотя бы одно сообщество VK в настройках."
         if not selected_vk_group_ids:
@@ -2533,7 +2583,7 @@ def save_content_plan_post_from_form(form: Any, post: ContentPlanPost, user: Use
                 selected_vk_group_ids = [available_vk_groups[0]["owner_id"]]
             else:
                 return False, "Выберите хотя бы одно сообщество VK для публикации."
-    if any(item.casefold() == "pinterest" for item in socials):
+    if any(normalize_content_social_value(item).casefold() == "pinterest" for item in socials):
         if not available_pinterest_boards:
             return False, "Сначала подключите Pinterest и подтяните хотя бы одну доску."
         if not telegram_photos:
@@ -2593,6 +2643,23 @@ def get_content_vk_settings(user: User, db: Session) -> dict[str, Any]:
         "groups_text": "",
         "groups_masked_text": format_content_vk_group_lines(groups, masked_tokens=True),
         "groups": groups,
+    }
+
+
+def get_content_rednote_settings(user: User, db: Session) -> dict[str, Any]:
+    profile_value = str(get_user_option_value(db, user.id, CONTENT_REDNOTE_PROFILE_GROUP) or "").strip()
+    profile_url = ""
+    if profile_value and (
+        looks_like_url(profile_value)
+        or profile_value.lower().startswith("www.")
+        or "/" in profile_value
+        or "." in profile_value
+    ):
+        profile_url = build_external_url(profile_value)
+    return {
+        "profile_value": profile_value,
+        "profile_url": profile_url,
+        "connected": bool(profile_value),
     }
 
 
@@ -3525,15 +3592,19 @@ def ensure_content_plan_access(request: Request, user: User, db: Session) -> Red
 
 
 def content_post_targets_telegram(post: ContentPlanPost) -> bool:
-    return any(str(item).strip().casefold() == "тг" for item in as_list(post.socials_json))
+    return any(normalize_content_social_value(item).casefold() == "тг" for item in as_list(post.socials_json))
 
 
 def content_post_targets_vk(post: ContentPlanPost) -> bool:
-    return any(str(item).strip().casefold() == "vk" for item in as_list(post.socials_json))
+    return any(normalize_content_social_value(item).casefold() == "vk" for item in as_list(post.socials_json))
 
 
 def content_post_targets_pinterest(post: ContentPlanPost) -> bool:
-    return any(str(item).strip().casefold() == "pinterest" for item in as_list(post.socials_json))
+    return any(normalize_content_social_value(item).casefold() == "pinterest" for item in as_list(post.socials_json))
+
+
+def content_post_targets_rednote(post: ContentPlanPost) -> bool:
+    return any(normalize_content_social_value(item).casefold() == "rednote" for item in as_list(post.socials_json))
 
 
 def content_post_publish_datetime(post: ContentPlanPost) -> datetime | None:
@@ -3799,6 +3870,19 @@ def mark_content_post_pinterest_published(
         and str(item.get("pin_id") or "").strip()
     ]
     post.pinterest_published_at = datetime.utcnow()
+    if normalize_content_status(post.status) != "published":
+        post.status = "published"
+
+
+def mark_content_post_rednote_published(
+    post: ContentPlanPost,
+    *,
+    rubric_tag: str | None = None,
+) -> None:
+    normalized_tag = normalize_content_rubric_tag(rubric_tag) or normalize_content_rubric_tag(post.rubric_tag)
+    if normalized_tag:
+        post.rubric_tag = normalized_tag
+    post.rednote_published_at = datetime.utcnow()
     if normalize_content_status(post.status) != "published":
         post.status = "published"
 
@@ -11007,6 +11091,11 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
         "groups_masked_text": "",
         "groups": [],
     }
+    rednote_settings: dict[str, Any] = {
+        "profile_value": "",
+        "profile_url": "",
+        "connected": False,
+    }
     pinterest_settings: dict[str, Any] = {
         "app_configured": pinterest_app_configured(),
         "redirect_uri": PINTEREST_REDIRECT_URI,
@@ -11036,6 +11125,7 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
         ).scalars().all()
         telegram_settings = get_content_telegram_settings(content_owner, db)
         vk_settings = get_content_vk_settings(content_owner, db)
+        rednote_settings = get_content_rednote_settings(content_owner, db)
         pinterest_settings = get_content_pinterest_settings(content_owner, db)
         pinterest_settings["connect_url"] = f"/my-calendar/content/pinterest/oauth/start?{content_action_query}"
         pinterest_settings["sync_url"] = f"/my-calendar/content/pinterest/sync?{content_action_query}"
@@ -11094,11 +11184,12 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
                 "time": post.publish_time or "",
                 "title": post.title or "Без названия",
                 "description": post.description or "",
-                "socials_text": ", ".join(as_list(post.socials_json)) or "—",
+                "socials_text": ", ".join(normalize_content_social_values(as_list(post.socials_json))) or "—",
                 "rubric": row_rubric,
                 "rubric_color": row_color,
                 "status": normalize_content_status(post.status),
                 "status_label": CONTENT_STATUS_LABELS.get(normalize_content_status(post.status), "План"),
+                "rednote_targeted": content_post_targets_rednote(post),
                 "telegram_channels_text": ", ".join(
                     str(channel.get("title") or channel.get("chat_id") or "").strip()
                     for channel in row_telegram_channels
@@ -11117,6 +11208,7 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
                     if str(board.get("name") or board.get("id") or "").strip()
                 ) or "—",
                 "pinterest_published_at": post.pinterest_published_at,
+                "rednote_published_at": post.rednote_published_at,
             }
         )
 
@@ -11193,6 +11285,7 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
         content_can_manage_manager_access=content_can_manage_manager_access,
         telegram_settings=telegram_settings,
         vk_settings=vk_settings,
+        rednote_settings=rednote_settings,
         pinterest_settings=pinterest_settings,
         telegram_settings_masked={
             "bot_token": mask_secret_value(telegram_settings.get("bot_token")) if content_can_manage_connections else "",
@@ -11203,10 +11296,13 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
         },
         telegram_content_connected=bool(telegram_settings.get("bot_token") and telegram_channels),
         vk_content_connected=bool(vk_groups),
+        rednote_content_connected=bool(rednote_settings.get("connected")),
         pinterest_content_connected=bool(pinterest_settings.get("connected")),
         content_initial_platform=(
             "pinterest"
             if pinterest_settings.get("connected") and not (telegram_settings.get("bot_token") and telegram_channels) and not vk_groups
+            else "rednote"
+            if rednote_settings.get("connected") and not (telegram_settings.get("bot_token") and telegram_channels) and not vk_groups and not pinterest_settings.get("connected")
             else "vk"
             if not (telegram_settings.get("bot_token") and telegram_channels) and vk_groups
             else "telegram"
@@ -11831,6 +11927,59 @@ def my_calendar_content_vk_disconnect(request: Request, db: Session = Depends(ge
     return content_calendar_redirect(request, user, content_owner=content_owner)
 
 
+@app.post("/my-calendar/content/rednote/connect")
+async def my_calendar_content_rednote_connect(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    access_redirect = ensure_content_plan_access(request, user, db)
+    if access_redirect:
+        return access_redirect
+
+    form = await request.form()
+    content_owner, owner_redirect = ensure_content_owner_for_action(request, user, db, form=form)
+    if owner_redirect or not content_owner:
+        return owner_redirect or content_calendar_redirect(request, user, form=form)
+    if not content_connections_editable(user, content_owner):
+        add_flash(request, "Настройки RedNote может менять только владелец контент-плана.", "error")
+        return content_calendar_redirect(request, user, form=form, content_owner=content_owner)
+
+    profile_value = str(form.get("rednote_profile", "")).strip()
+    if not profile_value:
+        add_flash(request, "Укажите ник, ID или ссылку на профиль/аккаунт RedNote.", "error")
+        return content_calendar_redirect(request, user, form=form, content_owner=content_owner)
+    if len(profile_value) > 500:
+        add_flash(request, "Поле RedNote должно быть не длиннее 500 символов.", "error")
+        return content_calendar_redirect(request, user, form=form, content_owner=content_owner)
+
+    set_user_option_value(db, content_owner.id, CONTENT_REDNOTE_PROFILE_GROUP, profile_value)
+    db.commit()
+    add_flash(request, "Профиль RedNote сохранён. Публикации отмечаются вручную.", "success")
+    return content_calendar_redirect(request, user, form=form, content_owner=content_owner)
+
+
+@app.post("/my-calendar/content/rednote/disconnect")
+def my_calendar_content_rednote_disconnect(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    access_redirect = ensure_content_plan_access(request, user, db)
+    if access_redirect:
+        return access_redirect
+
+    content_owner, owner_redirect = ensure_content_owner_for_action(request, user, db)
+    if owner_redirect or not content_owner:
+        return owner_redirect or content_calendar_redirect(request, user)
+    if not content_connections_editable(user, content_owner):
+        add_flash(request, "Настройки RedNote может менять только владелец контент-плана.", "error")
+        return content_calendar_redirect(request, user, content_owner=content_owner)
+
+    set_user_option_value(db, content_owner.id, CONTENT_REDNOTE_PROFILE_GROUP, "")
+    db.commit()
+    add_flash(request, "Настройки RedNote удалены.", "info")
+    return content_calendar_redirect(request, user, content_owner=content_owner)
+
+
 @app.get("/my-calendar/content/pinterest/oauth/start")
 def my_calendar_content_pinterest_oauth_start(request: Request, db: Session = Depends(get_db)):
     user = current_user(request, db)
@@ -12152,6 +12301,39 @@ def my_calendar_content_publish_pinterest(post_id: int, request: Request, db: Se
     if send_errors:
         success_text = f"{success_text} Не удалось отправить в: {'; '.join(send_errors)}"
     add_flash(request, success_text, "success")
+    return content_calendar_redirect(request, user, content_owner=content_owner)
+
+
+@app.post("/my-calendar/content/{post_id}/rednote-publish")
+def my_calendar_content_publish_rednote(post_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    access_redirect = ensure_content_plan_access(request, user, db)
+    if access_redirect:
+        return access_redirect
+
+    content_owner, owner_redirect = ensure_content_owner_for_action(request, user, db)
+    if owner_redirect or not content_owner:
+        return owner_redirect or content_calendar_redirect(request, user)
+
+    post = db.execute(
+        select(ContentPlanPost).where(
+            ContentPlanPost.id == post_id,
+            ContentPlanPost.user_id == content_owner.id,
+        )
+    ).scalar_one_or_none()
+    if not post:
+        add_flash(request, "Пост контент-плана не найден.", "error")
+        return content_calendar_redirect(request, user, content_owner=content_owner)
+    if not content_post_targets_rednote(post):
+        add_flash(request, "Сначала отметьте RedNote в карточке поста.", "error")
+        return content_calendar_redirect(request, user, content_owner=content_owner)
+
+    rubric_tag = normalize_content_rubric_tag(post.rubric_tag) or get_content_rubric_tags(db, content_owner.id).get(post.rubric or "", "")
+    mark_content_post_rednote_published(post, rubric_tag=rubric_tag)
+    db.commit()
+    add_flash(request, "Пост отмечен как опубликованный в RedNote.", "success")
     return content_calendar_redirect(request, user, content_owner=content_owner)
 
 
