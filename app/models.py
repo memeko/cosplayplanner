@@ -527,6 +527,7 @@ class Festival(Base):
     nomination_3 = Column(String(255), nullable=True)
     has_photo_cosplay = Column(Boolean, nullable=False, default=False)
     is_partner_festival = Column(Boolean, nullable=False, default=False)
+    shared_note = Column(Text, nullable=True)
 
     is_going = Column(Boolean, nullable=False, default=False)
     going_coproplayers_json = Column(JSON, nullable=False, default=list)
@@ -788,6 +789,7 @@ class CommunityStudio(Base):
     address = Column(String(255), nullable=True)
     gallery_json = Column(JSON, nullable=False, default=list)
     contact = Column(String(255), nullable=True)
+    note = Column(Text, nullable=True)
     price_list_json = Column(JSON, nullable=False, default=list)
     tags_json = Column(JSON, nullable=False, default=list)
 

@@ -43,6 +43,12 @@
       {% endfor %}
     </div>
   {% endif %}
+  {% if studio.note %}
+    <div class="top-offset">
+      <p class="meta">Заметка:</p>
+      <p class="notes-block">{{ studio.note|render_text }}</p>
+    </div>
+  {% endif %}
 </section>
 
 {% set gallery = studio.gallery_json or [] %}

@@ -794,6 +794,7 @@ def apply_schema_migrations() -> None:
             ("import_external_id", "VARCHAR(128)"),
             ("has_photo_cosplay", "BOOLEAN NOT NULL DEFAULT 0"),
             ("is_partner_festival", "BOOLEAN NOT NULL DEFAULT 0"),
+            ("shared_note", "TEXT"),
         ],
         "work_shift_days": [
             ("is_half_day", "BOOLEAN NOT NULL DEFAULT 0"),
@@ -811,6 +812,9 @@ def apply_schema_migrations() -> None:
             ("import_source", "VARCHAR(64)"),
             ("import_external_id", "VARCHAR(128)"),
             ("import_url", "TEXT"),
+        ],
+        "community_studios": [
+            ("note", "TEXT"),
         ],
         "community_questions": [
             ("is_anonymous", "BOOLEAN NOT NULL DEFAULT 0"),
@@ -8588,6 +8592,7 @@ def get_festival_form_values(festival: Festival | None = None) -> dict[str, Any]
             "nomination_3": "",
             "has_photo_cosplay": False,
             "is_partner_festival": False,
+            "shared_note": "",
             "is_going": False,
             "going_coproplayers_json": [],
             "going_coproplayers_input": "",
@@ -8605,6 +8610,7 @@ def get_festival_form_values(festival: Festival | None = None) -> dict[str, Any]
         "nomination_3": festival.nomination_3 or "",
         "has_photo_cosplay": bool(festival.has_photo_cosplay),
         "is_partner_festival": bool(festival.is_partner_festival),
+        "shared_note": festival.shared_note or "",
         "is_going": bool(festival.is_going),
         "going_coproplayers_json": as_list(festival.going_coproplayers_json),
         "going_coproplayers_input": ", ".join(as_list(festival.going_coproplayers_json)),
@@ -8653,6 +8659,7 @@ def apply_festival_common_fields_from_form(
     *,
     can_edit_photo_cosplay: bool = False,
     can_edit_partner_festival: bool = False,
+    can_edit_shared_note: bool = False,
 ) -> None:
     event_date = parse_date(str(form.get("event_date", "")))
     event_end_date = parse_date(str(form.get("event_end_date", "")))
@@ -8674,6 +8681,8 @@ def apply_festival_common_fields_from_form(
         festival.has_photo_cosplay = to_bool(form.get("has_photo_cosplay"))
     if can_edit_partner_festival:
         festival.is_partner_festival = to_bool(form.get("is_partner_festival"))
+    if can_edit_shared_note:
+        festival.shared_note = str(form.get("shared_note", "")).strip() or None
 
 
 def apply_festival_personal_fields_from_form(form: Any, festival: Festival, db: Session) -> None:
@@ -14733,6 +14742,7 @@ def get_studio_form_values(studio: CommunityStudio | None = None) -> dict[str, A
             "address": "",
             "gallery_input": "",
             "contact": "",
+            "note": "",
             "price_rows": [],
             "tags_json": [],
         }
@@ -14742,6 +14752,7 @@ def get_studio_form_values(studio: CommunityStudio | None = None) -> dict[str, A
         "address": studio.address or "",
         "gallery_input": "\n".join(as_list(studio.gallery_json)),
         "contact": studio.contact or "",
+        "note": studio.note or "",
         "price_rows": format_master_price_rows_for_form(as_list(studio.price_list_json)),
         "tags_json": normalize_studio_tags(as_list(studio.tags_json)),
     }
@@ -14753,6 +14764,7 @@ def save_studio_from_form(form: Any, studio: CommunityStudio) -> tuple[bool, str
     address = str(form.get("address", "")).strip()
     gallery_input = str(form.get("gallery_input", ""))
     contact = str(form.get("contact", "")).strip()
+    note = str(form.get("note", "")).strip()
     price_rows = parse_master_price_rows_from_form(form)
     tags = normalize_studio_tags([str(item) for item in form.getlist("tags")])
 
@@ -14774,6 +14786,7 @@ def save_studio_from_form(form: Any, studio: CommunityStudio) -> tuple[bool, str
     studio.address = address or None
     studio.gallery_json = parse_reference_values(gallery_input)
     studio.contact = contact or None
+    studio.note = note or None
     studio.price_list_json = price_rows
     studio.tags_json = tags
     return True, ""
@@ -16757,6 +16770,7 @@ def festivals_new(request: Request, db: Session = Depends(get_db)):
         can_edit_personal_festival_fields=True,
         can_edit_photo_cosplay=user_is_special(user),
         can_edit_partner_festival=user_is_special(user),
+        can_edit_shared_note=user_is_special(user),
     )
 
 
@@ -16794,6 +16808,7 @@ def festivals_edit(festival_id: int, request: Request, db: Session = Depends(get
         can_edit_personal_festival_fields=festival.user_id == user.id,
         can_edit_photo_cosplay=user_is_special(user),
         can_edit_partner_festival=user_is_special(user),
+        can_edit_shared_note=user_is_special(user),
     )
 
 
@@ -16803,6 +16818,7 @@ def save_festival_from_form(form: Any, festival: Festival, user: User, db: Sessi
         festival,
         can_edit_photo_cosplay=user_is_special(user),
         can_edit_partner_festival=user_is_special(user),
+        can_edit_shared_note=user_is_special(user),
     )
     apply_festival_personal_fields_from_form(form, festival, db)
 
@@ -16889,6 +16905,7 @@ async def festivals_update(festival_id: int, request: Request, db: Session = Dep
         festival,
         can_edit_photo_cosplay=can_edit_photo_cosplay,
         can_edit_partner_festival=user_is_special(user),
+        can_edit_shared_note=user_is_special(user),
     )
 
     raw_coproplayer_aliases: list[str] = []
@@ -16927,6 +16944,7 @@ async def festivals_update(festival_id: int, request: Request, db: Session = Dep
                 item,
                 can_edit_photo_cosplay=can_edit_photo_cosplay,
                 can_edit_partner_festival=user_is_special(user),
+                can_edit_shared_note=user_is_special(user),
             )
             updated_festival_ids.add(item.id)
 

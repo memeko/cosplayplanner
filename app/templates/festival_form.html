@@ -102,6 +102,13 @@
       </label>
     {% endif %}
 
+    {% if can_edit_shared_note %}
+      <label class="top-offset">
+        Примечание для всех
+        <textarea name="shared_note" rows="4" placeholder="Заметка, которая будет видна всем пользователям">{{ form.shared_note }}</textarea>
+      </label>
+    {% endif %}
+
     <div class="top-offset">
       <strong>Личная информация</strong>
       {% if can_edit_personal_festival_fields %}

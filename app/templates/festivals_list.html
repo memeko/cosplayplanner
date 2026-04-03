@@ -268,6 +268,9 @@
     </p>
     <p class="meta">Дедлайн подачи: {{ festival.submission_deadline.strftime('%d-%m-%Y') if festival.submission_deadline else "—" }}</p>
     <p class="meta">Номинации: {{ [festival.nomination_1, festival.nomination_2, festival.nomination_3] | reject('equalto', None) | reject('equalto', '') | list | join(', ') or '—' }}</p>
+    {% if festival.shared_note %}
+      <p class="notes-block">{{ festival.shared_note|render_text }}</p>
+    {% endif %}
     {% if festival.going_coproplayers_json %}
       <p class="meta">Сокосплеер: {{ festival_coproplayers_display.get(festival.id, []) | join(', ') }}</p>
     {% endif %}
