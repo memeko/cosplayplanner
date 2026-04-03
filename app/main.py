@@ -4550,8 +4550,12 @@ TEXT_RENDER_TOKEN_RE = re.compile(
 )
 
 
+def normalize_text_line_breaks(value: str | None) -> str:
+    return str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+
+
 def render_text_content(value: str | None) -> Markup:
-    text_value = (value or "")
+    text_value = normalize_text_line_breaks(value)
     if not text_value:
         return Markup("")
 
@@ -4596,7 +4600,7 @@ def build_text_preview(value: str | None, limit: int = 200) -> str:
     if limit <= 0:
         return ""
 
-    compact_value = "\n".join(line.strip() for line in str(value or "").splitlines() if line.strip()).strip()
+    compact_value = "\n".join(line.strip() for line in normalize_text_line_breaks(value).splitlines() if line.strip()).strip()
     if not compact_value:
         return ""
     if len(compact_value) <= limit:
