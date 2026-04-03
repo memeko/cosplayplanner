@@ -531,6 +531,33 @@ textarea {
   border-color: rgba(201, 97, 139, 0.95);
 }
 
+.card.partner-festival {
+  background:
+    linear-gradient(180deg, rgba(254, 226, 226, 0.82), rgba(255, 255, 255, 0.98) 44%),
+    #fff;
+  border-color: rgba(220, 38, 38, 0.95);
+  box-shadow: 0 0 0 3px rgba(220, 38, 38, 0.14);
+}
+
+.festival-partner-banner {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin-bottom: 0.65rem;
+  padding: 0.3rem 0.65rem;
+  border-radius: 999px;
+  background: #fee2e2;
+  color: #991b1b;
+  font-size: 0.84rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.chip-partner {
+  background: #dc2626;
+  color: #fff;
+}
+
 .card.frozen-progress {
   background: linear-gradient(155deg, rgba(254, 226, 226, 0.85), rgba(254, 226, 226, 0.6));
   border-color: rgba(239, 68, 68, 0.9);

@@ -1,0 +1,139 @@
+{% extends "base.html" %}
+{% block content %}
+{% set current_url = "/cosplan/titles" ~ ("?" ~ request.url.query if request.url.query else "") %}
+
+<section class="section-head">
+  <div>
+    <h1>Тайтлы</h1>
+    <p class="meta">Показано карточек: <strong>{{ filtered_entries_count }}</strong></p>
+  </div>
+  <div class="actions-inline wrap">
+    <form method="get" action="/cosplan/titles" class="search-inline">
+      <input type="hidden" name="kind" value="{{ current_kind_filter }}" />
+      <input type="hidden" name="status_filter" value="{{ current_status_filter }}" />
+      <input type="text" name="q" value="{{ q }}" placeholder="Поиск по тайтлам" />
+      <button type="submit" class="btn">Найти</button>
+    </form>
+    <a href="/cosplan/titles/new" class="btn btn-accent">Новый тайтл</a>
+  </div>
+</section>
+
+<nav class="calendar-tabs">
+  <a href="/cosplan" class="tab">
+    Карточки косплана
+    <span class="chip">{{ cosplan_cards_total }}</span>
+  </a>
+  <a href="/cosplan/titles" class="tab active">
+    Тайтлы
+    <span class="chip">{{ title_entries_total }}</span>
+  </a>
+</nav>
+
+<div class="actions-inline wrap top-offset">
+  <a href="/cosplan/titles?status_filter={{ current_status_filter }}{% if q %}&q={{ q|urlencode }}{% endif %}" class="btn {% if current_kind_filter == 'all' %}btn-accent{% endif %}">
+    Все
+    <span class="chip">{{ kind_counts.get('all', 0) }}</span>
+  </a>
+  <a href="/cosplan/titles?kind=watch&status_filter={{ current_status_filter }}{% if q %}&q={{ q|urlencode }}{% endif %}" class="btn {% if current_kind_filter == 'watch' %}btn-accent{% endif %}">
+    Просмотр
+    <span class="chip">{{ kind_counts.get('watch', 0) }}</span>
+  </a>
+  <a href="/cosplan/titles?kind=read&status_filter={{ current_status_filter }}{% if q %}&q={{ q|urlencode }}{% endif %}" class="btn {% if current_kind_filter == 'read' %}btn-accent{% endif %}">
+    Чтение
+    <span class="chip">{{ kind_counts.get('read', 0) }}</span>
+  </a>
+</div>
+
+<div class="actions-inline wrap top-offset">
+  {% for filter_value, filter_label in title_status_filter_labels.items() %}
+    <a href="/cosplan/titles?kind={{ current_kind_filter }}{% if filter_value != 'all' %}&status_filter={{ filter_value }}{% endif %}{% if q %}&q={{ q|urlencode }}{% endif %}" class="btn {% if current_status_filter == filter_value %}btn-accent{% endif %}">
+      {{ filter_label }}
+      <span class="chip">{{ status_counts.get(filter_value, 0) }}</span>
+    </a>
+  {% endfor %}
+</div>
+
+{% if entries %}
+  <div class="cards-grid top-offset">
+    {% for entry in entries %}
+      {% set linked_card = linked_cards_by_id.get(entry.linked_card_id) %}
+      {% set is_overdue = entry.deadline_date and entry.deadline_date < today and entry.status != 'done' %}
+      <article class="card">
+        <h3>
+          <a href="/cosplan/titles/{{ entry.id }}/edit" class="card-title-link">{{ entry.title }}</a>
+          <span class="chip">{{ title_kind_labels.get(entry.entry_kind, entry.entry_kind) }}</span>
+          <span class="chip {% if entry.status == 'done' %}chip-active{% elif is_overdue %}chip-alert{% endif %}">
+            {{ title_status_label(entry.entry_kind, entry.status) }}
+          </span>
+          {% if is_overdue %}
+            <span class="chip chip-alert">Дедлайн просрочен</span>
+          {% endif %}
+        </h3>
+
+        {% if linked_card %}
+          <p class="meta">
+            Связанный косплан:
+            <a href="/cosplan/{{ linked_card.id }}">{{ linked_card.character_name }}</a>
+            {% if linked_card.fandom %}<span class="muted">· {{ linked_card.fandom }}</span>{% endif %}
+          </p>
+        {% endif %}
+        {% if entry.deadline_date %}
+          <p class="meta">Дедлайн: {{ entry.deadline_date.strftime('%d-%m-%Y') }}</p>
+        {% endif %}
+        {% if entry.source_url %}
+          <p class="meta">Ссылка: <a href="{{ entry.source_url }}" target="_blank" rel="noreferrer">{{ entry.source_url }}</a></p>
+        {% endif %}
+
+        {% if entry.entry_kind == 'watch' %}
+          {% if entry.watch_country %}<p class="meta">Страна: {{ entry.watch_country }}</p>{% endif %}
+          {% if entry.watch_episode_count %}<p class="meta">Серий: {{ entry.watch_episode_count }}</p>{% endif %}
+          {% if entry.watch_release_type %}<p class="meta">Тип: {{ title_watch_release_type_label(entry.watch_release_type) }}</p>{% endif %}
+          {% if entry.status == 'in_progress' and entry.watch_current_episode %}
+            <p class="meta">Текущая серия: {{ entry.watch_current_episode }}</p>
+          {% endif %}
+        {% else %}
+          {% if entry.read_publisher %}<p class="meta">Издательство: {{ entry.read_publisher }}</p>{% endif %}
+          {% if entry.read_page_count %}<p class="meta">Страниц: {{ entry.read_page_count }}</p>{% endif %}
+          {% if entry.read_chapter_count %}<p class="meta">Глав: {{ entry.read_chapter_count }}</p>{% endif %}
+          {% if entry.read_genre %}<p class="meta">Жанр: {{ entry.read_genre }}</p>{% endif %}
+          {% if entry.read_types_json %}
+            <div class="chips-wrap top-offset">
+              {% for type_value in entry.read_types_json %}
+                <span class="chip">{{ type_value }}</span>
+              {% endfor %}
+            </div>
+          {% endif %}
+          {% if entry.status == 'in_progress' and (entry.read_current_page or entry.read_current_chapter) %}
+            <p class="meta">
+              {% if entry.read_current_page %}Текущая страница: {{ entry.read_current_page }}{% endif %}
+              {% if entry.read_current_page and entry.read_current_chapter %} · {% endif %}
+              {% if entry.read_current_chapter %}Текущая глава: {{ entry.read_current_chapter }}{% endif %}
+            </p>
+          {% endif %}
+        {% endif %}
+
+        <div class="actions-inline wrap top-offset">
+          <form method="post" action="/cosplan/titles/{{ entry.id }}/status" class="actions-inline wrap">
+            <input type="hidden" name="next" value="{{ current_url }}" />
+            <select name="status">
+              <option value="plan" {% if entry.status == 'plan' %}selected{% endif %}>{{ title_status_label(entry.entry_kind, 'plan') }}</option>
+              <option value="in_progress" {% if entry.status == 'in_progress' %}selected{% endif %}>{{ title_status_label(entry.entry_kind, 'in_progress') }}</option>
+              <option value="done" {% if entry.status == 'done' %}selected{% endif %}>{{ title_status_label(entry.entry_kind, 'done') }}</option>
+            </select>
+            <button type="submit" class="btn btn-small">Обновить</button>
+          </form>
+          {% if entry.entry_kind == 'read' and yandex_books_search_url(entry.title) %}
+            <a href="{{ yandex_books_search_url(entry.title) }}" target="_blank" rel="noreferrer" class="btn btn-small">Яндекс Книги</a>
+          {% endif %}
+          <a href="/cosplan/titles/{{ entry.id }}/edit" class="btn btn-small">Редактировать</a>
+          <form method="post" action="/cosplan/titles/{{ entry.id }}/delete" onsubmit="return confirm('Удалить карточку тайтла?');">
+            <button type="submit" class="btn btn-danger btn-small">Удалить</button>
+          </form>
+        </div>
+      </article>
+    {% endfor %}
+  </div>
+{% else %}
+  <p class="muted top-offset">Карточек тайтлов пока нет. Добавьте первую карточку для просмотра или чтения.</p>
+{% endif %}
+{% endblock %}

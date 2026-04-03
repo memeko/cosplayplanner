@@ -219,12 +219,19 @@
   {% for festival in festivals %}
   {% set is_planned = (festival.name|lower) in planned_festival_names %}
   {% set is_shared_planned = (festival.name|lower) in shared_planned_festival_names %}
-  <article class="card {% if is_planned %}planned{% endif %} {% if is_shared_planned %}planned-shared{% endif %} {% if festival.id in home_city_festival_ids %}home-city-highlight{% endif %} {% if festival.id in nearest_city_festival_ids %}nearest-city-highlight{% endif %} {% if festival.is_global_announcement %}announcement-global{% endif %}">
+  {% set is_partner_festival = festival.name and 'akamaru fest' in (festival.name|lower) %}
+  <article class="card {% if is_planned %}planned{% endif %} {% if is_shared_planned %}planned-shared{% endif %} {% if festival.id in home_city_festival_ids %}home-city-highlight{% endif %} {% if festival.id in nearest_city_festival_ids %}nearest-city-highlight{% endif %} {% if festival.is_global_announcement %}announcement-global{% endif %} {% if is_partner_festival %}partner-festival{% endif %}">
+    {% if is_partner_festival %}
+      <div class="festival-partner-banner">❤️ Партнёр</div>
+    {% endif %}
     <div class="row-between">
       <h3>{{ festival.name }}</h3>
       <div class="actions-inline">
         {% if festival.is_global_announcement %}
           <span class="chip">Анонс</span>
+        {% endif %}
+        {% if is_partner_festival %}
+          <span class="chip chip-partner">партнёр</span>
         {% endif %}
         {% if festival.import_source %}
           <span class="chip">{{ import_source_labels.get(festival.import_source, festival.import_source) }}</span>

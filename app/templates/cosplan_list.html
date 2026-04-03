@@ -43,6 +43,17 @@
 </section>
 
 <nav class="calendar-tabs">
+  <a href="/cosplan" class="tab active">
+    Карточки косплана
+    <span class="chip">{{ cosplan_cards_total }}</span>
+  </a>
+  <a href="/cosplan/titles" class="tab">
+    Тайтлы
+    <span class="chip">{{ title_entries_total }}</span>
+  </a>
+</nav>
+
+<nav class="calendar-tabs">
   <a href="/cosplan?tab=current&view={{ current_view }}{% if q %}&q={{ q|urlencode }}{% endif %}" class="tab {% if current_tab == 'current' %}active{% endif %}">
     Текущие планы
     <span class="chip">{{ current_count }}</span>

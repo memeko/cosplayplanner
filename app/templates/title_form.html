@@ -1,0 +1,288 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="section-head">
+  <h1>{{ "Редактирование тайтла" if editing else "Новый тайтл" }}</h1>
+  <a href="/cosplan/titles" class="btn">Назад к тайтлам</a>
+</section>
+
+<nav class="calendar-tabs">
+  <a href="/cosplan" class="tab">
+    Карточки косплана
+    <span class="chip">{{ cosplan_cards_total }}</span>
+  </a>
+  <a href="/cosplan/titles" class="tab active">
+    Тайтлы
+    <span class="chip">{{ title_entries_total }}</span>
+  </a>
+</nav>
+
+<style>
+  .title-form-help {
+    font-size: 0.9rem;
+    color: var(--muted);
+    margin-top: 0.35rem;
+  }
+  .title-form-link-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.6rem;
+    align-items: center;
+  }
+  .title-form-link-row .btn[aria-disabled="true"] {
+    pointer-events: none;
+    opacity: 0.55;
+  }
+</style>
+
+<form method="post" action="{{ '/cosplan/titles/' ~ entry_id ~ '/edit' if editing else '/cosplan/titles/new' }}" class="grid one-col big-form" id="title-entry-form">
+  <section class="box">
+    <h2>Общее</h2>
+    <div class="grid two-col">
+      <label>
+        Формат *
+        <select name="entry_kind" id="entry_kind">
+          {% for kind_value, kind_label in title_kind_labels.items() %}
+            <option value="{{ kind_value }}" {% if form.entry_kind == kind_value %}selected{% endif %}>{{ kind_label }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>
+        Статус *
+        <select name="status" id="title_status">
+          <option value="plan" {% if form.status == 'plan' %}selected{% endif %}>{{ title_status_label(form.entry_kind, 'plan') }}</option>
+          <option value="in_progress" {% if form.status == 'in_progress' %}selected{% endif %}>{{ title_status_label(form.entry_kind, 'in_progress') }}</option>
+          <option value="done" {% if form.status == 'done' %}selected{% endif %}>{{ title_status_label(form.entry_kind, 'done') }}</option>
+        </select>
+      </label>
+    </div>
+
+    <label>
+      Название *
+      <input type="text" name="title" id="title_name" value="{{ form.title }}" maxlength="255" required />
+    </label>
+
+    <div class="grid two-col">
+      <label>
+        Ссылка
+        <input type="url" name="source_url" value="{{ form.source_url }}" />
+      </label>
+      <label>
+        Дедлайн
+        <input type="date" name="deadline_date" value="{{ form.deadline_date }}" />
+      </label>
+    </div>
+
+    <label>
+      Связанный косплан
+      <input type="hidden" name="linked_card_id" id="linked_card_id" value="{{ form.linked_card_id }}" />
+      <input
+        type="text"
+        id="linked_card_label"
+        value="{{ form.linked_card_label }}"
+        list="linked-card-options"
+        placeholder="Начните вводить название своей карточки"
+        autocomplete="off"
+      />
+      <div class="title-form-help">Можно выбрать одну свою карточку косплана. Поиск работает по вводу в поле.</div>
+    </label>
+  </section>
+
+  <section class="box" id="watch_fields">
+    <h2>Просмотр</h2>
+    <div class="grid two-col">
+      <label>
+        Страна
+        <input type="text" name="watch_country" value="{{ form.watch_country }}" list="title-country-options" />
+      </label>
+      <label>
+        Количество серий
+        <input type="number" min="1" step="1" name="watch_episode_count" value="{{ form.watch_episode_count }}" />
+      </label>
+    </div>
+
+    <label>
+      Тип
+      <select name="watch_release_type">
+        <option value="">Не выбрано</option>
+        {% for type_value, type_label in title_watch_release_type_labels.items() %}
+          <option value="{{ type_value }}" {% if form.watch_release_type == type_value %}selected{% endif %}>{{ type_label }}</option>
+        {% endfor %}
+      </select>
+    </label>
+
+    <label id="watch_current_episode_wrap">
+      Текущая серия
+      <input type="number" min="1" step="1" name="watch_current_episode" value="{{ form.watch_current_episode }}" />
+    </label>
+  </section>
+
+  <section class="box" id="read_fields">
+    <h2>Чтение</h2>
+    <div class="grid two-col">
+      <label>
+        Издательство
+        <input type="text" name="read_publisher" value="{{ form.read_publisher }}" />
+      </label>
+      <label>
+        Жанр
+        <input type="text" name="read_genre" value="{{ form.read_genre }}" />
+      </label>
+    </div>
+
+    <div class="grid two-col">
+      <label>
+        Количество страниц
+        <input type="number" min="1" step="1" name="read_page_count" value="{{ form.read_page_count }}" />
+      </label>
+      <label>
+        Количество глав
+        <input type="number" min="1" step="1" name="read_chapter_count" value="{{ form.read_chapter_count }}" />
+      </label>
+    </div>
+
+    <label>Тип</label>
+    <div class="chips-wrap">
+      {% for type_value in title_read_type_options %}
+        <label class="chip-check">
+          <input type="checkbox" name="read_types" value="{{ type_value }}" {% if type_value in form.read_types_json %}checked{% endif %} />
+          {{ type_value }}
+        </label>
+      {% endfor %}
+    </div>
+
+    <div class="grid two-col" id="read_progress_wrap">
+      <label>
+        Текущая страница
+        <input type="number" min="1" step="1" name="read_current_page" value="{{ form.read_current_page }}" />
+      </label>
+      <label>
+        Текущая глава
+        <input type="number" min="1" step="1" name="read_current_chapter" value="{{ form.read_current_chapter }}" />
+      </label>
+    </div>
+
+    <div class="title-form-link-row top-offset">
+      <a
+        href="{{ form.yandex_books_url or '#' }}"
+        target="_blank"
+        rel="noreferrer"
+        class="btn"
+        id="yandex_books_button"
+        {% if not form.yandex_books_url %}aria-disabled="true"{% endif %}
+      >
+        Яндекс Книги
+      </a>
+      <span class="muted" id="yandex_books_hint">Кнопка ищет книгу по введённому названию.</span>
+    </div>
+  </section>
+
+  <datalist id="title-country-options">
+    {% for value in title_country_options %}
+      <option value="{{ value }}"></option>
+    {% endfor %}
+  </datalist>
+
+  <datalist id="linked-card-options">
+    {% for item in linked_title_card_options %}
+      <option value="{{ item.label }}"></option>
+    {% endfor %}
+  </datalist>
+
+  <div class="actions-inline">
+    <button type="submit" class="btn btn-accent">{{ "Сохранить" if editing else "Создать" }}</button>
+    <a href="/cosplan/titles" class="btn">Отмена</a>
+  </div>
+</form>
+
+<script>
+  const linkedCardOptions = {{ linked_title_card_options | tojson }};
+  const linkedCardIdInput = document.getElementById("linked_card_id");
+  const linkedCardLabelInput = document.getElementById("linked_card_label");
+  const titleInput = document.getElementById("title_name");
+  const entryKindSelect = document.getElementById("entry_kind");
+  const statusSelect = document.getElementById("title_status");
+  const yandexBooksButton = document.getElementById("yandex_books_button");
+  const yandexBooksHint = document.getElementById("yandex_books_hint");
+
+  const statusLabels = {
+    watch: {
+      plan: "В плане",
+      in_progress: "Смотрю",
+      done: "Просмотрено",
+    },
+    read: {
+      plan: "План",
+      in_progress: "Читаю",
+      done: "Завершено",
+    },
+  };
+
+  const toggleVisibility = (id, visible) => {
+    const node = document.getElementById(id);
+    if (!node) return;
+    node.style.display = visible ? "" : "none";
+  };
+
+  const buildYandexBooksUrl = (titleValue) => {
+    const trimmed = (titleValue || "").trim();
+    if (!trimmed) return "";
+    return "https://yandex.ru/search/?" + new URLSearchParams({
+      text: `site:books.yandex.ru ${trimmed}`,
+    }).toString();
+  };
+
+  const syncLinkedCardValue = () => {
+    if (!linkedCardIdInput || !linkedCardLabelInput) return;
+    const rawValue = (linkedCardLabelInput.value || "").trim();
+    const match = linkedCardOptions.find((item) => item.label === rawValue);
+    linkedCardIdInput.value = match ? String(match.id) : "";
+  };
+
+  const updateStatusLabels = () => {
+    const kind = entryKindSelect?.value || "watch";
+    Array.from(statusSelect?.options || []).forEach((option) => {
+      const labels = statusLabels[kind] || statusLabels.watch;
+      option.textContent = labels[option.value] || option.textContent;
+    });
+  };
+
+  const updateYandexBooksButton = () => {
+    if (!yandexBooksButton) return;
+    const isRead = (entryKindSelect?.value || "") === "read";
+    const url = buildYandexBooksUrl(titleInput?.value || "");
+    const enabled = Boolean(isRead && url);
+    yandexBooksButton.href = enabled ? url : "#";
+    if (enabled) {
+      yandexBooksButton.removeAttribute("aria-disabled");
+    } else {
+      yandexBooksButton.setAttribute("aria-disabled", "true");
+    }
+    if (yandexBooksHint) {
+      yandexBooksHint.textContent = enabled
+        ? "Откроется поиск по названию на Яндекс Книгах."
+        : "Введите название и выберите формат «Чтение», чтобы появилась активная кнопка.";
+    }
+  };
+
+  const applyTitleFormRules = () => {
+    const kind = entryKindSelect?.value || "watch";
+    const status = statusSelect?.value || "plan";
+    toggleVisibility("watch_fields", kind === "watch");
+    toggleVisibility("read_fields", kind === "read");
+    toggleVisibility("watch_current_episode_wrap", kind === "watch" && status === "in_progress");
+    toggleVisibility("read_progress_wrap", kind === "read" && status === "in_progress");
+    updateStatusLabels();
+    updateYandexBooksButton();
+  };
+
+  linkedCardLabelInput?.addEventListener("input", syncLinkedCardValue);
+  linkedCardLabelInput?.addEventListener("change", syncLinkedCardValue);
+  entryKindSelect?.addEventListener("change", applyTitleFormRules);
+  statusSelect?.addEventListener("change", applyTitleFormRules);
+  titleInput?.addEventListener("input", updateYandexBooksButton);
+  document.getElementById("title-entry-form")?.addEventListener("submit", syncLinkedCardValue);
+
+  syncLinkedCardValue();
+  applyTitleFormRules();
+</script>
+{% endblock %}

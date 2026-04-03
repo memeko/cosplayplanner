@@ -159,6 +159,11 @@ class User(Base):
         back_populates="user",
         cascade="all, delete-orphan",
     )
+    title_entries = relationship(
+        "TitleEntry",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
     password_reset_tokens = relationship(
         "PasswordResetToken",
         back_populates="user",
@@ -331,6 +336,40 @@ class CosplanCard(Base):
     comments = relationship("CardComment", back_populates="card", cascade="all, delete-orphan")
     rehearsal_cards = relationship("RehearsalCard", back_populates="cosplan_card", cascade="all, delete-orphan")
     rehearsal_entries = relationship("RehearsalEntry", back_populates="cosplan_card", cascade="all, delete-orphan")
+    linked_title_entries = relationship("TitleEntry", back_populates="linked_card")
+
+
+class TitleEntry(Base):
+    __tablename__ = "title_entries"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    linked_card_id = Column(Integer, ForeignKey("cosplan_cards.id", ondelete="SET NULL"), nullable=True, index=True)
+
+    entry_kind = Column(String(16), nullable=False, index=True)  # watch | read
+    title = Column(String(255), nullable=False, index=True)
+    status = Column(String(32), nullable=False, default="plan", index=True)  # plan | in_progress | done
+    source_url = Column(Text, nullable=True)
+    deadline_date = Column(Date, nullable=True, index=True)
+
+    watch_country = Column(String(120), nullable=True)
+    watch_episode_count = Column(Integer, nullable=True)
+    watch_release_type = Column(String(32), nullable=True)  # completed | ongoing | no_translation
+    watch_current_episode = Column(Integer, nullable=True)
+
+    read_publisher = Column(String(255), nullable=True)
+    read_page_count = Column(Integer, nullable=True)
+    read_chapter_count = Column(Integer, nullable=True)
+    read_types_json = Column(JSON, nullable=False, default=list)
+    read_genre = Column(String(255), nullable=True)
+    read_current_page = Column(Integer, nullable=True)
+    read_current_chapter = Column(Integer, nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    user = relationship("User", back_populates="title_entries")
+    linked_card = relationship("CosplanCard", back_populates="linked_title_entries")
 
 
 class CardComment(Base):

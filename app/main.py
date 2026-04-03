@@ -75,6 +75,7 @@ from .models import (
     PasswordResetToken,
     RehearsalCard,
     RehearsalEntry,
+    TitleEntry,
     User,
     UserOption,
     WorkShiftDay,
@@ -202,6 +203,55 @@ REHEARSAL_STATUS_PROPOSED = "proposed"
 REHEARSAL_STATUS_APPROVED = "approved"
 REHEARSAL_STATUS_ACCEPTED = "accepted"
 REHEARSAL_STATUS_DECLINED = "declined"
+
+TITLE_ENTRY_KIND_WATCH = "watch"
+TITLE_ENTRY_KIND_READ = "read"
+TITLE_ENTRY_KIND_LABELS = {
+    TITLE_ENTRY_KIND_WATCH: "Просмотр",
+    TITLE_ENTRY_KIND_READ: "Чтение",
+}
+TITLE_STATUS_PLAN = "plan"
+TITLE_STATUS_IN_PROGRESS = "in_progress"
+TITLE_STATUS_DONE = "done"
+TITLE_STATUS_LABELS_BY_KIND = {
+    TITLE_ENTRY_KIND_WATCH: {
+        TITLE_STATUS_PLAN: "В плане",
+        TITLE_STATUS_IN_PROGRESS: "Смотрю",
+        TITLE_STATUS_DONE: "Просмотрено",
+    },
+    TITLE_ENTRY_KIND_READ: {
+        TITLE_STATUS_PLAN: "План",
+        TITLE_STATUS_IN_PROGRESS: "Читаю",
+        TITLE_STATUS_DONE: "Завершено",
+    },
+}
+TITLE_STATUS_FILTER_LABELS = {
+    "all": "Все статусы",
+    TITLE_STATUS_PLAN: "План",
+    TITLE_STATUS_IN_PROGRESS: "В процессе",
+    TITLE_STATUS_DONE: "Завершено",
+}
+TITLE_WATCH_RELEASE_TYPE_COMPLETED = "completed"
+TITLE_WATCH_RELEASE_TYPE_ONGOING = "ongoing"
+TITLE_WATCH_RELEASE_TYPE_NO_TRANSLATION = "no_translation"
+TITLE_WATCH_RELEASE_TYPE_LABELS = {
+    TITLE_WATCH_RELEASE_TYPE_COMPLETED: "завершено",
+    TITLE_WATCH_RELEASE_TYPE_ONGOING: "онгоин",
+    TITLE_WATCH_RELEASE_TYPE_NO_TRANSLATION: "без перевода",
+}
+TITLE_READ_TYPE_OPTIONS = [
+    "Однотомник",
+    "Новелла",
+    "Завершено",
+    "Выходит перевод",
+    "Манга",
+    "Маньхуа",
+    "Манхва",
+    "Комикс",
+    "Веб-новелла",
+    "Российский автор",
+    "Зарубежный автор",
+]
 
 PROJECT_BOARD_STATUS_ACTIVE = "active"
 PROJECT_BOARD_STATUS_FOUND = "found"
@@ -835,6 +885,8 @@ def apply_schema_migrations() -> None:
             WorkShiftDay.__table__.create(bind=conn, checkfirst=True)
         if "content_plan_posts" not in existing_tables:
             ContentPlanPost.__table__.create(bind=conn, checkfirst=True)
+        if "title_entries" not in existing_tables:
+            TitleEntry.__table__.create(bind=conn, checkfirst=True)
         if "password_reset_tokens" not in existing_tables:
             PasswordResetToken.__table__.create(bind=conn, checkfirst=True)
 
@@ -4290,6 +4342,26 @@ def parse_positive_int(raw: str | None) -> int | None:
     return parsed if parsed > 0 else None
 
 
+def title_kind_label(kind: str | None) -> str:
+    return TITLE_ENTRY_KIND_LABELS.get(str(kind or "").strip(), "Тайтл")
+
+
+def title_status_label(kind: str | None, status: str | None) -> str:
+    labels = TITLE_STATUS_LABELS_BY_KIND.get(str(kind or "").strip(), {})
+    return labels.get(str(status or "").strip(), "Без статуса")
+
+
+def title_watch_release_type_label(value: str | None) -> str:
+    return TITLE_WATCH_RELEASE_TYPE_LABELS.get(str(value or "").strip(), "")
+
+
+def build_yandex_books_search_url(title_value: str | None) -> str:
+    cleaned = str(title_value or "").strip()
+    if not cleaned:
+        return ""
+    return "https://yandex.ru/search/?" + urlencode({"text": f"site:books.yandex.ru {cleaned}"})
+
+
 def looks_like_url(value: str | None) -> bool:
     raw = (value or "").strip().lower()
     return raw.startswith("http://") or raw.startswith("https://")
@@ -6797,6 +6869,11 @@ def delete_card_with_runtime_dependents(db: Session, card: CosplanCard) -> None:
     ).scalars().all()
     for row in in_progress_rows:
         db.delete(row)
+    linked_title_entries = db.execute(
+        select(TitleEntry).where(TitleEntry.linked_card_id == card.id)
+    ).scalars().all()
+    for entry in linked_title_entries:
+        entry.linked_card_id = None
     db.delete(card)
 
 
@@ -8197,6 +8274,214 @@ def get_card_form_values(card: CosplanCard | None = None, *, actor_user_id: int 
     }
 
 
+def get_title_form_values(entry: TitleEntry | None = None) -> dict[str, Any]:
+    if not entry:
+        return {
+            "entry_kind": TITLE_ENTRY_KIND_WATCH,
+            "title": "",
+            "status": TITLE_STATUS_PLAN,
+            "source_url": "",
+            "deadline_date": "",
+            "watch_country": "",
+            "watch_episode_count": "",
+            "watch_release_type": "",
+            "watch_current_episode": "",
+            "read_publisher": "",
+            "read_page_count": "",
+            "read_chapter_count": "",
+            "read_types_json": [],
+            "read_genre": "",
+            "read_current_page": "",
+            "read_current_chapter": "",
+            "linked_card_id": "",
+            "linked_card_label": "",
+            "yandex_books_url": "",
+        }
+
+    linked_card_label = ""
+    if entry.linked_card and entry.linked_card.character_name:
+        linked_card_label = entry.linked_card.character_name
+        if entry.linked_card.fandom:
+            linked_card_label = f"{linked_card_label} — {entry.linked_card.fandom}"
+        linked_card_label = f"{linked_card_label} · #{entry.linked_card.id}"
+
+    return {
+        "entry_kind": entry.entry_kind or TITLE_ENTRY_KIND_WATCH,
+        "title": entry.title or "",
+        "status": entry.status or TITLE_STATUS_PLAN,
+        "source_url": entry.source_url or "",
+        "deadline_date": entry.deadline_date.isoformat() if entry.deadline_date else "",
+        "watch_country": entry.watch_country or "",
+        "watch_episode_count": "" if entry.watch_episode_count is None else str(entry.watch_episode_count),
+        "watch_release_type": entry.watch_release_type or "",
+        "watch_current_episode": "" if entry.watch_current_episode is None else str(entry.watch_current_episode),
+        "read_publisher": entry.read_publisher or "",
+        "read_page_count": "" if entry.read_page_count is None else str(entry.read_page_count),
+        "read_chapter_count": "" if entry.read_chapter_count is None else str(entry.read_chapter_count),
+        "read_types_json": as_list(entry.read_types_json),
+        "read_genre": entry.read_genre or "",
+        "read_current_page": "" if entry.read_current_page is None else str(entry.read_current_page),
+        "read_current_chapter": "" if entry.read_current_chapter is None else str(entry.read_current_chapter),
+        "linked_card_id": "" if entry.linked_card_id is None else str(entry.linked_card_id),
+        "linked_card_label": linked_card_label,
+        "yandex_books_url": (
+            build_yandex_books_search_url(entry.title) if (entry.entry_kind or "") == TITLE_ENTRY_KIND_READ else ""
+        ),
+    }
+
+
+def title_entry_options(db: Session, user: User) -> dict[str, Any]:
+    own_cards = db.execute(
+        select(CosplanCard)
+        .where(
+            CosplanCard.user_id == user.id,
+            CosplanCard.is_shared_copy.is_(False),
+        )
+        .order_by(CosplanCard.updated_at.desc(), CosplanCard.id.desc())
+    ).scalars().all()
+    linked_card_options: list[dict[str, Any]] = []
+    for card in own_cards:
+        if not card.character_name:
+            continue
+        label = card.character_name
+        if card.fandom:
+            label = f"{label} — {card.fandom}"
+        label = f"{label} · #{card.id}"
+        linked_card_options.append({"id": int(card.id), "label": label})
+
+    return {
+        "title_country_options": get_options(db, user.id, "title_watch_country"),
+        "linked_title_card_options": linked_card_options,
+        "title_read_type_options": TITLE_READ_TYPE_OPTIONS,
+    }
+
+
+def get_user_title_entry(db: Session, user: User, entry_id: int) -> TitleEntry | None:
+    return db.execute(
+        select(TitleEntry).where(
+            TitleEntry.id == entry_id,
+            TitleEntry.user_id == user.id,
+        )
+    ).scalar_one_or_none()
+
+
+def save_title_entry_from_form(form: Any, entry: TitleEntry, user: User, db: Session) -> tuple[bool, str]:
+    title_value = str(form.get("title", "")).strip()
+    if not title_value:
+        return False, "Название обязательно."
+
+    entry_kind = str(form.get("entry_kind", "")).strip()
+    if entry_kind not in TITLE_ENTRY_KIND_LABELS:
+        return False, "Выберите тип тайтла."
+
+    status = str(form.get("status", "")).strip()
+    if status not in {TITLE_STATUS_PLAN, TITLE_STATUS_IN_PROGRESS, TITLE_STATUS_DONE}:
+        return False, "Выберите корректный статус."
+
+    linked_card_id = parse_positive_int(str(form.get("linked_card_id", "")))
+    linked_card: CosplanCard | None = None
+    if linked_card_id:
+        linked_card = db.execute(
+            select(CosplanCard).where(
+                CosplanCard.id == linked_card_id,
+                CosplanCard.user_id == user.id,
+                CosplanCard.is_shared_copy.is_(False),
+            )
+        ).scalar_one_or_none()
+        if not linked_card:
+            return False, "Связанный косплан нужно выбрать из списка ваших карточек."
+
+    entry.entry_kind = entry_kind
+    entry.title = title_value
+    entry.status = status
+    entry.source_url = str(form.get("source_url", "")).strip() or None
+    entry.deadline_date = parse_date(str(form.get("deadline_date", "")))
+    entry.linked_card_id = linked_card.id if linked_card else None
+
+    # Reset kind-specific fields before applying the active block.
+    entry.watch_country = None
+    entry.watch_episode_count = None
+    entry.watch_release_type = None
+    entry.watch_current_episode = None
+    entry.read_publisher = None
+    entry.read_page_count = None
+    entry.read_chapter_count = None
+    entry.read_types_json = []
+    entry.read_genre = None
+    entry.read_current_page = None
+    entry.read_current_chapter = None
+
+    if entry_kind == TITLE_ENTRY_KIND_WATCH:
+        watch_country = str(form.get("watch_country", "")).strip()
+        watch_episode_count = parse_positive_int(str(form.get("watch_episode_count", "")))
+        watch_release_type = str(form.get("watch_release_type", "")).strip()
+        watch_current_episode = parse_positive_int(str(form.get("watch_current_episode", "")))
+
+        if watch_release_type and watch_release_type not in TITLE_WATCH_RELEASE_TYPE_LABELS:
+            return False, "Выберите корректный тип для просмотра."
+        if (
+            status == TITLE_STATUS_IN_PROGRESS
+            and watch_current_episode is not None
+            and watch_episode_count is not None
+            and watch_current_episode > watch_episode_count
+        ):
+            return False, "Текущая серия не может быть больше общего количества серий."
+
+        entry.watch_country = watch_country or None
+        entry.watch_episode_count = watch_episode_count
+        entry.watch_release_type = watch_release_type or None
+        entry.watch_current_episode = watch_current_episode if status == TITLE_STATUS_IN_PROGRESS else None
+        remember_options(db, user.id, "title_watch_country", [watch_country])
+        return True, ""
+
+    read_publisher = str(form.get("read_publisher", "")).strip()
+    read_page_count = parse_positive_int(str(form.get("read_page_count", "")))
+    read_chapter_count = parse_positive_int(str(form.get("read_chapter_count", "")))
+    read_genre = str(form.get("read_genre", "")).strip()
+    read_current_page = parse_positive_int(str(form.get("read_current_page", "")))
+    read_current_chapter = parse_positive_int(str(form.get("read_current_chapter", "")))
+    selected_types = merge_unique([str(item) for item in form.getlist("read_types")])
+    valid_type_set = {item.casefold(): item for item in TITLE_READ_TYPE_OPTIONS}
+    read_types = [valid_type_set[item.casefold()] for item in selected_types if item.casefold() in valid_type_set]
+
+    if (
+        status == TITLE_STATUS_IN_PROGRESS
+        and read_current_page is not None
+        and read_page_count is not None
+        and read_current_page > read_page_count
+    ):
+        return False, "Текущая страница не может быть больше общего количества страниц."
+    if (
+        status == TITLE_STATUS_IN_PROGRESS
+        and read_current_chapter is not None
+        and read_chapter_count is not None
+        and read_current_chapter > read_chapter_count
+    ):
+        return False, "Текущая глава не может быть больше общего количества глав."
+
+    entry.read_publisher = read_publisher or None
+    entry.read_page_count = read_page_count
+    entry.read_chapter_count = read_chapter_count
+    entry.read_types_json = read_types
+    entry.read_genre = read_genre or None
+    entry.read_current_page = read_current_page if status == TITLE_STATUS_IN_PROGRESS else None
+    entry.read_current_chapter = read_current_chapter if status == TITLE_STATUS_IN_PROGRESS else None
+    return True, ""
+
+
+def get_cosplan_section_totals(db: Session, user_id: int) -> dict[str, int]:
+    cards_total = int(
+        db.execute(select(func.count(CosplanCard.id)).where(CosplanCard.user_id == user_id)).scalar() or 0
+    )
+    titles_total = int(
+        db.execute(select(func.count(TitleEntry.id)).where(TitleEntry.user_id == user_id)).scalar() or 0
+    )
+    return {
+        "cosplan_cards_total": cards_total,
+        "title_entries_total": titles_total,
+    }
+
+
 def card_options(
     db: Session,
     user: User,
@@ -9047,6 +9332,7 @@ def cosplan_list(
     if not user:
         return redirect("/login")
 
+    section_totals = get_cosplan_section_totals(db, user.id)
     all_cards = db.execute(
         select(CosplanCard)
         .where(CosplanCard.user_id == user.id)
@@ -9178,7 +9464,259 @@ def cosplan_list(
         rehearsal_stats_by_card=rehearsal_stats_by_card,
         editable_card_links=editable_card_links,
         current_query=request.url.query or "",
+        **section_totals,
     )
+
+
+@app.get("/cosplan/titles", response_class=HTMLResponse)
+def cosplan_titles_list(
+    request: Request,
+    q: str = "",
+    kind: str = "all",
+    status_filter: str = "all",
+    db: Session = Depends(get_db),
+):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    section_totals = get_cosplan_section_totals(db, user.id)
+    current_kind_filter = kind if kind in {"all", TITLE_ENTRY_KIND_WATCH, TITLE_ENTRY_KIND_READ} else "all"
+    current_status_filter = (
+        status_filter
+        if status_filter in {"all", TITLE_STATUS_PLAN, TITLE_STATUS_IN_PROGRESS, TITLE_STATUS_DONE}
+        else "all"
+    )
+
+    all_entries = db.execute(
+        select(TitleEntry)
+        .where(TitleEntry.user_id == user.id)
+        .order_by(TitleEntry.updated_at.desc(), TitleEntry.id.desc())
+    ).scalars().all()
+
+    linked_card_ids = {entry.linked_card_id for entry in all_entries if entry.linked_card_id}
+    linked_cards_by_id: dict[int, CosplanCard] = {}
+    if linked_card_ids:
+        linked_cards = db.execute(
+            select(CosplanCard).where(CosplanCard.id.in_(linked_card_ids))
+        ).scalars().all()
+        linked_cards_by_id = {card.id: card for card in linked_cards}
+
+    kind_counts = {
+        "all": len(all_entries),
+        TITLE_ENTRY_KIND_WATCH: 0,
+        TITLE_ENTRY_KIND_READ: 0,
+    }
+    for entry in all_entries:
+        if entry.entry_kind in kind_counts:
+            kind_counts[entry.entry_kind] += 1
+
+    entries = list(all_entries)
+    if current_kind_filter != "all":
+        entries = [entry for entry in entries if (entry.entry_kind or "") == current_kind_filter]
+
+    status_counts = {
+        "all": len(entries),
+        TITLE_STATUS_PLAN: 0,
+        TITLE_STATUS_IN_PROGRESS: 0,
+        TITLE_STATUS_DONE: 0,
+    }
+    for entry in entries:
+        if entry.status in status_counts:
+            status_counts[entry.status] += 1
+
+    if current_status_filter != "all":
+        entries = [entry for entry in entries if (entry.status or "") == current_status_filter]
+
+    needle = q.strip().casefold()
+    if needle:
+        filtered_entries: list[TitleEntry] = []
+        for entry in entries:
+            linked_card = linked_cards_by_id.get(entry.linked_card_id or 0)
+            searchable = [
+                entry.title or "",
+                entry.source_url or "",
+                entry.watch_country or "",
+                entry.read_publisher or "",
+                entry.read_genre or "",
+            ]
+            searchable.extend(as_list(entry.read_types_json))
+            if linked_card:
+                searchable.extend([linked_card.character_name or "", linked_card.fandom or ""])
+            if any(needle in str(value).casefold() for value in searchable if value):
+                filtered_entries.append(entry)
+        entries = filtered_entries
+
+    entries.sort(
+        key=lambda item: (
+            1 if item.status == TITLE_STATUS_DONE else 0,
+            1 if item.deadline_date is None else 0,
+            item.deadline_date or date.max,
+            -(
+                item.updated_at.timestamp()
+                if isinstance(item.updated_at, datetime)
+                else 0.0
+            ),
+        )
+    )
+
+    return template_response(
+        request,
+        "cosplan_titles_list.html",
+        user=user,
+        active_tab="cosplan",
+        entries=entries,
+        linked_cards_by_id=linked_cards_by_id,
+        q=q,
+        current_kind_filter=current_kind_filter,
+        current_status_filter=current_status_filter,
+        kind_counts=kind_counts,
+        status_counts=status_counts,
+        filtered_entries_count=len(entries),
+        title_kind_labels=TITLE_ENTRY_KIND_LABELS,
+        title_status_filter_labels=TITLE_STATUS_FILTER_LABELS,
+        title_status_label=title_status_label,
+        title_watch_release_type_label=title_watch_release_type_label,
+        today=date.today(),
+        yandex_books_search_url=build_yandex_books_search_url,
+        **section_totals,
+    )
+
+
+@app.get("/cosplan/titles/new", response_class=HTMLResponse)
+def title_entry_new(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    return template_response(
+        request,
+        "title_form.html",
+        user=user,
+        active_tab="cosplan",
+        editing=False,
+        entry_id=None,
+        form=get_title_form_values(),
+        title_kind_labels=TITLE_ENTRY_KIND_LABELS,
+        title_status_label=title_status_label,
+        title_watch_release_type_labels=TITLE_WATCH_RELEASE_TYPE_LABELS,
+        **title_entry_options(db, user),
+        **get_cosplan_section_totals(db, user.id),
+    )
+
+
+@app.post("/cosplan/titles/new")
+async def title_entry_create(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    form = await request.form()
+    entry = TitleEntry(user_id=user.id, entry_kind=TITLE_ENTRY_KIND_WATCH, title="", status=TITLE_STATUS_PLAN)
+    ok, error_text = save_title_entry_from_form(form, entry, user, db)
+    if not ok:
+        add_flash(request, error_text, "error")
+        return redirect("/cosplan/titles/new")
+
+    db.add(entry)
+    db.commit()
+    add_flash(request, "Карточка тайтла создана.", "success")
+    return redirect("/cosplan/titles")
+
+
+@app.get("/cosplan/titles/{entry_id}/edit", response_class=HTMLResponse)
+def title_entry_edit(entry_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    entry = get_user_title_entry(db, user, entry_id)
+    if not entry:
+        add_flash(request, "Карточка тайтла не найдена.", "error")
+        return redirect("/cosplan/titles")
+
+    return template_response(
+        request,
+        "title_form.html",
+        user=user,
+        active_tab="cosplan",
+        editing=True,
+        entry_id=entry.id,
+        form=get_title_form_values(entry),
+        title_kind_labels=TITLE_ENTRY_KIND_LABELS,
+        title_status_label=title_status_label,
+        title_watch_release_type_labels=TITLE_WATCH_RELEASE_TYPE_LABELS,
+        **title_entry_options(db, user),
+        **get_cosplan_section_totals(db, user.id),
+    )
+
+
+@app.post("/cosplan/titles/{entry_id}/edit")
+async def title_entry_update(entry_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    entry = get_user_title_entry(db, user, entry_id)
+    if not entry:
+        add_flash(request, "Карточка тайтла не найдена.", "error")
+        return redirect("/cosplan/titles")
+
+    form = await request.form()
+    ok, error_text = save_title_entry_from_form(form, entry, user, db)
+    if not ok:
+        add_flash(request, error_text, "error")
+        return redirect(f"/cosplan/titles/{entry_id}/edit")
+
+    db.commit()
+    add_flash(request, "Карточка тайтла обновлена.", "success")
+    return redirect("/cosplan/titles")
+
+
+@app.post("/cosplan/titles/{entry_id}/status")
+async def title_entry_update_status(entry_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    entry = get_user_title_entry(db, user, entry_id)
+    if not entry:
+        add_flash(request, "Карточка тайтла не найдена.", "error")
+        return redirect("/cosplan/titles")
+
+    form = await request.form()
+    next_url = safe_redirect_target(str(form.get("next", "")).strip(), "/cosplan/titles")
+    next_status = str(form.get("status", "")).strip()
+    if next_status not in {TITLE_STATUS_PLAN, TITLE_STATUS_IN_PROGRESS, TITLE_STATUS_DONE}:
+        add_flash(request, "Выберите корректный статус.", "error")
+        return redirect(next_url)
+
+    entry.status = next_status
+    if next_status != TITLE_STATUS_IN_PROGRESS:
+        entry.watch_current_episode = None
+        entry.read_current_page = None
+        entry.read_current_chapter = None
+
+    db.commit()
+    add_flash(request, "Статус тайтла обновлён.", "success")
+    return redirect(next_url)
+
+
+@app.post("/cosplan/titles/{entry_id}/delete")
+def title_entry_delete(entry_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    entry = get_user_title_entry(db, user, entry_id)
+    if not entry:
+        add_flash(request, "Карточка тайтла не найдена.", "error")
+        return redirect("/cosplan/titles")
+
+    db.delete(entry)
+    db.commit()
+    add_flash(request, "Карточка тайтла удалена.", "info")
+    return redirect("/cosplan/titles")
 
 
 @app.get("/cosplan/export.csv")
