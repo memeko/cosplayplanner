@@ -35,6 +35,12 @@
 
 <form method="post" action="{{ '/festivals/' ~ festival_id ~ '/edit' if editing else '/festivals/new' }}" class="grid one-col big-form" id="festival-form">
   <section class="box">
+    {% if global_festival_edit_mode %}
+      <div class="flash flash-info">
+        Общие поля этой карточки обновятся у всех совпадающих фестивалей. Личные отметки других пользователей, включая «Я иду» и сокосплееров, останутся без изменений.
+      </div>
+    {% endif %}
+
     <div class="grid two-col">
       <label>
         Название *
@@ -82,30 +88,44 @@
       </label>
     </div>
 
-    <label class="inline-check">
-      <input type="checkbox" name="is_going" id="is_going" {% if form.is_going %}checked{% endif %} />
-      Я иду
-    </label>
-
-    <div id="going_coproplayers_wrap">
-      <label class="alias-suggest">
-        Сокосплеер(ы) (через запятую)
-        <input
-          type="text"
-          name="going_coproplayers_input"
-          id="going_coproplayers_input"
-          value="{{ form.going_coproplayers_input }}"
-          list="festival-coproplayer-options"
-          placeholder="username1, cosplay_nick2"
-          autocomplete="off"
-        />
-        <div class="alias-suggest-list" id="festival-coproplayer-suggest"></div>
+    {% if can_edit_photo_cosplay %}
+      <label class="inline-check top-offset">
+        <input type="checkbox" name="has_photo_cosplay" {% if form.has_photo_cosplay %}checked{% endif %} />
+        Есть фотокосплей
       </label>
-      <datalist id="festival-coproplayer-options">
-        {% for value in coproplayer_alias_options %}
-          <option value="{{ value }}"></option>
-        {% endfor %}
-      </datalist>
+    {% endif %}
+
+    <div class="top-offset">
+      <strong>Личная информация</strong>
+      {% if can_edit_personal_festival_fields %}
+        <label class="inline-check top-offset">
+          <input type="checkbox" name="is_going" id="is_going" {% if form.is_going %}checked{% endif %} />
+          Я иду
+        </label>
+
+        <div id="going_coproplayers_wrap">
+          <label class="alias-suggest">
+            Сокосплеер(ы) (через запятую)
+            <input
+              type="text"
+              name="going_coproplayers_input"
+              id="going_coproplayers_input"
+              value="{{ form.going_coproplayers_input }}"
+              list="festival-coproplayer-options"
+              placeholder="username1, cosplay_nick2"
+              autocomplete="off"
+            />
+            <div class="alias-suggest-list" id="festival-coproplayer-suggest"></div>
+          </label>
+          <datalist id="festival-coproplayer-options">
+            {% for value in coproplayer_alias_options %}
+              <option value="{{ value }}"></option>
+            {% endfor %}
+          </datalist>
+        </div>
+      {% else %}
+        <p class="muted top-offset">Для этой карточки можно менять только общую информацию фестиваля. Личные поля владельца здесь не редактируются.</p>
+      {% endif %}
     </div>
   </section>
 
@@ -118,7 +138,10 @@
 <script>
   const isGoing = document.getElementById("is_going");
   const wrap = document.getElementById("going_coproplayers_wrap");
-  const apply = () => { wrap.style.display = isGoing && isGoing.checked ? "" : "none"; };
+  const apply = () => {
+    if (!wrap) return;
+    wrap.style.display = isGoing && isGoing.checked ? "" : "none";
+  };
   if (isGoing) { isGoing.addEventListener("change", apply); }
   const input = document.getElementById("going_coproplayers_input");
   const list = document.getElementById("festival-coproplayer-suggest");

@@ -513,6 +513,10 @@ ANNOUNCEMENT_STATUS_REJECTED = "rejected"
 
 SPECIAL_HIGHLIGHT_USERNAME = "brfox_cosplay"
 SPECIAL_HIGHLIGHT_EMAIL = "angenzel@gmail.com"
+FESTIVAL_GLOBAL_EDITOR_USERNAMES = {
+    SPECIAL_HIGHLIGHT_USERNAME,
+    "brfox_xosplay",
+}
 
 CHARACTER_BIRTHDAYS_SHEET_CSV_URL = (
     "https://docs.google.com/spreadsheets/d/1lUJd6q8k1jt2zIrs66Ebf1lZxvckBioVmtY0FI7rfFw/export?format=csv"
@@ -788,6 +792,7 @@ def apply_schema_migrations() -> None:
             ("source_announcement_id", "INTEGER"),
             ("import_source", "VARCHAR(64)"),
             ("import_external_id", "VARCHAR(128)"),
+            ("has_photo_cosplay", "BOOLEAN NOT NULL DEFAULT 0"),
         ],
         "work_shift_days": [
             ("is_half_day", "BOOLEAN NOT NULL DEFAULT 0"),
@@ -1246,6 +1251,16 @@ def user_is_special(user: User | None) -> bool:
 
 def is_moderator_user(user: User | None) -> bool:
     return user_is_special(user)
+
+
+def can_manage_festival_globally(user: User | None) -> bool:
+    if not user:
+        return False
+    aliases = {
+        normalize_username(user.username).casefold(),
+        normalize_username(user.cosplay_nick).casefold(),
+    }
+    return any(alias in FESTIVAL_GLOBAL_EDITOR_USERNAMES for alias in aliases if alias)
 
 
 def is_smm_manager_user(user: User | None) -> bool:
@@ -8559,6 +8574,7 @@ def get_festival_form_values(festival: Festival | None = None) -> dict[str, Any]
             "nomination_1": "",
             "nomination_2": "",
             "nomination_3": "",
+            "has_photo_cosplay": False,
             "is_going": False,
             "going_coproplayers_json": [],
             "going_coproplayers_input": "",
@@ -8574,10 +8590,85 @@ def get_festival_form_values(festival: Festival | None = None) -> dict[str, Any]
         "nomination_1": festival.nomination_1 or "",
         "nomination_2": festival.nomination_2 or "",
         "nomination_3": festival.nomination_3 or "",
+        "has_photo_cosplay": bool(festival.has_photo_cosplay),
         "is_going": bool(festival.is_going),
         "going_coproplayers_json": as_list(festival.going_coproplayers_json),
         "going_coproplayers_input": ", ".join(as_list(festival.going_coproplayers_json)),
     }
+
+
+def find_matching_festivals_for_global_update(
+    db: Session,
+    *,
+    source_announcement_id: int | None,
+    import_source: str | None,
+    import_external_id: str | None,
+    name: str | None,
+    city: str | None,
+    event_date: date | None,
+) -> list[Festival]:
+    all_festivals = db.execute(select(Festival)).scalars().all()
+    target_items: list[Festival] = []
+    for item in all_festivals:
+        if source_announcement_id and item.source_announcement_id == source_announcement_id:
+            target_items.append(item)
+            continue
+        if (
+            import_source
+            and import_external_id
+            and item.import_source == import_source
+            and item.import_external_id == import_external_id
+        ):
+            target_items.append(item)
+            continue
+        if festivals_look_like_duplicates(
+            item.name,
+            item.city,
+            item.event_date,
+            name,
+            city,
+            event_date,
+        ):
+            target_items.append(item)
+    return target_items
+
+
+def apply_festival_common_fields_from_form(
+    form: Any,
+    festival: Festival,
+    *,
+    can_edit_photo_cosplay: bool = False,
+) -> None:
+    event_date = parse_date(str(form.get("event_date", "")))
+    event_end_date = parse_date(str(form.get("event_end_date", "")))
+    if not event_date and event_end_date:
+        event_date = event_end_date
+    if event_date and event_end_date and event_end_date < event_date:
+        event_end_date = event_date
+
+    festival.name = str(form.get("name", "")).strip()
+    festival.url = str(form.get("url", "")).strip() or None
+    festival.city = str(form.get("city", "")).strip() or None
+    festival.event_date = event_date
+    festival.event_end_date = event_end_date
+    festival.submission_deadline = parse_date(str(form.get("submission_deadline", "")))
+    festival.nomination_1 = str(form.get("nomination_1", "")).strip() or None
+    festival.nomination_2 = str(form.get("nomination_2", "")).strip() or None
+    festival.nomination_3 = str(form.get("nomination_3", "")).strip() or None
+    if can_edit_photo_cosplay:
+        festival.has_photo_cosplay = to_bool(form.get("has_photo_cosplay"))
+
+
+def apply_festival_personal_fields_from_form(form: Any, festival: Festival, db: Session) -> None:
+    alias_to_username, _, _ = build_user_alias_lookup(db)
+    festival.is_going = to_bool(form.get("is_going"))
+
+    raw_coproplayer_aliases = merge_unique(
+        split_csv(str(form.get("going_coproplayers_input", ""))),
+        form.getlist("going_coproplayers"),
+        split_csv(str(form.get("going_coproplayers_new", ""))),
+    )
+    festival.going_coproplayers_json = resolve_aliases_to_usernames(raw_coproplayer_aliases, alias_to_username)
 
 
 def get_festival_announcement_form_values(announcement: FestivalAnnouncement | None = None) -> dict[str, Any]:
@@ -16196,6 +16287,7 @@ def festivals_list(request: Request, db: Session = Depends(get_db)):
         moderator_announcements=moderator_announcements,
         own_announcements=own_announcements,
         announcement_requesters_by_id=announcement_requesters_by_id,
+        can_manage_festival_globally=can_manage_festival_globally(user),
         can_import_cosplay2=user_is_special(user),
         can_import_raf=user_is_special(user) and VK_IMPORT_ENABLED,
         import_source_labels=IMPORT_SOURCE_LABELS,
@@ -16513,6 +16605,9 @@ def festivals_new(request: Request, db: Session = Depends(get_db)):
         festival_id=None,
         form=get_festival_form_values(),
         coproplayer_alias_options=merge_unique(alias_options, get_options(db, user.id, "coproplayer")),
+        global_festival_edit_mode=False,
+        can_edit_personal_festival_fields=True,
+        can_edit_photo_cosplay=user_is_special(user),
     )
 
 
@@ -16522,13 +16617,17 @@ def festivals_edit(festival_id: int, request: Request, db: Session = Depends(get
     if not user:
         return redirect("/login")
 
-    festival = db.execute(
-        select(Festival).where(Festival.id == festival_id, Festival.user_id == user.id)
-    ).scalar_one_or_none()
+    global_festival_edit_mode = can_manage_festival_globally(user)
+    if global_festival_edit_mode:
+        festival = db.get(Festival, festival_id)
+    else:
+        festival = db.execute(
+            select(Festival).where(Festival.id == festival_id, Festival.user_id == user.id)
+        ).scalar_one_or_none()
     if not festival:
         add_flash(request, "Фестиваль не найден.", "error")
         return redirect("/festivals")
-    if festival.is_global_announcement:
+    if festival.is_global_announcement and not global_festival_edit_mode:
         add_flash(request, "Карточка анонса доступна только для просмотра и отметки «Я иду».", "error")
         return redirect("/festivals")
 
@@ -16542,36 +16641,25 @@ def festivals_edit(festival_id: int, request: Request, db: Session = Depends(get
         festival_id=festival.id,
         form=get_festival_form_values(festival),
         coproplayer_alias_options=merge_unique(alias_options, get_options(db, user.id, "coproplayer")),
+        global_festival_edit_mode=global_festival_edit_mode,
+        can_edit_personal_festival_fields=festival.user_id == user.id,
+        can_edit_photo_cosplay=user_is_special(user),
     )
 
 
 def save_festival_from_form(form: Any, festival: Festival, user: User, db: Session) -> None:
-    alias_to_username, _, _ = build_user_alias_lookup(db)
-
-    event_date = parse_date(str(form.get("event_date", "")))
-    event_end_date = parse_date(str(form.get("event_end_date", "")))
-    if not event_date and event_end_date:
-        event_date = event_end_date
-    if event_date and event_end_date and event_end_date < event_date:
-        event_end_date = event_date
-
-    festival.name = str(form.get("name", "")).strip()
-    festival.url = str(form.get("url", "")).strip() or None
-    festival.city = str(form.get("city", "")).strip() or None
-    festival.event_date = event_date
-    festival.event_end_date = event_end_date
-    festival.submission_deadline = parse_date(str(form.get("submission_deadline", "")))
-    festival.nomination_1 = str(form.get("nomination_1", "")).strip() or None
-    festival.nomination_2 = str(form.get("nomination_2", "")).strip() or None
-    festival.nomination_3 = str(form.get("nomination_3", "")).strip() or None
-    festival.is_going = to_bool(form.get("is_going"))
+    apply_festival_common_fields_from_form(
+        form,
+        festival,
+        can_edit_photo_cosplay=user_is_special(user),
+    )
+    apply_festival_personal_fields_from_form(form, festival, db)
 
     raw_coproplayer_aliases = merge_unique(
         split_csv(str(form.get("going_coproplayers_input", ""))),
-        form.getlist("going_coproplayers"),  # backward compatibility with previous form
-        split_csv(str(form.get("going_coproplayers_new", ""))),  # backward compatibility
+        form.getlist("going_coproplayers"),
+        split_csv(str(form.get("going_coproplayers_new", ""))),
     )
-    festival.going_coproplayers_json = resolve_aliases_to_usernames(raw_coproplayer_aliases, alias_to_username)
 
     remember_options(db, user.id, "coproplayer", merge_unique(raw_coproplayer_aliases, festival.going_coproplayers_json))
     remember_options(
@@ -16616,13 +16704,17 @@ async def festivals_update(festival_id: int, request: Request, db: Session = Dep
     if not user:
         return redirect("/login")
 
-    festival = db.execute(
-        select(Festival).where(Festival.id == festival_id, Festival.user_id == user.id)
-    ).scalar_one_or_none()
+    global_festival_edit_mode = can_manage_festival_globally(user)
+    if global_festival_edit_mode:
+        festival = db.get(Festival, festival_id)
+    else:
+        festival = db.execute(
+            select(Festival).where(Festival.id == festival_id, Festival.user_id == user.id)
+        ).scalar_one_or_none()
     if not festival:
         add_flash(request, "Фестиваль не найден.", "error")
         return redirect("/festivals")
-    if festival.is_global_announcement:
+    if festival.is_global_announcement and not global_festival_edit_mode:
         add_flash(request, "Карточку анонса нельзя редактировать.", "error")
         return redirect("/festivals")
 
@@ -16632,11 +16724,74 @@ async def festivals_update(festival_id: int, request: Request, db: Session = Dep
         add_flash(request, "Название фестиваля обязательно.", "error")
         return redirect(f"/festivals/{festival_id}/edit")
 
-    save_festival_from_form(form, festival, user, db)
-    notify_count = notify_coproplayer_conflicts_for_festival(db, festival=festival, owner=user)
+    identity_before_update = {
+        "source_announcement_id": festival.source_announcement_id,
+        "import_source": festival.import_source,
+        "import_external_id": festival.import_external_id,
+        "name": festival.name,
+        "city": festival.city,
+        "event_date": festival.event_date,
+    }
+    can_edit_photo_cosplay = user_is_special(user)
+    apply_festival_common_fields_from_form(
+        form,
+        festival,
+        can_edit_photo_cosplay=can_edit_photo_cosplay,
+    )
+
+    raw_coproplayer_aliases: list[str] = []
+    notify_count = 0
+    if festival.user_id == user.id:
+        apply_festival_personal_fields_from_form(form, festival, db)
+        raw_coproplayer_aliases = merge_unique(
+            split_csv(str(form.get("going_coproplayers_input", ""))),
+            form.getlist("going_coproplayers"),
+            split_csv(str(form.get("going_coproplayers_new", ""))),
+        )
+        remember_options(
+            db,
+            user.id,
+            "coproplayer",
+            merge_unique(raw_coproplayer_aliases, festival.going_coproplayers_json),
+        )
+        notify_count = notify_coproplayer_conflicts_for_festival(db, festival=festival, owner=user)
+
+    updated_festival_ids = {festival.id}
+    if global_festival_edit_mode:
+        matching_festivals = find_matching_festivals_for_global_update(
+            db,
+            source_announcement_id=identity_before_update["source_announcement_id"],
+            import_source=identity_before_update["import_source"],
+            import_external_id=identity_before_update["import_external_id"],
+            name=identity_before_update["name"],
+            city=identity_before_update["city"],
+            event_date=identity_before_update["event_date"],
+        )
+        for item in matching_festivals:
+            if item.id in updated_festival_ids:
+                continue
+            apply_festival_common_fields_from_form(
+                form,
+                item,
+                can_edit_photo_cosplay=can_edit_photo_cosplay,
+            )
+            updated_festival_ids.add(item.id)
+
+    remember_options(
+        db,
+        user.id,
+        "nomination",
+        merge_unique(DEFAULT_NOMINATIONS, [festival.nomination_1 or "", festival.nomination_2 or "", festival.nomination_3 or ""]),
+    )
+    remember_options(db, user.id, "festival", [festival.name])
     db.commit()
 
-    if notify_count:
+    if global_festival_edit_mode:
+        message = f"Общая информация фестиваля обновлена в {len(updated_festival_ids)} карточках."
+        if notify_count:
+            message += f" Конфликтов по сокосплеерам в вашей карточке: {notify_count}."
+        add_flash(request, message, "success")
+    elif notify_count:
         add_flash(request, f"Фестиваль обновлён. Конфликтов по сокосплеерам: {notify_count}.", "success")
     else:
         add_flash(request, "Фестиваль обновлён.", "success")

@@ -227,6 +227,9 @@
     <div class="row-between">
       <h3>{{ festival.name }}</h3>
       <div class="actions-inline">
+        {% if festival.has_photo_cosplay %}
+          <span class="festival-photo-marker" title="Есть фотокосплей">📷</span>
+        {% endif %}
         {% if festival.is_global_announcement %}
           <span class="chip">Анонс</span>
         {% endif %}
@@ -267,11 +270,15 @@
       <p><a href="{{ festival.url }}" target="_blank" rel="noreferrer">Ссылка на фестиваль</a></p>
     {% endif %}
     <div class="actions-inline">
-      {% if not festival.is_global_announcement %}
+      {% if not festival.is_global_announcement or can_manage_festival_globally %}
         <a href="/festivals/{{ festival.id }}/edit" class="btn">Редактировать</a>
+      {% endif %}
+      {% if not festival.is_global_announcement %}
         <form method="post" action="/festivals/{{ festival.id }}/delete" onsubmit="return confirm('Удалить фестиваль?');">
           <button type="submit" class="btn btn-danger">Удалить</button>
         </form>
+      {% elif can_manage_festival_globally %}
+        <span class="muted">Можно обновить общую информацию для всех карточек фестиваля.</span>
       {% else %}
         <span class="muted">Карточка анонса доступна только для отметки «Я иду».</span>
       {% endif %}
