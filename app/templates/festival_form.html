@@ -7,6 +7,13 @@
 
 <style>
   .alias-suggest { position: relative; }
+  .festival-nomination-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) auto;
+    gap: 0.75rem;
+    align-items: end;
+    margin-top: 0.75rem;
+  }
   .alias-suggest-list {
     position: absolute;
     z-index: 20;
@@ -31,6 +38,11 @@
     cursor: pointer;
   }
   .alias-suggest-item:hover { background: #f2f6ff; }
+  @media (max-width: 780px) {
+    .festival-nomination-row {
+      grid-template-columns: 1fr;
+    }
+  }
 </style>
 
 <form method="post" action="{{ '/festivals/' ~ festival_id ~ '/edit' if editing else '/festivals/new' }}" class="grid one-col big-form" id="festival-form">
@@ -73,19 +85,27 @@
       </label>
     </div>
 
-    <div class="grid three-col">
-      <label>
-        Номинация 1
-        <input type="text" name="nomination_1" value="{{ form.nomination_1 }}" />
-      </label>
-      <label>
-        Номинация 2
-        <input type="text" name="nomination_2" value="{{ form.nomination_2 }}" />
-      </label>
-      <label>
-        Номинация 3
-        <input type="text" name="nomination_3" value="{{ form.nomination_3 }}" />
-      </label>
+    <div class="top-offset">
+      <div class="row-between">
+        <strong>Номинации фестиваля</strong>
+        <button type="button" class="btn" id="add-festival-nomination">Добавить номинацию</button>
+      </div>
+      <p class="muted top-offset">Для каждой номинации можно указать ссылку на правила или отдельную страницу подачи.</p>
+      <div id="festival_nomination_rows">
+        {% for row in form.nomination_rows %}
+          <div class="festival-nomination-row">
+            <label>
+              Название
+              <input type="text" name="nomination_title" value="{{ row.title }}" maxlength="255" />
+            </label>
+            <label>
+              Ссылка
+              <input type="url" name="nomination_url" value="{{ row.url }}" placeholder="https://..." />
+            </label>
+            <button type="button" class="btn btn-danger remove-festival-nomination">Удалить</button>
+          </div>
+        {% endfor %}
+      </div>
     </div>
 
     {% if can_edit_photo_cosplay %}
@@ -112,6 +132,21 @@
     <div class="top-offset">
       <strong>Личная информация</strong>
       {% if can_edit_personal_festival_fields %}
+        {% if form.nomination_items %}
+          <div class="top-offset">
+            <p class="meta">Планирую подаваться в:</p>
+            <div class="chips-wrap top-offset">
+              {% for item in form.nomination_items %}
+                <label class="chip-check">
+                  <input type="checkbox" name="planned_nominations" value="{{ item.title }}" {% if item.title in (form.planned_nominations_json or []) %}checked{% endif %} />
+                  {{ item.title }}
+                </label>
+              {% endfor %}
+            </div>
+          </div>
+        {% else %}
+          <p class="muted top-offset">Чекбоксы выбора появятся после того, как у фестиваля будут заполнены номинации.</p>
+        {% endif %}
         <label class="inline-check top-offset">
           <input type="checkbox" name="is_going" id="is_going" {% if form.is_going %}checked{% endif %} />
           Я иду
@@ -152,11 +187,45 @@
 <script>
   const isGoing = document.getElementById("is_going");
   const wrap = document.getElementById("going_coproplayers_wrap");
+  const nominationRows = document.getElementById("festival_nomination_rows");
+  const addNominationButton = document.getElementById("add-festival-nomination");
   const apply = () => {
     if (!wrap) return;
     wrap.style.display = isGoing && isGoing.checked ? "" : "none";
   };
+  const bindNominationRemoveButtons = () => {
+    document.querySelectorAll(".remove-festival-nomination").forEach((button) => {
+      if (button.dataset.bound === "1") return;
+      button.dataset.bound = "1";
+      button.addEventListener("click", () => {
+        const row = button.closest(".festival-nomination-row");
+        if (row) row.remove();
+      });
+    });
+  };
+  const buildNominationRow = () => {
+    const row = document.createElement("div");
+    row.className = "festival-nomination-row";
+    row.innerHTML = `
+      <label>
+        Название
+        <input type="text" name="nomination_title" value="" maxlength="255" />
+      </label>
+      <label>
+        Ссылка
+        <input type="url" name="nomination_url" value="" placeholder="https://..." />
+      </label>
+      <button type="button" class="btn btn-danger remove-festival-nomination">Удалить</button>
+    `;
+    return row;
+  };
   if (isGoing) { isGoing.addEventListener("change", apply); }
+  if (addNominationButton && nominationRows) {
+    addNominationButton.addEventListener("click", () => {
+      nominationRows.appendChild(buildNominationRow());
+      bindNominationRemoveButtons();
+    });
+  }
   const input = document.getElementById("going_coproplayers_input");
   const list = document.getElementById("festival-coproplayer-suggest");
   let pendingRequest = null;
@@ -212,6 +281,7 @@
     });
     input.addEventListener("blur", () => setTimeout(closeSuggest, 120));
   }
+  bindNominationRemoveButtons();
   apply();
 </script>
 {% endblock %}

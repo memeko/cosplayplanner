@@ -30,6 +30,15 @@
 <style>
   .going-toggle-form { margin: 0; }
   .going-toggle-form .inline-check { margin: 0; font-size: 0.9rem; }
+  .festival-nomination-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    margin-top: 0.35rem;
+  }
+  .festival-nomination-list .chip {
+    text-decoration: none;
+  }
 </style>
 
 {% if user_home_city %}
@@ -267,7 +276,26 @@
       {% endif %}
     </p>
     <p class="meta">Дедлайн подачи: {{ festival.submission_deadline.strftime('%d-%m-%Y') if festival.submission_deadline else "—" }}</p>
-    <p class="meta">Номинации: {{ [festival.nomination_1, festival.nomination_2, festival.nomination_3] | reject('equalto', None) | reject('equalto', '') | list | join(', ') or '—' }}</p>
+    {% set nomination_items = festival_nomination_items_by_id.get(festival.id, []) %}
+    {% if nomination_items %}
+      <p class="meta">Номинации:</p>
+      <div class="festival-nomination-list">
+        {% for item in nomination_items %}
+          {% set nomination_href = build_external_url(item.url) %}
+          {% if nomination_href %}
+            <a href="{{ nomination_href }}" target="_blank" rel="noreferrer" class="chip">{{ item.title }}</a>
+          {% else %}
+            <span class="chip">{{ item.title }}</span>
+          {% endif %}
+        {% endfor %}
+      </div>
+    {% else %}
+      <p class="meta">Номинации: —</p>
+    {% endif %}
+    {% set planned_nominations = festival_planned_nominations_by_id.get(festival.id, []) %}
+    {% if planned_nominations %}
+      <p class="meta">Планирую подаваться: {{ planned_nominations | join(', ') }}</p>
+    {% endif %}
     {% if festival.shared_note %}
       <p class="notes-block">{{ festival.shared_note|render_text }}</p>
     {% endif %}

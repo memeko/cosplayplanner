@@ -792,6 +792,8 @@ def apply_schema_migrations() -> None:
             ("source_announcement_id", "INTEGER"),
             ("import_source", "VARCHAR(64)"),
             ("import_external_id", "VARCHAR(128)"),
+            ("nominations_json", "JSON NOT NULL DEFAULT '[]'"),
+            ("planned_nominations_json", "JSON NOT NULL DEFAULT '[]'"),
             ("has_photo_cosplay", "BOOLEAN NOT NULL DEFAULT 0"),
             ("is_partner_festival", "BOOLEAN NOT NULL DEFAULT 0"),
             ("shared_note", "TEXT"),
@@ -8582,7 +8584,89 @@ def card_options(
     }
 
 
+def normalize_festival_nomination_items(raw_items: Any) -> list[dict[str, str]]:
+    normalized: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for raw_item in as_list(raw_items):
+        if isinstance(raw_item, dict):
+            title = str(raw_item.get("title", "")).strip()
+            url_raw = str(raw_item.get("url", "")).strip()
+        else:
+            title = str(raw_item or "").strip()
+            url_raw = ""
+        if not title:
+            continue
+        title = title[:255].strip()
+        url = build_external_url(url_raw) if url_raw else ""
+        key = (title.casefold(), (url or url_raw).casefold())
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append({"title": title, "url": url or url_raw})
+    return normalized
+
+
+def legacy_festival_nomination_items(*values: str | None) -> list[dict[str, str]]:
+    return normalize_festival_nomination_items(list(values))
+
+
+def festival_nomination_items(festival: Festival | None) -> list[dict[str, str]]:
+    if not festival:
+        return []
+    raw_items = list(as_list(getattr(festival, "nominations_json", [])))
+    raw_items.extend([festival.nomination_1 or "", festival.nomination_2 or "", festival.nomination_3 or ""])
+    return normalize_festival_nomination_items(raw_items)
+
+
+def festival_nomination_titles(festival: Festival | None) -> list[str]:
+    return [item["title"] for item in festival_nomination_items(festival)]
+
+
+def festival_selected_nomination_titles(festival: Festival | None) -> list[str]:
+    if not festival:
+        return []
+    selected_keys = {
+        str(value).strip().casefold()
+        for value in as_list(getattr(festival, "planned_nominations_json", []))
+        if str(value).strip()
+    }
+    if not selected_keys:
+        return []
+    selected: list[str] = []
+    seen: set[str] = set()
+    for title in festival_nomination_titles(festival):
+        key = title.casefold()
+        if key not in selected_keys or key in seen:
+            continue
+        seen.add(key)
+        selected.append(title)
+    return selected
+
+
+def parse_festival_nomination_items_from_form(form: Any) -> list[dict[str, str]]:
+    titles = [str(value).strip() for value in form.getlist("nomination_title")]
+    urls = [str(value).strip() for value in form.getlist("nomination_url")]
+    size = max(len(titles), len(urls))
+    rows: list[dict[str, str]] = []
+    for index in range(size):
+        title = titles[index] if index < len(titles) else ""
+        url = urls[index] if index < len(urls) else ""
+        if not title and not url:
+            continue
+        rows.append({"title": title, "url": url})
+    return normalize_festival_nomination_items(rows)
+
+
 def get_festival_form_values(festival: Festival | None = None) -> dict[str, Any]:
+    nomination_items = festival_nomination_items(festival)
+    nomination_rows = [
+        {
+            "row_id": f"festival-nomination-{index}",
+            "title": item["title"],
+            "url": item["url"],
+        }
+        for index, item in enumerate(nomination_items)
+    ]
     if not festival:
         return {
             "name": "",
@@ -8591,9 +8675,9 @@ def get_festival_form_values(festival: Festival | None = None) -> dict[str, Any]
             "event_date": "",
             "event_end_date": "",
             "submission_deadline": "",
-            "nomination_1": "",
-            "nomination_2": "",
-            "nomination_3": "",
+            "nomination_rows": nomination_rows or [{"row_id": "festival-nomination-0", "title": "", "url": ""}],
+            "nomination_items": nomination_items,
+            "planned_nominations_json": [],
             "has_photo_cosplay": False,
             "is_partner_festival": False,
             "shared_note": "",
@@ -8609,9 +8693,9 @@ def get_festival_form_values(festival: Festival | None = None) -> dict[str, Any]
         "event_date": festival.event_date.isoformat() if festival.event_date else "",
         "event_end_date": festival.event_end_date.isoformat() if festival.event_end_date else "",
         "submission_deadline": festival.submission_deadline.isoformat() if festival.submission_deadline else "",
-        "nomination_1": festival.nomination_1 or "",
-        "nomination_2": festival.nomination_2 or "",
-        "nomination_3": festival.nomination_3 or "",
+        "nomination_rows": nomination_rows or [{"row_id": "festival-nomination-0", "title": "", "url": ""}],
+        "nomination_items": nomination_items,
+        "planned_nominations_json": festival_selected_nomination_titles(festival),
         "has_photo_cosplay": bool(festival.has_photo_cosplay),
         "is_partner_festival": bool(festival.is_partner_festival),
         "shared_note": festival.shared_note or "",
@@ -8678,9 +8762,11 @@ def apply_festival_common_fields_from_form(
     festival.event_date = event_date
     festival.event_end_date = event_end_date
     festival.submission_deadline = parse_date(str(form.get("submission_deadline", "")))
-    festival.nomination_1 = str(form.get("nomination_1", "")).strip() or None
-    festival.nomination_2 = str(form.get("nomination_2", "")).strip() or None
-    festival.nomination_3 = str(form.get("nomination_3", "")).strip() or None
+    nomination_items = parse_festival_nomination_items_from_form(form)
+    festival.nominations_json = nomination_items
+    festival.nomination_1 = nomination_items[0]["title"] if len(nomination_items) > 0 else None
+    festival.nomination_2 = nomination_items[1]["title"] if len(nomination_items) > 1 else None
+    festival.nomination_3 = nomination_items[2]["title"] if len(nomination_items) > 2 else None
     if can_edit_photo_cosplay:
         festival.has_photo_cosplay = to_bool(form.get("has_photo_cosplay"))
     if can_edit_partner_festival:
@@ -8692,6 +8778,16 @@ def apply_festival_common_fields_from_form(
 def apply_festival_personal_fields_from_form(form: Any, festival: Festival, db: Session) -> None:
     alias_to_username, _, _ = build_user_alias_lookup(db)
     festival.is_going = to_bool(form.get("is_going"))
+    selected_nomination_keys = {
+        str(value).strip().casefold()
+        for value in form.getlist("planned_nominations")
+        if str(value).strip()
+    }
+    festival.planned_nominations_json = [
+        title
+        for title in festival_nomination_titles(festival)
+        if title.casefold() in selected_nomination_keys
+    ]
 
     raw_coproplayer_aliases = merge_unique(
         split_csv(str(form.get("going_coproplayers_input", ""))),
@@ -8783,6 +8879,12 @@ def propagate_approved_announcement(
                 nomination_1=announcement.nomination_1,
                 nomination_2=announcement.nomination_2,
                 nomination_3=announcement.nomination_3,
+                nominations_json=legacy_festival_nomination_items(
+                    announcement.nomination_1,
+                    announcement.nomination_2,
+                    announcement.nomination_3,
+                ),
+                planned_nominations_json=[],
                 is_going=False,
                 going_coproplayers_json=[],
                 is_global_announcement=True,
@@ -13115,7 +13217,7 @@ def my_calendar_export_ics(request: Request, db: Session = Depends(get_db)):
             users_by_username,
         )
         description_parts = ["Фестиваль"]
-        nomination_values = [item for item in [festival.nomination_1, festival.nomination_2, festival.nomination_3] if item]
+        nomination_values = festival_nomination_titles(festival)
         if nomination_values:
             description_parts.append("Номинации: " + ", ".join(nomination_values))
         if coproplayers_display:
@@ -16266,12 +16368,17 @@ def festivals_list(request: Request, db: Session = Depends(get_db)):
 
     alias_to_username, users_by_username, alias_options = build_user_alias_lookup(db)
     festival_coproplayers_display: dict[int, list[str]] = {}
+    festival_nomination_items_by_id: dict[int, list[dict[str, str]]] = {}
+    festival_planned_nominations_by_id: dict[int, list[str]] = {}
 
     filtered: list[Festival] = []
     for festival in active_festivals:
         raw_coproplayers = as_list(festival.going_coproplayers_json)
         display_coproplayers = format_coproplayer_names(raw_coproplayers, alias_to_username, users_by_username)
         festival_coproplayers_display[festival.id] = display_coproplayers
+        nomination_items = festival_nomination_items(festival)
+        festival_nomination_items_by_id[festival.id] = nomination_items
+        festival_planned_nominations_by_id[festival.id] = festival_selected_nomination_titles(festival)
 
         if only_going and not festival.is_going:
             continue
@@ -16279,8 +16386,8 @@ def festivals_list(request: Request, db: Session = Depends(get_db)):
         if city_filter_values and not city_matches_any(city_filter_values, festival.city):
             continue
 
-        nominations = [festival.nomination_1 or "", festival.nomination_2 or "", festival.nomination_3 or ""]
-        if nomination_filter and not any(nomination_filter.casefold() in value.casefold() for value in nominations if value):
+        nominations = [item["title"] for item in nomination_items]
+        if nomination_filter and not any(nomination_filter.casefold() in value.casefold() for value in nominations):
             continue
 
         coproplayer_search_targets = merge_unique(
@@ -16374,9 +16481,7 @@ def festivals_list(request: Request, db: Session = Depends(get_db)):
     city_options = merge_unique([festival.city for festival in active_festivals if festival.city])
     nomination_options = merge_unique(
         DEFAULT_NOMINATIONS,
-        [festival.nomination_1 or "" for festival in active_festivals],
-        [festival.nomination_2 or "" for festival in active_festivals],
-        [festival.nomination_3 or "" for festival in active_festivals],
+        [item["title"] for festival in active_festivals for item in festival_nomination_items(festival)],
         get_options(db, user.id, "nomination"),
     )
     coproplayer_options = merge_unique(
@@ -16438,6 +16543,8 @@ def festivals_list(request: Request, db: Session = Depends(get_db)):
         nomination_options=nomination_options,
         coproplayer_options=coproplayer_options,
         festival_coproplayers_display=festival_coproplayers_display,
+        festival_nomination_items_by_id=festival_nomination_items_by_id,
+        festival_planned_nominations_by_id=festival_planned_nominations_by_id,
         show_summary=show_summary,
         summary_rows=summary_rows,
         user_home_city=user.home_city or "",
@@ -16837,7 +16944,7 @@ def save_festival_from_form(form: Any, festival: Festival, user: User, db: Sessi
         db,
         user.id,
         "nomination",
-        merge_unique(DEFAULT_NOMINATIONS, [festival.nomination_1 or "", festival.nomination_2 or "", festival.nomination_3 or ""]),
+        merge_unique(DEFAULT_NOMINATIONS, festival_nomination_titles(festival), as_list(festival.planned_nominations_json)),
     )
     remember_options(db, user.id, "festival", [festival.name])
 
@@ -16956,7 +17063,7 @@ async def festivals_update(festival_id: int, request: Request, db: Session = Dep
         db,
         user.id,
         "nomination",
-        merge_unique(DEFAULT_NOMINATIONS, [festival.nomination_1 or "", festival.nomination_2 or "", festival.nomination_3 or ""]),
+        merge_unique(DEFAULT_NOMINATIONS, festival_nomination_titles(festival), as_list(festival.planned_nominations_json)),
     )
     remember_options(db, user.id, "festival", [festival.name])
     db.commit()
@@ -17168,7 +17275,7 @@ def festivals_export_ics(request: Request, db: Session = Depends(get_db)):
                     ),
                     f"LOCATION:{esc_ics(festival.city)}",
                     f"URL:{esc_ics(festival.url)}",
-                    f"DESCRIPTION:{esc_ics('Фестиваль. Номинации: ' + ', '.join([n for n in [festival.nomination_1, festival.nomination_2, festival.nomination_3] if n]))}",
+                    f"DESCRIPTION:{esc_ics('Фестиваль. Номинации: ' + ', '.join(festival_nomination_titles(festival)))}",
                     "END:VEVENT",
                 ]
             )

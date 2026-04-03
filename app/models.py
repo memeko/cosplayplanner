@@ -525,6 +525,8 @@ class Festival(Base):
     nomination_1 = Column(String(255), nullable=True)
     nomination_2 = Column(String(255), nullable=True)
     nomination_3 = Column(String(255), nullable=True)
+    nominations_json = Column(JSON, nullable=False, default=list)
+    planned_nominations_json = Column(JSON, nullable=False, default=list)
     has_photo_cosplay = Column(Boolean, nullable=False, default=False)
     is_partner_festival = Column(Boolean, nullable=False, default=False)
     shared_note = Column(Text, nullable=True)
