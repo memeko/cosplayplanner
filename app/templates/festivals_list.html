@@ -241,9 +241,6 @@
         {% if festival.is_global_announcement %}
           <span class="chip">Анонс</span>
         {% endif %}
-        {% if is_partner_festival %}
-          <span class="chip chip-partner">партнёр</span>
-        {% endif %}
         {% if festival.import_source %}
           <span class="chip">{{ import_source_labels.get(festival.import_source, festival.import_source) }}</span>
         {% endif %}
