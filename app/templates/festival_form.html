@@ -95,6 +95,13 @@
       </label>
     {% endif %}
 
+    {% if can_edit_partner_festival %}
+      <label class="inline-check top-offset">
+        <input type="checkbox" name="is_partner_festival" {% if form.is_partner_festival %}checked{% endif %} />
+        Партнёр фестиваля
+      </label>
+    {% endif %}
+
     <div class="top-offset">
       <strong>Личная информация</strong>
       {% if can_edit_personal_festival_fields %}

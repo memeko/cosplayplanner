@@ -793,6 +793,7 @@ def apply_schema_migrations() -> None:
             ("import_source", "VARCHAR(64)"),
             ("import_external_id", "VARCHAR(128)"),
             ("has_photo_cosplay", "BOOLEAN NOT NULL DEFAULT 0"),
+            ("is_partner_festival", "BOOLEAN NOT NULL DEFAULT 0"),
         ],
         "work_shift_days": [
             ("is_half_day", "BOOLEAN NOT NULL DEFAULT 0"),
@@ -896,6 +897,7 @@ def apply_schema_migrations() -> None:
             PasswordResetToken.__table__.create(bind=conn, checkfirst=True)
 
         community_masters_added_allow_site_orders = False
+        festivals_added_partner_flag = False
 
         for table_name, columns in required_columns.items():
             if table_name not in existing_tables and table_name != "festival_notifications":
@@ -911,9 +913,19 @@ def apply_schema_migrations() -> None:
                 conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}"))
                 if table_name == "community_masters" and column_name == "allow_site_orders":
                     community_masters_added_allow_site_orders = True
+                if table_name == "festivals" and column_name == "is_partner_festival":
+                    festivals_added_partner_flag = True
 
         if community_masters_added_allow_site_orders:
             conn.execute(text("UPDATE community_masters SET allow_site_orders = 1"))
+        if festivals_added_partner_flag:
+            conn.execute(
+                text(
+                    "UPDATE festivals "
+                    "SET is_partner_festival = 1 "
+                    "WHERE lower(coalesce(name, '')) LIKE '%akamaru fest%'"
+                )
+            )
 
         conn.execute(
             text(
@@ -8575,6 +8587,7 @@ def get_festival_form_values(festival: Festival | None = None) -> dict[str, Any]
             "nomination_2": "",
             "nomination_3": "",
             "has_photo_cosplay": False,
+            "is_partner_festival": False,
             "is_going": False,
             "going_coproplayers_json": [],
             "going_coproplayers_input": "",
@@ -8591,6 +8604,7 @@ def get_festival_form_values(festival: Festival | None = None) -> dict[str, Any]
         "nomination_2": festival.nomination_2 or "",
         "nomination_3": festival.nomination_3 or "",
         "has_photo_cosplay": bool(festival.has_photo_cosplay),
+        "is_partner_festival": bool(festival.is_partner_festival),
         "is_going": bool(festival.is_going),
         "going_coproplayers_json": as_list(festival.going_coproplayers_json),
         "going_coproplayers_input": ", ".join(as_list(festival.going_coproplayers_json)),
@@ -8638,6 +8652,7 @@ def apply_festival_common_fields_from_form(
     festival: Festival,
     *,
     can_edit_photo_cosplay: bool = False,
+    can_edit_partner_festival: bool = False,
 ) -> None:
     event_date = parse_date(str(form.get("event_date", "")))
     event_end_date = parse_date(str(form.get("event_end_date", "")))
@@ -8657,6 +8672,8 @@ def apply_festival_common_fields_from_form(
     festival.nomination_3 = str(form.get("nomination_3", "")).strip() or None
     if can_edit_photo_cosplay:
         festival.has_photo_cosplay = to_bool(form.get("has_photo_cosplay"))
+    if can_edit_partner_festival:
+        festival.is_partner_festival = to_bool(form.get("is_partner_festival"))
 
 
 def apply_festival_personal_fields_from_form(form: Any, festival: Festival, db: Session) -> None:
@@ -15985,6 +16002,121 @@ def import_raf_events_for_user(db: Session, user: User, events: list[dict[str, A
     return imported_count
 
 
+def import_cosplay2_events_for_user(db: Session, user: User, parsed_events: list[Any]) -> tuple[int, int]:
+    existing_rows = db.execute(select(Festival).where(Festival.user_id == user.id)).scalars().all()
+    existing_by_url: dict[str, Festival] = {}
+    for row in existing_rows:
+        normalized = normalize_url(row.url)
+        if normalized:
+            existing_by_url[normalized] = row
+
+    imported = 0
+    updated = 0
+    imported_names: list[str] = []
+
+    for event in parsed_events:
+        normalized_url = normalize_url(event.url)
+        if not normalized_url:
+            continue
+
+        existing = existing_by_url.get(normalized_url)
+        if existing:
+            changed = False
+            guessed_existing_name = guess_name_from_url(existing.url)
+
+            if event.name and (
+                not existing.name
+                or (guessed_existing_name and existing.name.casefold() == guessed_existing_name.casefold())
+            ):
+                existing.name = event.name
+                changed = True
+
+            if event.city and not existing.city:
+                existing.city = event.city
+                changed = True
+
+            if event.event_date and not existing.event_date:
+                existing.event_date = event.event_date
+                changed = True
+
+            if event.submission_deadline and not existing.submission_deadline:
+                existing.submission_deadline = event.submission_deadline
+                changed = True
+
+            if existing.import_source != COSPLAY2_IMPORT_SOURCE_LABEL:
+                existing.import_source = COSPLAY2_IMPORT_SOURCE_LABEL
+                changed = True
+            if existing.import_external_id != normalized_url:
+                existing.import_external_id = normalized_url
+                changed = True
+
+            if changed:
+                updated += 1
+            continue
+
+        if any(
+            festivals_look_like_duplicates(
+                row.name,
+                row.city,
+                row.event_date,
+                event.name,
+                event.city,
+                event.event_date,
+            )
+            for row in existing_rows
+        ):
+            continue
+
+        festival = Festival(
+            user_id=user.id,
+            name=event.name,
+            url=normalized_url,
+            city=event.city,
+            event_date=event.event_date,
+            submission_deadline=event.submission_deadline,
+            import_source=COSPLAY2_IMPORT_SOURCE_LABEL,
+            import_external_id=normalized_url,
+        )
+        db.add(festival)
+        existing_by_url[normalized_url] = festival
+        existing_rows.append(festival)
+        imported += 1
+        imported_names.append(event.name)
+
+    if imported_names:
+        remember_options(db, user.id, "festival", imported_names)
+    return imported, updated
+
+
+def count_distinct_imported_festivals(db: Session) -> int:
+    imported_rows = db.execute(
+        select(
+            Festival.import_source,
+            Festival.import_external_id,
+            Festival.name,
+            Festival.city,
+            Festival.event_date,
+        ).where(Festival.import_source.is_not(None))
+    ).all()
+    unique_keys: set[tuple[str, str, str, str, str]] = set()
+    for import_source, import_external_id, name, city, event_date in imported_rows:
+        source_key = str(import_source or "").strip()
+        external_key = str(import_external_id or "").strip()
+        if source_key and external_key:
+            unique_keys.add((source_key, external_key, "", "", ""))
+            continue
+        unique_keys.add(
+            (
+                source_key,
+                "",
+                normalize_event_name_key(name),
+                normalize_event_name_key(city),
+                event_date.isoformat() if isinstance(event_date, date) else "",
+            )
+        )
+    return len(unique_keys)
+
+
 def auto_import_external_sources_if_needed() -> None:
     if not VK_IMPORT_ENABLED:
         return
@@ -16074,7 +16206,10 @@ def festivals_import_raf(request: Request, db: Session = Depends(get_db)):
 
     try:
         events = fetch_raf_events_from_vk()
-        imported_count = import_raf_events_for_user(db, user, events)
+        users = db.execute(select(User).order_by(User.id)).scalars().all()
+        imported_count = 0
+        for item in users:
+            imported_count += import_raf_events_for_user(db, item, events)
         db.commit()
     except RuntimeError as exc:
         db.rollback()
@@ -16083,7 +16218,7 @@ def festivals_import_raf(request: Request, db: Session = Depends(get_db)):
 
     add_flash(
         request,
-        f"Импорт с РАФ завершён: найдено {len(events)}, добавлено {imported_count}.",
+        f"Импорт с РАФ для всех пользователей завершён: найдено {len(events)}, добавлено карточек {imported_count}.",
         "success" if imported_count else "info",
     )
     return redirect("/festivals")
@@ -16249,6 +16384,16 @@ def festivals_list(request: Request, db: Session = Depends(get_db)):
         .order_by(FestivalAnnouncement.created_at.desc(), FestivalAnnouncement.id.desc())
         .limit(25)
     ).scalars().all()
+    total_planned_festivals = len(active_festivals)
+    imported_festival_total = count_distinct_imported_festivals(db)
+    approved_announcement_total = int(
+        db.execute(
+            select(func.count(FestivalAnnouncement.id)).where(
+                FestivalAnnouncement.status == ANNOUNCEMENT_STATUS_APPROVED
+            )
+        ).scalar()
+        or 0
+    )
 
     announcement_user_ids = {
         int(item.requester_user_id)
@@ -16287,6 +16432,9 @@ def festivals_list(request: Request, db: Session = Depends(get_db)):
         moderator_announcements=moderator_announcements,
         own_announcements=own_announcements,
         announcement_requesters_by_id=announcement_requesters_by_id,
+        total_planned_festivals=total_planned_festivals,
+        imported_festival_total=imported_festival_total,
+        approved_announcement_total=approved_announcement_total,
         can_manage_festival_globally=can_manage_festival_globally(user),
         can_import_cosplay2=user_is_special(user),
         can_import_raf=user_is_special(user) and VK_IMPORT_ENABLED,
@@ -16608,6 +16756,7 @@ def festivals_new(request: Request, db: Session = Depends(get_db)):
         global_festival_edit_mode=False,
         can_edit_personal_festival_fields=True,
         can_edit_photo_cosplay=user_is_special(user),
+        can_edit_partner_festival=user_is_special(user),
     )
 
 
@@ -16644,6 +16793,7 @@ def festivals_edit(festival_id: int, request: Request, db: Session = Depends(get
         global_festival_edit_mode=global_festival_edit_mode,
         can_edit_personal_festival_fields=festival.user_id == user.id,
         can_edit_photo_cosplay=user_is_special(user),
+        can_edit_partner_festival=user_is_special(user),
     )
 
 
@@ -16652,6 +16802,7 @@ def save_festival_from_form(form: Any, festival: Festival, user: User, db: Sessi
         form,
         festival,
         can_edit_photo_cosplay=user_is_special(user),
+        can_edit_partner_festival=user_is_special(user),
     )
     apply_festival_personal_fields_from_form(form, festival, db)
 
@@ -16737,6 +16888,7 @@ async def festivals_update(festival_id: int, request: Request, db: Session = Dep
         form,
         festival,
         can_edit_photo_cosplay=can_edit_photo_cosplay,
+        can_edit_partner_festival=user_is_special(user),
     )
 
     raw_coproplayer_aliases: list[str] = []
@@ -16774,6 +16926,7 @@ async def festivals_update(festival_id: int, request: Request, db: Session = Dep
                 form,
                 item,
                 can_edit_photo_cosplay=can_edit_photo_cosplay,
+                can_edit_partner_festival=user_is_special(user),
             )
             updated_festival_ids.add(item.id)
 
@@ -16932,96 +17085,23 @@ def festivals_import_cosplay2(request: Request, db: Session = Depends(get_db)):
         add_flash(request, "На cosplay2.ru не удалось найти структурированные данные фестивалей.", "error")
         return redirect("/festivals")
 
-    existing_rows = db.execute(select(Festival).where(Festival.user_id == user.id)).scalars().all()
-    existing_by_url: dict[str, Festival] = {}
-    for row in existing_rows:
-        normalized = normalize_url(row.url)
-        if normalized:
-            existing_by_url[normalized] = row
-
     imported = 0
     updated = 0
-    imported_names: list[str] = []
-
-    for event in parsed_events:
-        normalized_url = normalize_url(event.url)
-        if not normalized_url:
-            continue
-
-        existing = existing_by_url.get(normalized_url)
-        if existing:
-            changed = False
-            guessed_existing_name = guess_name_from_url(existing.url)
-
-            if event.name and (
-                not existing.name
-                or (guessed_existing_name and existing.name.casefold() == guessed_existing_name.casefold())
-            ):
-                existing.name = event.name
-                changed = True
-
-            if event.city and not existing.city:
-                existing.city = event.city
-                changed = True
-
-            if event.event_date and not existing.event_date:
-                existing.event_date = event.event_date
-                changed = True
-
-            if event.submission_deadline and not existing.submission_deadline:
-                existing.submission_deadline = event.submission_deadline
-                changed = True
-
-            if existing.import_source != COSPLAY2_IMPORT_SOURCE_LABEL:
-                existing.import_source = COSPLAY2_IMPORT_SOURCE_LABEL
-                changed = True
-            if existing.import_external_id != normalized_url:
-                existing.import_external_id = normalized_url
-                changed = True
-
-            if changed:
-                updated += 1
-            continue
-
-        if any(
-            festivals_look_like_duplicates(
-                row.name,
-                row.city,
-                row.event_date,
-                event.name,
-                event.city,
-                event.event_date,
-            )
-            for row in existing_rows
-        ):
-            continue
-
-        festival = Festival(
-            user_id=user.id,
-            name=event.name,
-            url=normalized_url,
-            city=event.city,
-            event_date=event.event_date,
-            submission_deadline=event.submission_deadline,
-            import_source=COSPLAY2_IMPORT_SOURCE_LABEL,
-            import_external_id=normalized_url,
-        )
-        db.add(festival)
-        existing_by_url[normalized_url] = festival
-        existing_rows.append(festival)
-        imported += 1
-        imported_names.append(event.name)
+    users = db.execute(select(User).order_by(User.id)).scalars().all()
+    for item in users:
+        user_imported, user_updated = import_cosplay2_events_for_user(db, item, parsed_events)
+        imported += user_imported
+        updated += user_updated
 
     if imported or updated:
-        remember_options(db, user.id, "festival", imported_names)
         db.commit()
         add_flash(
             request,
-            f"Импорт с cosplay2.ru завершён: новых {imported}, обновлено {updated}.",
+            f"Импорт с cosplay2.ru для всех пользователей завершён: новых карточек {imported}, обновлено {updated}.",
             "success",
         )
     else:
-        add_flash(request, "Новых или обновляемых фестивалей не найдено.", "info")
+        add_flash(request, "Новых или обновляемых фестивалей для всех пользователей не найдено.", "info")
 
     return redirect("/festivals")
 
