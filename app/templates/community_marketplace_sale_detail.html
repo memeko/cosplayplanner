@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+{% block content %}
+{% include "community_tabs.html" %}
+{% include "community_marketplace_tabs.html" %}
+{% set contact_buttons = external_contact_buttons(sale.contact, include_site=True) %}
+
+<section class="section-head">
+  <h1>{{ sale.name }}</h1>
+  <div class="actions-inline">
+    <a href="/community/marketplace/sale" class="btn">Назад к продаже</a>
+    {% if can_manage %}
+      <a href="/community/marketplace/sale/{{ sale.id }}/edit" class="btn">Редактировать</a>
+      <form method="post" action="/community/marketplace/sale/{{ sale.id }}/delete" onsubmit="return confirm('Удалить карточку продажи?');">
+        <button type="submit" class="btn btn-danger">Удалить</button>
+      </form>
+    {% endif %}
+  </div>
+</section>
+
+<section class="box">
+  <div class="row-between">
+    <p class="meta">Город: <span class="chip marketplace-city-chip">{{ sale.city or "—" }}</span></p>
+    {% if sale.is_verified_participant %}
+      <span class="chip chip-authority">Проверенный участник</span>
+    {% endif %}
+  </div>
+  {% if owner %}
+    <p class="meta">Добавил(а): <span class="{% if user_is_special(owner) %}nick-special{% endif %}">@{{ owner.cosplay_nick or owner.username }}</span></p>
+  {% endif %}
+  {% if contact_buttons %}
+    <div class="actions-inline top-offset">
+      {% for button in contact_buttons %}
+        <a href="{{ button.url }}" target="_blank" rel="noreferrer" class="btn btn-small btn-platform">{{ button.label }}</a>
+      {% endfor %}
+    </div>
+  {% elif sale.contact %}
+    <p class="meta">Контакт: {{ sale.contact|render_text }}</p>
+  {% endif %}
+  {% if sale.description %}
+    <p class="notes-block top-offset">{{ sale.description|render_text }}</p>
+  {% endif %}
+</section>
+
+{% set gallery = sale.gallery_json or [] %}
+{% if gallery %}
+<section class="box">
+  <h3>Фотографии</h3>
+  <div class="reference-grid top-offset">
+    {% for url in gallery %}
+      <a class="reference-tile" href="{{ url }}" target="_blank" rel="noreferrer">
+        <img src="{{ url }}" alt="Фото товара" loading="lazy" />
+      </a>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
+<section class="box">
+  <h3>Прайс-лист</h3>
+  {% if price_rows %}
+    <div class="top-offset">
+      <table class="table">
+        <thead>
+          <tr>
+            <th>Название части</th>
+            <th>Цена</th>
+            <th>Комментарий</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in price_rows %}
+            <tr>
+              <td>{{ row.service or "—" }}</td>
+              <td>{% if row.cost != '' and row.cost is not none %}{{ row.cost }}{% else %}—{% endif %}</td>
+              <td>{{ row.comment or "—" }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <p class="muted top-offset">Прайс-лист пока не заполнен.</p>
+  {% endif %}
+</section>
+
+{% if sale.delivery_terms %}
+<section class="box">
+  <h3>Условия доставки</h3>
+  <p class="notes-block top-offset">{{ sale.delivery_terms|render_text }}</p>
+</section>
+{% endif %}
+
+<section class="box">
+  <details class="marketplace-safety-note">
+    <summary>Важно</summary>
+    <p class="muted top-offset">Пожалуйста, проверяйте контакты клиента и продавца.</p>
+  </details>
+</section>
+{% endblock %}

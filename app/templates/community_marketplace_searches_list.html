@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% block content %}
+{% include "community_tabs.html" %}
+{% include "community_marketplace_tabs.html" %}
+
+<section class="section-head">
+  <h1>Барахолка: Поиск</h1>
+  <div class="actions-inline">
+    <a href="/community/marketplace/search/new" class="btn btn-accent">Добавить карточку</a>
+  </div>
+</section>
+
+<section class="box">
+  <form method="get" action="/community/marketplace/search" class="grid one-col">
+    <div class="search-inline">
+      <input type="text" name="q" value="{{ q }}" placeholder="Поиск по названию, описанию или бюджету" />
+      <input type="text" name="city" value="{{ city_filter }}" placeholder="Город" list="marketplace-search-city-options" />
+      <datalist id="marketplace-search-city-options">
+        {% for city in city_options %}
+          <option value="{{ city }}"></option>
+        {% endfor %}
+      </datalist>
+      <button type="submit" class="btn">Найти</button>
+      <a href="/community/marketplace/search" class="btn">Сброс</a>
+    </div>
+  </form>
+</section>
+
+{% if search_items %}
+<div class="cards-grid top-offset">
+  {% for item in search_items %}
+    {% set owner = owners_by_id.get(item.user_id) %}
+    {% set references = item.references_json or [] %}
+    <article class="card">
+      {% if references %}
+        <div class="cosplayer-card-avatar-wrap">
+          <img src="{{ references[0] }}" alt="Референс для {{ item.name }}" class="cosplayer-card-avatar" loading="lazy" />
+        </div>
+      {% endif %}
+      <div class="row-between">
+        <h3><a href="/community/marketplace/search/{{ item.id }}" class="card-title-link">{{ item.name }}</a></h3>
+        {% if item.is_verified_participant %}
+          <span class="chip chip-authority">Проверенный участник</span>
+        {% endif %}
+      </div>
+      {% if owner %}
+        <p class="meta">Добавил(а): <span class="{% if user_is_special(owner) %}nick-special{% endif %}">@{{ owner.cosplay_nick or owner.username }}</span></p>
+      {% endif %}
+      <p class="meta">Город: <span class="chip marketplace-city-chip">{{ item.city or "—" }}</span></p>
+      {% if item.description %}
+        <p class="notes-block">{{ item.description|preview_text(240)|render_text }}</p>
+      {% endif %}
+      {% if item.budget %}
+        <p class="meta">Бюджет: {{ item.budget }}</p>
+      {% endif %}
+      <p class="meta">Референсов: {{ references|length }}</p>
+      <div class="actions-inline">
+        <a href="/community/marketplace/search/{{ item.id }}" class="btn">Подробнее</a>
+        {% if user and (user.id == item.user_id or user_is_special(user)) %}
+          <a href="/community/marketplace/search/{{ item.id }}/edit" class="btn">Редактировать</a>
+        {% endif %}
+      </div>
+    </article>
+  {% endfor %}
+</div>
+{% else %}
+<section class="box top-offset">
+  <p class="muted">Пока нет карточек поиска. Добавьте первую карточку.</p>
+</section>
+{% endif %}
+{% endblock %}

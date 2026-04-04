@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block content %}
+{% include "community_tabs.html" %}
+{% include "community_marketplace_tabs.html" %}
+
+<section class="section-head">
+  <h1>{{ search_item.name }}</h1>
+  <div class="actions-inline">
+    <a href="/community/marketplace/search" class="btn">Назад к поиску</a>
+    {% if can_manage %}
+      <a href="/community/marketplace/search/{{ search_item.id }}/edit" class="btn">Редактировать</a>
+      <form method="post" action="/community/marketplace/search/{{ search_item.id }}/delete" onsubmit="return confirm('Удалить карточку поиска?');">
+        <button type="submit" class="btn btn-danger">Удалить</button>
+      </form>
+    {% endif %}
+  </div>
+</section>
+
+<section class="box">
+  <div class="row-between">
+    <p class="meta">Город: <span class="chip marketplace-city-chip">{{ search_item.city or "—" }}</span></p>
+    {% if search_item.is_verified_participant %}
+      <span class="chip chip-authority">Проверенный участник</span>
+    {% endif %}
+  </div>
+  {% if owner %}
+    <p class="meta">Добавил(а): <span class="{% if user_is_special(owner) %}nick-special{% endif %}">@{{ owner.cosplay_nick or owner.username }}</span></p>
+  {% endif %}
+  {% if search_item.budget %}
+    <p class="meta">Бюджет: {{ search_item.budget }}</p>
+  {% endif %}
+  {% if search_item.description %}
+    <p class="notes-block top-offset">{{ search_item.description|render_text }}</p>
+  {% endif %}
+</section>
+
+{% set references = search_item.references_json or [] %}
+{% if references %}
+<section class="box">
+  <h3>Референсы</h3>
+  <div class="reference-grid top-offset">
+    {% for url in references %}
+      <a class="reference-tile" href="{{ url }}" target="_blank" rel="noreferrer">
+        <img src="{{ url }}" alt="Референс" loading="lazy" />
+      </a>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
+<section class="box">
+  <details class="marketplace-safety-note">
+    <summary>Важно</summary>
+    <p class="muted top-offset">Пожалуйста, проверяйте контакты клиента и продавца.</p>
+  </details>
+</section>
+{% endblock %}

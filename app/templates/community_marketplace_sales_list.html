@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% block content %}
+{% include "community_tabs.html" %}
+{% include "community_marketplace_tabs.html" %}
+
+<section class="section-head">
+  <h1>Барахолка: Продажа</h1>
+  <div class="actions-inline">
+    <a href="/community/marketplace/sale/new" class="btn btn-accent">Добавить карточку</a>
+  </div>
+</section>
+
+<section class="box">
+  <form method="get" action="/community/marketplace/sale" class="grid one-col">
+    <div class="search-inline">
+      <input type="text" name="q" value="{{ q }}" placeholder="Поиск по названию, описанию или контакту" />
+      <input type="text" name="city" value="{{ city_filter }}" placeholder="Город" list="marketplace-sale-city-options" />
+      <datalist id="marketplace-sale-city-options">
+        {% for city in city_options %}
+          <option value="{{ city }}"></option>
+        {% endfor %}
+      </datalist>
+      <button type="submit" class="btn">Найти</button>
+      <a href="/community/marketplace/sale" class="btn">Сброс</a>
+    </div>
+  </form>
+</section>
+
+{% if sales %}
+<div class="cards-grid top-offset">
+  {% for sale in sales %}
+    {% set owner = owners_by_id.get(sale.user_id) %}
+    {% set photos = sale.gallery_json or [] %}
+    {% set contact_buttons = external_contact_buttons(sale.contact, include_site=True) %}
+    <article class="card">
+      {% if photos %}
+        <div class="cosplayer-card-avatar-wrap">
+          <img src="{{ photos[0] }}" alt="Фото для {{ sale.name }}" class="cosplayer-card-avatar" loading="lazy" />
+        </div>
+      {% endif %}
+      <div class="row-between">
+        <h3><a href="/community/marketplace/sale/{{ sale.id }}" class="card-title-link">{{ sale.name }}</a></h3>
+        {% if sale.is_verified_participant %}
+          <span class="chip chip-authority">Проверенный участник</span>
+        {% endif %}
+      </div>
+      {% if owner %}
+        <p class="meta">Добавил(а): <span class="{% if user_is_special(owner) %}nick-special{% endif %}">@{{ owner.cosplay_nick or owner.username }}</span></p>
+      {% endif %}
+      <p class="meta">Город: <span class="chip marketplace-city-chip">{{ sale.city or "—" }}</span></p>
+      {% if contact_buttons %}
+        <div class="actions-inline">
+          {% for button in contact_buttons %}
+            <a href="{{ button.url }}" target="_blank" rel="noreferrer" class="btn btn-small btn-platform">{{ button.label }}</a>
+          {% endfor %}
+        </div>
+      {% elif sale.contact %}
+        <p class="meta">Контакт: {{ sale.contact|render_text }}</p>
+      {% endif %}
+      {% if sale.description %}
+        <p class="notes-block">{{ sale.description|preview_text(240)|render_text }}</p>
+      {% endif %}
+      <p class="meta">Фотографий: {{ photos|length }}</p>
+      <p class="meta">Позиций в продаже: {{ (sale.price_list_json or [])|length }}</p>
+      <div class="actions-inline">
+        <a href="/community/marketplace/sale/{{ sale.id }}" class="btn">Подробнее</a>
+        {% if user and (user.id == sale.user_id or user_is_special(user)) %}
+          <a href="/community/marketplace/sale/{{ sale.id }}/edit" class="btn">Редактировать</a>
+        {% endif %}
+      </div>
+    </article>
+  {% endfor %}
+</div>
+{% else %}
+<section class="box top-offset">
+  <p class="muted">Пока нет карточек продажи. Добавьте первую карточку.</p>
+</section>
+{% endif %}
+{% endblock %}

@@ -58,6 +58,8 @@ from .models import (
     CommunityMasterComment,
     CommunityMasterOrder,
     CommunityMasterRating,
+    CommunityMarketplaceSale,
+    CommunityMarketplaceSearch,
     CommunityQuestion,
     CommunityQuestionComment,
     CommunityStudio,
@@ -873,6 +875,10 @@ def apply_schema_migrations() -> None:
             CommunityStudio.__table__.create(bind=conn, checkfirst=True)
         if "community_studio_comments" not in existing_tables:
             CommunityStudioComment.__table__.create(bind=conn, checkfirst=True)
+        if "community_marketplace_sales" not in existing_tables:
+            CommunityMarketplaceSale.__table__.create(bind=conn, checkfirst=True)
+        if "community_marketplace_searches" not in existing_tables:
+            CommunityMarketplaceSearch.__table__.create(bind=conn, checkfirst=True)
         if "community_cosplayers" not in existing_tables:
             CommunityCosplayer.__table__.create(bind=conn, checkfirst=True)
         if "community_cosplayer_comments" not in existing_tables:
@@ -5131,6 +5137,24 @@ def resolve_user_for_telegram_login(db: Session, raw_username: str) -> User | No
     return db.execute(select(User).where(func.lower(User.cosplay_nick) == normalized)).scalar_one_or_none()
 
 
+def set_user_bot_secret_code(user: User, raw_code: str, db: Session) -> None:
+    secret_code = str(raw_code or "").strip()
+    if not secret_code:
+        return
+    if len(secret_code) < 6:
+        raise ValueError("Секретный код для ботов должен быть не короче 6 символов.")
+    user.telegram_secret_code_hash = password_context.hash(secret_code)
+    user.telegram_secret_code_updated_at = datetime.utcnow()
+    # Re-auth in bots after code rotation.
+    user.telegram_chat_id = None
+    user.telegram_username = None
+    user.telegram_linked_at = None
+    set_user_option_value(db, user.id, CONTENT_PLAN_ACCESS_VERIFIED_GROUP, "")
+    user.vk_bot_user_id = None
+    user.vk_bot_peer_id = None
+    user.vk_bot_linked_at = None
+
+
 def verify_user_telegram_secret_code(user: User, raw_code: str) -> bool:
     secret_hash = (user.telegram_secret_code_hash or "").strip()
     if not secret_hash:
@@ -9081,6 +9105,7 @@ async def register_submit(request: Request, db: Session = Depends(get_db)):
     email = str(form.get("email", "")).strip().lower()
     password = str(form.get("password", ""))
     password2 = str(form.get("password_confirm", ""))
+    telegram_secret_code = str(form.get("telegram_secret_code", "")).strip()
     is_smm_manager = str(form.get("is_smm_manager", "")).strip().lower() in {"1", "true", "on", "yes"}
 
     if not username or not email or not password:
@@ -9089,6 +9114,9 @@ async def register_submit(request: Request, db: Session = Depends(get_db)):
 
     if password != password2:
         add_flash(request, "Пароли не совпадают.", "error")
+        return redirect("/register")
+    if telegram_secret_code and len(telegram_secret_code) < 6:
+        add_flash(request, "Секретный код для ботов должен быть не короче 6 символов.", "error")
         return redirect("/register")
 
     exists_stmt = select(User).where(
@@ -9106,6 +9134,7 @@ async def register_submit(request: Request, db: Session = Depends(get_db)):
     db.add(user)
     db.commit()
     db.refresh(user)
+    set_user_bot_secret_code(user, telegram_secret_code, db)
     if is_smm_manager:
         set_user_option_value(db, user.id, SMM_MANAGER_ROLE_GROUP, "1")
 
@@ -9503,19 +9532,11 @@ async def profile_update(request: Request, db: Session = Depends(get_db)):
     user.birth_date = birth_date
 
     if telegram_secret_code:
-        if len(telegram_secret_code) < 6:
-            add_flash(request, "Секретный код для ботов должен быть не короче 6 символов.", "error")
+        try:
+            set_user_bot_secret_code(user, telegram_secret_code, db)
+        except ValueError as exc:
+            add_flash(request, str(exc), "error")
             return redirect("/profile")
-        user.telegram_secret_code_hash = password_context.hash(telegram_secret_code)
-        user.telegram_secret_code_updated_at = datetime.utcnow()
-        # Re-auth in bots after code rotation.
-        user.telegram_chat_id = None
-        user.telegram_username = None
-        user.telegram_linked_at = None
-        set_user_option_value(db, user.id, CONTENT_PLAN_ACCESS_VERIFIED_GROUP, "")
-        user.vk_bot_user_id = None
-        user.vk_bot_peer_id = None
-        user.vk_bot_linked_at = None
 
     if new_password:
         if new_password != new_password_confirm:
@@ -15145,6 +15166,517 @@ async def community_studios_add_comment(studio_id: int, request: Request, db: Se
     db.commit()
     add_flash(request, "Комментарий добавлен.", "success")
     return redirect(f"/community/studios/{studio_id}")
+
+
+def can_manage_marketplace_sale(user: User | None, sale: CommunityMarketplaceSale | None) -> bool:
+    return bool(user and sale and (sale.user_id == user.id or user_is_special(user)))
+
+
+def can_manage_marketplace_search(user: User | None, search_item: CommunityMarketplaceSearch | None) -> bool:
+    return bool(user and search_item and (search_item.user_id == user.id or user_is_special(user)))
+
+
+def get_marketplace_sale_form_values(sale: CommunityMarketplaceSale | None = None) -> dict[str, Any]:
+    if not sale:
+        return {
+            "name": "",
+            "city": "",
+            "contact": "",
+            "description": "",
+            "gallery_input": "",
+            "price_rows": [],
+            "delivery_terms": "",
+            "is_verified_participant": False,
+        }
+    return {
+        "name": sale.name or "",
+        "city": sale.city or "",
+        "contact": sale.contact or "",
+        "description": sale.description or "",
+        "gallery_input": "\n".join(as_list(sale.gallery_json)),
+        "price_rows": format_master_price_rows_for_form(as_list(sale.price_list_json)),
+        "delivery_terms": sale.delivery_terms or "",
+        "is_verified_participant": bool(sale.is_verified_participant),
+    }
+
+
+def save_marketplace_sale_from_form(form: Any, sale: CommunityMarketplaceSale, user: User) -> tuple[bool, str]:
+    name = str(form.get("name", "")).strip()
+    city = str(form.get("city", "")).strip()
+    contact = str(form.get("contact", "")).strip()
+    description = str(form.get("description", "")).strip()
+    gallery_input = str(form.get("gallery_input", ""))
+    delivery_terms = str(form.get("delivery_terms", "")).strip()
+    price_rows = parse_master_price_rows_from_form(form)
+    gallery = parse_reference_values(gallery_input)
+
+    if not name:
+        return False, "Укажите название."
+    if len(name) > 255:
+        return False, "Название слишком длинное (до 255 символов)."
+    if len(city) > 255:
+        return False, "Поле «Город» слишком длинное (до 255 символов)."
+    if not contact:
+        return False, "Укажите контакт для связи."
+    if len(contact) > 255:
+        return False, "Контакт слишком длинный (до 255 символов)."
+    if len(description) > 10000:
+        return False, "Описание должно быть до 10000 символов."
+    if len(gallery) > 10:
+        return False, "Можно добавить не более 10 фотографий."
+    if len(delivery_terms) > 5000:
+        return False, "Условия доставки должны быть до 5000 символов."
+
+    sale.name = name
+    sale.city = city or None
+    sale.contact = contact
+    sale.description = description or None
+    sale.gallery_json = gallery
+    sale.price_list_json = price_rows
+    sale.delivery_terms = delivery_terms or None
+    if user_is_special(user):
+        sale.is_verified_participant = to_bool(form.get("is_verified_participant"))
+    return True, ""
+
+
+def get_marketplace_search_form_values(search_item: CommunityMarketplaceSearch | None = None) -> dict[str, Any]:
+    if not search_item:
+        return {
+            "name": "",
+            "city": "",
+            "description": "",
+            "references_input": "",
+            "budget": "",
+            "is_verified_participant": False,
+        }
+    return {
+        "name": search_item.name or "",
+        "city": search_item.city or "",
+        "description": search_item.description or "",
+        "references_input": "\n".join(as_list(search_item.references_json)),
+        "budget": search_item.budget or "",
+        "is_verified_participant": bool(search_item.is_verified_participant),
+    }
+
+
+def save_marketplace_search_from_form(form: Any, search_item: CommunityMarketplaceSearch, user: User) -> tuple[bool, str]:
+    name = str(form.get("name", "")).strip()
+    city = str(form.get("city", "")).strip()
+    description = str(form.get("description", "")).strip()
+    references_input = str(form.get("references_input", ""))
+    budget = str(form.get("budget", "")).strip()
+    references = parse_reference_values(references_input)
+
+    if not name:
+        return False, "Укажите название."
+    if len(name) > 255:
+        return False, "Название слишком длинное (до 255 символов)."
+    if len(city) > 255:
+        return False, "Поле «Город» слишком длинное (до 255 символов)."
+    if len(description) > 10000:
+        return False, "Описание должно быть до 10000 символов."
+    if len(references) > 5:
+        return False, "Можно добавить не более 5 референсов."
+    if len(budget) > 120:
+        return False, "Поле «Бюджет» слишком длинное (до 120 символов)."
+
+    search_item.name = name
+    search_item.city = city or None
+    search_item.description = description or None
+    search_item.references_json = references
+    search_item.budget = budget or None
+    if user_is_special(user):
+        search_item.is_verified_participant = to_bool(form.get("is_verified_participant"))
+    return True, ""
+
+
+@app.get("/community/marketplace", response_class=HTMLResponse)
+def community_marketplace_redirect(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    return redirect("/community/marketplace/sale")
+
+
+@app.get("/community/marketplace/sale", response_class=HTMLResponse)
+def community_marketplace_sales_list(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    q = request.query_params.get("q", "").strip()
+    city_filter = request.query_params.get("city", "").strip()
+    city_values = split_city_values(city_filter)
+
+    sales = db.execute(
+        select(CommunityMarketplaceSale).order_by(CommunityMarketplaceSale.updated_at.desc(), CommunityMarketplaceSale.id.desc())
+    ).scalars().all()
+
+    if q:
+        needle = q.casefold()
+        sales = [
+            item
+            for item in sales
+            if needle in (item.name or "").casefold()
+            or needle in (item.city or "").casefold()
+            or needle in (item.description or "").casefold()
+            or needle in (item.contact or "").casefold()
+        ]
+    if city_values:
+        sales = [item for item in sales if city_matches_any(city_values, item.city)]
+
+    owner_ids = {item.user_id for item in sales}
+    owners_by_id: dict[int, User] = {}
+    if owner_ids:
+        owners = db.execute(select(User).where(User.id.in_(owner_ids))).scalars().all()
+        owners_by_id = {item.id: item for item in owners}
+
+    city_options = sorted(
+        merge_unique([item.city for item in sales if item.city]),
+        key=lambda value: value.casefold(),
+    )
+
+    return template_response(
+        request,
+        "community_marketplace_sales_list.html",
+        user=user,
+        active_tab="community",
+        community_tab="marketplace",
+        marketplace_tab="sale",
+        sales=sales,
+        owners_by_id=owners_by_id,
+        q=q,
+        city_filter=city_filter,
+        city_options=city_options,
+        can_verify_marketplace=user_is_special(user),
+    )
+
+
+@app.get("/community/marketplace/sale/new", response_class=HTMLResponse)
+def community_marketplace_sales_new(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    return template_response(
+        request,
+        "community_marketplace_sale_form.html",
+        user=user,
+        active_tab="community",
+        community_tab="marketplace",
+        marketplace_tab="sale",
+        editing=False,
+        sale_id=None,
+        form=get_marketplace_sale_form_values(),
+        can_verify_marketplace=user_is_special(user),
+    )
+
+
+@app.post("/community/marketplace/sale/new")
+async def community_marketplace_sales_create(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    form = await request.form()
+    sale = CommunityMarketplaceSale(user_id=user.id, name="")
+    ok, error_text = save_marketplace_sale_from_form(form, sale, user)
+    if not ok:
+        add_flash(request, error_text, "error")
+        return redirect("/community/marketplace/sale/new")
+
+    db.add(sale)
+    db.commit()
+    add_flash(request, "Карточка продажи опубликована.", "success")
+    return redirect(f"/community/marketplace/sale/{sale.id}")
+
+
+@app.get("/community/marketplace/sale/{sale_id}", response_class=HTMLResponse)
+def community_marketplace_sales_detail(sale_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    sale = db.get(CommunityMarketplaceSale, sale_id)
+    if not sale:
+        add_flash(request, "Карточка продажи не найдена.", "error")
+        return redirect("/community/marketplace/sale")
+
+    owner = db.get(User, sale.user_id)
+    return template_response(
+        request,
+        "community_marketplace_sale_detail.html",
+        user=user,
+        active_tab="community",
+        community_tab="marketplace",
+        marketplace_tab="sale",
+        sale=sale,
+        owner=owner,
+        price_rows=format_master_price_rows_for_form(as_list(sale.price_list_json)),
+        can_manage=can_manage_marketplace_sale(user, sale),
+    )
+
+
+@app.get("/community/marketplace/sale/{sale_id}/edit", response_class=HTMLResponse)
+def community_marketplace_sales_edit(sale_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    sale = db.get(CommunityMarketplaceSale, sale_id)
+    if not sale:
+        add_flash(request, "Карточка продажи не найдена.", "error")
+        return redirect("/community/marketplace/sale")
+    if not can_manage_marketplace_sale(user, sale):
+        add_flash(request, "Редактировать можно только свою карточку продажи.", "error")
+        return redirect(f"/community/marketplace/sale/{sale_id}")
+
+    return template_response(
+        request,
+        "community_marketplace_sale_form.html",
+        user=user,
+        active_tab="community",
+        community_tab="marketplace",
+        marketplace_tab="sale",
+        editing=True,
+        sale_id=sale.id,
+        form=get_marketplace_sale_form_values(sale),
+        can_verify_marketplace=user_is_special(user),
+    )
+
+
+@app.post("/community/marketplace/sale/{sale_id}/edit")
+async def community_marketplace_sales_update(sale_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    sale = db.get(CommunityMarketplaceSale, sale_id)
+    if not sale:
+        add_flash(request, "Карточка продажи не найдена.", "error")
+        return redirect("/community/marketplace/sale")
+    if not can_manage_marketplace_sale(user, sale):
+        add_flash(request, "Редактировать можно только свою карточку продажи.", "error")
+        return redirect(f"/community/marketplace/sale/{sale_id}")
+
+    form = await request.form()
+    ok, error_text = save_marketplace_sale_from_form(form, sale, user)
+    if not ok:
+        add_flash(request, error_text, "error")
+        return redirect(f"/community/marketplace/sale/{sale_id}/edit")
+
+    db.commit()
+    add_flash(request, "Карточка продажи обновлена.", "success")
+    return redirect(f"/community/marketplace/sale/{sale_id}")
+
+
+@app.post("/community/marketplace/sale/{sale_id}/delete")
+def community_marketplace_sales_delete(sale_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    sale = db.get(CommunityMarketplaceSale, sale_id)
+    if not sale:
+        add_flash(request, "Карточка продажи не найдена.", "error")
+        return redirect("/community/marketplace/sale")
+    if not can_manage_marketplace_sale(user, sale):
+        add_flash(request, "Удалять можно только свою карточку продажи.", "error")
+        return redirect(f"/community/marketplace/sale/{sale_id}")
+
+    db.delete(sale)
+    db.commit()
+    add_flash(request, "Карточка продажи удалена.", "info")
+    return redirect("/community/marketplace/sale")
+
+
+@app.get("/community/marketplace/search", response_class=HTMLResponse)
+def community_marketplace_searches_list(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    q = request.query_params.get("q", "").strip()
+    city_filter = request.query_params.get("city", "").strip()
+    city_values = split_city_values(city_filter)
+
+    search_items = db.execute(
+        select(CommunityMarketplaceSearch).order_by(CommunityMarketplaceSearch.updated_at.desc(), CommunityMarketplaceSearch.id.desc())
+    ).scalars().all()
+
+    if q:
+        needle = q.casefold()
+        search_items = [
+            item
+            for item in search_items
+            if needle in (item.name or "").casefold()
+            or needle in (item.city or "").casefold()
+            or needle in (item.description or "").casefold()
+            or needle in (item.budget or "").casefold()
+        ]
+    if city_values:
+        search_items = [item for item in search_items if city_matches_any(city_values, item.city)]
+
+    owner_ids = {item.user_id for item in search_items}
+    owners_by_id: dict[int, User] = {}
+    if owner_ids:
+        owners = db.execute(select(User).where(User.id.in_(owner_ids))).scalars().all()
+        owners_by_id = {item.id: item for item in owners}
+
+    city_options = sorted(
+        merge_unique([item.city for item in search_items if item.city]),
+        key=lambda value: value.casefold(),
+    )
+
+    return template_response(
+        request,
+        "community_marketplace_searches_list.html",
+        user=user,
+        active_tab="community",
+        community_tab="marketplace",
+        marketplace_tab="search",
+        search_items=search_items,
+        owners_by_id=owners_by_id,
+        q=q,
+        city_filter=city_filter,
+        city_options=city_options,
+        can_verify_marketplace=user_is_special(user),
+    )
+
+
+@app.get("/community/marketplace/search/new", response_class=HTMLResponse)
+def community_marketplace_searches_new(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    return template_response(
+        request,
+        "community_marketplace_search_form.html",
+        user=user,
+        active_tab="community",
+        community_tab="marketplace",
+        marketplace_tab="search",
+        editing=False,
+        search_id=None,
+        form=get_marketplace_search_form_values(),
+        can_verify_marketplace=user_is_special(user),
+    )
+
+
+@app.post("/community/marketplace/search/new")
+async def community_marketplace_searches_create(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    form = await request.form()
+    search_item = CommunityMarketplaceSearch(user_id=user.id, name="")
+    ok, error_text = save_marketplace_search_from_form(form, search_item, user)
+    if not ok:
+        add_flash(request, error_text, "error")
+        return redirect("/community/marketplace/search/new")
+
+    db.add(search_item)
+    db.commit()
+    add_flash(request, "Карточка поиска опубликована.", "success")
+    return redirect(f"/community/marketplace/search/{search_item.id}")
+
+
+@app.get("/community/marketplace/search/{search_id}", response_class=HTMLResponse)
+def community_marketplace_searches_detail(search_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    search_item = db.get(CommunityMarketplaceSearch, search_id)
+    if not search_item:
+        add_flash(request, "Карточка поиска не найдена.", "error")
+        return redirect("/community/marketplace/search")
+
+    owner = db.get(User, search_item.user_id)
+    return template_response(
+        request,
+        "community_marketplace_search_detail.html",
+        user=user,
+        active_tab="community",
+        community_tab="marketplace",
+        marketplace_tab="search",
+        search_item=search_item,
+        owner=owner,
+        can_manage=can_manage_marketplace_search(user, search_item),
+    )
+
+
+@app.get("/community/marketplace/search/{search_id}/edit", response_class=HTMLResponse)
+def community_marketplace_searches_edit(search_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    search_item = db.get(CommunityMarketplaceSearch, search_id)
+    if not search_item:
+        add_flash(request, "Карточка поиска не найдена.", "error")
+        return redirect("/community/marketplace/search")
+    if not can_manage_marketplace_search(user, search_item):
+        add_flash(request, "Редактировать можно только свою карточку поиска.", "error")
+        return redirect(f"/community/marketplace/search/{search_id}")
+
+    return template_response(
+        request,
+        "community_marketplace_search_form.html",
+        user=user,
+        active_tab="community",
+        community_tab="marketplace",
+        marketplace_tab="search",
+        editing=True,
+        search_id=search_item.id,
+        form=get_marketplace_search_form_values(search_item),
+        can_verify_marketplace=user_is_special(user),
+    )
+
+
+@app.post("/community/marketplace/search/{search_id}/edit")
+async def community_marketplace_searches_update(search_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    search_item = db.get(CommunityMarketplaceSearch, search_id)
+    if not search_item:
+        add_flash(request, "Карточка поиска не найдена.", "error")
+        return redirect("/community/marketplace/search")
+    if not can_manage_marketplace_search(user, search_item):
+        add_flash(request, "Редактировать можно только свою карточку поиска.", "error")
+        return redirect(f"/community/marketplace/search/{search_id}")
+
+    form = await request.form()
+    ok, error_text = save_marketplace_search_from_form(form, search_item, user)
+    if not ok:
+        add_flash(request, error_text, "error")
+        return redirect(f"/community/marketplace/search/{search_id}/edit")
+
+    db.commit()
+    add_flash(request, "Карточка поиска обновлена.", "success")
+    return redirect(f"/community/marketplace/search/{search_id}")
+
+
+@app.post("/community/marketplace/search/{search_id}/delete")
+def community_marketplace_searches_delete(search_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    search_item = db.get(CommunityMarketplaceSearch, search_id)
+    if not search_item:
+        add_flash(request, "Карточка поиска не найдена.", "error")
+        return redirect("/community/marketplace/search")
+    if not can_manage_marketplace_search(user, search_item):
+        add_flash(request, "Удалять можно только свою карточку поиска.", "error")
+        return redirect(f"/community/marketplace/search/{search_id}")
+
+    db.delete(search_item)
+    db.commit()
+    add_flash(request, "Карточка поиска удалена.", "info")
+    return redirect("/community/marketplace/search")
 
 
 def get_article_form_values(article: CommunityArticle | None = None, user: User | None = None) -> dict[str, Any]:

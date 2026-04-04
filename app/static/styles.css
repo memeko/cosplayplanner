@@ -724,6 +724,13 @@ textarea {
   color: #235c95;
 }
 
+.marketplace-city-chip {
+  background: rgba(255, 243, 176, 0.72);
+  border-color: rgba(245, 158, 11, 0.42);
+  color: #8a4b00;
+  font-weight: 600;
+}
+
 .row-between {
   display: flex;
   justify-content: space-between;
@@ -799,6 +806,12 @@ textarea {
   object-fit: cover;
   border: 1px solid rgba(255, 255, 255, 0.78);
   box-shadow: var(--glass-shadow), var(--glass-highlight-soft);
+}
+
+.marketplace-safety-note summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--muted);
 }
 
 .card-post-found {

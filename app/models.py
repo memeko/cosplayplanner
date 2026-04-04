@@ -97,6 +97,16 @@ class User(Base):
         back_populates="user",
         cascade="all, delete-orphan",
     )
+    community_marketplace_sales = relationship(
+        "CommunityMarketplaceSale",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+    community_marketplace_searches = relationship(
+        "CommunityMarketplaceSearch",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
     community_articles = relationship("CommunityArticle", back_populates="user", cascade="all, delete-orphan")
     community_article_comments = relationship(
         "CommunityArticleComment",
@@ -813,6 +823,46 @@ class CommunityStudioComment(Base):
 
     studio = relationship("CommunityStudio", back_populates="comments")
     user = relationship("User", back_populates="community_studio_comments")
+
+
+class CommunityMarketplaceSale(Base):
+    __tablename__ = "community_marketplace_sales"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+
+    name = Column(String(255), nullable=False, index=True)
+    city = Column(String(255), nullable=True, index=True)
+    contact = Column(String(255), nullable=True)
+    description = Column(Text, nullable=True)
+    gallery_json = Column(JSON, nullable=False, default=list)
+    price_list_json = Column(JSON, nullable=False, default=list)
+    delivery_terms = Column(Text, nullable=True)
+    is_verified_participant = Column(Boolean, nullable=False, default=False)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    user = relationship("User", back_populates="community_marketplace_sales")
+
+
+class CommunityMarketplaceSearch(Base):
+    __tablename__ = "community_marketplace_searches"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+
+    name = Column(String(255), nullable=False, index=True)
+    city = Column(String(255), nullable=True, index=True)
+    description = Column(Text, nullable=True)
+    references_json = Column(JSON, nullable=False, default=list)
+    budget = Column(String(120), nullable=True)
+    is_verified_participant = Column(Boolean, nullable=False, default=False)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    user = relationship("User", back_populates="community_marketplace_searches")
 
 
 class CommunityCosplayer(Base):

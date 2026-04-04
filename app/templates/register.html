@@ -19,6 +19,14 @@
       Повтор пароля
       <input type="password" name="password_confirm" required />
     </label>
+    <label>
+      Секретный код для ботов TG и VK
+      <input type="password" name="telegram_secret_code" />
+    </label>
+    <p class="muted">Поле необязательное. Можно оставить пустым и задать код позднее в профиле.</p>
+    <div class="flash flash-info">
+      Аккаунт СММ-менеджера имеет отличный функционал: в нем доступен контент-план пользователя и контент-планы клиентов, указавших его ник как менеджера. Коспланы и сообщество на этом типе аккаунта не доступны.
+    </div>
     <label class="inline-check">
       <input type="checkbox" name="is_smm_manager" value="1" />
       Я – СММ-менеджер

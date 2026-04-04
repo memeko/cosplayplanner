@@ -1,0 +1,240 @@
+{% extends "base.html" %}
+{% block content %}
+{% include "community_tabs.html" %}
+{% include "community_marketplace_tabs.html" %}
+
+<section class="section-head">
+  <h1>{{ "Редактирование продажи" if editing else "Новая продажа" }}</h1>
+  <a href="{{ '/community/marketplace/sale/' ~ sale_id if editing else '/community/marketplace/sale' }}" class="btn">Назад</a>
+</section>
+
+<form method="post" action="{{ '/community/marketplace/sale/' ~ sale_id ~ '/edit' if editing else '/community/marketplace/sale/new' }}" class="grid one-col big-form">
+  <section class="box">
+    <div class="grid two-col">
+      <label>
+        Название *
+        <input type="text" name="name" value="{{ form.name }}" maxlength="255" required />
+      </label>
+      <label>
+        Город
+        <input type="text" name="city" value="{{ form.city }}" maxlength="255" />
+      </label>
+      <label>
+        Контакт для связи *
+        <input type="text" name="contact" value="{{ form.contact }}" maxlength="255" placeholder="Телеграм, VK, ссылка..." required />
+      </label>
+    </div>
+
+    <label>
+      Описание
+      <textarea name="description" rows="8" placeholder="Опишите, что именно продаётся, комплектность, состояние, нюансы...">{{ form.description }}</textarea>
+    </label>
+
+    <label>
+      Фотографии
+      <textarea name="gallery_input" id="sale_gallery_input" rows="5" placeholder="https://..." data-max-items="10">{{ form.gallery_input }}</textarea>
+    </label>
+    <p class="muted">Можно добавить до 10 фото. Поддерживаются ссылки и загрузка изображений со сжатием.</p>
+    <div class="gallery-upload-row">
+      <input type="file" id="sale_gallery_upload_files" accept="image/*" multiple />
+      <button type="button" class="btn" id="sale_gallery_upload_btn">Загрузить фото</button>
+      <span class="muted" id="sale_gallery_upload_status"></span>
+    </div>
+    <div class="reference-grid" id="sale_gallery_preview"></div>
+  </section>
+
+  <section class="box">
+    <div class="row-between">
+      <h3>Прайс-лист</h3>
+      <button type="button" class="btn" id="add-sale-price-row">Добавить строку</button>
+    </div>
+    <div class="master-price-rows" id="sale_price_rows_wrap">
+      {% if form.price_rows %}
+        {% for row in form.price_rows %}
+          <div class="master-price-row">
+            <input type="hidden" name="price_row_id" value="{{ row.row_id }}" />
+            <label>
+              Название части
+              <input type="text" name="price_service" value="{{ row.service }}" />
+            </label>
+            <label>
+              Цена
+              <input type="number" name="price_cost" step="0.01" min="0" value="{{ row.cost }}" />
+            </label>
+            <label>
+              Комментарий
+              <input type="text" name="price_comment" value="{{ row.comment }}" placeholder="Состояние, комплектность..." />
+            </label>
+            <button type="button" class="btn btn-danger remove-sale-price-row">Удалить</button>
+          </div>
+        {% endfor %}
+      {% else %}
+        <div class="master-price-row">
+          <input type="hidden" name="price_row_id" value="sale-price-0" />
+          <label>
+            Название части
+            <input type="text" name="price_service" value="" />
+          </label>
+          <label>
+            Цена
+            <input type="number" name="price_cost" step="0.01" min="0" value="" />
+          </label>
+          <label>
+            Комментарий
+            <input type="text" name="price_comment" value="" placeholder="Состояние, комплектность..." />
+          </label>
+          <button type="button" class="btn btn-danger remove-sale-price-row">Удалить</button>
+        </div>
+      {% endif %}
+    </div>
+  </section>
+
+  <section class="box">
+    <label>
+      Условия доставки
+      <textarea name="delivery_terms" rows="6" placeholder="Самовывоз, отправка, упаковка, предоплата и другие условия...">{{ form.delivery_terms }}</textarea>
+    </label>
+    {% if can_verify_marketplace %}
+      <label class="inline-check top-offset">
+        <input type="checkbox" name="is_verified_participant" {% if form.is_verified_participant %}checked{% endif %} />
+        Проверенный участник
+      </label>
+    {% endif %}
+  </section>
+
+  <div class="actions-inline">
+    <button type="submit" class="btn btn-accent">{{ "Сохранить" if editing else "Опубликовать" }}</button>
+    <a href="{{ '/community/marketplace/sale/' ~ sale_id if editing else '/community/marketplace/sale' }}" class="btn">Отмена</a>
+  </div>
+</form>
+
+<script>
+(function () {
+  function parseListEntries(value) {
+    if (!value) return [];
+    const normalized = value.replace(/,\s*(?=(?:https?:\/\/|\/media\/|iframe:|<iframe))/gi, '\n');
+    return normalized
+      .split(/\n|;/)
+      .map((item) => item.trim())
+      .map((item) => item.replace(/[;,]+$/, ''))
+      .filter(Boolean);
+  }
+
+  function createImageTile(url) {
+    const link = document.createElement('a');
+    link.className = 'reference-tile';
+    link.href = url;
+    link.target = '_blank';
+    link.rel = 'noreferrer';
+    const image = document.createElement('img');
+    image.src = url;
+    image.alt = 'Фото товара';
+    link.appendChild(image);
+    return link;
+  }
+
+  function appendUrlsToTextarea(textarea, urls) {
+    if (!textarea || !urls.length) return;
+    const existing = textarea.value ? `${textarea.value}\n` : '';
+    textarea.value = `${existing}${urls.join('\n')}`.trim();
+  }
+
+  async function uploadGalleryImages() {
+    const filesInput = document.getElementById('sale_gallery_upload_files');
+    const status = document.getElementById('sale_gallery_upload_status');
+    const textarea = document.getElementById('sale_gallery_input');
+    const limit = Number(textarea?.dataset.maxItems || '10');
+    if (!filesInput || !textarea || !filesInput.files?.length) {
+      if (status) status.textContent = 'Выберите изображение.';
+      return;
+    }
+    const existingCount = parseListEntries(textarea.value).filter((value) => /^(https?:\/\/|\/media\/)/i.test(value)).length;
+    if (existingCount + filesInput.files.length > limit) {
+      if (status) status.textContent = `Можно сохранить не более ${limit} изображений.`;
+      return;
+    }
+    if (status) status.textContent = 'Загрузка...';
+    const uploadedUrls = [];
+    for (const file of Array.from(filesInput.files)) {
+      const formData = new FormData();
+      formData.append('image', file);
+      try {
+        const response = await fetch('/media/upload-image', { method: 'POST', body: formData, credentials: 'same-origin' });
+        const payload = await response.json();
+        if (!response.ok || !payload?.ok || !payload?.url) throw new Error(payload?.detail || 'Ошибка загрузки');
+        uploadedUrls.push(payload.url);
+      } catch (error) {
+        if (status) status.textContent = `Ошибка: ${error.message || 'не удалось загрузить файл'}`;
+        return;
+      }
+    }
+    appendUrlsToTextarea(textarea, uploadedUrls);
+    filesInput.value = '';
+    updateGalleryPreview();
+    if (status) status.textContent = `Загружено: ${uploadedUrls.length}`;
+  }
+
+  function updateGalleryPreview() {
+    const input = document.getElementById('sale_gallery_input');
+    const wrap = document.getElementById('sale_gallery_preview');
+    if (!input || !wrap) return;
+    wrap.innerHTML = '';
+    const urls = Array.from(new Set(parseListEntries(input.value).filter((value) => /^(https?:\/\/|\/media\/)/i.test(value))));
+    urls.forEach((url) => wrap.appendChild(createImageTile(url)));
+  }
+
+  const galleryInput = document.getElementById('sale_gallery_input');
+  if (galleryInput) {
+    galleryInput.addEventListener('input', updateGalleryPreview);
+    updateGalleryPreview();
+  }
+  const uploadButton = document.getElementById('sale_gallery_upload_btn');
+  if (uploadButton) uploadButton.addEventListener('click', uploadGalleryImages);
+
+  const rowsWrap = document.getElementById('sale_price_rows_wrap');
+  const addRowBtn = document.getElementById('add-sale-price-row');
+
+  function bindRemoveButtons() {
+    document.querySelectorAll('.remove-sale-price-row').forEach((button) => {
+      if (button.dataset.bound === '1') return;
+      button.dataset.bound = '1';
+      button.addEventListener('click', () => {
+        const row = button.closest('.master-price-row');
+        if (row) row.remove();
+      });
+    });
+  }
+
+  function buildPriceRow(rowId) {
+    const row = document.createElement('div');
+    row.className = 'master-price-row';
+    row.innerHTML = `
+      <input type="hidden" name="price_row_id" value="${rowId}" />
+      <label>
+        Название части
+        <input type="text" name="price_service" value="" />
+      </label>
+      <label>
+        Цена
+        <input type="number" name="price_cost" step="0.01" min="0" value="" />
+      </label>
+      <label>
+        Комментарий
+        <input type="text" name="price_comment" value="" placeholder="Состояние, комплектность..." />
+      </label>
+      <button type="button" class="btn btn-danger remove-sale-price-row">Удалить</button>
+    `;
+    return row;
+  }
+
+  if (addRowBtn && rowsWrap) {
+    addRowBtn.addEventListener('click', () => {
+      const rowId = `sale-price-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+      rowsWrap.appendChild(buildPriceRow(rowId));
+      bindRemoveButtons();
+    });
+  }
+  bindRemoveButtons();
+})();
+</script>
+{% endblock %}

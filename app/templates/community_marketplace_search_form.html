@@ -1,0 +1,143 @@
+{% extends "base.html" %}
+{% block content %}
+{% include "community_tabs.html" %}
+{% include "community_marketplace_tabs.html" %}
+
+<section class="section-head">
+  <h1>{{ "Редактирование поиска" if editing else "Новый поиск" }}</h1>
+  <a href="{{ '/community/marketplace/search/' ~ search_id if editing else '/community/marketplace/search' }}" class="btn">Назад</a>
+</section>
+
+<form method="post" action="{{ '/community/marketplace/search/' ~ search_id ~ '/edit' if editing else '/community/marketplace/search/new' }}" class="grid one-col big-form">
+  <section class="box">
+    <div class="grid two-col">
+      <label>
+        Название *
+        <input type="text" name="name" value="{{ form.name }}" maxlength="255" required />
+      </label>
+      <label>
+        Город
+        <input type="text" name="city" value="{{ form.city }}" maxlength="255" />
+      </label>
+      <label>
+        Бюджет
+        <input type="text" name="budget" value="{{ form.budget }}" maxlength="120" placeholder="Например: до 15 000 ₽" />
+      </label>
+    </div>
+
+    <label>
+      Описание
+      <textarea name="description" rows="8" placeholder="Что именно ищете, важные размеры, комплектность, сроки и другие детали...">{{ form.description }}</textarea>
+    </label>
+
+    <label>
+      Референсы
+      <textarea name="references_input" id="search_references_input" rows="5" placeholder="https://..." data-max-items="5">{{ form.references_input }}</textarea>
+    </label>
+    <p class="muted">Можно добавить до 5 референсов. Поддерживаются ссылки и загрузка изображений со сжатием.</p>
+    <div class="gallery-upload-row">
+      <input type="file" id="search_references_upload_files" accept="image/*" multiple />
+      <button type="button" class="btn" id="search_references_upload_btn">Загрузить фото</button>
+      <span class="muted" id="search_references_upload_status"></span>
+    </div>
+    <div class="reference-grid" id="search_references_preview"></div>
+
+    {% if can_verify_marketplace %}
+      <label class="inline-check top-offset">
+        <input type="checkbox" name="is_verified_participant" {% if form.is_verified_participant %}checked{% endif %} />
+        Проверенный участник
+      </label>
+    {% endif %}
+  </section>
+
+  <div class="actions-inline">
+    <button type="submit" class="btn btn-accent">{{ "Сохранить" if editing else "Опубликовать" }}</button>
+    <a href="{{ '/community/marketplace/search/' ~ search_id if editing else '/community/marketplace/search' }}" class="btn">Отмена</a>
+  </div>
+</form>
+
+<script>
+(function () {
+  function parseListEntries(value) {
+    if (!value) return [];
+    const normalized = value.replace(/,\s*(?=(?:https?:\/\/|\/media\/|iframe:|<iframe))/gi, '\n');
+    return normalized
+      .split(/\n|;/)
+      .map((item) => item.trim())
+      .map((item) => item.replace(/[;,]+$/, ''))
+      .filter(Boolean);
+  }
+
+  function createImageTile(url) {
+    const link = document.createElement('a');
+    link.className = 'reference-tile';
+    link.href = url;
+    link.target = '_blank';
+    link.rel = 'noreferrer';
+    const image = document.createElement('img');
+    image.src = url;
+    image.alt = 'Референс';
+    link.appendChild(image);
+    return link;
+  }
+
+  function appendUrlsToTextarea(textarea, urls) {
+    if (!textarea || !urls.length) return;
+    const existing = textarea.value ? `${textarea.value}\n` : '';
+    textarea.value = `${existing}${urls.join('\n')}`.trim();
+  }
+
+  async function uploadReferenceImages() {
+    const filesInput = document.getElementById('search_references_upload_files');
+    const status = document.getElementById('search_references_upload_status');
+    const textarea = document.getElementById('search_references_input');
+    const limit = Number(textarea?.dataset.maxItems || '5');
+    if (!filesInput || !textarea || !filesInput.files?.length) {
+      if (status) status.textContent = 'Выберите изображение.';
+      return;
+    }
+    const existingCount = parseListEntries(textarea.value).filter((value) => /^(https?:\/\/|\/media\/)/i.test(value)).length;
+    if (existingCount + filesInput.files.length > limit) {
+      if (status) status.textContent = `Можно сохранить не более ${limit} изображений.`;
+      return;
+    }
+    if (status) status.textContent = 'Загрузка...';
+    const uploadedUrls = [];
+    for (const file of Array.from(filesInput.files)) {
+      const formData = new FormData();
+      formData.append('image', file);
+      try {
+        const response = await fetch('/media/upload-image', { method: 'POST', body: formData, credentials: 'same-origin' });
+        const payload = await response.json();
+        if (!response.ok || !payload?.ok || !payload?.url) throw new Error(payload?.detail || 'Ошибка загрузки');
+        uploadedUrls.push(payload.url);
+      } catch (error) {
+        if (status) status.textContent = `Ошибка: ${error.message || 'не удалось загрузить файл'}`;
+        return;
+      }
+    }
+    appendUrlsToTextarea(textarea, uploadedUrls);
+    filesInput.value = '';
+    updatePreview();
+    if (status) status.textContent = `Загружено: ${uploadedUrls.length}`;
+  }
+
+  function updatePreview() {
+    const input = document.getElementById('search_references_input');
+    const wrap = document.getElementById('search_references_preview');
+    if (!input || !wrap) return;
+    wrap.innerHTML = '';
+    const urls = Array.from(new Set(parseListEntries(input.value).filter((value) => /^(https?:\/\/|\/media\/)/i.test(value))));
+    urls.forEach((url) => wrap.appendChild(createImageTile(url)));
+  }
+
+  const referencesInput = document.getElementById('search_references_input');
+  if (referencesInput) {
+    referencesInput.addEventListener('input', updatePreview);
+    updatePreview();
+  }
+  const uploadButton = document.getElementById('search_references_upload_btn');
+  if (uploadButton) uploadButton.addEventListener('click', uploadReferenceImages);
+})();
+</script>
+{% endblock %}
