@@ -8707,7 +8707,7 @@ def card_options(
         "festival_options": all_festival_options,
         "festival_items": festival_items,
         "festival_custom_options": festival_custom_options,
-        "nomination_options": merge_unique(DEFAULT_NOMINATIONS, get_options(db, user.id, "nomination")),
+        "nomination_options": merge_unique_nomination_titles(DEFAULT_NOMINATIONS, get_options(db, user.id, "nomination")),
         "photographer_options": get_options(db, user.id, "photographer"),
         "studio_options": get_options(db, user.id, "studio"),
         "coproplayer_alias_options": coproplayer_alias_options,
@@ -8719,8 +8719,57 @@ def card_options(
         ),
     }
 
+def clean_nomination_title(value: Any) -> str:
+    raw = str(value or "").replace("\xa0", " ").strip()
+    if not raw:
+        return ""
+    return re.sub(r"\s+", " ", raw)
+
+
+def normalize_nomination_title_key(value: Any) -> str:
+    raw = clean_nomination_title(value).casefold().replace("ё", "е")
+    if not raw:
+        return ""
+    return " ".join(re.findall(r"[0-9a-zа-я]+", raw))
+
+
+def canonical_nomination_title(value: Any, known_titles: list[str] | None = None) -> str:
+    cleaned = clean_nomination_title(value)
+    key = normalize_nomination_title_key(cleaned)
+    if not key:
+        return ""
+
+    for candidate in DEFAULT_NOMINATIONS:
+        candidate_title = clean_nomination_title(candidate)
+        if normalize_nomination_title_key(candidate_title) == key:
+            return candidate_title
+
+    for candidate in known_titles or []:
+        candidate_title = clean_nomination_title(candidate)
+        if normalize_nomination_title_key(candidate_title) == key:
+            return candidate_title
+
+    return cleaned
+
+
+def merge_unique_nomination_titles(*groups: Any) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for group in groups:
+        for value in as_list(group):
+            title = canonical_nomination_title(value, known_titles=result)
+            key = normalize_nomination_title_key(title)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            result.append(title)
+    return result
+
 
 def normalize_festival_nomination_items(raw_items: Any) -> list[dict[str, str]]:
+    def stored_titles() -> list[str]:
+        return [item["title"] for item in normalized]
+
     normalized: list[dict[str, str]] = []
     seen_indexes: dict[str, int] = {}
     for raw_item in as_list(raw_items):
@@ -8732,9 +8781,11 @@ def normalize_festival_nomination_items(raw_items: Any) -> list[dict[str, str]]:
             url_raw = ""
         if not title:
             continue
-        title = title[:255].strip()
+        title = canonical_nomination_title(title[:255], known_titles=stored_titles())
+        if not title:
+            continue
         url = build_external_url(url_raw) if url_raw else ""
-        key = title.casefold()
+        key = normalize_nomination_title_key(title)
         existing_index = seen_indexes.get(key)
         if existing_index is not None:
             if url and not normalized[existing_index]["url"]:
@@ -8765,16 +8816,16 @@ def festival_selected_nomination_titles(festival: Festival | None) -> list[str]:
     if not festival:
         return []
     selected_keys = {
-        str(value).strip().casefold()
+        normalize_nomination_title_key(value)
         for value in as_list(getattr(festival, "planned_nominations_json", []))
-        if str(value).strip()
+        if normalize_nomination_title_key(value)
     }
     if not selected_keys:
         return []
     selected: list[str] = []
     seen: set[str] = set()
     for title in festival_nomination_titles(festival):
-        key = title.casefold()
+        key = normalize_nomination_title_key(title)
         if key not in selected_keys or key in seen:
             continue
         seen.add(key)
@@ -8918,14 +8969,14 @@ def apply_festival_personal_fields_from_form(form: Any, festival: Festival, db: 
     alias_to_username, _, _ = build_user_alias_lookup(db)
     festival.is_going = to_bool(form.get("is_going"))
     selected_nomination_keys = {
-        str(value).strip().casefold()
+        normalize_nomination_title_key(value)
         for value in form.getlist("planned_nominations")
-        if str(value).strip()
+        if normalize_nomination_title_key(value)
     }
     festival.planned_nominations_json = [
         title
         for title in festival_nomination_titles(festival)
-        if title.casefold() in selected_nomination_keys
+        if normalize_nomination_title_key(title) in selected_nomination_keys
     ]
 
     raw_coproplayer_aliases = merge_unique(
@@ -8980,9 +9031,9 @@ def save_festival_announcement_from_form(form: Any, announcement: FestivalAnnoun
     announcement.event_date = event_date
     announcement.event_end_date = event_end_date
     announcement.submission_deadline = parse_date(str(form.get("submission_deadline", "")))
-    announcement.nomination_1 = str(form.get("nomination_1", "")).strip() or None
-    announcement.nomination_2 = str(form.get("nomination_2", "")).strip() or None
-    announcement.nomination_3 = str(form.get("nomination_3", "")).strip() or None
+    announcement.nomination_1 = canonical_nomination_title(form.get("nomination_1")) or None
+    announcement.nomination_2 = canonical_nomination_title(form.get("nomination_2")) or None
+    announcement.nomination_3 = canonical_nomination_title(form.get("nomination_3")) or None
     return True, ""
 
 
@@ -17249,6 +17300,7 @@ def festivals_list(request: Request, db: Session = Depends(get_db)):
     city_filter_values = split_city_values(city_filter)
     nomination_filter = request.query_params.get("nomination", "").strip()
     coproplayer_filter = request.query_params.get("coproplayer", "").strip()
+    nomination_filter_key = normalize_nomination_title_key(nomination_filter)
     only_going = to_bool(request.query_params.get("only_going", ""))
 
     festivals = db.execute(
@@ -17288,7 +17340,10 @@ def festivals_list(request: Request, db: Session = Depends(get_db)):
             continue
 
         nominations = [item["title"] for item in nomination_items]
-        if nomination_filter and not any(nomination_filter.casefold() in value.casefold() for value in nominations):
+        if nomination_filter_key and not any(
+            nomination_filter_key in normalize_nomination_title_key(value)
+            for value in nominations
+        ):
             continue
 
         coproplayer_search_targets = merge_unique(
@@ -17392,7 +17447,7 @@ def festivals_list(request: Request, db: Session = Depends(get_db)):
     summary_rows.sort(key=lambda item: item["date"])
 
     city_options = merge_unique([festival.city for festival in active_festivals if festival.city])
-    nomination_options = merge_unique(
+    nomination_options = merge_unique_nomination_titles(
         DEFAULT_NOMINATIONS,
         [item["title"] for festival in active_festivals for item in festival_nomination_items(festival)],
         get_options(db, user.id, "nomination"),
@@ -17656,6 +17711,7 @@ def festivals_announcements_new(request: Request, db: Session = Depends(get_db))
         editing=False,
         announcement_id=None,
         form=get_festival_announcement_form_values(),
+        nomination_title_options=merge_unique_nomination_titles(DEFAULT_NOMINATIONS, get_options(db, user.id, "nomination")),
     )
 
 
@@ -17790,6 +17846,7 @@ def festivals_new(request: Request, db: Session = Depends(get_db)):
         editing=False,
         festival_id=None,
         form=get_festival_form_values(),
+        nomination_title_options=merge_unique_nomination_titles(DEFAULT_NOMINATIONS, get_options(db, user.id, "nomination")),
         coproplayer_alias_options=merge_unique(alias_options, get_options(db, user.id, "coproplayer")),
         global_festival_edit_mode=False,
         can_edit_personal_festival_fields=True,
@@ -17828,6 +17885,7 @@ def festivals_edit(festival_id: int, request: Request, db: Session = Depends(get
         editing=True,
         festival_id=festival.id,
         form=get_festival_form_values(festival),
+        nomination_title_options=merge_unique_nomination_titles(DEFAULT_NOMINATIONS, get_options(db, user.id, "nomination")),
         coproplayer_alias_options=merge_unique(alias_options, get_options(db, user.id, "coproplayer")),
         global_festival_edit_mode=global_festival_edit_mode,
         can_edit_personal_festival_fields=festival.user_id == user.id,
@@ -17858,7 +17916,11 @@ def save_festival_from_form(form: Any, festival: Festival, user: User, db: Sessi
         db,
         user.id,
         "nomination",
-        merge_unique(DEFAULT_NOMINATIONS, festival_nomination_titles(festival), as_list(festival.planned_nominations_json)),
+        merge_unique_nomination_titles(
+            DEFAULT_NOMINATIONS,
+            festival_nomination_titles(festival),
+            as_list(festival.planned_nominations_json),
+        ),
     )
     remember_options(db, user.id, "festival", [festival.name])
 
@@ -17987,7 +18049,11 @@ async def festivals_update(festival_id: int, request: Request, db: Session = Dep
         db,
         user.id,
         "nomination",
-        merge_unique(DEFAULT_NOMINATIONS, festival_nomination_titles(festival), as_list(festival.planned_nominations_json)),
+        merge_unique_nomination_titles(
+            DEFAULT_NOMINATIONS,
+            festival_nomination_titles(festival),
+            as_list(festival.planned_nominations_json),
+        ),
     )
     remember_options(db, user.id, "festival", [festival.name])
     notify_admin_about_similar_festival_names(

@@ -40,18 +40,23 @@
       </label>
       <label>
         Номинация 1
-        <input type="text" name="nomination_1" value="{{ form.nomination_1 }}" />
+        <input type="text" name="nomination_1" value="{{ form.nomination_1 }}" list="festival-announcement-nomination-options" />
       </label>
       <label>
         Номинация 2
-        <input type="text" name="nomination_2" value="{{ form.nomination_2 }}" />
+        <input type="text" name="nomination_2" value="{{ form.nomination_2 }}" list="festival-announcement-nomination-options" />
       </label>
     </div>
 
     <label>
       Номинация 3
-      <input type="text" name="nomination_3" value="{{ form.nomination_3 }}" />
+      <input type="text" name="nomination_3" value="{{ form.nomination_3 }}" list="festival-announcement-nomination-options" />
     </label>
+    <datalist id="festival-announcement-nomination-options">
+      {% for value in nomination_title_options %}
+        <option value="{{ value }}"></option>
+      {% endfor %}
+    </datalist>
 
     <p class="muted">После отправки карточка попадёт на модерацию. После одобрения фестиваль появится у всех пользователей.</p>
   </section>
