@@ -8722,7 +8722,7 @@ def card_options(
 
 def normalize_festival_nomination_items(raw_items: Any) -> list[dict[str, str]]:
     normalized: list[dict[str, str]] = []
-    seen: set[tuple[str, str]] = set()
+    seen_indexes: dict[str, int] = {}
     for raw_item in as_list(raw_items):
         if isinstance(raw_item, dict):
             title = str(raw_item.get("title", "")).strip()
@@ -8734,10 +8734,13 @@ def normalize_festival_nomination_items(raw_items: Any) -> list[dict[str, str]]:
             continue
         title = title[:255].strip()
         url = build_external_url(url_raw) if url_raw else ""
-        key = (title.casefold(), (url or url_raw).casefold())
-        if key in seen:
+        key = title.casefold()
+        existing_index = seen_indexes.get(key)
+        if existing_index is not None:
+            if url and not normalized[existing_index]["url"]:
+                normalized[existing_index]["url"] = url
             continue
-        seen.add(key)
+        seen_indexes[key] = len(normalized)
         normalized.append({"title": title, "url": url or url_raw})
     return normalized
 
