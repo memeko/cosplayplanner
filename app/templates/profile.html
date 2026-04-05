@@ -107,6 +107,8 @@
   }
 
   const VKID = window.VKIDSDK;
+  const hasLinkedVk = {{ (user.vk_user_id is not none)|tojson }};
+  let linkInProgress = false;
 
   function showMessage(text, isError) {
     if (!messageEl) {
@@ -131,6 +133,14 @@
     showMessage(message, true);
   }
 
+  function handleWidgetError(rawError) {
+    if (!linkInProgress && hasLinkedVk) {
+      console.warn('VK widget error ignored for already linked profile', rawError);
+      return;
+    }
+    showVkError(rawError);
+  }
+
   VKID.Config.init({
     app: Number({{ vkid_app_id }}),
     redirectUrl: {{ vkid_redirect_url|tojson }},
@@ -145,7 +155,7 @@
       container: container,
       showAlternativeLogin: false
     })
-    .on(VKID.WidgetEvents.ERROR, showVkError)
+    .on(VKID.WidgetEvents.ERROR, handleWidgetError)
     .on(VKID.OneTapInternalEvents.LOGIN_SUCCESS, function (payload) {
       const code = payload && payload.code;
       const deviceId = payload && payload.device_id;
@@ -154,6 +164,7 @@
         return;
       }
 
+      linkInProgress = true;
       showMessage('Проверяем профиль VK...', false);
       VKID.Auth.exchangeCode(code, deviceId)
         .then(function (exchangeData) {
@@ -180,7 +191,10 @@
             window.location.href = payload.redirect || '/profile';
           }, 450);
         })
-        .catch(showVkError);
+        .catch(function (error) {
+          linkInProgress = false;
+          showVkError(error);
+        });
     });
 })();
 </script>

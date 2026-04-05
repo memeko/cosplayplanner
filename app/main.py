@@ -31,7 +31,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import requests
 from cryptography.fernet import Fernet, InvalidToken
 from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, RedirectResponse, StreamingResponse
+from fastapi.exception_handlers import http_exception_handler
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from itsdangerous import BadSignature, TimestampSigner
@@ -41,6 +42,7 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 from sqlalchemy import and_, func, inspect, or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.gzip import GZipMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
@@ -8050,6 +8052,7 @@ def template_response(
     name: str,
     user: User | None = None,
     active_tab: str | None = None,
+    status_code: int = 200,
     **context: Any,
 ) -> HTMLResponse:
     payload = {
@@ -8078,12 +8081,121 @@ def template_response(
         "default_seo_keywords": SEO_KEYWORDS,
     }
     payload.update(context)
-    return templates.TemplateResponse(name, payload)
+    return templates.TemplateResponse(name, payload, status_code=status_code)
 
 
 @app.get("/robots.txt", include_in_schema=False)
-def robots_txt() -> FileResponse:
-    return FileResponse("app/static/robots.txt", media_type="text/plain; charset=utf-8")
+def robots_txt() -> PlainTextResponse:
+    body = "\n".join(
+        [
+            "# Cosplay Planner",
+            "# косплей, косплей органайзер, косплей это, планирование, планер",
+            "# командная работа, организация командной работы, проект, косплей проект",
+            "# косплей фестиваль, бюджетный косплей, косплей аниме, косплей фото",
+            "",
+            "User-agent: *",
+            "Allow: /",
+            "",
+            f"Sitemap: {SITE_URL}/sitemap.xml",
+        ]
+    )
+    return PlainTextResponse(body, media_type="text/plain")
+
+
+def public_site_map_entries() -> list[dict[str, str]]:
+    lastmod = date.today().isoformat()
+    return [
+        {"path": "/", "changefreq": "weekly", "priority": "1.0", "lastmod": lastmod},
+        {"path": "/login", "changefreq": "monthly", "priority": "0.8", "lastmod": lastmod},
+        {"path": "/register", "changefreq": "monthly", "priority": "0.8", "lastmod": lastmod},
+        {"path": "/forgot-password", "changefreq": "yearly", "priority": "0.5", "lastmod": lastmod},
+        {"path": "/privacy-policy", "changefreq": "yearly", "priority": "0.4", "lastmod": lastmod},
+        {"path": "/llms.txt", "changefreq": "monthly", "priority": "0.3", "lastmod": lastmod},
+    ]
+
+
+@app.get("/sitemap.xml", include_in_schema=False)
+def sitemap_xml() -> PlainTextResponse:
+    lines = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">',
+    ]
+    for item in public_site_map_entries():
+        loc = f"{SITE_URL}{item['path']}"
+        lines.extend(
+            [
+                "  <url>",
+                f"    <loc>{html.escape(loc, quote=True)}</loc>",
+                f"    <lastmod>{item['lastmod']}</lastmod>",
+                f"    <changefreq>{item['changefreq']}</changefreq>",
+                f"    <priority>{item['priority']}</priority>",
+                "  </url>",
+            ]
+        )
+    lines.append("</urlset>")
+    return PlainTextResponse("\n".join(lines), media_type="application/xml")
+
+
+@app.get("/llms.txt", include_in_schema=False)
+def llms_txt() -> PlainTextResponse:
+    body = "\n".join(
+        [
+            f"# {PROJECT_NAME}",
+            "",
+            f"> {SITE_URL}",
+            "",
+            "Cosplay Planner is a Russian web application for cosplay planning, festival tracking, deadlines, budgets, and teamwork.",
+            "",
+            "## Public pages",
+            f"- Landing page: {SITE_URL}/",
+            f"- Login: {SITE_URL}/login",
+            f"- Registration: {SITE_URL}/register",
+            f"- Password reset request: {SITE_URL}/forgot-password",
+            f"- Privacy policy: {SITE_URL}/privacy-policy",
+            f"- Sitemap: {SITE_URL}/sitemap.xml",
+            "",
+            "## Guidance for language models",
+            "- Primary language: Russian.",
+            "- Most working sections require authentication and contain user-specific data.",
+            "- Do not invent private festival plans, collaborator lists, contact details, or budget values.",
+            "- If a user is not authenticated, prefer the landing page, registration page, login page, or privacy policy.",
+        ]
+    )
+    return PlainTextResponse(body, media_type="text/plain")
+
+
+def request_prefers_html_404(request: Request) -> bool:
+    if request.method != "GET":
+        return False
+    if request.headers.get("X-Requested-With") == "XMLHttpRequest":
+        return False
+    path = request.url.path or "/"
+    if path.startswith("/api/") or path.startswith("/static/"):
+        return False
+    accept = (request.headers.get("accept") or "").casefold()
+    return "text/html" in accept or "*/*" in accept or not accept
+
+
+@app.exception_handler(StarletteHTTPException)
+async def custom_http_exception_handler(request: Request, exc: StarletteHTTPException):
+    if exc.status_code == 404 and request_prefers_html_404(request):
+        with SessionLocal() as db:
+            user = current_user(request, db)
+        return template_response(
+            request,
+            "404.html",
+            user=user,
+            active_tab=None,
+            status_code=404,
+            title="404 — Страница не найдена",
+            seo_description="Запрошенная страница не найдена. Вернитесь на главную страницу Cosplay Planner.",
+            seo_robots="noindex,nofollow,noarchive",
+        )
+
+    if request.url.path.startswith("/api/") and exc.status_code == 404:
+        return JSONResponse(status_code=404, content={"detail": exc.detail})
+
+    return await http_exception_handler(request, exc)
 
 
 @app.post("/vk/bot/callback", include_in_schema=False)
@@ -8916,6 +9028,14 @@ def propagate_approved_announcement(
             )
         )
         created += 1
+    if created:
+        notify_admin_about_similar_festival_names(
+            db,
+            name=announcement.name,
+            city=announcement.city,
+            event_date=announcement.event_date,
+            source_announcement_id=announcement.id,
+        )
     return created
 
 
@@ -16136,11 +16256,89 @@ def get_import_owner_user(db: Session) -> User | None:
     return users[0]
 
 
+def get_primary_admin_user(db: Session) -> User | None:
+    users = db.execute(select(User).order_by(User.id)).scalars().all()
+    for item in users:
+        if is_moderator_user(item):
+            return item
+    return None
+
+
 def normalize_event_name_key(value: str | None) -> str:
     raw = (value or "").strip().casefold()
     if not raw:
         return ""
     return re.sub(r"[^0-9a-zа-яё]+", "", raw)
+
+
+def normalize_festival_name_text(value: str | None) -> str:
+    raw = (value or "").strip().casefold().replace("ё", "е")
+    if not raw:
+        return ""
+    return " ".join(re.findall(r"[0-9a-zа-я]+", raw))
+
+
+def festival_name_tokens(value: str | None) -> list[str]:
+    normalized = normalize_festival_name_text(value)
+    if not normalized:
+        return []
+    return [token for token in normalized.split() if token]
+
+
+def festival_name_search_score(query: str | None, candidate: str | None) -> int:
+    query_text = normalize_festival_name_text(query)
+    candidate_text = normalize_festival_name_text(candidate)
+    if not query_text or not candidate_text:
+        return 0
+
+    query_compact = query_text.replace(" ", "")
+    candidate_compact = candidate_text.replace(" ", "")
+    if not query_compact or not candidate_compact:
+        return 0
+
+    if query_text == candidate_text or query_compact == candidate_compact:
+        return 1000
+
+    best = 0
+    if candidate_text.startswith(query_text) or candidate_compact.startswith(query_compact):
+        best = max(best, 950)
+    if query_text in candidate_text or query_compact in candidate_compact:
+        best = max(best, 900)
+
+    query_tokens = festival_name_tokens(query)
+    candidate_tokens = festival_name_tokens(candidate)
+    if query_tokens and candidate_tokens:
+        prefix_matches = 0
+        fuzzy_matches = 0
+        for query_token in query_tokens:
+            if any(
+                candidate_token.startswith(query_token) or query_token.startswith(candidate_token)
+                for candidate_token in candidate_tokens
+            ):
+                prefix_matches += 1
+                fuzzy_matches += 1
+                continue
+            if len(query_token) >= 4 and any(
+                SequenceMatcher(None, query_token, candidate_token).ratio() >= 0.78
+                for candidate_token in candidate_tokens
+            ):
+                fuzzy_matches += 1
+        if prefix_matches == len(query_tokens):
+            best = max(best, 860)
+        if fuzzy_matches == len(query_tokens):
+            best = max(best, 760)
+
+    compact_min_len = min(len(query_compact), len(candidate_compact))
+    if compact_min_len >= 4:
+        full_ratio = SequenceMatcher(None, query_compact, candidate_compact).ratio()
+        if full_ratio >= 0.92:
+            best = max(best, 720)
+        elif full_ratio >= 0.84:
+            best = max(best, 620)
+        elif full_ratio >= 0.76 and len(query_tokens) >= 2:
+            best = max(best, 540)
+
+    return best
 
 
 def festival_name_keywords(value: str | None) -> set[str]:
@@ -16159,6 +16357,164 @@ def festival_name_keywords(value: str | None) -> set[str]:
     return {normalized} if normalized else set()
 
 
+def festival_titles_look_similar(left_name: str | None, right_name: str | None) -> bool:
+    left_key = normalize_event_name_key(left_name)
+    right_key = normalize_event_name_key(right_name)
+    if left_key and right_key and left_key == right_key:
+        return True
+
+    if max(
+        festival_name_search_score(left_name, right_name),
+        festival_name_search_score(right_name, left_name),
+    ) >= 760:
+        return True
+
+    left_keywords = festival_name_keywords(left_name)
+    right_keywords = festival_name_keywords(right_name)
+    if not left_keywords or not right_keywords:
+        return False
+    if left_keywords <= right_keywords or right_keywords <= left_keywords:
+        return True
+    return bool(left_keywords & right_keywords)
+
+
+def festival_duplicate_context_matches(
+    left_city: str | None,
+    left_date: date | None,
+    right_city: str | None,
+    right_date: date | None,
+) -> bool:
+    if not left_date or not right_date or left_date != right_date:
+        return False
+    return city_matches(left_city, right_city)
+
+
+def festival_duplicate_group_key(
+    *,
+    source_announcement_id: int | None = None,
+    import_source: str | None = None,
+    import_external_id: str | None = None,
+    name: str | None = None,
+    city: str | None = None,
+    event_date: date | None = None,
+) -> str:
+    if source_announcement_id:
+        return f"announcement:{source_announcement_id}"
+    if import_source and import_external_id:
+        return f"import:{import_source.casefold()}:{str(import_external_id).strip().casefold()}"
+
+    name_key = normalize_event_name_key(name)
+    city_key = normalize_city(city)
+    date_key = event_date.isoformat() if event_date else ""
+    if not (name_key or city_key or date_key):
+        return ""
+    return f"manual:{date_key}:{city_key}:{name_key}"
+
+
+def festival_duplicate_group_key_for_item(festival: Festival) -> str:
+    return festival_duplicate_group_key(
+        source_announcement_id=festival.source_announcement_id,
+        import_source=festival.import_source,
+        import_external_id=festival.import_external_id,
+        name=festival.name,
+        city=festival.city,
+        event_date=festival.event_date,
+    )
+
+
+def find_similar_festival_name_candidates(
+    db: Session,
+    *,
+    name: str | None,
+    city: str | None,
+    event_date: date | None,
+    source_announcement_id: int | None = None,
+    import_source: str | None = None,
+    import_external_id: str | None = None,
+    exclude_festival_id: int | None = None,
+) -> list[Festival]:
+    if not name or not city or not event_date:
+        return []
+
+    group_key = festival_duplicate_group_key(
+        source_announcement_id=source_announcement_id,
+        import_source=import_source,
+        import_external_id=import_external_id,
+        name=name,
+        city=city,
+        event_date=event_date,
+    )
+    rows = db.execute(select(Festival).where(Festival.event_date == event_date)).scalars().all()
+    unique_matches: dict[str, Festival] = {}
+    for item in rows:
+        if exclude_festival_id and item.id == exclude_festival_id:
+            continue
+        candidate_group_key = festival_duplicate_group_key_for_item(item)
+        if group_key and candidate_group_key == group_key:
+            continue
+        if not festival_duplicate_context_matches(city, event_date, item.city, item.event_date):
+            continue
+        if not festival_titles_look_similar(name, item.name):
+            continue
+        dedupe_key = candidate_group_key or f"festival:{item.id}"
+        if dedupe_key not in unique_matches:
+            unique_matches[dedupe_key] = item
+    return list(unique_matches.values())
+
+
+def notify_admin_about_similar_festival_names(
+    db: Session,
+    *,
+    name: str | None,
+    city: str | None,
+    event_date: date | None,
+    source_announcement_id: int | None = None,
+    import_source: str | None = None,
+    import_external_id: str | None = None,
+    exclude_festival_id: int | None = None,
+) -> bool:
+    admin_user = get_primary_admin_user(db)
+    if not admin_user:
+        return False
+
+    similar_items = find_similar_festival_name_candidates(
+        db,
+        name=name,
+        city=city,
+        event_date=event_date,
+        source_announcement_id=source_announcement_id,
+        import_source=import_source,
+        import_external_id=import_external_id,
+        exclude_festival_id=exclude_festival_id,
+    )
+    if not similar_items:
+        return False
+
+    comparison_names = merge_unique([name, *[item.name for item in similar_items if item.name]])
+    city_label = city or "—"
+    date_label = event_date.strftime("%d-%m-%Y") if event_date else "—"
+    if len(comparison_names) <= 1:
+        message = (
+            f"Похоже, в базе есть несколько карточек фестиваля с названием «{name}». "
+            f"Город: {city_label}. Дата: {date_label}. "
+            "Проверьте карточки и при необходимости удалите одну вручную через «Удалить у всех»."
+        )
+    else:
+        message = (
+            f"Похожие названия карточек фестиваля: {_short_names(comparison_names, limit=3)}. "
+            f"Город: {city_label}. Дата: {date_label}. "
+            "Проверьте карточки и при необходимости удалите одну вручную через «Удалить у всех»."
+        )
+
+    return enqueue_notification_if_missing(
+        db,
+        user_id=admin_user.id,
+        from_user_id=None,
+        source_card_id=None,
+        message=message,
+    )
+
+
 def festivals_look_like_duplicates(
     left_name: str | None,
     left_city: str | None,
@@ -16167,21 +16523,9 @@ def festivals_look_like_duplicates(
     right_city: str | None,
     right_date: date | None,
 ) -> bool:
-    if not left_date or not right_date or left_date != right_date:
+    if not festival_duplicate_context_matches(left_city, left_date, right_city, right_date):
         return False
-    if not city_matches(left_city, right_city):
-        return False
-
-    left_key = normalize_event_name_key(left_name)
-    right_key = normalize_event_name_key(right_name)
-    if left_key and right_key and left_key == right_key:
-        return True
-
-    left_keywords = festival_name_keywords(left_name)
-    right_keywords = festival_name_keywords(right_name)
-    if not left_keywords or not right_keywords:
-        return False
-    return bool(left_keywords & right_keywords)
+    return festival_titles_look_similar(left_name, right_name)
 
 
 def detect_master_type_from_text(text_value: str | None) -> str:
@@ -16647,6 +16991,14 @@ def import_raf_events_for_user(db: Session, user: User, events: list[dict[str, A
             existing_external_ids.add(external_id)
         imported_count += 1
         imported_names.append(event_name)
+        notify_admin_about_similar_festival_names(
+            db,
+            name=event_name,
+            city=str(event.get("city") or "").strip() or None,
+            event_date=event_date,
+            import_source=RAF_IMPORT_SOURCE_LABEL,
+            import_external_id=external_id or None,
+        )
 
     if imported_names:
         remember_options(db, user.id, "festival", imported_names)
@@ -16733,6 +17085,14 @@ def import_cosplay2_events_for_user(db: Session, user: User, parsed_events: list
         existing_rows.append(festival)
         imported += 1
         imported_names.append(event.name)
+        notify_admin_about_similar_festival_names(
+            db,
+            name=event.name,
+            city=event.city,
+            event_date=event.event_date,
+            import_source=COSPLAY2_IMPORT_SOURCE_LABEL,
+            import_external_id=normalized_url,
+        )
 
     if imported_names:
         remember_options(db, user.id, "festival", imported_names)
@@ -16881,6 +17241,7 @@ def festivals_list(request: Request, db: Session = Depends(get_db)):
     if not user:
         return redirect("/login")
 
+    q = request.query_params.get("q", "").strip()
     city_filter = request.query_params.get("city", "").strip()
     city_filter_values = split_city_values(city_filter)
     nomination_filter = request.query_params.get("nomination", "").strip()
@@ -16902,6 +17263,7 @@ def festivals_list(request: Request, db: Session = Depends(get_db)):
     festival_coproplayers_display: dict[int, list[str]] = {}
     festival_nomination_items_by_id: dict[int, list[dict[str, str]]] = {}
     festival_planned_nominations_by_id: dict[int, list[str]] = {}
+    festival_name_match_scores: dict[int, int] = {}
 
     filtered: list[Festival] = []
     for festival in active_festivals:
@@ -16913,6 +17275,10 @@ def festivals_list(request: Request, db: Session = Depends(get_db)):
         festival_planned_nominations_by_id[festival.id] = festival_selected_nomination_titles(festival)
 
         if only_going and not festival.is_going:
+            continue
+
+        name_match_score = festival_name_search_score(q, festival.name) if q else 0
+        if q and name_match_score <= 0:
             continue
 
         if city_filter_values and not city_matches_any(city_filter_values, festival.city):
@@ -16931,7 +17297,19 @@ def festivals_list(request: Request, db: Session = Depends(get_db)):
         ):
             continue
 
+        if q:
+            festival_name_match_scores[festival.id] = name_match_score
         filtered.append(festival)
+
+    if q:
+        filtered.sort(
+            key=lambda item: (
+                -festival_name_match_scores.get(item.id, 0),
+                item.event_date is None,
+                item.event_date or date.max,
+                (item.name or "").casefold(),
+            )
+        )
 
     home_city_value = user.home_city or ""
     home_city_values = split_city_values(home_city_value)
@@ -17022,7 +17400,7 @@ def festivals_list(request: Request, db: Session = Depends(get_db)):
         get_options(db, user.id, "coproplayer"),
     )
 
-    show_summary = not any([city_filter, nomination_filter, coproplayer_filter, only_going])
+    show_summary = not any([q, city_filter, nomination_filter, coproplayer_filter, only_going])
 
     moderator_announcements: list[FestivalAnnouncement] = []
     if is_moderator_user(user):
@@ -17067,6 +17445,7 @@ def festivals_list(request: Request, db: Session = Depends(get_db)):
         festivals=filtered,
         planned_festival_names=planned_festival_names,
         shared_planned_festival_names=shared_planned_festival_names,
+        q=q,
         city_filter=city_filter,
         nomination_filter=nomination_filter,
         coproplayer_filter=coproplayer_filter,
@@ -17499,6 +17878,16 @@ async def festivals_create(request: Request, db: Session = Depends(get_db)):
     db.add(festival)
     db.flush()
     notify_count = notify_coproplayer_conflicts_for_festival(db, festival=festival, owner=user)
+    notify_admin_about_similar_festival_names(
+        db,
+        name=festival.name,
+        city=festival.city,
+        event_date=festival.event_date,
+        source_announcement_id=festival.source_announcement_id,
+        import_source=festival.import_source,
+        import_external_id=festival.import_external_id,
+        exclude_festival_id=festival.id,
+    )
     db.commit()
 
     if notify_count:
@@ -17598,6 +17987,16 @@ async def festivals_update(festival_id: int, request: Request, db: Session = Dep
         merge_unique(DEFAULT_NOMINATIONS, festival_nomination_titles(festival), as_list(festival.planned_nominations_json)),
     )
     remember_options(db, user.id, "festival", [festival.name])
+    notify_admin_about_similar_festival_names(
+        db,
+        name=festival.name,
+        city=festival.city,
+        event_date=festival.event_date,
+        source_announcement_id=festival.source_announcement_id,
+        import_source=festival.import_source,
+        import_external_id=festival.import_external_id,
+        exclude_festival_id=festival.id,
+    )
     db.commit()
 
     if global_festival_edit_mode:

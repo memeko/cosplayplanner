@@ -155,6 +155,10 @@
   <h2>Фильтры (для фестивалей, куда вы идёте)</h2>
   <form method="get" action="/festivals" class="grid four-col">
     <label>
+      Название
+      <input type="text" name="q" value="{{ q }}" placeholder="Начало названия или поиск с опечаткой" />
+    </label>
+    <label>
       Город
       <input type="text" name="city" value="{{ city_filter }}" list="city-options" />
       <datalist id="city-options">

@@ -9,10 +9,11 @@
   {% set seo_title = title or project_name or "Cosplay Planner" %}
   {% set seo_description = seo_description or default_seo_description %}
   {% set seo_keywords = seo_keywords or default_seo_keywords %}
+  {% set seo_robots = seo_robots or "index,follow,max-image-preview:large,max-snippet:-1,max-video-preview:-1" %}
   <title>{{ seo_title }}</title>
   <meta name="description" content="{{ seo_description }}" />
   <meta name="keywords" content="{{ seo_keywords }}" />
-  <meta name="robots" content="index,follow,max-image-preview:large,max-snippet:-1,max-video-preview:-1" />
+  <meta name="robots" content="{{ seo_robots }}" />
   <link rel="canonical" href="{{ site_url ~ request.url.path }}" />
   <meta property="og:locale" content="ru_RU" />
   <meta property="og:type" content="website" />

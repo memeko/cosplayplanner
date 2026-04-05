@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="section-head">
+  <h1>Страница не найдена</h1>
+</section>
+
+<section class="box error-page-card">
+  <div class="error-page-layout">
+    <div class="error-page-copy">
+      <span class="chip">Ошибка 404</span>
+      <h2>Лис всё обыскал, но такой страницы нет.</h2>
+      <p class="muted">
+        Возможно, ссылка устарела, страница была перенесена или в адресе закралась опечатка.
+      </p>
+      {% if request.url.path and request.url.path != "/" %}
+        <p class="meta">Запрошенный адрес: <code>{{ request.url.path }}</code></p>
+      {% endif %}
+      <div class="actions-inline top-offset">
+        <a href="/" class="btn btn-accent">Вернуться на главную</a>
+      </div>
+    </div>
+    <div class="error-page-art" aria-hidden="true">
+      <img src="/static/foxy.png" alt="" class="error-page-image" />
+    </div>
+  </div>
+</section>
+{% endblock %}
