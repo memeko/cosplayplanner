@@ -40,7 +40,7 @@ from markupsafe import Markup
 from passlib.context import CryptContext
 from PIL import Image, ImageOps, UnidentifiedImageError
 from sqlalchemy import and_, func, inspect, or_, select, text
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.gzip import GZipMiddleware
@@ -789,6 +789,17 @@ def apply_schema_migrations() -> None:
         "in_progress_cards": [
             ("is_frozen", "BOOLEAN NOT NULL DEFAULT 0"),
             ("task_rows_json", "JSON NOT NULL DEFAULT '[]'"),
+        ],
+        "rehearsal_cards": [
+            ("deadline_date", "DATE"),
+            ("updated_at", "DATETIME DEFAULT CURRENT_TIMESTAMP"),
+        ],
+        "rehearsal_entries": [
+            ("proposed_by_user_id", "INTEGER"),
+            ("source_type", "VARCHAR(32) NOT NULL DEFAULT 'participant'"),
+            ("status", "VARCHAR(32) NOT NULL DEFAULT 'approved'"),
+            ("entry_time", "VARCHAR(8)"),
+            ("updated_at", "DATETIME DEFAULT CURRENT_TIMESTAMP"),
         ],
         "festivals": [
             ("event_end_date", "DATE"),
@@ -11040,15 +11051,19 @@ def in_progress_list(request: Request, db: Session = Depends(get_db)):
         )
 
     if progress_card_ids:
-        leader_entries = db.execute(
-            select(RehearsalEntry)
-            .where(
-                RehearsalEntry.user_id == user.id,
-                RehearsalEntry.source_type == REHEARSAL_SOURCE_LEADER,
-                RehearsalEntry.cosplan_card_id.in_(progress_card_ids),
-            )
-            .order_by(RehearsalEntry.entry_date, RehearsalEntry.entry_time, RehearsalEntry.id)
-        ).scalars().all()
+        try:
+            leader_entries = db.execute(
+                select(RehearsalEntry)
+                .where(
+                    RehearsalEntry.user_id == user.id,
+                    RehearsalEntry.source_type == REHEARSAL_SOURCE_LEADER,
+                    RehearsalEntry.cosplan_card_id.in_(progress_card_ids),
+                )
+                .order_by(RehearsalEntry.entry_date, RehearsalEntry.entry_time, RehearsalEntry.id)
+            ).scalars().all()
+        except OperationalError:
+            db.rollback()
+            leader_entries = []
         for entry in leader_entries:
             leader_rehearsals_by_card[entry.cosplan_card_id].append(entry)
 
