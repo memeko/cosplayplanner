@@ -7,7 +7,7 @@
   <h1>{{ studio.name }}</h1>
   <div class="actions-inline">
     <a href="/community/studios" class="btn">Назад к студиям</a>
-    {% if user and user.id == studio.user_id %}
+    {% if can_manage_studio %}
       <a href="/community/studios/{{ studio.id }}/edit" class="btn">Редактировать</a>
       <form method="post" action="/community/studios/{{ studio.id }}/delete" onsubmit="return confirm('Удалить карточку студии?');">
         <button type="submit" class="btn btn-danger">Удалить</button>

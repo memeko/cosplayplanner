@@ -67,7 +67,7 @@
           <a href="{{ button.url }}" target="_blank" rel="noreferrer" class="btn btn-small btn-platform">{{ button.label }}</a>
         {% endfor %}
         <a href="/community/studios/{{ studio.id }}" class="btn">Подробнее</a>
-        {% if user and user.id == studio.user_id %}
+        {% if user and (user.id == studio.user_id or user_is_special(user)) %}
           <a href="/community/studios/{{ studio.id }}/edit" class="btn">Редактировать</a>
           <form method="post" action="/community/studios/{{ studio.id }}/delete" onsubmit="return confirm('Удалить карточку студии?');">
             <button type="submit" class="btn btn-danger">Удалить</button>

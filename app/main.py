@@ -1304,12 +1304,28 @@ def is_smm_manager_user(user: User | None) -> bool:
     return bool(getattr(user, "_is_smm_manager", False)) if user else False
 
 
+def can_edit_master_card(user: User | None, master: CommunityMaster | None) -> bool:
+    if not user or not master:
+        return False
+    if master.user_id == user.id:
+        return True
+    return user_is_special(user)
+
+
 def can_manage_master(user: User | None, master: CommunityMaster | None) -> bool:
     if not user or not master:
         return False
     if master.user_id == user.id:
         return True
     return user_is_special(user) and bool(master.import_source)
+
+
+def can_manage_studio(user: User | None, studio: CommunityStudio | None) -> bool:
+    if not user or not studio:
+        return False
+    if studio.user_id == user.id:
+        return True
+    return user_is_special(user)
 
 
 def can_manage_project_board_post(user: User | None, post: ProjectSearchPost | None) -> bool:
@@ -14551,6 +14567,7 @@ def community_masters_detail(master_id: int, request: Request, db: Session = Dep
         rating_count=rating_count_by_master.get(master.id, 0),
         user_rating=user_rating_by_master.get(master.id, 0),
         import_source_labels=IMPORT_SOURCE_LABELS,
+        can_edit_master_card=can_edit_master_card(user, master),
         can_manage_master=can_manage_master(user, master),
     )
 
@@ -14565,8 +14582,8 @@ def community_masters_edit(master_id: int, request: Request, db: Session = Depen
     if not master:
         add_flash(request, "Карточка мастера не найдена.", "error")
         return redirect("/community/masters")
-    if not can_manage_master(user, master):
-        add_flash(request, "Редактировать можно только свою карточку мастера.", "error")
+    if not can_edit_master_card(user, master):
+        add_flash(request, "Недостаточно прав для редактирования карточки мастера.", "error")
         return redirect(f"/community/masters/{master_id}")
 
     return template_response(
@@ -14592,8 +14609,8 @@ async def community_masters_update(master_id: int, request: Request, db: Session
     if not master:
         add_flash(request, "Карточка мастера не найдена.", "error")
         return redirect("/community/masters")
-    if not can_manage_master(user, master):
-        add_flash(request, "Редактировать можно только свою карточку мастера.", "error")
+    if not can_edit_master_card(user, master):
+        add_flash(request, "Недостаточно прав для редактирования карточки мастера.", "error")
         return redirect(f"/community/masters/{master_id}")
 
     form = await request.form()
@@ -14778,8 +14795,8 @@ def community_masters_delete(master_id: int, request: Request, db: Session = Dep
     if not master:
         add_flash(request, "Карточка мастера не найдена.", "error")
         return redirect("/community/masters")
-    if not can_manage_master(user, master):
-        add_flash(request, "Удалять можно только свою карточку мастера.", "error")
+    if not can_edit_master_card(user, master):
+        add_flash(request, "Недостаточно прав для удаления карточки мастера.", "error")
         return redirect(f"/community/masters/{master_id}")
 
     db.delete(master)
@@ -15329,6 +15346,7 @@ def community_studios_detail(studio_id: int, request: Request, db: Session = Dep
         studio_tags=normalize_studio_tags(as_list(studio.tags_json)),
         comments=comments,
         authors_by_id=authors_by_id,
+        can_manage_studio=can_manage_studio(user, studio),
     )
 
 
@@ -15342,8 +15360,8 @@ def community_studios_edit(studio_id: int, request: Request, db: Session = Depen
     if not studio:
         add_flash(request, "Карточка студии не найдена.", "error")
         return redirect("/community/studios")
-    if studio.user_id != user.id:
-        add_flash(request, "Редактировать можно только свою карточку студии.", "error")
+    if not can_manage_studio(user, studio):
+        add_flash(request, "Недостаточно прав для редактирования карточки студии.", "error")
         return redirect(f"/community/studios/{studio_id}")
 
     return template_response(
@@ -15369,8 +15387,8 @@ async def community_studios_update(studio_id: int, request: Request, db: Session
     if not studio:
         add_flash(request, "Карточка студии не найдена.", "error")
         return redirect("/community/studios")
-    if studio.user_id != user.id:
-        add_flash(request, "Редактировать можно только свою карточку студии.", "error")
+    if not can_manage_studio(user, studio):
+        add_flash(request, "Недостаточно прав для редактирования карточки студии.", "error")
         return redirect(f"/community/studios/{studio_id}")
 
     form = await request.form()
@@ -15394,8 +15412,8 @@ def community_studios_delete(studio_id: int, request: Request, db: Session = Dep
     if not studio:
         add_flash(request, "Карточка студии не найдена.", "error")
         return redirect("/community/studios")
-    if studio.user_id != user.id:
-        add_flash(request, "Удалять можно только свою карточку студии.", "error")
+    if not can_manage_studio(user, studio):
+        add_flash(request, "Недостаточно прав для удаления карточки студии.", "error")
         return redirect(f"/community/studios/{studio_id}")
 
     db.delete(studio)

@@ -8,7 +8,7 @@
   <h1><span class="{% if nick_is_special(master.nick) %}nick-special{% endif %}">@{{ master.nick }}</span></h1>
   <div class="actions-inline">
     <a href="/community/masters" class="btn">Назад к мастерам</a>
-    {% if can_manage_master %}
+    {% if can_edit_master_card %}
       <a href="/community/masters/{{ master.id }}/edit" class="btn">Редактировать</a>
       <form method="post" action="/community/masters/{{ master.id }}/delete" onsubmit="return confirm('Удалить карточку мастера?');">
         <button type="submit" class="btn btn-danger">Удалить</button>
@@ -144,7 +144,7 @@
   {% endif %}
 </section>
 
-{% if user and not can_manage_master and master.allow_site_orders %}
+{% if user and not can_edit_master_card and master.allow_site_orders %}
 <section class="box" id="master-order-form">
   <h3>Записаться!</h3>
   <form method="post" action="/community/masters/{{ master.id }}/orders" class="grid one-col top-offset">
@@ -183,7 +183,7 @@
     </div>
   </form>
 </section>
-{% elif user and not can_manage_master %}
+{% elif user and not can_edit_master_card %}
 <section class="box" id="master-order-form">
   <h3>Заявки через сайт отключены</h3>
   <p class="muted top-offset">Этот мастер не принимает заявки через сайт. Для связи используйте кнопки контактов выше.</p>

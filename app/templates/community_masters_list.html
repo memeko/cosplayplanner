@@ -73,10 +73,10 @@
       {% endif %}
       <div class="actions-inline">
         <a href="/community/masters/{{ master.id }}" class="btn">Подробнее</a>
-        {% if user and not (user.id == master.user_id or (user_is_special(user) and master.import_source)) and master.allow_site_orders %}
+        {% if user and not (user.id == master.user_id or user_is_special(user)) and master.allow_site_orders %}
           <a href="/community/masters/{{ master.id }}#master-order-form" class="btn btn-accent">Записаться!</a>
         {% endif %}
-        {% if user and (user.id == master.user_id or (user_is_special(user) and master.import_source)) %}
+        {% if user and (user.id == master.user_id or user_is_special(user)) %}
           <a href="/community/masters/{{ master.id }}/edit" class="btn">Редактировать</a>
           <form method="post" action="/community/masters/{{ master.id }}/delete" onsubmit="return confirm('Удалить карточку мастера?');">
             <button type="submit" class="btn btn-danger">Удалить</button>
