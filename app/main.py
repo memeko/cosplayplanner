@@ -6418,6 +6418,54 @@ def conflict_subject_from_message(message: str | None) -> str:
     return (match.group(1).strip() if match else "")
 
 
+def parse_duplicate_festival_notification(message: str | None) -> dict[str, Any] | None:
+    text_value = (message or "").strip()
+    if not text_value:
+        return None
+    lower_text = text_value.casefold()
+    if "похожие названия карточек фестиваля" not in lower_text and "несколько карточек фестиваля с названием" not in lower_text:
+        return None
+
+    city_match = re.search(r"Город:\s*(.+?)\.\s*Дата:", text_value, flags=re.DOTALL)
+    date_match = re.search(r"Дата:\s*(\d{2}-\d{2}-\d{4})", text_value)
+    if not city_match or not date_match:
+        return None
+
+    city_value = str(city_match.group(1) or "").strip()
+    try:
+        event_date = datetime.strptime(date_match.group(1), "%d-%m-%Y").date()
+    except ValueError:
+        return None
+
+    names: list[str] = []
+    multi_match = re.search(
+        r"Похожие названия карточек фестиваля:\s*(.+?)\.\s*Город:",
+        text_value,
+        flags=re.DOTALL,
+    )
+    if multi_match:
+        names = [value.strip() for value in re.findall(r"«([^»]+)»", multi_match.group(1)) if value.strip()]
+    else:
+        single_match = re.search(
+            r"несколько карточек фестиваля с названием\s+«([^»]+)»",
+            text_value,
+            flags=re.IGNORECASE,
+        )
+        if single_match:
+            name_value = str(single_match.group(1) or "").strip()
+            if name_value:
+                names = [name_value]
+
+    if not city_value or not event_date or not names:
+        return None
+
+    return {
+        "city": city_value,
+        "event_date": event_date,
+        "names": merge_unique(names),
+    }
+
+
 def parse_pigeon_message(message: str | None) -> tuple[str, str] | None:
     text_value = (message or "").strip()
     if not text_value:
@@ -9165,6 +9213,12 @@ def index(request: Request, db: Session = Depends(get_db)):
             else:
                 regular_notifications.append(note)
 
+        mergeable_duplicate_notification_ids: set[int] = set()
+        if is_moderator_user(user):
+            for note in regular_notifications:
+                if len(duplicate_festival_candidates_from_notification(db, note.message)) >= 2:
+                    mergeable_duplicate_notification_ids.add(note.id)
+
         _, _, alias_options = build_user_alias_lookup(db)
         own_aliases = {item.casefold() for item in user_aliases(user)}
         pigeon_alias_options = sorted(
@@ -9192,6 +9246,7 @@ def index(request: Request, db: Session = Depends(get_db)):
             unread_notifications=unread_notifications,
             news_items=news_items,
             can_manage_news=is_moderator_user(user),
+            mergeable_duplicate_notification_ids=mergeable_duplicate_notification_ids,
         )
     return template_response(request, "landing.html", user=None, active_tab=None)
 
@@ -11012,43 +11067,75 @@ def in_progress_list(request: Request, db: Session = Depends(get_db)):
     if not user:
         return redirect("/login")
 
-    progress_items = db.execute(
-        select(InProgressCard)
-        .where(InProgressCard.user_id == user.id)
-        .order_by(InProgressCard.is_frozen.asc(), InProgressCard.updated_at.desc())
-    ).scalars().all()
+    try:
+        progress_items = db.execute(
+            select(InProgressCard)
+            .where(InProgressCard.user_id == user.id)
+            .order_by(InProgressCard.is_frozen.asc(), InProgressCard.updated_at.desc())
+        ).scalars().all()
+    except OperationalError as exc:
+        db.rollback()
+        print(f"[in-progress] schema retry for user {user.id}: {exc}")
+        apply_schema_migrations()
+        try:
+            progress_items = db.execute(
+                select(InProgressCard)
+                .where(InProgressCard.user_id == user.id)
+                .order_by(InProgressCard.is_frozen.asc(), InProgressCard.updated_at.desc())
+            ).scalars().all()
+        except OperationalError as retry_exc:
+            db.rollback()
+            print(f"[in-progress] failed after schema retry for user {user.id}: {retry_exc}")
+            progress_items = []
+
+    safe_progress_items: list[InProgressCard] = []
+    for row in progress_items:
+        try:
+            _ = row.cosplan_card
+        except Exception as exc:
+            db.rollback()
+            print(f"[in-progress] skip broken progress row {row.id} for user {user.id}: {exc}")
+            continue
+        safe_progress_items.append(row)
+
     today = date.today()
     urgent_deadline = today + timedelta(days=14)
     urgent_progress_ids = {
         row.id
-        for row in progress_items
+        for row in safe_progress_items
         if row.cosplan_card
         and row.cosplan_card.project_deadline
         and today <= row.cosplan_card.project_deadline <= urgent_deadline
         and not row.is_frozen
     }
-    progress_card_ids = [row.cosplan_card_id for row in progress_items if row.cosplan_card_id]
+    progress_card_ids = [row.cosplan_card_id for row in safe_progress_items if row.cosplan_card_id]
     leader_rehearsals_by_card: dict[int, list[RehearsalEntry]] = defaultdict(list)
     task_assignees_by_progress: dict[int, list[dict[str, Any]]] = {}
     task_rows_by_progress: dict[int, list[dict[str, Any]]] = {}
     alias_to_username, users_by_username, _ = build_user_alias_lookup(db)
 
-    for row in progress_items:
+    for row in safe_progress_items:
         card = row.cosplan_card
         source_card = resolve_source_card(db, card)
         if not source_card or source_card.plan_type != "project":
             continue
-        task_assignees_by_progress[row.id] = card_task_assignee_options(
-            source_card,
-            alias_to_username,
-            users_by_username,
-        )
-        task_rows_by_progress[row.id] = load_scoped_task_rows(
-            db,
-            source_card,
-            alias_to_username,
-            users_by_username,
-        )
+        try:
+            task_assignees_by_progress[row.id] = card_task_assignee_options(
+                source_card,
+                alias_to_username,
+                users_by_username,
+            )
+            task_rows_by_progress[row.id] = load_scoped_task_rows(
+                db,
+                source_card,
+                alias_to_username,
+                users_by_username,
+            )
+        except Exception as exc:
+            db.rollback()
+            print(f"[in-progress] task block fallback for progress row {row.id}: {exc}")
+            task_assignees_by_progress[row.id] = []
+            task_rows_by_progress[row.id] = []
 
     if progress_card_ids:
         try:
@@ -11072,7 +11159,7 @@ def in_progress_list(request: Request, db: Session = Depends(get_db)):
         "in_progress.html",
         user=user,
         active_tab="in-progress",
-        progress_items=progress_items,
+        progress_items=safe_progress_items,
         urgent_progress_ids=urgent_progress_ids,
         leader_rehearsals_by_card=leader_rehearsals_by_card,
         task_assignees_by_progress=task_assignees_by_progress,
@@ -16584,6 +16671,123 @@ def notify_admin_about_similar_festival_names(
     )
 
 
+def duplicate_festival_candidates_from_notification(db: Session, message: str | None) -> list[Festival]:
+    context = parse_duplicate_festival_notification(message)
+    if not context:
+        return []
+
+    city_value = str(context.get("city") or "").strip()
+    event_date = context.get("event_date")
+    names = [str(value).strip() for value in as_list(context.get("names")) if str(value).strip()]
+    if not city_value or not isinstance(event_date, date) or not names:
+        return []
+
+    rows = db.execute(select(Festival).where(Festival.event_date == event_date)).scalars().all()
+    result: list[Festival] = []
+    seen_ids: set[int] = set()
+    for item in rows:
+        if item.id in seen_ids:
+            continue
+        if not festival_duplicate_context_matches(city_value, event_date, item.city, item.event_date):
+            continue
+        if not any(festival_titles_look_similar(item.name, name) for name in names):
+            continue
+        seen_ids.add(item.id)
+        result.append(item)
+    return result
+
+
+def festival_merge_rank(festival: Festival | None) -> tuple[int, int, int, int, int, int]:
+    if not festival:
+        return (0, 0, 0, 0, 0, 0)
+    name_value = (festival.name or "").strip()
+    return (
+        len(name_value),
+        1 if festival.url else 0,
+        len(festival_nomination_items(festival)),
+        1 if festival.source_announcement_id else 0,
+        1 if festival.import_external_id else 0,
+        int(festival.id or 0),
+    )
+
+
+def build_merged_festival_payload(items: list[Festival]) -> dict[str, Any]:
+    ordered = sorted(items, key=festival_merge_rank, reverse=True)
+    primary = ordered[0]
+    merged_nomination_items = normalize_festival_nomination_items(
+        [nomination for item in ordered for nomination in festival_nomination_items(item)]
+    )
+    shared_notes = [
+        str(item.shared_note or "").strip()
+        for item in ordered
+        if str(item.shared_note or "").strip()
+    ]
+    return {
+        "name": (primary.name or "").strip(),
+        "url": next((item.url for item in ordered if item.url), None),
+        "city": next((item.city for item in ordered if item.city), primary.city),
+        "event_date": next((item.event_date for item in ordered if item.event_date), primary.event_date),
+        "event_end_date": next((item.event_end_date for item in ordered if item.event_end_date), primary.event_end_date),
+        "submission_deadline": next(
+            (item.submission_deadline for item in ordered if item.submission_deadline),
+            primary.submission_deadline,
+        ),
+        "nominations_json": merged_nomination_items,
+        "nomination_1": merged_nomination_items[0]["title"] if len(merged_nomination_items) > 0 else None,
+        "nomination_2": merged_nomination_items[1]["title"] if len(merged_nomination_items) > 1 else None,
+        "nomination_3": merged_nomination_items[2]["title"] if len(merged_nomination_items) > 2 else None,
+        "has_photo_cosplay": any(bool(item.has_photo_cosplay) for item in ordered),
+        "is_partner_festival": any(bool(item.is_partner_festival) for item in ordered),
+        "shared_note": max(shared_notes, key=len) if shared_notes else None,
+        "is_global_announcement": any(bool(item.is_global_announcement) for item in ordered),
+        "source_announcement_id": next(
+            (item.source_announcement_id for item in ordered if item.source_announcement_id),
+            None,
+        ),
+        "import_source": next((item.import_source for item in ordered if item.import_source), None),
+        "import_external_id": next((item.import_external_id for item in ordered if item.import_external_id), None),
+    }
+
+
+def apply_merged_festival_payload(festival: Festival, payload: dict[str, Any]) -> None:
+    festival.name = str(payload.get("name") or "").strip() or festival.name
+    festival.url = payload.get("url")
+    festival.city = payload.get("city")
+    festival.event_date = payload.get("event_date")
+    festival.event_end_date = payload.get("event_end_date")
+    festival.submission_deadline = payload.get("submission_deadline")
+    festival.nominations_json = as_list(payload.get("nominations_json"))
+    festival.nomination_1 = payload.get("nomination_1")
+    festival.nomination_2 = payload.get("nomination_2")
+    festival.nomination_3 = payload.get("nomination_3")
+    festival.has_photo_cosplay = bool(payload.get("has_photo_cosplay"))
+    festival.is_partner_festival = bool(payload.get("is_partner_festival"))
+    festival.shared_note = payload.get("shared_note")
+    festival.is_global_announcement = bool(payload.get("is_global_announcement"))
+    festival.source_announcement_id = payload.get("source_announcement_id")
+    festival.import_source = payload.get("import_source")
+    festival.import_external_id = payload.get("import_external_id")
+
+
+def duplicate_festival_notification_signature(message: str | None) -> str:
+    context = parse_duplicate_festival_notification(message)
+    if not context:
+        return ""
+    city_key = normalize_city(str(context.get("city") or ""))
+    event_date = context.get("event_date")
+    date_key = event_date.isoformat() if isinstance(event_date, date) else ""
+    name_keys = sorted(
+        {
+            normalize_event_name_key(name)
+            for name in as_list(context.get("names"))
+            if normalize_event_name_key(name)
+        }
+    )
+    if not city_key or not date_key or not name_keys:
+        return ""
+    return f"{date_key}|{city_key}|{'|'.join(name_keys)}"
+
+
 def festivals_look_like_duplicates(
     left_name: str | None,
     left_city: str | None,
@@ -17710,6 +17914,102 @@ async def festivals_notification_ignore(notification_id: int, request: Request, 
     form = await request.form()
     next_url = safe_redirect_target(str(form.get("next", "")).strip(), "/festivals")
     add_flash(request, "Оповещение скрыто: конфликт больше не учитывается.", "info")
+    return redirect(next_url)
+
+
+@app.post("/festivals/notifications/{notification_id}/merge-duplicate")
+async def festivals_notification_merge_duplicate(notification_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    if not user_is_special(user):
+        add_flash(request, "Объединение дублей доступно только администратору.", "error")
+        return redirect("/")
+
+    notification = db.execute(
+        select(FestivalNotification).where(
+            FestivalNotification.id == notification_id,
+            FestivalNotification.user_id == user.id,
+        )
+    ).scalar_one_or_none()
+    if not notification:
+        add_flash(request, "Оповещение не найдено.", "error")
+        return redirect("/")
+
+    form = await request.form()
+    next_url = safe_redirect_target(str(form.get("next", "")).strip(), "/")
+    duplicate_items = duplicate_festival_candidates_from_notification(db, notification.message)
+    if len(duplicate_items) < 2:
+        add_flash(request, "Для этого оповещения не удалось найти минимум две карточки для объединения.", "error")
+        return redirect(next_url)
+
+    merge_payload = build_merged_festival_payload(duplicate_items)
+    merged_name = str(merge_payload.get("name") or "").strip()
+    merged_nomination_keys = {
+        normalize_nomination_title_key(item.get("title"))
+        for item in as_list(merge_payload.get("nominations_json"))
+        if isinstance(item, dict) and normalize_nomination_title_key(item.get("title"))
+    }
+
+    grouped_by_user: dict[int, list[Festival]] = defaultdict(list)
+    duplicate_announcement_ids: set[int] = set()
+    for item in duplicate_items:
+        grouped_by_user[int(item.user_id)].append(item)
+        if item.source_announcement_id:
+            duplicate_announcement_ids.add(int(item.source_announcement_id))
+
+    deleted_count = 0
+    kept_count = 0
+    for user_items in grouped_by_user.values():
+        keep_row = max(user_items, key=festival_merge_rank)
+        kept_count += 1
+        apply_merged_festival_payload(keep_row, merge_payload)
+        keep_row.is_going = any(bool(item.is_going) for item in user_items)
+        keep_row.going_coproplayers_json = merge_unique(
+            *[as_list(item.going_coproplayers_json) for item in user_items]
+        )
+        merged_planned_titles = merge_unique_nomination_titles(
+            *[as_list(item.planned_nominations_json) for item in user_items]
+        )
+        keep_row.planned_nominations_json = [
+            title
+            for title in merged_planned_titles
+            if normalize_nomination_title_key(title) in merged_nomination_keys
+        ]
+
+        for item in user_items:
+            if item.id == keep_row.id:
+                continue
+            db.delete(item)
+            deleted_count += 1
+
+    for announcement_id in duplicate_announcement_ids:
+        remaining = db.execute(
+            select(Festival.id).where(Festival.source_announcement_id == announcement_id)
+        ).scalars().first()
+        if remaining:
+            continue
+        source_announcement = db.get(FestivalAnnouncement, announcement_id)
+        if source_announcement:
+            db.delete(source_announcement)
+
+    target_signature = duplicate_festival_notification_signature(notification.message)
+    if target_signature:
+        related_notifications = db.execute(
+            select(FestivalNotification).where(FestivalNotification.user_id == user.id)
+        ).scalars().all()
+        for item in related_notifications:
+            if duplicate_festival_notification_signature(item.message) == target_signature:
+                db.delete(item)
+    else:
+        db.delete(notification)
+
+    db.commit()
+    add_flash(
+        request,
+        f"Дубли фестиваля объединены. Оставлено карточек: {kept_count}. Удалено дублей: {deleted_count}. Итоговое название: {merged_name or '—'}.",
+        "success",
+    )
     return redirect(next_url)
 
 

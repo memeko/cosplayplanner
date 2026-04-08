@@ -37,10 +37,18 @@
           {{ note.message|render_text }}
           <span class="muted">({{ note.created_at }})</span>
         </div>
-        <form method="post" action="/festivals/notifications/{{ note.id }}/ignore">
-          <input type="hidden" name="next" value="/" />
-          <button type="submit" class="btn btn-small">Не учитывать</button>
-        </form>
+        <div class="actions-inline">
+          {% if mergeable_duplicate_notification_ids and note.id in mergeable_duplicate_notification_ids %}
+            <form method="post" action="/festivals/notifications/{{ note.id }}/merge-duplicate" onsubmit="return confirm('Объединить дубли фестиваля? Будет оставлена карточка с более длинным названием, остальные удалятся у всех пользователей.');">
+              <input type="hidden" name="next" value="/" />
+              <button type="submit" class="btn btn-small btn-accent">Объединить</button>
+            </form>
+          {% endif %}
+          <form method="post" action="/festivals/notifications/{{ note.id }}/ignore">
+            <input type="hidden" name="next" value="/" />
+            <button type="submit" class="btn btn-small">Не учитывать</button>
+          </form>
+        </div>
       </li>
     {% endfor %}
   </ul>
