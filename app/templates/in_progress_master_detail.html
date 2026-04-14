@@ -1,0 +1,182 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="section-head">
+  <h1>{{ card.name }}</h1>
+  <div class="actions-inline">
+    <a href="/in-progress?scope=master" class="btn">Назад</a>
+    {% if can_edit_master_card %}
+      <a href="/in-progress/master/{{ card.id }}/edit" class="btn">Редактировать</a>
+      <form method="post" action="/in-progress/master/{{ card.id }}/delete" onsubmit="return confirm('Удалить карточку мастера?');">
+        <button type="submit" class="btn btn-danger">Удалить</button>
+      </form>
+    {% endif %}
+  </div>
+</section>
+
+<nav class="calendar-tabs">
+  <a href="/in-progress?scope=cosplayer" class="tab {% if (in_progress_scope or 'cosplayer') == 'cosplayer' %}active{% endif %}">Косплеер</a>
+  <a href="/in-progress?scope=master" class="tab {% if (in_progress_scope or 'cosplayer') == 'master' %}active{% endif %}">Мастер</a>
+</nav>
+
+<section class="box">
+  <div class="row-between">
+    <div class="chips-wrap">
+      <span class="chip">{{ master_work_type_labels.get(card.work_type, "Другое") }}</span>
+      <span class="chip">Статус: {{ card.status_percent or 0 }}%</span>
+    </div>
+  </div>
+  {% if card.title_text %}
+    <p class="meta">Тайтл: {{ card.title_text }}</p>
+  {% endif %}
+  <p class="meta">
+    Исполнитель:
+    {% if owner %}
+      <span class="{% if user_is_special(owner) %}nick-special{% endif %}">@{{ owner.cosplay_nick or owner.username }}</span>
+    {% else %}
+      —
+    {% endif %}
+  </p>
+  <p class="meta">Заказчик: {{ customer_display }}</p>
+  <p class="meta">
+    Ссылка на облако:
+    {% if card.cloud_url %}
+      <a href="{{ card.cloud_url }}" target="_blank" rel="noreferrer">Открыть</a>
+    {% else %}
+      —
+    {% endif %}
+  </p>
+  {% if card.note %}
+    <p class="notes-block">{{ card.note|render_text }}</p>
+  {% endif %}
+</section>
+
+<section class="box">
+  <h3>Список задач</h3>
+  {% if task_rows %}
+    <ul class="checklist top-offset">
+      {% for row in task_rows %}
+        <li>
+          <span class="{% if row.done == '__YES__' %}done{% endif %}">{{ row.text }}</span>
+          {% if row.done == '__YES__' %}
+            <span class="chip">Готово</span>
+          {% endif %}
+        </li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <p class="muted top-offset">Список задач пуст.</p>
+  {% endif %}
+</section>
+
+<section class="box">
+  <h3>Материалы к покупке</h3>
+  {% if material_rows %}
+    <div class="top-offset">
+      <table class="table">
+        <thead>
+          <tr>
+            <th>Материал</th>
+            <th>Ссылка</th>
+            <th>Цена</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in material_rows %}
+            <tr>
+              <td>{{ row.name or '—' }}</td>
+              <td>
+                {% if row.url %}
+                  <a href="{{ row.url }}" target="_blank" rel="noreferrer">Открыть</a>
+                {% else %}
+                  —
+                {% endif %}
+              </td>
+              <td>{% if row.price %}{{ row.price }} ₽{% else %}—{% endif %}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      <p class="meta top-offset">Общая сумма: <strong>{{ '%.2f'|format(material_total or 0) }} ₽</strong></p>
+    </div>
+  {% else %}
+    <p class="muted top-offset">Материалы не добавлены.</p>
+  {% endif %}
+</section>
+
+<section class="box">
+  <h3>Мерки</h3>
+  {% if measurement_rows %}
+    <div class="top-offset">
+      <table class="table">
+        <thead>
+          <tr>
+            <th>Название</th>
+            <th>Значение</th>
+            <th>Ед. изм.</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in measurement_rows %}
+            <tr>
+              <td>{{ row.name or '—' }}</td>
+              <td>{{ row.value or '—' }}</td>
+              <td>{{ row.unit or '—' }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <p class="muted top-offset">Мерки не заполнены.</p>
+  {% endif %}
+</section>
+
+<section class="box">
+  <h3>Референсы</h3>
+  {% if references %}
+    <div class="reference-grid top-offset">
+      {% for url in references %}
+        <a class="reference-tile" href="{{ url }}" target="_blank" rel="noreferrer">
+          <img src="{{ url }}" alt="Референс" loading="lazy" />
+        </a>
+      {% endfor %}
+    </div>
+  {% else %}
+    <p class="muted top-offset">Референсы не добавлены.</p>
+  {% endif %}
+</section>
+
+<section class="box">
+  <h3>Комментарии</h3>
+  {% if comments %}
+    <div class="comments-list top-offset">
+      {% for comment in comments %}
+        {% set author = authors_by_id.get(comment.user_id) %}
+        <article class="comment-card">
+          <p class="comment-meta">
+            {% if author %}
+              <span class="{% if user_is_special(author) %}nick-special{% endif %}">@{{ author.cosplay_nick or author.username }}</span>
+            {% else %}
+              @unknown
+            {% endif %}
+            • {{ comment.created_at.strftime('%d-%m-%Y %H:%M') if comment.created_at else '—' }}
+          </p>
+          <p class="notes-block">{{ comment.body|render_text }}</p>
+        </article>
+      {% endfor %}
+    </div>
+  {% else %}
+    <p class="muted top-offset">Комментариев пока нет.</p>
+  {% endif %}
+
+  <form method="post" action="/in-progress/master/{{ card.id }}/comments" class="comment-form top-offset">
+    <label>
+      Новое сообщение
+      <textarea name="body" rows="4" maxlength="5000" placeholder="Введите текст комментария" required></textarea>
+    </label>
+    <div class="actions-inline">
+      <button type="submit" class="btn btn-accent">Отправить</button>
+    </div>
+  </form>
+</section>
+{% endblock %}

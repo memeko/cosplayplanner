@@ -4,6 +4,10 @@
   <h1>В работе</h1>
   <a href="/cosplan" class="btn">Добавить из косплана</a>
 </section>
+<nav class="calendar-tabs">
+  <a href="/in-progress?scope=cosplayer" class="tab {% if (in_progress_scope or 'cosplayer') == 'cosplayer' %}active{% endif %}">Косплеер</a>
+  <a href="/in-progress?scope=master" class="tab {% if (in_progress_scope or 'cosplayer') == 'master' %}active{% endif %}">Мастер</a>
+</nav>
 
 <style>
   .tasks-table {

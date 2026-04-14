@@ -1,0 +1,389 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="section-head">
+  <h1>{{ "Редактирование карточки мастера" if editing else "Новая карточка мастера" }}</h1>
+  <a href="{{ '/in-progress/master/' ~ card_id if editing else '/in-progress?scope=master' }}" class="btn">Назад</a>
+</section>
+
+<nav class="calendar-tabs">
+  <a href="/in-progress?scope=cosplayer" class="tab {% if (in_progress_scope or 'cosplayer') == 'cosplayer' %}active{% endif %}">Косплеер</a>
+  <a href="/in-progress?scope=master" class="tab {% if (in_progress_scope or 'cosplayer') == 'master' %}active{% endif %}">Мастер</a>
+</nav>
+
+<form method="post" action="{{ '/in-progress/master/' ~ card_id ~ '/edit' if editing else '/in-progress/master/new' }}" class="grid one-col big-form">
+  <section class="box">
+    <div class="grid two-col">
+      <label>
+        Тип *
+        <select name="work_type" required>
+          {% for option in master_work_type_options %}
+            <option value="{{ option }}" {% if form.work_type == option %}selected{% endif %}>{{ master_work_type_labels.get(option, option) }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>
+        Статус: <span id="status_percent_value">{{ form.status_percent or 0 }}</span>%
+        <input type="range" name="status_percent" id="status_percent_input" min="0" max="100" value="{{ form.status_percent or 0 }}" />
+      </label>
+    </div>
+
+    <div class="grid two-col">
+      <label>
+        Название *
+        <input type="text" name="name" value="{{ form.name }}" maxlength="255" required />
+      </label>
+      <label>
+        Тайтл
+        <input type="text" name="title_text" value="{{ form.title_text }}" maxlength="255" />
+      </label>
+    </div>
+
+    <div class="grid two-col">
+      <label>
+        Заказчик (пользователь)
+        <input type="text" name="customer_alias" value="{{ form.customer_alias }}" placeholder="@nickname" list="customer-alias-options" />
+        <datalist id="customer-alias-options">
+          {% for value in customer_alias_options %}
+            <option value="{{ value }}"></option>
+          {% endfor %}
+        </datalist>
+      </label>
+      <label>
+        Заказчик (произвольный текст)
+        <input type="text" name="customer_name" value="{{ form.customer_name }}" maxlength="255" placeholder="Имя / @ник / студия" />
+      </label>
+    </div>
+
+    <label>
+      Комментарий
+      <textarea name="note" rows="7" maxlength="12000">{{ form.note }}</textarea>
+    </label>
+    <label>
+      Ссылка на облако
+      <input type="url" name="cloud_url" value="{{ form.cloud_url }}" placeholder="https://..." />
+    </label>
+  </section>
+
+  <section class="box">
+    <div class="row-between">
+      <h3>Список задач</h3>
+      <button type="button" class="btn" id="add-task-row">Добавить задачу</button>
+    </div>
+    <div class="master-price-rows" id="task_rows_wrap">
+      {% for row in form.task_rows %}
+        <div class="master-price-row task-row">
+          <input type="hidden" name="task_row_id" value="{{ row.row_id }}" />
+          <label>
+            Задача
+            <input type="text" name="task_text" value="{{ row.text }}" />
+          </label>
+          <label class="inline-check top-offset">
+            <input type="checkbox" name="task_done" value="{{ row.row_id }}" {% if row.done == '__YES__' %}checked{% endif %} />
+            Выполнено
+          </label>
+          <button type="button" class="btn btn-danger remove-task-row">Удалить</button>
+        </div>
+      {% endfor %}
+    </div>
+  </section>
+
+  <section class="box">
+    <div class="row-between">
+      <h3>Материалы к покупке</h3>
+      <button type="button" class="btn" id="add-material-row">Добавить материал</button>
+    </div>
+    <p class="meta">Сумма: <strong id="materials-total-value">0</strong> ₽</p>
+    <div class="master-price-rows" id="material_rows_wrap">
+      {% for row in form.material_rows %}
+        <div class="master-price-row material-row">
+          <input type="hidden" name="material_row_id" value="{{ row.row_id }}" />
+          <label>
+            Материал
+            <input type="text" name="material_name" value="{{ row.name }}" />
+          </label>
+          <label>
+            Ссылка
+            <input type="url" name="material_url" value="{{ row.url }}" placeholder="https://..." />
+          </label>
+          <label>
+            Цена
+            <input type="number" name="material_price" value="{{ row.price }}" min="0" step="0.01" />
+          </label>
+          <button type="button" class="btn btn-danger remove-material-row">Удалить</button>
+        </div>
+      {% endfor %}
+    </div>
+  </section>
+
+  <section class="box">
+    <div class="row-between">
+      <h3>Мерки</h3>
+      <button type="button" class="btn" id="add-measurement-row">Добавить мерку</button>
+    </div>
+    <div class="master-price-rows" id="measurement_rows_wrap">
+      {% for row in form.measurement_rows %}
+        <div class="master-price-row measurement-row">
+          <input type="hidden" name="measurement_row_id" value="{{ row.row_id }}" />
+          <label>
+            Название
+            <input type="text" name="measurement_name" value="{{ row.name }}" />
+          </label>
+          <label>
+            Значение
+            <input type="text" name="measurement_value" value="{{ row.value }}" />
+          </label>
+          <label>
+            Ед. измерения
+            <input type="text" name="measurement_unit" value="{{ row.unit }}" />
+          </label>
+          <button type="button" class="btn btn-danger remove-measurement-row">Удалить</button>
+        </div>
+      {% endfor %}
+    </div>
+  </section>
+
+  <section class="box">
+    <h3>Референсы (до 10 ссылок)</h3>
+    <label>
+      Ссылки на картинки (по одной на строку)
+      <textarea name="references_input" id="references_input" rows="5" placeholder="https://...">{{ form.references_input }}</textarea>
+    </label>
+    <div class="gallery-upload-row">
+      <input type="file" id="references_upload_files" accept="image/*" multiple />
+      <button type="button" class="btn" id="references_upload_btn">Загрузить фото</button>
+      <span class="muted" id="references_upload_status"></span>
+    </div>
+    <div class="reference-grid" id="references_preview"></div>
+  </section>
+
+  <div class="actions-inline">
+    <button type="submit" class="btn btn-accent">{{ "Сохранить" if editing else "Создать" }}</button>
+    <a href="{{ '/in-progress/master/' ~ card_id if editing else '/in-progress?scope=master' }}" class="btn">Отмена</a>
+  </div>
+</form>
+
+<script>
+(function () {
+  function parseListEntries(value) {
+    if (!value) return [];
+    const normalized = value.replace(/,\s*(?=(?:https?:\/\/|\/media\/|iframe:|<iframe))/gi, '\n');
+    return normalized
+      .split(/\n|;/)
+      .map((item) => item.trim())
+      .map((item) => item.replace(/[;,]+$/, ''))
+      .filter(Boolean);
+  }
+
+  function createImageTile(url) {
+    const link = document.createElement('a');
+    link.className = 'reference-tile';
+    link.href = url;
+    link.target = '_blank';
+    link.rel = 'noreferrer';
+
+    const image = document.createElement('img');
+    image.src = url;
+    image.alt = 'Референс';
+    link.appendChild(image);
+    return link;
+  }
+
+  function appendUrlsToTextarea(textarea, urls) {
+    if (!textarea || !urls.length) return;
+    const existing = textarea.value ? `${textarea.value}\n` : '';
+    textarea.value = `${existing}${urls.join('\n')}`.trim();
+  }
+
+  function updateReferencesPreview() {
+    const input = document.getElementById('references_input');
+    const wrap = document.getElementById('references_preview');
+    if (!input || !wrap) return;
+    wrap.innerHTML = '';
+    const urls = Array.from(new Set(parseListEntries(input.value).filter((value) => /^(https?:\/\/|\/media\/)/i.test(value)))).slice(0, 10);
+    urls.forEach((url) => wrap.appendChild(createImageTile(url)));
+  }
+
+  async function uploadReferenceImages() {
+    const filesInput = document.getElementById('references_upload_files');
+    const status = document.getElementById('references_upload_status');
+    const textarea = document.getElementById('references_input');
+    if (!filesInput || !textarea || !filesInput.files?.length) {
+      if (status) status.textContent = 'Выберите изображение.';
+      return;
+    }
+    if (status) status.textContent = 'Загрузка...';
+
+    const uploadedUrls = [];
+    for (const file of Array.from(filesInput.files)) {
+      const formData = new FormData();
+      formData.append('image', file);
+      try {
+        const response = await fetch('/media/upload-image', {
+          method: 'POST',
+          body: formData,
+          credentials: 'same-origin',
+        });
+        const payload = await response.json();
+        if (!response.ok || !payload?.ok || !payload?.url) {
+          throw new Error(payload?.detail || 'Ошибка загрузки');
+        }
+        uploadedUrls.push(payload.url);
+      } catch (error) {
+        if (status) status.textContent = `Ошибка: ${error.message || 'не удалось загрузить файл'}`;
+        return;
+      }
+    }
+
+    appendUrlsToTextarea(textarea, uploadedUrls);
+    filesInput.value = '';
+    updateReferencesPreview();
+    if (status) status.textContent = `Загружено: ${uploadedUrls.length}`;
+  }
+
+  function bindRemoveButtons(selector, rowSelector) {
+    document.querySelectorAll(selector).forEach((button) => {
+      if (button.dataset.bound === '1') return;
+      button.dataset.bound = '1';
+      button.addEventListener('click', () => {
+        const row = button.closest(rowSelector);
+        if (row) row.remove();
+        updateMaterialsTotal();
+      });
+    });
+  }
+
+  function buildTaskRow(rowId) {
+    const row = document.createElement('div');
+    row.className = 'master-price-row task-row';
+    row.innerHTML = `
+      <input type="hidden" name="task_row_id" value="${rowId}" />
+      <label>
+        Задача
+        <input type="text" name="task_text" value="" />
+      </label>
+      <label class="inline-check top-offset">
+        <input type="checkbox" name="task_done" value="${rowId}" />
+        Выполнено
+      </label>
+      <button type="button" class="btn btn-danger remove-task-row">Удалить</button>
+    `;
+    return row;
+  }
+
+  function buildMaterialRow(rowId) {
+    const row = document.createElement('div');
+    row.className = 'master-price-row material-row';
+    row.innerHTML = `
+      <input type="hidden" name="material_row_id" value="${rowId}" />
+      <label>
+        Материал
+        <input type="text" name="material_name" value="" />
+      </label>
+      <label>
+        Ссылка
+        <input type="url" name="material_url" value="" placeholder="https://..." />
+      </label>
+      <label>
+        Цена
+        <input type="number" name="material_price" value="" min="0" step="0.01" />
+      </label>
+      <button type="button" class="btn btn-danger remove-material-row">Удалить</button>
+    `;
+    return row;
+  }
+
+  function buildMeasurementRow(rowId) {
+    const row = document.createElement('div');
+    row.className = 'master-price-row measurement-row';
+    row.innerHTML = `
+      <input type="hidden" name="measurement_row_id" value="${rowId}" />
+      <label>
+        Название
+        <input type="text" name="measurement_name" value="" />
+      </label>
+      <label>
+        Значение
+        <input type="text" name="measurement_value" value="" />
+      </label>
+      <label>
+        Ед. измерения
+        <input type="text" name="measurement_unit" value="" />
+      </label>
+      <button type="button" class="btn btn-danger remove-measurement-row">Удалить</button>
+    `;
+    return row;
+  }
+
+  function updateMaterialsTotal() {
+    const output = document.getElementById('materials-total-value');
+    if (!output) return;
+    let total = 0;
+    document.querySelectorAll('input[name="material_price"]').forEach((input) => {
+      const value = Number.parseFloat(String(input.value || '').replace(',', '.'));
+      if (Number.isFinite(value)) total += value;
+    });
+    output.textContent = total.toFixed(2);
+  }
+
+  const statusInput = document.getElementById('status_percent_input');
+  const statusValue = document.getElementById('status_percent_value');
+  if (statusInput && statusValue) {
+    const syncStatus = () => {
+      statusValue.textContent = statusInput.value || '0';
+    };
+    statusInput.addEventListener('input', syncStatus);
+    syncStatus();
+  }
+
+  const referencesInput = document.getElementById('references_input');
+  if (referencesInput) {
+    referencesInput.addEventListener('input', updateReferencesPreview);
+    updateReferencesPreview();
+  }
+  const uploadButton = document.getElementById('references_upload_btn');
+  if (uploadButton) {
+    uploadButton.addEventListener('click', uploadReferenceImages);
+  }
+
+  const taskWrap = document.getElementById('task_rows_wrap');
+  const materialWrap = document.getElementById('material_rows_wrap');
+  const measurementWrap = document.getElementById('measurement_rows_wrap');
+
+  const addTaskBtn = document.getElementById('add-task-row');
+  if (addTaskBtn && taskWrap) {
+    addTaskBtn.addEventListener('click', () => {
+      taskWrap.appendChild(buildTaskRow(`task-${Date.now()}-${Math.floor(Math.random() * 1000)}`));
+      bindRemoveButtons('.remove-task-row', '.task-row');
+    });
+  }
+
+  const addMaterialBtn = document.getElementById('add-material-row');
+  if (addMaterialBtn && materialWrap) {
+    addMaterialBtn.addEventListener('click', () => {
+      materialWrap.appendChild(buildMaterialRow(`material-${Date.now()}-${Math.floor(Math.random() * 1000)}`));
+      bindRemoveButtons('.remove-material-row', '.material-row');
+      updateMaterialsTotal();
+    });
+  }
+
+  const addMeasurementBtn = document.getElementById('add-measurement-row');
+  if (addMeasurementBtn && measurementWrap) {
+    addMeasurementBtn.addEventListener('click', () => {
+      measurementWrap.appendChild(buildMeasurementRow(`measure-${Date.now()}-${Math.floor(Math.random() * 1000)}`));
+      bindRemoveButtons('.remove-measurement-row', '.measurement-row');
+    });
+  }
+
+  document.addEventListener('input', (event) => {
+    if (event.target && event.target.name === 'material_price') {
+      updateMaterialsTotal();
+    }
+  });
+
+  bindRemoveButtons('.remove-task-row', '.task-row');
+  bindRemoveButtons('.remove-material-row', '.material-row');
+  bindRemoveButtons('.remove-measurement-row', '.measurement-row');
+  updateMaterialsTotal();
+})();
+</script>
+{% endblock %}

@@ -73,6 +73,8 @@ from .models import (
     FestivalNotification,
     HomeNews,
     InProgressCard,
+    InProgressMasterCard,
+    InProgressMasterComment,
     ProjectSearchPost,
     ProjectSearchComment,
     PersonalCalendarEvent,
@@ -207,6 +209,33 @@ REHEARSAL_STATUS_PROPOSED = "proposed"
 REHEARSAL_STATUS_APPROVED = "approved"
 REHEARSAL_STATUS_ACCEPTED = "accepted"
 REHEARSAL_STATUS_DECLINED = "declined"
+
+IN_PROGRESS_SCOPE_COSPLAYER = "cosplayer"
+IN_PROGRESS_SCOPE_MASTER = "master"
+IN_PROGRESS_SCOPE_OPTIONS = {IN_PROGRESS_SCOPE_COSPLAYER, IN_PROGRESS_SCOPE_MASTER}
+
+MASTER_WORK_TYPE_SEWING = "sewing"
+MASTER_WORK_TYPE_CRAFT = "craft"
+MASTER_WORK_TYPE_3D = "3d"
+MASTER_WORK_TYPE_STYLING = "styling"
+MASTER_WORK_TYPE_RETOUCH = "retouch"
+MASTER_WORK_TYPE_OTHER = "other"
+MASTER_WORK_TYPE_LABELS = {
+    MASTER_WORK_TYPE_SEWING: "Пошив",
+    MASTER_WORK_TYPE_CRAFT: "Крафт",
+    MASTER_WORK_TYPE_3D: "3D",
+    MASTER_WORK_TYPE_STYLING: "Укладка",
+    MASTER_WORK_TYPE_RETOUCH: "Ретушь",
+    MASTER_WORK_TYPE_OTHER: "Другое",
+}
+MASTER_WORK_TYPE_OPTIONS = [
+    MASTER_WORK_TYPE_SEWING,
+    MASTER_WORK_TYPE_CRAFT,
+    MASTER_WORK_TYPE_3D,
+    MASTER_WORK_TYPE_STYLING,
+    MASTER_WORK_TYPE_RETOUCH,
+    MASTER_WORK_TYPE_OTHER,
+]
 
 TITLE_ENTRY_KIND_WATCH = "watch"
 TITLE_ENTRY_KIND_READ = "read"
@@ -790,6 +819,24 @@ def apply_schema_migrations() -> None:
             ("is_frozen", "BOOLEAN NOT NULL DEFAULT 0"),
             ("task_rows_json", "JSON NOT NULL DEFAULT '[]'"),
         ],
+        "in_progress_master_cards": [
+            ("work_type", "VARCHAR(32) NOT NULL DEFAULT 'other'"),
+            ("name", "VARCHAR(255)"),
+            ("title_text", "VARCHAR(255)"),
+            ("customer_name", "VARCHAR(255)"),
+            ("customer_user_id", "INTEGER"),
+            ("task_rows_json", "JSON NOT NULL DEFAULT '[]'"),
+            ("materials_json", "JSON NOT NULL DEFAULT '[]'"),
+            ("note", "TEXT"),
+            ("measurements_json", "JSON NOT NULL DEFAULT '[]'"),
+            ("references_json", "JSON NOT NULL DEFAULT '[]'"),
+            ("cloud_url", "TEXT"),
+            ("status_percent", "INTEGER NOT NULL DEFAULT 0"),
+            ("updated_at", "DATETIME DEFAULT CURRENT_TIMESTAMP"),
+        ],
+        "in_progress_master_comments": [
+            ("body", "TEXT"),
+        ],
         "rehearsal_cards": [
             ("deadline_date", "DATE"),
             ("updated_at", "DATETIME DEFAULT CURRENT_TIMESTAMP"),
@@ -920,6 +967,10 @@ def apply_schema_migrations() -> None:
             TitleEntry.__table__.create(bind=conn, checkfirst=True)
         if "password_reset_tokens" not in existing_tables:
             PasswordResetToken.__table__.create(bind=conn, checkfirst=True)
+        if "in_progress_master_cards" not in existing_tables:
+            InProgressMasterCard.__table__.create(bind=conn, checkfirst=True)
+        if "in_progress_master_comments" not in existing_tables:
+            InProgressMasterComment.__table__.create(bind=conn, checkfirst=True)
 
         community_masters_added_allow_site_orders = False
         festivals_added_partner_flag = False
@@ -2322,6 +2373,18 @@ def normalize_calendar_view(raw: str | None) -> str:
     if value in CALENDAR_VIEW_OPTIONS:
         return value
     return CALENDAR_VIEW_MY
+
+
+def normalize_in_progress_scope(raw: str | None) -> str:
+    value = str(raw or "").strip().lower()
+    if value in IN_PROGRESS_SCOPE_OPTIONS:
+        return value
+    return IN_PROGRESS_SCOPE_COSPLAYER
+
+
+def master_work_type_label(value: str | None) -> str:
+    key = str(value or "").strip().lower()
+    return MASTER_WORK_TYPE_LABELS.get(key, MASTER_WORK_TYPE_LABELS[MASTER_WORK_TYPE_OTHER])
 
 
 def normalize_content_scope(raw: str | None, user: User | None = None) -> str:
@@ -8085,6 +8148,7 @@ def upsert_user_by_vk(
         ).scalars().all()
         for announcement in approved_announcements:
             propagate_approved_announcement(db, announcement, target_user_ids=[user.id])
+        propagate_shared_festivals_to_user(db, user_id=user.id)
 
     try:
         db.commit()
@@ -9168,6 +9232,124 @@ def propagate_approved_announcement(
     return created
 
 
+def shared_festival_seed_candidates(db: Session) -> list[Festival]:
+    rows = db.execute(
+        select(Festival).where(Festival.is_global_announcement.is_(False))
+    ).scalars().all()
+    if not rows:
+        return []
+
+    all_users = db.execute(select(User)).scalars().all()
+    global_editor_ids = {item.id for item in all_users if can_manage_festival_globally(item)}
+
+    grouped: dict[str, list[Festival]] = defaultdict(list)
+    fallback_keys: dict[int, str] = {}
+    for row in rows:
+        key = festival_duplicate_group_key_for_item(row)
+        if not key:
+            key = fallback_keys.setdefault(int(row.id), f"item:{row.id}")
+        grouped[key].append(row)
+
+    result: list[Festival] = []
+    for items in grouped.values():
+        unique_user_ids = {int(item.user_id) for item in items if item.user_id}
+        if not unique_user_ids:
+            continue
+        is_shared_group = (
+            any(bool(item.import_source) for item in items)
+            or len(unique_user_ids) >= 2
+            or bool(unique_user_ids & global_editor_ids)
+        )
+        if not is_shared_group:
+            continue
+        result.append(max(items, key=festival_merge_rank))
+
+    result.sort(key=lambda item: (item.event_date is None, item.event_date or date.max, (item.name or "").casefold()))
+    return result
+
+
+def propagate_shared_festivals_to_user(
+    db: Session,
+    *,
+    user_id: int,
+    seeds: list[Festival] | None = None,
+) -> int:
+    seed_rows = seeds if seeds is not None else shared_festival_seed_candidates(db)
+    if not seed_rows:
+        return 0
+
+    existing_rows = db.execute(
+        select(Festival).where(
+            Festival.user_id == int(user_id),
+            Festival.is_global_announcement.is_(False),
+        )
+    ).scalars().all()
+    existing_group_keys = {
+        key
+        for key in (festival_duplicate_group_key_for_item(item) for item in existing_rows)
+        if key
+    }
+
+    created = 0
+    imported_names: list[str] = []
+    for seed in seed_rows:
+        group_key = festival_duplicate_group_key_for_item(seed)
+        if group_key and group_key in existing_group_keys:
+            continue
+        if any(
+            festivals_look_like_duplicates(
+                item.name,
+                item.city,
+                item.event_date,
+                seed.name,
+                seed.city,
+                seed.event_date,
+            )
+            for item in existing_rows
+        ):
+            if group_key:
+                existing_group_keys.add(group_key)
+            continue
+
+        nomination_items = normalize_festival_nomination_items(festival_nomination_items(seed))
+        created_row = Festival(
+            user_id=int(user_id),
+            name=seed.name,
+            url=seed.url,
+            city=seed.city,
+            event_date=seed.event_date,
+            event_end_date=seed.event_end_date,
+            submission_deadline=seed.submission_deadline,
+            nomination_1=nomination_items[0]["title"] if len(nomination_items) > 0 else None,
+            nomination_2=nomination_items[1]["title"] if len(nomination_items) > 1 else None,
+            nomination_3=nomination_items[2]["title"] if len(nomination_items) > 2 else None,
+            nominations_json=nomination_items,
+            planned_nominations_json=[],
+            has_photo_cosplay=bool(seed.has_photo_cosplay),
+            is_partner_festival=bool(seed.is_partner_festival),
+            shared_note=seed.shared_note,
+            is_going=False,
+            going_coproplayers_json=[],
+            import_source=seed.import_source,
+            import_external_id=seed.import_external_id,
+            is_global_announcement=False,
+        )
+        db.add(created_row)
+        existing_rows.append(created_row)
+        if group_key:
+            existing_group_keys.add(group_key)
+        imported_names.append(seed.name or "")
+        created += 1
+
+    if imported_names:
+        remember_options(db, int(user_id), "festival", [name for name in imported_names if name])
+    return created
+
+
+def ensure_user_has_shared_festivals(db: Session, user_id: int) -> int:
+    return propagate_shared_festivals_to_user(db, user_id=int(user_id))
+
+
 def get_project_search_post_form_values(post: ProjectSearchPost | None = None, user: User | None = None) -> dict[str, Any]:
     default_nick = preferred_user_alias(user) if user else ""
     if not post:
@@ -9399,6 +9581,7 @@ async def register_submit(request: Request, db: Session = Depends(get_db)):
     ).scalars().all()
     for announcement in approved_announcements:
         propagate_approved_announcement(db, announcement, target_user_ids=[user.id])
+    propagate_shared_festivals_to_user(db, user_id=user.id)
     db.commit()
 
     request.session["user_id"] = user.id
@@ -11051,6 +11234,235 @@ def cosplan_delete(card_id: int, request: Request, db: Session = Depends(get_db)
     return redirect("/cosplan")
 
 
+def can_view_in_progress_master_card(user: User | None, card: InProgressMasterCard | None) -> bool:
+    if not user or not card:
+        return False
+    if is_moderator_user(user):
+        return True
+    if int(card.user_id) == int(user.id):
+        return True
+    return bool(card.customer_user_id and int(card.customer_user_id) == int(user.id))
+
+
+def can_edit_in_progress_master_card(user: User | None, card: InProgressMasterCard | None) -> bool:
+    if not user or not card:
+        return False
+    if is_moderator_user(user):
+        return True
+    return int(card.user_id) == int(user.id)
+
+
+def parse_master_work_material_rows_from_form(form: Any) -> list[dict[str, Any]]:
+    row_ids = [str(value).strip() for value in form.getlist("material_row_id")]
+    names = [str(value).strip() for value in form.getlist("material_name")]
+    urls = [str(value).strip() for value in form.getlist("material_url")]
+    prices = [str(value).strip() for value in form.getlist("material_price")]
+    size = max(len(row_ids), len(names), len(urls), len(prices))
+    if size == 0:
+        return []
+
+    rows: list[dict[str, Any]] = []
+    for index in range(size):
+        row_id = row_ids[index] if index < len(row_ids) and row_ids[index] else f"material-{index}"
+        name = names[index] if index < len(names) else ""
+        url = urls[index] if index < len(urls) else ""
+        raw_price = prices[index] if index < len(prices) else ""
+        parsed_price = parse_float(raw_price)
+        if not (name or url or raw_price):
+            continue
+        rows.append(
+            {
+                "row_id": row_id,
+                "name": name,
+                "url": url,
+                "price": parsed_price,
+            }
+        )
+    return rows
+
+
+def format_master_work_material_rows(rows: list[Any]) -> list[dict[str, str]]:
+    formatted: list[dict[str, str]] = []
+    for index, raw_row in enumerate(rows):
+        if not isinstance(raw_row, dict):
+            continue
+        price_value = raw_row.get("price")
+        formatted.append(
+            {
+                "row_id": str(raw_row.get("row_id") or f"material-{index}"),
+                "name": str(raw_row.get("name", "") or ""),
+                "url": str(raw_row.get("url", "") or ""),
+                "price": "" if price_value is None else f"{price_value:g}",
+            }
+        )
+    return formatted
+
+
+def parse_master_work_measurement_rows_from_form(form: Any) -> list[dict[str, str]]:
+    row_ids = [str(value).strip() for value in form.getlist("measurement_row_id")]
+    names = [str(value).strip() for value in form.getlist("measurement_name")]
+    values = [str(value).strip() for value in form.getlist("measurement_value")]
+    units = [str(value).strip() for value in form.getlist("measurement_unit")]
+    size = max(len(row_ids), len(names), len(values), len(units))
+    if size == 0:
+        return []
+
+    rows: list[dict[str, str]] = []
+    for index in range(size):
+        row_id = row_ids[index] if index < len(row_ids) and row_ids[index] else f"measure-{index}"
+        name = names[index] if index < len(names) else ""
+        value = values[index] if index < len(values) else ""
+        unit = units[index] if index < len(units) else ""
+        if not (name or value or unit):
+            continue
+        rows.append(
+            {
+                "row_id": row_id,
+                "name": name,
+                "value": value,
+                "unit": unit,
+            }
+        )
+    return rows
+
+
+def format_master_work_measurement_rows(rows: list[Any]) -> list[dict[str, str]]:
+    formatted: list[dict[str, str]] = []
+    for index, raw_row in enumerate(rows):
+        if not isinstance(raw_row, dict):
+            continue
+        formatted.append(
+            {
+                "row_id": str(raw_row.get("row_id") or f"measure-{index}"),
+                "name": str(raw_row.get("name", "") or ""),
+                "value": str(raw_row.get("value", "") or ""),
+                "unit": str(raw_row.get("unit", "") or ""),
+            }
+        )
+    return formatted
+
+
+def sum_master_material_rows(rows: list[Any]) -> float:
+    total = 0.0
+    for raw_row in rows:
+        if not isinstance(raw_row, dict):
+            continue
+        price = raw_row.get("price")
+        if isinstance(price, (int, float)):
+            total += float(price)
+            continue
+        parsed_price = parse_float(str(price or ""))
+        if parsed_price is not None:
+            total += float(parsed_price)
+    return total
+
+
+def get_in_progress_master_form_values(
+    card: InProgressMasterCard | None = None,
+    *,
+    customer_alias: str = "",
+) -> dict[str, Any]:
+    if not card:
+        return {
+            "work_type": MASTER_WORK_TYPE_OTHER,
+            "name": "",
+            "title_text": "",
+            "customer_alias": customer_alias,
+            "customer_name": "",
+            "task_rows": [{"row_id": "task-0", "text": "", "done": "__NO__"}],
+            "material_rows": [{"row_id": "material-0", "name": "", "url": "", "price": ""}],
+            "note": "",
+            "measurement_rows": [{"row_id": "measure-0", "name": "", "value": "", "unit": ""}],
+            "references_input": "",
+            "cloud_url": "",
+            "status_percent": 0,
+        }
+    return {
+        "work_type": card.work_type or MASTER_WORK_TYPE_OTHER,
+        "name": card.name or "",
+        "title_text": card.title_text or "",
+        "customer_alias": customer_alias,
+        "customer_name": card.customer_name or "",
+        "task_rows": format_checklist_for_form(as_list(card.task_rows_json)),
+        "material_rows": format_master_work_material_rows(as_list(card.materials_json)),
+        "note": card.note or "",
+        "measurement_rows": format_master_work_measurement_rows(as_list(card.measurements_json)),
+        "references_input": "\n".join(as_list(card.references_json)),
+        "cloud_url": card.cloud_url or "",
+        "status_percent": min(100, max(0, int(card.status_percent or 0))),
+    }
+
+
+def save_in_progress_master_card_from_form(
+    form: Any,
+    card: InProgressMasterCard,
+    *,
+    db: Session,
+) -> tuple[bool, str]:
+    work_type = str(form.get("work_type", "")).strip().lower()
+    name = str(form.get("name", "")).strip()
+    title_text = str(form.get("title_text", "")).strip()
+    customer_alias_raw = normalize_username(str(form.get("customer_alias", "")).strip().lstrip("@"))
+    customer_name = str(form.get("customer_name", "")).strip()
+    note = str(form.get("note", "")).strip()
+    cloud_url = str(form.get("cloud_url", "")).strip()
+    status_raw = str(form.get("status_percent", "")).strip()
+
+    if work_type not in MASTER_WORK_TYPE_OPTIONS:
+        return False, "Выберите корректный тип работы."
+    if not name:
+        return False, "Укажите название карточки."
+    if len(name) > 255:
+        return False, "Название должно быть не длиннее 255 символов."
+    if len(title_text) > 255:
+        return False, "Поле «Тайтл» должно быть не длиннее 255 символов."
+    if len(customer_name) > 255:
+        return False, "Поле «Заказчик» должно быть не длиннее 255 символов."
+    if len(note) > 12000:
+        return False, "Комментарий должен быть не длиннее 12000 символов."
+    if cloud_url and not cloud_url.lower().startswith(("http://", "https://")):
+        return False, "Ссылка на облако должна начинаться с http:// или https://"
+
+    try:
+        status_percent = int(status_raw) if status_raw else 0
+    except ValueError:
+        status_percent = 0
+    status_percent = max(0, min(100, status_percent))
+
+    task_rows = parse_checklist_rows_from_form(form, "task")
+    material_rows = parse_master_work_material_rows_from_form(form)
+    measurement_rows = parse_master_work_measurement_rows_from_form(form)
+    references = parse_reference_values(str(form.get("references_input", "")))
+    if len(references) > 10:
+        return False, "Можно добавить не более 10 ссылок на референсы."
+
+    alias_to_username, users_by_username, _ = build_user_alias_lookup(db)
+    customer_user_id: int | None = None
+    if customer_alias_raw:
+        canonical_username = resolve_alias_to_username(customer_alias_raw, alias_to_username)
+        matched_user = users_by_username.get(canonical_username.casefold())
+        if matched_user:
+            customer_user_id = int(matched_user.id)
+            if not customer_name:
+                customer_name = f"@{preferred_user_alias(matched_user)}"
+        elif not customer_name:
+            customer_name = f"@{customer_alias_raw}"
+
+    card.work_type = work_type
+    card.name = name
+    card.title_text = title_text or None
+    card.customer_name = customer_name or None
+    card.customer_user_id = customer_user_id
+    card.task_rows_json = task_rows
+    card.materials_json = material_rows
+    card.note = note or None
+    card.measurements_json = measurement_rows
+    card.references_json = references
+    card.cloud_url = cloud_url or None
+    card.status_percent = status_percent
+    return True, ""
+
+
 @app.post("/in-progress/add/{card_id}")
 def in_progress_add(card_id: int, request: Request, db: Session = Depends(get_db)):
     user = current_user(request, db)
@@ -11082,6 +11494,76 @@ def in_progress_list(request: Request, db: Session = Depends(get_db)):
     user = current_user(request, db)
     if not user:
         return redirect("/login")
+    scope = normalize_in_progress_scope(request.query_params.get("scope"))
+
+    if scope == IN_PROGRESS_SCOPE_MASTER:
+        master_cards = db.execute(
+            select(InProgressMasterCard)
+            .where(
+                or_(
+                    InProgressMasterCard.user_id == user.id,
+                    InProgressMasterCard.customer_user_id == user.id,
+                )
+            )
+            .order_by(InProgressMasterCard.updated_at.desc(), InProgressMasterCard.id.desc())
+        ).scalars().all()
+
+        owner_and_customer_ids = {
+            int(user_id)
+            for card in master_cards
+            for user_id in [card.user_id, card.customer_user_id]
+            if user_id
+        }
+        users_by_id: dict[int, User] = {}
+        if owner_and_customer_ids:
+            users = db.execute(select(User).where(User.id.in_(owner_and_customer_ids))).scalars().all()
+            users_by_id = {item.id: item for item in users}
+
+        comment_rows: list[Any] = []
+        if master_cards:
+            comment_rows = db.execute(
+                select(InProgressMasterComment.card_id, func.count(InProgressMasterComment.id))
+                .where(InProgressMasterComment.card_id.in_([card.id for card in master_cards]))
+                .group_by(InProgressMasterComment.card_id)
+            ).all()
+        comment_counts = {int(row[0]): int(row[1]) for row in comment_rows}
+
+        executor_labels_by_card: dict[int, str] = {}
+        customer_labels_by_card: dict[int, str] = {}
+        material_totals_by_card: dict[int, float] = {}
+        can_edit_ids: set[int] = set()
+        for card in master_cards:
+            owner = users_by_id.get(card.user_id)
+            if owner:
+                executor_labels_by_card[card.id] = f"@{preferred_user_alias(owner)}"
+            else:
+                executor_labels_by_card[card.id] = "—"
+
+            customer_label = card.customer_name or ""
+            if card.customer_user_id:
+                customer_user = users_by_id.get(card.customer_user_id)
+                if customer_user:
+                    customer_label = f"@{preferred_user_alias(customer_user)}"
+            customer_labels_by_card[card.id] = customer_label or "—"
+
+            material_totals_by_card[card.id] = sum_master_material_rows(as_list(card.materials_json))
+            if can_edit_in_progress_master_card(user, card):
+                can_edit_ids.add(card.id)
+
+        return template_response(
+            request,
+            "in_progress_master.html",
+            user=user,
+            active_tab="in-progress",
+            in_progress_scope=scope,
+            master_cards=master_cards,
+            comment_counts=comment_counts,
+            executor_labels_by_card=executor_labels_by_card,
+            customer_labels_by_card=customer_labels_by_card,
+            material_totals_by_card=material_totals_by_card,
+            can_edit_master_card_ids=can_edit_ids,
+            master_work_type_labels=MASTER_WORK_TYPE_LABELS,
+        )
 
     try:
         progress_items = db.execute(
@@ -11175,6 +11657,7 @@ def in_progress_list(request: Request, db: Session = Depends(get_db)):
         "in_progress.html",
         user=user,
         active_tab="in-progress",
+        in_progress_scope=scope,
         progress_items=safe_progress_items,
         urgent_progress_ids=urgent_progress_ids,
         leader_rehearsals_by_card=leader_rehearsals_by_card,
@@ -11436,6 +11919,252 @@ def in_progress_toggle_freeze(progress_id: int, request: Request, db: Session = 
     else:
         add_flash(request, "Проект разморожен.", "success")
     return redirect("/in-progress")
+
+
+def get_accessible_in_progress_master_card(
+    db: Session,
+    *,
+    user: User,
+    card_id: int,
+) -> InProgressMasterCard | None:
+    card = db.get(InProgressMasterCard, card_id)
+    if not card:
+        return None
+    if not can_view_in_progress_master_card(user, card):
+        return None
+    return card
+
+
+@app.get("/in-progress/master/new", response_class=HTMLResponse)
+def in_progress_master_new(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    _, _, alias_options = build_user_alias_lookup(db)
+    return template_response(
+        request,
+        "in_progress_master_form.html",
+        user=user,
+        active_tab="in-progress",
+        in_progress_scope=IN_PROGRESS_SCOPE_MASTER,
+        editing=False,
+        card_id=None,
+        form=get_in_progress_master_form_values(),
+        customer_alias_options=alias_options,
+        master_work_type_options=MASTER_WORK_TYPE_OPTIONS,
+        master_work_type_labels=MASTER_WORK_TYPE_LABELS,
+    )
+
+
+@app.post("/in-progress/master/new")
+async def in_progress_master_create(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    form = await request.form()
+    card = InProgressMasterCard(
+        user_id=user.id,
+        work_type=MASTER_WORK_TYPE_OTHER,
+        name="",
+        task_rows_json=[],
+        materials_json=[],
+        measurements_json=[],
+        references_json=[],
+        status_percent=0,
+    )
+    ok, error_text = save_in_progress_master_card_from_form(form, card, db=db)
+    if not ok:
+        add_flash(request, error_text, "error")
+        return redirect("/in-progress/master/new")
+
+    db.add(card)
+    db.commit()
+    add_flash(request, "Карточка мастера создана.", "success")
+    return redirect(f"/in-progress/master/{card.id}")
+
+
+@app.get("/in-progress/master/{card_id}", response_class=HTMLResponse)
+def in_progress_master_detail(card_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    card = get_accessible_in_progress_master_card(db, user=user, card_id=card_id)
+    if not card:
+        add_flash(request, "Карточка мастера не найдена или недоступна.", "error")
+        return redirect("/in-progress?scope=master")
+
+    comments = db.execute(
+        select(InProgressMasterComment)
+        .where(InProgressMasterComment.card_id == card.id)
+        .order_by(InProgressMasterComment.created_at, InProgressMasterComment.id)
+    ).scalars().all()
+
+    author_ids = {card.user_id, *(item.user_id for item in comments)}
+    if card.customer_user_id:
+        author_ids.add(card.customer_user_id)
+    authors_by_id: dict[int, User] = {}
+    if author_ids:
+        author_rows = db.execute(select(User).where(User.id.in_(author_ids))).scalars().all()
+        authors_by_id = {item.id: item for item in author_rows}
+
+    owner = authors_by_id.get(card.user_id)
+    customer_user = authors_by_id.get(card.customer_user_id) if card.customer_user_id else None
+    customer_display = (
+        f"@{preferred_user_alias(customer_user)}"
+        if customer_user
+        else (card.customer_name or "—")
+    )
+
+    return template_response(
+        request,
+        "in_progress_master_detail.html",
+        user=user,
+        active_tab="in-progress",
+        in_progress_scope=IN_PROGRESS_SCOPE_MASTER,
+        card=card,
+        owner=owner,
+        customer_display=customer_display,
+        task_rows=format_checklist_for_form(as_list(card.task_rows_json)),
+        material_rows=format_master_work_material_rows(as_list(card.materials_json)),
+        material_total=sum_master_material_rows(as_list(card.materials_json)),
+        measurement_rows=format_master_work_measurement_rows(as_list(card.measurements_json)),
+        references=as_list(card.references_json),
+        comments=comments,
+        authors_by_id=authors_by_id,
+        can_edit_master_card=can_edit_in_progress_master_card(user, card),
+        master_work_type_labels=MASTER_WORK_TYPE_LABELS,
+    )
+
+
+@app.get("/in-progress/master/{card_id}/edit", response_class=HTMLResponse)
+def in_progress_master_edit(card_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    card = db.get(InProgressMasterCard, card_id)
+    if not card:
+        add_flash(request, "Карточка мастера не найдена.", "error")
+        return redirect("/in-progress?scope=master")
+    if not can_edit_in_progress_master_card(user, card):
+        add_flash(request, "Недостаточно прав для редактирования.", "error")
+        return redirect(f"/in-progress/master/{card_id}")
+
+    _, _, alias_options = build_user_alias_lookup(db)
+    customer_alias = ""
+    if card.customer_user_id:
+        customer_user = db.get(User, card.customer_user_id)
+        if customer_user:
+            customer_alias = preferred_user_alias(customer_user)
+
+    return template_response(
+        request,
+        "in_progress_master_form.html",
+        user=user,
+        active_tab="in-progress",
+        in_progress_scope=IN_PROGRESS_SCOPE_MASTER,
+        editing=True,
+        card_id=card.id,
+        form=get_in_progress_master_form_values(card, customer_alias=customer_alias),
+        customer_alias_options=alias_options,
+        master_work_type_options=MASTER_WORK_TYPE_OPTIONS,
+        master_work_type_labels=MASTER_WORK_TYPE_LABELS,
+    )
+
+
+@app.post("/in-progress/master/{card_id}/edit")
+async def in_progress_master_update(card_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    card = db.get(InProgressMasterCard, card_id)
+    if not card:
+        add_flash(request, "Карточка мастера не найдена.", "error")
+        return redirect("/in-progress?scope=master")
+    if not can_edit_in_progress_master_card(user, card):
+        add_flash(request, "Недостаточно прав для редактирования.", "error")
+        return redirect(f"/in-progress/master/{card_id}")
+
+    form = await request.form()
+    ok, error_text = save_in_progress_master_card_from_form(form, card, db=db)
+    if not ok:
+        add_flash(request, error_text, "error")
+        return redirect(f"/in-progress/master/{card_id}/edit")
+
+    db.commit()
+    add_flash(request, "Карточка мастера обновлена.", "success")
+    return redirect(f"/in-progress/master/{card.id}")
+
+
+@app.post("/in-progress/master/{card_id}/delete")
+def in_progress_master_delete(card_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    card = db.get(InProgressMasterCard, card_id)
+    if not card:
+        add_flash(request, "Карточка мастера не найдена.", "error")
+        return redirect("/in-progress?scope=master")
+    if not can_edit_in_progress_master_card(user, card):
+        add_flash(request, "Недостаточно прав для удаления.", "error")
+        return redirect(f"/in-progress/master/{card_id}")
+
+    db.delete(card)
+    db.commit()
+    add_flash(request, "Карточка мастера удалена.", "info")
+    return redirect("/in-progress?scope=master")
+
+
+@app.post("/in-progress/master/{card_id}/comments")
+async def in_progress_master_add_comment(card_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    card = get_accessible_in_progress_master_card(db, user=user, card_id=card_id)
+    if not card:
+        add_flash(request, "Карточка мастера не найдена или недоступна.", "error")
+        return redirect("/in-progress?scope=master")
+
+    form = await request.form()
+    body = str(form.get("body", "")).strip()
+    if not body:
+        add_flash(request, "Введите текст комментария.", "error")
+        return redirect(f"/in-progress/master/{card_id}")
+    if len(body) > 5000:
+        add_flash(request, "Комментарий слишком длинный (до 5000 символов).", "error")
+        return redirect(f"/in-progress/master/{card_id}")
+
+    db.add(
+        InProgressMasterComment(
+            card_id=card.id,
+            user_id=user.id,
+            body=body,
+        )
+    )
+
+    recipients = {int(card.user_id)}
+    if card.customer_user_id:
+        recipients.add(int(card.customer_user_id))
+    recipients.discard(int(user.id))
+    preview = body if len(body) <= 120 else body[:117].rstrip() + "..."
+    for recipient_id in recipients:
+        enqueue_notification_if_missing(
+            db,
+            user_id=recipient_id,
+            from_user_id=user.id,
+            source_card_id=None,
+            message=f"Новый комментарий в работе мастера «{card.name}»: {preview}",
+        )
+
+    db.commit()
+    add_flash(request, "Комментарий добавлен.", "success")
+    return redirect(f"/in-progress/master/{card_id}")
 
 
 @app.get("/rehearsals", response_class=HTMLResponse)
@@ -17219,7 +17948,7 @@ def fetch_raf_events_from_vk() -> list[dict[str, Any]]:
     return deduped
 
 
-def import_raf_events_for_user(db: Session, user: User, events: list[dict[str, Any]]) -> int:
+def import_raf_events_for_user(db: Session, user: User, events: list[dict[str, Any]]) -> dict[str, Any]:
     today = date.today()
     existing_festivals = db.execute(
         select(Festival).where(Festival.user_id == user.id)
@@ -17237,6 +17966,8 @@ def import_raf_events_for_user(db: Session, user: User, events: list[dict[str, A
 
     imported_names: list[str] = []
     imported_count = 0
+    conflict_count = 0
+    conflict_names: set[str] = set()
     for event in events:
         event_name = str(event.get("name") or "").strip()
         event_date = event.get("event_date")
@@ -17247,11 +17978,12 @@ def import_raf_events_for_user(db: Session, user: User, events: list[dict[str, A
 
         name_key = normalize_event_name_key(event_name)
         external_id = str(event.get("external_id") or "").strip()
+        has_conflict = False
         if name_key and name_key in existing_name_keys:
-            continue
-        if external_id and external_id in existing_external_ids:
-            continue
-        if any(
+            has_conflict = True
+        elif external_id and external_id in existing_external_ids:
+            has_conflict = True
+        elif any(
             festivals_look_like_duplicates(
                 item.name,
                 item.city,
@@ -17262,6 +17994,10 @@ def import_raf_events_for_user(db: Session, user: User, events: list[dict[str, A
             )
             for item in existing_festivals
         ):
+            has_conflict = True
+        if has_conflict:
+            conflict_count += 1
+            conflict_names.add(event_name)
             continue
 
         festival = Festival(
@@ -17293,10 +18029,14 @@ def import_raf_events_for_user(db: Session, user: User, events: list[dict[str, A
 
     if imported_names:
         remember_options(db, user.id, "festival", imported_names)
-    return imported_count
+    return {
+        "imported": imported_count,
+        "conflicts": conflict_count,
+        "conflict_names": sorted(conflict_names, key=lambda value: value.casefold()),
+    }
 
 
-def import_cosplay2_events_for_user(db: Session, user: User, parsed_events: list[Any]) -> tuple[int, int]:
+def import_cosplay2_events_for_user(db: Session, user: User, parsed_events: list[Any]) -> dict[str, Any]:
     existing_rows = db.execute(select(Festival).where(Festival.user_id == user.id)).scalars().all()
     existing_by_url: dict[str, Festival] = {}
     for row in existing_rows:
@@ -17306,6 +18046,8 @@ def import_cosplay2_events_for_user(db: Session, user: User, parsed_events: list
 
     imported = 0
     updated = 0
+    conflict_count = 0
+    conflict_names: set[str] = set()
     imported_names: list[str] = []
 
     for event in parsed_events:
@@ -17359,6 +18101,9 @@ def import_cosplay2_events_for_user(db: Session, user: User, parsed_events: list
             )
             for row in existing_rows
         ):
+            conflict_count += 1
+            if event.name:
+                conflict_names.add(event.name)
             continue
 
         festival = Festival(
@@ -17387,7 +18132,12 @@ def import_cosplay2_events_for_user(db: Session, user: User, parsed_events: list
 
     if imported_names:
         remember_options(db, user.id, "festival", imported_names)
-    return imported, updated
+    return {
+        "imported": imported,
+        "updated": updated,
+        "conflicts": conflict_count,
+        "conflict_names": sorted(conflict_names, key=lambda value: value.casefold()),
+    }
 
 
 def count_distinct_imported_festivals(db: Session) -> int:
@@ -17510,17 +18260,36 @@ def festivals_import_raf(request: Request, db: Session = Depends(get_db)):
         events = fetch_raf_events_from_vk()
         users = db.execute(select(User).order_by(User.id)).scalars().all()
         imported_count = 0
+        conflict_count = 0
+        conflict_names: set[str] = set()
         for item in users:
-            imported_count += import_raf_events_for_user(db, item, events)
+            result = import_raf_events_for_user(db, item, events)
+            imported_count += int(result.get("imported") or 0)
+            conflict_count += int(result.get("conflicts") or 0)
+            conflict_names.update(
+                str(name).strip()
+                for name in as_list(result.get("conflict_names"))
+                if str(name).strip()
+            )
         db.commit()
     except RuntimeError as exc:
         db.rollback()
         add_flash(request, str(exc), "error")
         return redirect("/festivals")
 
+    conflict_preview = ", ".join(sorted(conflict_names, key=lambda value: value.casefold())[:5])
+    conflict_text = (
+        f" Конфликтов (дублей): {conflict_count}."
+        + (f" Примеры: {conflict_preview}." if conflict_preview else "")
+        if conflict_count
+        else ""
+    )
     add_flash(
         request,
-        f"Импорт с РАФ для всех пользователей завершён: найдено {len(events)}, добавлено карточек {imported_count}.",
+        (
+            f"Импорт с РАФ для всех пользователей завершён: найдено {len(events)}, "
+            f"добавлено карточек {imported_count}.{conflict_text}"
+        ),
         "success" if imported_count else "info",
     )
     return redirect("/festivals")
@@ -17539,6 +18308,10 @@ def festivals_list(request: Request, db: Session = Depends(get_db)):
     coproplayer_filter = request.query_params.get("coproplayer", "").strip()
     nomination_filter_key = normalize_nomination_title_key(nomination_filter)
     only_going = to_bool(request.query_params.get("only_going", ""))
+
+    shared_added = ensure_user_has_shared_festivals(db, user.id)
+    if shared_added:
+        db.commit()
 
     festivals = db.execute(
         select(Festival).where(Festival.user_id == user.id).order_by(Festival.event_date.is_(None), Festival.event_date, Festival.name)
@@ -18549,21 +19322,51 @@ def festivals_import_cosplay2(request: Request, db: Session = Depends(get_db)):
 
     imported = 0
     updated = 0
+    conflict_count = 0
+    conflict_names: set[str] = set()
     users = db.execute(select(User).order_by(User.id)).scalars().all()
     for item in users:
-        user_imported, user_updated = import_cosplay2_events_for_user(db, item, parsed_events)
-        imported += user_imported
-        updated += user_updated
+        result = import_cosplay2_events_for_user(db, item, parsed_events)
+        imported += int(result.get("imported") or 0)
+        updated += int(result.get("updated") or 0)
+        conflict_count += int(result.get("conflicts") or 0)
+        conflict_names.update(
+            str(name).strip()
+            for name in as_list(result.get("conflict_names"))
+            if str(name).strip()
+        )
 
     if imported or updated:
         db.commit()
+        conflict_preview = ", ".join(sorted(conflict_names, key=lambda value: value.casefold())[:5])
+        conflict_text = (
+            f" Конфликтов (дублей): {conflict_count}."
+            + (f" Примеры: {conflict_preview}." if conflict_preview else "")
+            if conflict_count
+            else ""
+        )
         add_flash(
             request,
-            f"Импорт с cosplay2.ru для всех пользователей завершён: новых карточек {imported}, обновлено {updated}.",
+            (
+                f"Импорт с cosplay2.ru для всех пользователей завершён: "
+                f"новых карточек {imported}, обновлено {updated}.{conflict_text}"
+            ),
             "success",
         )
     else:
-        add_flash(request, "Новых или обновляемых фестивалей для всех пользователей не найдено.", "info")
+        conflict_preview = ", ".join(sorted(conflict_names, key=lambda value: value.casefold())[:5])
+        if conflict_count:
+            add_flash(
+                request,
+                (
+                    "Новых или обновляемых фестивалей для всех пользователей не найдено. "
+                    f"Конфликтов (дублей): {conflict_count}."
+                    + (f" Примеры: {conflict_preview}." if conflict_preview else "")
+                ),
+                "info",
+            )
+        else:
+            add_flash(request, "Новых или обновляемых фестивалей для всех пользователей не найдено.", "info")
 
     return redirect("/festivals")
 

@@ -52,6 +52,22 @@ class User(Base):
         foreign_keys="CosplanCard.shared_from_user_id",
     )
     in_progress_cards = relationship("InProgressCard", back_populates="user", cascade="all, delete-orphan")
+    in_progress_master_cards = relationship(
+        "InProgressMasterCard",
+        back_populates="user",
+        cascade="all, delete-orphan",
+        foreign_keys="InProgressMasterCard.user_id",
+    )
+    in_progress_master_customer_cards = relationship(
+        "InProgressMasterCard",
+        back_populates="customer_user",
+        foreign_keys="InProgressMasterCard.customer_user_id",
+    )
+    in_progress_master_comments = relationship(
+        "InProgressMasterComment",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
     festivals = relationship("Festival", back_populates="user", cascade="all, delete-orphan")
     project_search_posts = relationship("ProjectSearchPost", back_populates="user", cascade="all, delete-orphan")
     project_search_comments = relationship(
@@ -412,6 +428,44 @@ class InProgressCard(Base):
 
     user = relationship("User", back_populates="in_progress_cards")
     cosplan_card = relationship("CosplanCard", back_populates="in_progress")
+
+
+class InProgressMasterCard(Base):
+    __tablename__ = "in_progress_master_cards"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    work_type = Column(String(32), nullable=False, default="other")
+    name = Column(String(255), nullable=False, index=True)
+    title_text = Column(String(255), nullable=True)
+    customer_name = Column(String(255), nullable=True)
+    customer_user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    task_rows_json = Column(JSON, nullable=False, default=list)
+    materials_json = Column(JSON, nullable=False, default=list)
+    note = Column(Text, nullable=True)
+    measurements_json = Column(JSON, nullable=False, default=list)
+    references_json = Column(JSON, nullable=False, default=list)
+    cloud_url = Column(Text, nullable=True)
+    status_percent = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    user = relationship("User", back_populates="in_progress_master_cards", foreign_keys=[user_id])
+    customer_user = relationship("User", back_populates="in_progress_master_customer_cards", foreign_keys=[customer_user_id])
+    comments = relationship("InProgressMasterComment", back_populates="card", cascade="all, delete-orphan")
+
+
+class InProgressMasterComment(Base):
+    __tablename__ = "in_progress_master_comments"
+
+    id = Column(Integer, primary_key=True)
+    card_id = Column(Integer, ForeignKey("in_progress_master_cards.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    body = Column(Text, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    card = relationship("InProgressMasterCard", back_populates="comments")
+    user = relationship("User", back_populates="in_progress_master_comments")
 
 
 class RehearsalCard(Base):
