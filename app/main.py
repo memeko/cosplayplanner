@@ -4648,6 +4648,10 @@ TEXT_RENDER_TOKEN_RE = re.compile(
     r"(\[\[emoji:(?P<emoji>[a-z0-9-]+)\]\]|(?P<url>(?:https?://|www\.|t\.me/|telegram\.me/|vk\.com/|m\.vk\.com/|/media/)[^\s<]+))",
     re.IGNORECASE,
 )
+MARKDOWN_HINT_RE = re.compile(
+    r"(\*\*[^*]+\*\*|\*[^*]+\*|`[^`]+`|!\[[^\]]*\]\([^)]+\)|\[[^\]]+\]\([^)]+\)|(^|\n)\s*(#{1,6}\s+|[-*]\s+|\d+\.\s+))",
+    re.MULTILINE,
+)
 
 
 def normalize_text_line_breaks(value: str | None) -> str:
@@ -4696,6 +4700,46 @@ def render_text_content(value: str | None) -> Markup:
     return Markup("".join(parts))
 
 
+def render_markdown_content(value: str | None) -> Markup:
+    text_value = normalize_text_line_breaks(value).strip()
+    if not text_value:
+        return Markup("")
+    if not MARKDOWN_HINT_RE.search(text_value):
+        return render_text_content(text_value)
+
+    rendered_lines: list[str] = []
+    blank_pending = False
+    for raw_line in text_value.split("\n"):
+        stripped = raw_line.strip()
+        if not stripped:
+            blank_pending = True
+            continue
+
+        if blank_pending and rendered_lines:
+            rendered_lines.append("<br>")
+        blank_pending = False
+
+        list_match = re.match(r"^[-*]\s+(.+)$", stripped)
+        numbered_match = re.match(r"^(\d+)\.\s+(.+)$", stripped)
+        heading_match = re.match(r"^#{1,6}\s+(.+)$", stripped)
+
+        prefix = ""
+        content = stripped
+        if list_match:
+            prefix = "• "
+            content = list_match.group(1).strip()
+        elif numbered_match:
+            prefix = f"{numbered_match.group(1)}. "
+            content = numbered_match.group(2).strip()
+        elif heading_match:
+            content = heading_match.group(1).strip()
+
+        rendered_inline = _render_article_inline(content)
+        rendered_lines.append(f"{html.escape(prefix)}{rendered_inline}")
+
+    return Markup("<br>".join(rendered_lines))
+
+
 def build_text_preview(value: str | None, limit: int = 200) -> str:
     if limit <= 0:
         return ""
@@ -4729,6 +4773,7 @@ def replace_pixel_emoji_tokens_for_bots(value: str | None) -> str:
 
 
 templates.env.filters["render_text"] = render_text_content
+templates.env.filters["render_markdown"] = render_markdown_content
 templates.env.filters["preview_text"] = build_text_preview
 templates.env.filters["urlencode"] = lambda value: quote(str(value or ""))
 
@@ -10865,6 +10910,7 @@ def save_card_from_form(form: Any, card: CosplanCard, user: User, db: Session) -
         card.wig_restyle = False
         card.wig_buy_price = parse_price_field("wig_buy_price")
         card.wig_link = str(form.get("wig_link", "")).strip() or None
+        card.wig_currency = str(form.get("wig_currency", "")).strip() or None
     elif card.wig_type == "no_buy":
         card.wigmaker_name = None
         card.wig_price = None
@@ -10873,6 +10919,7 @@ def save_card_from_form(form: Any, card: CosplanCard, user: User, db: Session) -
         card.wig_link = None
         card.wig_no_buy_from = str(form.get("wig_no_buy_from", "")).strip() or None
         card.wig_restyle = to_bool(form.get("wig_restyle"))
+        card.wig_currency = None
     else:  # wigmaker
         card.wigmaker_name = str(form.get("wigmaker_name", "")).strip() or None
         card.wig_price = parse_price_field("wig_price")
@@ -10881,7 +10928,7 @@ def save_card_from_form(form: Any, card: CosplanCard, user: User, db: Session) -
         card.wig_link = None
         card.wig_no_buy_from = None
         card.wig_restyle = False
-    card.wig_currency = str(form.get("wig_currency", "")).strip() or None
+        card.wig_currency = str(form.get("wig_currency", "")).strip() or None
 
     card.craft_type = str(form.get("craft_type", "")).strip() or "self"
     if card.craft_type == "order":

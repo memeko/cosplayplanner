@@ -43,6 +43,7 @@
 </style>
 
 <form method="post" action="{{ '/cosplan/' ~ card_id ~ '/edit' if editing else '/cosplan/new' }}" class="grid one-col big-form" id="cosplan-form">
+  <p class="muted">Во всех текстовых полях карточки поддерживается Markdown: **жирный**, *курсив*, `код`, [ссылка](https://...).</p>
   <section class="box">
     <h2>Основное</h2>
     <div class="grid two-col">
@@ -309,7 +310,7 @@
         Переукладка
       </label>
     </div>
-    <label>
+    <label id="wig_currency_wrap">
       Валюта
       <input type="text" list="currency-options" name="wig_currency" value="{{ form.wig_currency }}" />
     </label>
@@ -574,7 +575,7 @@
       <div class="checklist-row">
         <input type="hidden" name="photoset_prop_row_id" value="{{ item.row_id }}" />
         <input type="checkbox" name="photoset_prop_done" value="{{ item.row_id }}" {% if item.done == '__YES__' %}checked{% endif %} />
-        <input type="text" name="photoset_prop_text" value="{{ item.text }}" placeholder="Пункт реквизита" />
+        <input type="text" name="photoset_prop_text" value="{{ item.text }}" placeholder="Пункт реквизита" autocomplete="off" />
         <button type="button" class="btn btn-danger" onclick="removeChecklistRow(this)">Удалить</button>
       </div>
       {% endfor %}
@@ -923,6 +924,7 @@
     toggleVisibility("wigmaker_wrap", wigType === "wigmaker");
     toggleVisibility("wig_buy_wrap", wigType === "buy");
     toggleVisibility("wig_no_buy_wrap", wigType === "no_buy");
+    toggleVisibility("wig_currency_wrap", wigType !== "no_buy");
 
     const craftType = document.getElementById("craft_type")?.value;
     toggleVisibility("craft_order_wrap", craftType === "order");
@@ -1151,7 +1153,7 @@
     row.innerHTML = `
       <input type="hidden" name="photoset_prop_row_id" value="${rowId}" />
       <input type="checkbox" name="photoset_prop_done" value="${rowId}" />
-      <input type="text" name="photoset_prop_text" placeholder="Пункт реквизита" />
+      <input type="text" name="photoset_prop_text" placeholder="Пункт реквизита" autocomplete="off" />
       <button type="button" class="btn btn-danger">Удалить</button>
     `;
     row.querySelector("button").addEventListener("click", () => row.remove());

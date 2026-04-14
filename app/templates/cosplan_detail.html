@@ -32,7 +32,7 @@
   {% if project_leader_display %}<p class="meta">Руководитель: {{ project_leader_display }}</p>{% endif %}
   {% if card.city %}<p class="meta">Город: {{ card.city }}</p>{% endif %}
   {% if card.is_au %}<p class="meta">AU: да</p>{% endif %}
-  {% if card.au_text %}<p class="notes-block">{{ card.au_text|render_text }}</p>{% endif %}
+  {% if card.au_text %}<p class="notes-block">{{ card.au_text|render_markdown }}</p>{% endif %}
 
   {% if cosbands %}<p class="meta">Cosband: {{ cosbands | join(", ") }}</p>{% endif %}
   {% if planned_festivals %}<p class="meta">Планируемые фестивали: {{ planned_festivals | join(", ") }}</p>{% endif %}
@@ -114,7 +114,7 @@
   {% if card.costume_currency %}<p class="meta">Валюта: {{ card.costume_currency }}</p>{% endif %}
   {% if card.costume_notes %}
     <h3>Дополнительно</h3>
-    <p class="notes-block">{{ card.costume_notes|render_text }}</p>
+    <p class="notes-block">{{ card.costume_notes|render_markdown }}</p>
   {% endif %}
 
   {% if costume_parts %}
@@ -129,7 +129,7 @@
           {% elif item.get("price") is not none %}
             <span class="chip">{{ '%.2f'|format(item.get("price")) }} {{ item.get("currency", "") }}</span>
           {% endif %}
-          {% if item.get("comment") %}<span class="muted">{{ item.get("comment")|render_text }}</span>{% endif %}
+          {% if item.get("comment") %}<span class="muted">{{ item.get("comment")|render_markdown }}</span>{% endif %}
         </li>
       {% endfor %}
     </ul>
@@ -162,7 +162,7 @@
   <h2>Линзы</h2>
   {% if card.lenses_enabled %}<p class="meta">Нужны линзы: да</p>{% endif %}
   {% if card.lenses_color %}<p class="meta">Цвет: {{ card.lenses_color }}</p>{% endif %}
-  {% if card.lenses_comment %}<p class="meta">Комментарий: {{ card.lenses_comment|render_text }}</p>{% endif %}
+  {% if card.lenses_comment %}<p class="meta">Комментарий: {{ card.lenses_comment|render_markdown }}</p>{% endif %}
   {{ money_line("Цена", card.lenses_price, card.lenses_currency, "lenses_price", unknown_fields) }}
   {% if card.lenses_currency %}<p class="meta">Валюта: {{ card.lenses_currency }}</p>{% endif %}
 </section>
@@ -186,7 +186,7 @@
     {% if card.wig_no_buy_from %}<p class="meta">Использовать парик от: {{ card.wig_no_buy_from }}</p>{% endif %}
     {% if card.wig_restyle %}<p class="meta">Переукладка: да</p>{% endif %}
   {% endif %}
-  {% if card.wig_currency %}<p class="meta">Валюта: {{ card.wig_currency }}</p>{% endif %}
+  {% if card.wig_currency and card.wig_type != "no_buy" %}<p class="meta">Валюта: {{ card.wig_currency }}</p>{% endif %}
 </section>
 {% endif %}
 
@@ -217,7 +217,7 @@
           {% elif item.get("price") is not none %}
             <span class="chip">{{ '%.2f'|format(item.get("price")) }} {{ item.get("currency", "") }}</span>
           {% endif %}
-          {% if item.get("comment") %}<span class="muted">{{ item.get("comment")|render_text }}</span>{% endif %}
+          {% if item.get("comment") %}<span class="muted">{{ item.get("comment")|render_markdown }}</span>{% endif %}
         </li>
       {% endfor %}
     </ul>
@@ -244,7 +244,7 @@
   {% endif %}
 
   {% if card.photoset_currency %}<p class="meta">Валюта: {{ card.photoset_currency }}</p>{% endif %}
-  {% if card.photoset_comment %}<p class="notes-block">{{ card.photoset_comment|render_text }}</p>{% endif %}
+  {% if card.photoset_comment %}<p class="notes-block">{{ card.photoset_comment|render_markdown }}</p>{% endif %}
 
   {% if photoset_props_checklist %}
     <h3>Чеклист реквизита</h3>
@@ -289,11 +289,11 @@
   {% endif %}
   {% if card.performance_script %}
     <h3>Сценарий</h3>
-    <p class="notes-block">{{ card.performance_script|render_text }}</p>
+    <p class="notes-block">{{ card.performance_script|render_markdown }}</p>
   {% endif %}
   {% if card.performance_light_script %}
     <h3>Светосценарий</h3>
-    <p class="notes-block">{{ card.performance_light_script|render_text }}</p>
+    <p class="notes-block">{{ card.performance_light_script|render_markdown }}</p>
   {% endif %}
 </section>
 {% endif %}
@@ -342,7 +342,7 @@
 {% if card.notes %}
 <section class="box">
   <h2>Примечания</h2>
-  <p class="notes-block">{{ card.notes|render_text }}</p>
+  <p class="notes-block">{{ card.notes|render_markdown }}</p>
 </section>
 {% endif %}
 
@@ -361,6 +361,7 @@
 
 <section class="box">
   <h2>Комментарии проекта</h2>
+  <p class="muted">Поддерживается Markdown: **жирный**, *курсив*, `код`, [ссылка](https://...).</p>
   {% if top_level_comments %}
     <div class="comments-list">
       {% for comment in top_level_comments %}
@@ -374,7 +375,7 @@
             {% endif %}
             · {{ comment.created_at.strftime('%d-%m-%Y %H:%M') if comment.created_at else "" }}
           </div>
-          <p class="notes-block">{{ comment.body|render_text }}</p>
+          <p class="notes-block">{{ comment.body|render_markdown }}</p>
           {% if replies_by_parent.get(comment.id) %}
             <div class="comment-replies">
               {% for reply in replies_by_parent.get(comment.id) %}
@@ -388,7 +389,7 @@
                     {% endif %}
                     · {{ reply.created_at.strftime('%d-%m-%Y %H:%M') if reply.created_at else "" }}
                   </div>
-                  <p class="notes-block">{{ reply.body|render_text }}</p>
+                  <p class="notes-block">{{ reply.body|render_markdown }}</p>
                 </article>
               {% endfor %}
             </div>

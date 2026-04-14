@@ -46,7 +46,7 @@
     {% endif %}
   </p>
   {% if card.note %}
-    <p class="notes-block">{{ card.note|render_text }}</p>
+    <p class="notes-block">{{ card.note|render_markdown }}</p>
   {% endif %}
 </section>
 
@@ -148,6 +148,7 @@
 
 <section class="box">
   <h3>Комментарии</h3>
+  <p class="muted">Поддерживается Markdown: **жирный**, *курсив*, `код`, [ссылка](https://...).</p>
   {% if comments %}
     <div class="comments-list top-offset">
       {% for comment in comments %}
@@ -161,7 +162,7 @@
             {% endif %}
             • {{ comment.created_at.strftime('%d-%m-%Y %H:%M') if comment.created_at else '—' }}
           </p>
-          <p class="notes-block">{{ comment.body|render_text }}</p>
+          <p class="notes-block">{{ comment.body|render_markdown }}</p>
         </article>
       {% endfor %}
     </div>

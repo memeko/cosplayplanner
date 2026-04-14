@@ -301,7 +301,7 @@
       <p class="meta">Планирую подаваться: {{ planned_nominations | join(', ') }}</p>
     {% endif %}
     {% if festival.shared_note %}
-      <p class="notes-block">{{ festival.shared_note|render_text }}</p>
+      <p class="notes-block">{{ festival.shared_note|render_markdown }}</p>
     {% endif %}
     {% if festival.going_coproplayers_json %}
       <p class="meta">Сокосплеер: {{ festival_coproplayers_display.get(festival.id, []) | join(', ') }}</p>
