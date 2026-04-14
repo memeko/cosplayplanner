@@ -236,6 +236,45 @@ MASTER_WORK_TYPE_OPTIONS = [
     MASTER_WORK_TYPE_RETOUCH,
     MASTER_WORK_TYPE_OTHER,
 ]
+MASTER_ARCHIVE_SCOPE_ACTIVE = "active"
+MASTER_ARCHIVE_SCOPE_ARCHIVED = "archived"
+MASTER_ARCHIVE_SCOPE_ALL = "all"
+MASTER_ARCHIVE_SCOPE_OPTIONS = {
+    MASTER_ARCHIVE_SCOPE_ACTIVE,
+    MASTER_ARCHIVE_SCOPE_ARCHIVED,
+    MASTER_ARCHIVE_SCOPE_ALL,
+}
+MASTER_ARCHIVE_SCOPE_LABELS = {
+    MASTER_ARCHIVE_SCOPE_ACTIVE: "Активные",
+    MASTER_ARCHIVE_SCOPE_ARCHIVED: "Архив",
+    MASTER_ARCHIVE_SCOPE_ALL: "Все",
+}
+MASTER_CARD_SORT_UPDATED_DESC = "updated_desc"
+MASTER_CARD_SORT_TYPE_ASC = "type_asc"
+MASTER_CARD_SORT_TYPE_DESC = "type_desc"
+MASTER_CARD_SORT_CUSTOMER_ASC = "customer_asc"
+MASTER_CARD_SORT_CUSTOMER_DESC = "customer_desc"
+MASTER_CARD_SORT_OPTIONS = {
+    MASTER_CARD_SORT_UPDATED_DESC,
+    MASTER_CARD_SORT_TYPE_ASC,
+    MASTER_CARD_SORT_TYPE_DESC,
+    MASTER_CARD_SORT_CUSTOMER_ASC,
+    MASTER_CARD_SORT_CUSTOMER_DESC,
+}
+MASTER_CARD_SORT_LABELS = {
+    MASTER_CARD_SORT_UPDATED_DESC: "По обновлению (новые сверху)",
+    MASTER_CARD_SORT_TYPE_ASC: "По типу (А-Я)",
+    MASTER_CARD_SORT_TYPE_DESC: "По типу (Я-А)",
+    MASTER_CARD_SORT_CUSTOMER_ASC: "По заказчику (А-Я)",
+    MASTER_CARD_SORT_CUSTOMER_DESC: "По заказчику (Я-А)",
+}
+MASTER_CARD_SORT_SELECT_OPTIONS = [
+    MASTER_CARD_SORT_UPDATED_DESC,
+    MASTER_CARD_SORT_TYPE_ASC,
+    MASTER_CARD_SORT_TYPE_DESC,
+    MASTER_CARD_SORT_CUSTOMER_ASC,
+    MASTER_CARD_SORT_CUSTOMER_DESC,
+]
 
 TITLE_ENTRY_KIND_WATCH = "watch"
 TITLE_ENTRY_KIND_READ = "read"
@@ -832,6 +871,7 @@ def apply_schema_migrations() -> None:
             ("references_json", "JSON NOT NULL DEFAULT '[]'"),
             ("cloud_url", "TEXT"),
             ("status_percent", "INTEGER NOT NULL DEFAULT 0"),
+            ("is_archived", "BOOLEAN NOT NULL DEFAULT 0"),
             ("updated_at", "DATETIME DEFAULT CURRENT_TIMESTAMP"),
         ],
         "in_progress_master_comments": [
@@ -2380,6 +2420,20 @@ def normalize_in_progress_scope(raw: str | None) -> str:
     if value in IN_PROGRESS_SCOPE_OPTIONS:
         return value
     return IN_PROGRESS_SCOPE_COSPLAYER
+
+
+def normalize_master_archive_scope(raw: str | None) -> str:
+    value = str(raw or "").strip().lower()
+    if value in MASTER_ARCHIVE_SCOPE_OPTIONS:
+        return value
+    return MASTER_ARCHIVE_SCOPE_ACTIVE
+
+
+def normalize_master_card_sort(raw: str | None) -> str:
+    value = str(raw or "").strip().lower()
+    if value in MASTER_CARD_SORT_OPTIONS:
+        return value
+    return MASTER_CARD_SORT_UPDATED_DESC
 
 
 def master_work_type_label(value: str | None) -> str:
@@ -11559,7 +11613,11 @@ def in_progress_list(request: Request, db: Session = Depends(get_db)):
     scope = normalize_in_progress_scope(request.query_params.get("scope"))
 
     if scope == IN_PROGRESS_SCOPE_MASTER:
-        master_cards = db.execute(
+        master_search_query = str(request.query_params.get("q", "")).strip()
+        master_archive_scope = normalize_master_archive_scope(request.query_params.get("archive_scope"))
+        master_sort_by = normalize_master_card_sort(request.query_params.get("sort_by"))
+
+        accessible_master_cards = db.execute(
             select(InProgressMasterCard)
             .where(
                 or_(
@@ -11567,12 +11625,11 @@ def in_progress_list(request: Request, db: Session = Depends(get_db)):
                     InProgressMasterCard.customer_user_id == user.id,
                 )
             )
-            .order_by(InProgressMasterCard.updated_at.desc(), InProgressMasterCard.id.desc())
         ).scalars().all()
 
         owner_and_customer_ids = {
             int(user_id)
-            for card in master_cards
+            for card in accessible_master_cards
             for user_id in [card.user_id, card.customer_user_id]
             if user_id
         }
@@ -11581,20 +11638,11 @@ def in_progress_list(request: Request, db: Session = Depends(get_db)):
             users = db.execute(select(User).where(User.id.in_(owner_and_customer_ids))).scalars().all()
             users_by_id = {item.id: item for item in users}
 
-        comment_rows: list[Any] = []
-        if master_cards:
-            comment_rows = db.execute(
-                select(InProgressMasterComment.card_id, func.count(InProgressMasterComment.id))
-                .where(InProgressMasterComment.card_id.in_([card.id for card in master_cards]))
-                .group_by(InProgressMasterComment.card_id)
-            ).all()
-        comment_counts = {int(row[0]): int(row[1]) for row in comment_rows}
-
         executor_labels_by_card: dict[int, str] = {}
         customer_labels_by_card: dict[int, str] = {}
         material_totals_by_card: dict[int, float] = {}
         can_edit_ids: set[int] = set()
-        for card in master_cards:
+        for card in accessible_master_cards:
             owner = users_by_id.get(card.user_id)
             if owner:
                 executor_labels_by_card[card.id] = f"@{preferred_user_alias(owner)}"
@@ -11612,6 +11660,85 @@ def in_progress_list(request: Request, db: Session = Depends(get_db)):
             if can_edit_in_progress_master_card(user, card):
                 can_edit_ids.add(card.id)
 
+        total_cards_count = len(accessible_master_cards)
+        total_archived_count = sum(1 for card in accessible_master_cards if bool(card.is_archived))
+        total_active_count = max(0, total_cards_count - total_archived_count)
+
+        search_query = master_search_query.casefold()
+        master_cards: list[InProgressMasterCard] = []
+        for card in accessible_master_cards:
+            card_is_archived = bool(card.is_archived)
+            if master_archive_scope == MASTER_ARCHIVE_SCOPE_ACTIVE and card_is_archived:
+                continue
+            if master_archive_scope == MASTER_ARCHIVE_SCOPE_ARCHIVED and not card_is_archived:
+                continue
+
+            if search_query:
+                search_blob = " ".join(
+                    [
+                        str(card.name or ""),
+                        str(card.title_text or ""),
+                        str(customer_labels_by_card.get(card.id, "")),
+                        str(executor_labels_by_card.get(card.id, "")),
+                        master_work_type_label(card.work_type),
+                    ]
+                ).casefold()
+                if search_query not in search_blob:
+                    continue
+            master_cards.append(card)
+
+        if master_sort_by == MASTER_CARD_SORT_UPDATED_DESC:
+            master_cards.sort(
+                key=lambda item: (item.updated_at or item.created_at or datetime.min, item.id),
+                reverse=True,
+            )
+        elif master_sort_by in {MASTER_CARD_SORT_TYPE_ASC, MASTER_CARD_SORT_TYPE_DESC}:
+            master_cards.sort(
+                key=lambda item: (
+                    master_work_type_label(item.work_type).casefold(),
+                    (item.name or "").casefold(),
+                    item.id,
+                )
+            )
+            if master_sort_by == MASTER_CARD_SORT_TYPE_DESC:
+                master_cards.reverse()
+        else:
+            def customer_sort_key(item: InProgressMasterCard) -> tuple[bool, str, str, int]:
+                raw_label = str(customer_labels_by_card.get(item.id, "") or "").strip()
+                normalized_label = raw_label.lstrip("@").strip().casefold()
+                is_empty = normalized_label in {"", "—"}
+                return (
+                    is_empty,
+                    normalized_label,
+                    (item.name or "").casefold(),
+                    item.id,
+                )
+
+            if master_sort_by == MASTER_CARD_SORT_CUSTOMER_ASC:
+                master_cards.sort(key=customer_sort_key)
+            else:
+                with_customer = [item for item in master_cards if not customer_sort_key(item)[0]]
+                without_customer = [item for item in master_cards if customer_sort_key(item)[0]]
+                with_customer.sort(
+                    key=lambda item: (
+                        customer_sort_key(item)[1],
+                        (item.name or "").casefold(),
+                        item.id,
+                    ),
+                    reverse=True,
+                )
+                without_customer.sort(key=lambda item: ((item.name or "").casefold(), item.id))
+                master_cards = with_customer + without_customer
+
+        comment_rows: list[Any] = []
+        if master_cards:
+            comment_rows = db.execute(
+                select(InProgressMasterComment.card_id, func.count(InProgressMasterComment.id))
+                .where(InProgressMasterComment.card_id.in_([card.id for card in master_cards]))
+                .group_by(InProgressMasterComment.card_id)
+            ).all()
+        comment_counts = {int(row[0]): int(row[1]) for row in comment_rows}
+
         return template_response(
             request,
             "in_progress_master.html",
@@ -11625,6 +11752,16 @@ def in_progress_list(request: Request, db: Session = Depends(get_db)):
             material_totals_by_card=material_totals_by_card,
             can_edit_master_card_ids=can_edit_ids,
             master_work_type_labels=MASTER_WORK_TYPE_LABELS,
+            master_search_query=master_search_query,
+            master_archive_scope=master_archive_scope,
+            master_archive_scope_labels=MASTER_ARCHIVE_SCOPE_LABELS,
+            master_sort_by=master_sort_by,
+            master_sort_labels=MASTER_CARD_SORT_LABELS,
+            master_sort_options=MASTER_CARD_SORT_SELECT_OPTIONS,
+            master_cards_total=total_cards_count,
+            master_cards_total_active=total_active_count,
+            master_cards_total_archived=total_archived_count,
+            master_cards_filtered_count=len(master_cards),
         )
 
     try:
@@ -12183,6 +12320,44 @@ def in_progress_master_task_delete(
         db.commit()
 
     return redirect(f"/in-progress/master/{card_id}")
+
+
+@app.post("/in-progress/master/{card_id}/archive-toggle")
+async def in_progress_master_archive_toggle(card_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    card = db.get(InProgressMasterCard, card_id)
+    if not card:
+        add_flash(request, "Карточка мастера не найдена.", "error")
+        return redirect("/in-progress?scope=master")
+    if not can_edit_in_progress_master_card(user, card):
+        add_flash(request, "Недостаточно прав для изменения архива.", "error")
+        return redirect(f"/in-progress/master/{card_id}")
+
+    form = await request.form()
+    archive_raw = str(form.get("archive", "")).strip()
+    if archive_raw == "":
+        next_archived_state = not bool(card.is_archived)
+    else:
+        next_archived_state = to_bool(archive_raw)
+
+    card.is_archived = bool(next_archived_state)
+    db.commit()
+
+    if card.is_archived:
+        add_flash(request, "Карточка перемещена в архив.", "info")
+    else:
+        add_flash(request, "Карточка возвращена из архива.", "success")
+
+    fallback_next = (
+        "/in-progress?scope=master&archive_scope=archived"
+        if card.is_archived
+        else "/in-progress?scope=master"
+    )
+    next_url = safe_redirect_target(str(form.get("next", "")).strip(), fallback_next)
+    return redirect(next_url)
 
 
 @app.get("/in-progress/master/{card_id}/edit", response_class=HTMLResponse)

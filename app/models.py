@@ -447,6 +447,7 @@ class InProgressMasterCard(Base):
     references_json = Column(JSON, nullable=False, default=list)
     cloud_url = Column(Text, nullable=True)
     status_percent = Column(Integer, nullable=False, default=0)
+    is_archived = Column(Boolean, nullable=False, default=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 

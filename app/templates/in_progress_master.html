@@ -1,7 +1,12 @@
 {% extends "base.html" %}
 {% block content %}
+{% set current_query = request.url.query %}
+{% set current_url = "/in-progress" ~ ("?" ~ current_query if current_query else "?scope=master") %}
 <section class="section-head">
-  <h1>В работе</h1>
+  <div>
+    <h1>В работе</h1>
+    <p class="meta">Показано карточек: <strong>{{ master_cards_filtered_count or 0 }}</strong></p>
+  </div>
   <a href="/in-progress/master/new" class="btn btn-accent">Новая карточка мастера</a>
 </section>
 
@@ -10,8 +15,43 @@
   <a href="/in-progress?scope=master" class="tab {% if (in_progress_scope or 'cosplayer') == 'master' %}active{% endif %}">Мастер</a>
 </nav>
 
+<section class="box compact-box">
+  <form method="get" action="/in-progress" class="grid two-col">
+    <input type="hidden" name="scope" value="master" />
+    <label>
+      Поиск
+      <input type="text" name="q" value="{{ master_search_query or '' }}" placeholder="Название, тайтл, заказчик, исполнитель" />
+    </label>
+    <label>
+      Сортировка
+      <select name="sort_by">
+        {% for option in master_sort_options %}
+          <option value="{{ option }}" {% if (master_sort_by or '') == option %}selected{% endif %}>{{ master_sort_labels.get(option, option) }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>
+      Раздел
+      <select name="archive_scope">
+        {% for option, option_label in master_archive_scope_labels.items() %}
+          <option value="{{ option }}" {% if (master_archive_scope or '') == option %}selected{% endif %}>{{ option_label }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <div class="actions-inline wrap">
+      <button type="submit" class="btn">Применить</button>
+      <a href="/in-progress?scope=master" class="btn">Сбросить</a>
+    </div>
+  </form>
+  <p class="meta top-offset">
+    Всего: <strong>{{ master_cards_total or 0 }}</strong> •
+    Активных: <strong>{{ master_cards_total_active or 0 }}</strong> •
+    В архиве: <strong>{{ master_cards_total_archived or 0 }}</strong>
+  </p>
+</section>
+
 {% if master_cards %}
-  <div class="cards-grid">
+  <div class="cards-grid top-offset">
     {% for card in master_cards %}
       {% set status_value = card.status_percent or 0 %}
       {% if status_value < 0 %}
@@ -24,6 +64,9 @@
           <h3><a href="/in-progress/master/{{ card.id }}" class="card-title-link">{{ card.name }}</a></h3>
           <div class="master-card-meta">
             <span class="chip">{{ master_work_type_labels.get(card.work_type, "Другое") }}</span>
+            {% if card.is_archived %}
+              <span class="chip">Архив</span>
+            {% endif %}
             <div class="master-status-inline" role="img" aria-label="Статус {{ status_value }}%">
               <span class="master-status-inline-track">
                 <span class="master-status-inline-fill" style="width: {{ status_value }}%;"></span>
@@ -39,10 +82,15 @@
         <p class="meta">Заказчик: {{ customer_labels_by_card.get(card.id, "—") }}</p>
         <p class="meta">Задач: {{ (card.task_rows_json or [])|length }} • Комментариев: {{ comment_counts.get(card.id, 0) }}</p>
         <p class="meta">Материалы: {{ '%.2f'|format(material_totals_by_card.get(card.id, 0.0)) }} ₽</p>
-        <div class="actions-inline">
+        <div class="actions-inline wrap">
           <a href="/in-progress/master/{{ card.id }}" class="btn">Открыть</a>
           {% if card.id in can_edit_master_card_ids %}
             <a href="/in-progress/master/{{ card.id }}/edit" class="btn">Редактировать</a>
+            <form method="post" action="/in-progress/master/{{ card.id }}/archive-toggle" onsubmit="return confirm('{{ 'Вернуть карточку из архива?' if card.is_archived else 'Убрать карточку в архив?' }}');">
+              <input type="hidden" name="archive" value="{{ 0 if card.is_archived else 1 }}" />
+              <input type="hidden" name="next" value="{{ current_url }}" />
+              <button type="submit" class="btn">{{ "Из архива" if card.is_archived else "В архив" }}</button>
+            </form>
             <form method="post" action="/in-progress/master/{{ card.id }}/delete" onsubmit="return confirm('Удалить карточку мастера?');">
               <button type="submit" class="btn btn-danger">Удалить</button>
             </form>
@@ -52,6 +100,6 @@
     {% endfor %}
   </div>
 {% else %}
-  <p class="muted">Пока нет карточек мастера. Нажмите «Новая карточка мастера».</p>
+  <p class="muted top-offset">Карточек по заданным фильтрам не найдено.</p>
 {% endif %}
 {% endblock %}
