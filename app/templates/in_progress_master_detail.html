@@ -56,8 +56,17 @@
     <ul class="checklist top-offset">
       {% for row in task_rows %}
         <li>
+          {% if can_edit_master_card %}
+            <form method="post" action="/in-progress/master/{{ card.id }}/tasks/toggle/{{ loop.index0 }}" class="inline-form">
+              <button type="submit" class="btn btn-small">{{ "☑" if row.done == '__YES__' else "☐" }}</button>
+            </form>
+          {% endif %}
           <span class="{% if row.done == '__YES__' %}done{% endif %}">{{ row.text }}</span>
-          {% if row.done == '__YES__' %}
+          {% if can_edit_master_card %}
+            <form method="post" action="/in-progress/master/{{ card.id }}/tasks/delete/{{ loop.index0 }}" class="inline-form">
+              <button type="submit" class="btn btn-small btn-danger">✕</button>
+            </form>
+          {% elif row.done == '__YES__' %}
             <span class="chip">Готово</span>
           {% endif %}
         </li>
@@ -65,6 +74,12 @@
     </ul>
   {% else %}
     <p class="muted top-offset">Список задач пуст.</p>
+  {% endif %}
+  {% if can_edit_master_card %}
+    <form method="post" action="/in-progress/master/{{ card.id }}/tasks/add" class="actions-inline top-offset">
+      <input type="text" name="item_text" placeholder="Новая задача" required />
+      <button type="submit" class="btn">Добавить</button>
+    </form>
   {% endif %}
 </section>
 

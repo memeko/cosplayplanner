@@ -11299,6 +11299,21 @@ def can_edit_in_progress_master_card(user: User | None, card: InProgressMasterCa
     return int(card.user_id) == int(user.id)
 
 
+def normalize_master_task_rows(rows: list[Any]) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    for raw_row in rows:
+        if isinstance(raw_row, dict):
+            text_value = str(raw_row.get("text", "")).strip()
+            done_value = to_bool(raw_row.get("done"))
+        else:
+            text_value = str(raw_row).strip()
+            done_value = False
+        if not text_value:
+            continue
+        normalized.append({"text": text_value, "done": done_value})
+    return normalized
+
+
 def parse_master_work_material_rows_from_form(form: Any) -> list[dict[str, Any]]:
     row_ids = [str(value).strip() for value in form.getlist("material_row_id")]
     names = [str(value).strip() for value in form.getlist("material_name")]
@@ -12084,6 +12099,90 @@ def in_progress_master_detail(card_id: int, request: Request, db: Session = Depe
         can_edit_master_card=can_edit_in_progress_master_card(user, card),
         master_work_type_labels=MASTER_WORK_TYPE_LABELS,
     )
+
+
+@app.post("/in-progress/master/{card_id}/tasks/add")
+async def in_progress_master_task_add(card_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    card = db.get(InProgressMasterCard, card_id)
+    if not card:
+        add_flash(request, "Карточка мастера не найдена.", "error")
+        return redirect("/in-progress?scope=master")
+    if not can_edit_in_progress_master_card(user, card):
+        add_flash(request, "Недостаточно прав для редактирования.", "error")
+        return redirect(f"/in-progress/master/{card_id}")
+
+    form = await request.form()
+    item_text = str(form.get("item_text", "")).strip()
+    if not item_text:
+        add_flash(request, "Введите текст задачи.", "error")
+        return redirect(f"/in-progress/master/{card_id}")
+
+    rows = normalize_master_task_rows(as_list(card.task_rows_json))
+    rows.append({"text": item_text, "done": False})
+    card.task_rows_json = rows
+    db.commit()
+    add_flash(request, "Задача добавлена.", "success")
+    return redirect(f"/in-progress/master/{card_id}")
+
+
+@app.post("/in-progress/master/{card_id}/tasks/toggle/{task_index}")
+def in_progress_master_task_toggle(
+    card_id: int,
+    task_index: int,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    card = db.get(InProgressMasterCard, card_id)
+    if not card:
+        add_flash(request, "Карточка мастера не найдена.", "error")
+        return redirect("/in-progress?scope=master")
+    if not can_edit_in_progress_master_card(user, card):
+        add_flash(request, "Недостаточно прав для редактирования.", "error")
+        return redirect(f"/in-progress/master/{card_id}")
+
+    rows = normalize_master_task_rows(as_list(card.task_rows_json))
+    if 0 <= task_index < len(rows):
+        rows[task_index]["done"] = not bool(rows[task_index].get("done"))
+        card.task_rows_json = rows
+        db.commit()
+
+    return redirect(f"/in-progress/master/{card_id}")
+
+
+@app.post("/in-progress/master/{card_id}/tasks/delete/{task_index}")
+def in_progress_master_task_delete(
+    card_id: int,
+    task_index: int,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    card = db.get(InProgressMasterCard, card_id)
+    if not card:
+        add_flash(request, "Карточка мастера не найдена.", "error")
+        return redirect("/in-progress?scope=master")
+    if not can_edit_in_progress_master_card(user, card):
+        add_flash(request, "Недостаточно прав для редактирования.", "error")
+        return redirect(f"/in-progress/master/{card_id}")
+
+    rows = normalize_master_task_rows(as_list(card.task_rows_json))
+    if 0 <= task_index < len(rows):
+        rows.pop(task_index)
+        card.task_rows_json = rows
+        db.commit()
+
+    return redirect(f"/in-progress/master/{card_id}")
 
 
 @app.get("/in-progress/master/{card_id}/edit", response_class=HTMLResponse)

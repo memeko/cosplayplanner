@@ -13,12 +13,23 @@
 {% if master_cards %}
   <div class="cards-grid">
     {% for card in master_cards %}
+      {% set status_value = card.status_percent or 0 %}
+      {% if status_value < 0 %}
+        {% set status_value = 0 %}
+      {% elif status_value > 100 %}
+        {% set status_value = 100 %}
+      {% endif %}
       <article class="card">
         <div class="row-between">
           <h3><a href="/in-progress/master/{{ card.id }}" class="card-title-link">{{ card.name }}</a></h3>
-          <div class="actions-inline">
+          <div class="master-card-meta">
             <span class="chip">{{ master_work_type_labels.get(card.work_type, "Другое") }}</span>
-            <span class="chip">Статус: {{ card.status_percent or 0 }}%</span>
+            <div class="master-status-inline" role="img" aria-label="Статус {{ status_value }}%">
+              <span class="master-status-inline-track">
+                <span class="master-status-inline-fill" style="width: {{ status_value }}%;"></span>
+              </span>
+              <span class="master-status-inline-text">{{ status_value }}%</span>
+            </div>
           </div>
         </div>
         {% if card.title_text %}

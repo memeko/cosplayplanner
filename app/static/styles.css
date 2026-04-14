@@ -690,6 +690,43 @@ textarea {
   margin-bottom: 8px;
 }
 
+.master-card-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.master-status-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 120px;
+}
+
+.master-status-inline-track {
+  width: 92px;
+  height: 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(11, 114, 133, 0.34);
+  background: rgba(148, 163, 184, 0.2);
+  overflow: hidden;
+}
+
+.master-status-inline-fill {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, rgba(16, 185, 129, 0.92), rgba(6, 182, 212, 0.92));
+}
+
+.master-status-inline-text {
+  font-size: 13px;
+  color: var(--muted);
+  min-width: 38px;
+  text-align: right;
+}
+
 .chip,
 .chip-check {
   border: 1px solid rgba(255, 255, 255, 0.74);
