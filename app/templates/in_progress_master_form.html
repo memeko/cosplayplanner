@@ -66,6 +66,30 @@
   </section>
 
   <section class="box">
+    <div class="grid two-col">
+      <label>
+        Дедлайн
+        <input type="date" name="deadline_date" value="{{ form.deadline_date }}" />
+      </label>
+    </div>
+    <div class="row-between top-offset">
+      <h3>Промежуточный дедлайн / Примерка</h3>
+      <button type="button" class="btn" id="add-intermediate-deadline-row">Добавить дату</button>
+    </div>
+    <div class="master-deadline-rows" id="intermediate_deadline_rows_wrap">
+      {% for row in form.intermediate_deadline_rows %}
+        <div class="master-deadline-row intermediate-deadline-row">
+          <label>
+            Дата
+            <input type="date" name="intermediate_deadline_date" value="{{ row.value }}" />
+          </label>
+          <button type="button" class="btn btn-danger remove-intermediate-deadline-row">Удалить</button>
+        </div>
+      {% endfor %}
+    </div>
+  </section>
+
+  <section class="box">
     <div class="row-between">
       <h3>Список задач</h3>
       <button type="button" class="btn" id="add-task-row">Добавить задачу</button>
@@ -271,6 +295,19 @@
     return row;
   }
 
+  function buildIntermediateDeadlineRow() {
+    const row = document.createElement('div');
+    row.className = 'master-deadline-row intermediate-deadline-row';
+    row.innerHTML = `
+      <label>
+        Дата
+        <input type="date" name="intermediate_deadline_date" value="" />
+      </label>
+      <button type="button" class="btn btn-danger remove-intermediate-deadline-row">Удалить</button>
+    `;
+    return row;
+  }
+
   function buildMaterialRow(rowId) {
     const row = document.createElement('div');
     row.className = 'master-price-row material-row';
@@ -347,8 +384,17 @@
   }
 
   const taskWrap = document.getElementById('task_rows_wrap');
+  const intermediateDeadlineWrap = document.getElementById('intermediate_deadline_rows_wrap');
   const materialWrap = document.getElementById('material_rows_wrap');
   const measurementWrap = document.getElementById('measurement_rows_wrap');
+
+  const addIntermediateDeadlineBtn = document.getElementById('add-intermediate-deadline-row');
+  if (addIntermediateDeadlineBtn && intermediateDeadlineWrap) {
+    addIntermediateDeadlineBtn.addEventListener('click', () => {
+      intermediateDeadlineWrap.appendChild(buildIntermediateDeadlineRow());
+      bindRemoveButtons('.remove-intermediate-deadline-row', '.intermediate-deadline-row');
+    });
+  }
 
   const addTaskBtn = document.getElementById('add-task-row');
   if (addTaskBtn && taskWrap) {
@@ -381,6 +427,7 @@
     }
   });
 
+  bindRemoveButtons('.remove-intermediate-deadline-row', '.intermediate-deadline-row');
   bindRemoveButtons('.remove-task-row', '.task-row');
   bindRemoveButtons('.remove-material-row', '.material-row');
   bindRemoveButtons('.remove-measurement-row', '.measurement-row');

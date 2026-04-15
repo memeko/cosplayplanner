@@ -445,6 +445,8 @@ class InProgressMasterCard(Base):
     note = Column(Text, nullable=True)
     measurements_json = Column(JSON, nullable=False, default=list)
     references_json = Column(JSON, nullable=False, default=list)
+    intermediate_deadlines_json = Column(JSON, nullable=False, default=list)
+    deadline_date = Column(Date, nullable=True)
     cloud_url = Column(Text, nullable=True)
     status_percent = Column(Integer, nullable=False, default=0)
     is_archived = Column(Boolean, nullable=False, default=False)

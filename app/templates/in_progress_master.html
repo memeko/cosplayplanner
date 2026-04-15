@@ -80,6 +80,8 @@
         {% endif %}
         <p class="meta">Исполнитель: {{ executor_labels_by_card.get(card.id, "—") }}</p>
         <p class="meta">Заказчик: {{ customer_labels_by_card.get(card.id, "—") }}</p>
+        <p class="meta">Дедлайн: {{ card.deadline_date.strftime('%d-%m-%Y') if card.deadline_date else '—' }}</p>
+        <p class="meta">Промежуточный дедлайн / Примерка: {{ (card.intermediate_deadlines_json or [])|length }}</p>
         <p class="meta">Задач: {{ (card.task_rows_json or [])|length }} • Комментариев: {{ comment_counts.get(card.id, 0) }}</p>
         <p class="meta">Материалы: {{ '%.2f'|format(material_totals_by_card.get(card.id, 0.0)) }} ₽</p>
         <div class="actions-inline wrap">

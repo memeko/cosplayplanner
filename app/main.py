@@ -869,6 +869,8 @@ def apply_schema_migrations() -> None:
             ("note", "TEXT"),
             ("measurements_json", "JSON NOT NULL DEFAULT '[]'"),
             ("references_json", "JSON NOT NULL DEFAULT '[]'"),
+            ("intermediate_deadlines_json", "JSON NOT NULL DEFAULT '[]'"),
+            ("deadline_date", "DATE"),
             ("cloud_url", "TEXT"),
             ("status_percent", "INTEGER NOT NULL DEFAULT 0"),
             ("is_archived", "BOOLEAN NOT NULL DEFAULT 0"),
@@ -9513,7 +9515,8 @@ def index(request: Request, db: Session = Depends(get_db)):
         mergeable_duplicate_notification_ids: set[int] = set()
         if is_moderator_user(user):
             for note in regular_notifications:
-                if len(duplicate_festival_candidates_from_notification(db, note.message)) >= 2:
+                duplicate_candidates = duplicate_festival_candidates_from_notification(db, note.message)
+                if has_mergeable_duplicate_festivals(duplicate_candidates):
                     mergeable_duplicate_notification_ids.add(note.id)
 
         _, _, alias_options = build_user_alias_lookup(db)
@@ -11458,6 +11461,39 @@ def format_master_work_measurement_rows(rows: list[Any]) -> list[dict[str, str]]
     return formatted
 
 
+def normalize_master_intermediate_deadline_dates(values: list[Any]) -> list[date]:
+    parsed_values: list[date] = []
+    seen: set[date] = set()
+    for raw_value in values:
+        candidate_date: date | None = None
+        if isinstance(raw_value, date):
+            candidate_date = raw_value
+        else:
+            candidate_date = parse_date(str(raw_value or "").strip())
+        if not candidate_date or candidate_date in seen:
+            continue
+        seen.add(candidate_date)
+        parsed_values.append(candidate_date)
+    parsed_values.sort()
+    return parsed_values
+
+
+def format_master_intermediate_deadline_rows_for_form(values: list[Any]) -> list[dict[str, str]]:
+    formatted: list[dict[str, str]] = []
+    for index, value in enumerate(normalize_master_intermediate_deadline_dates(values)):
+        formatted.append(
+            {
+                "row_id": f"intermediate-{index}",
+                "value": value.isoformat(),
+            }
+        )
+    return formatted
+
+
+def format_master_intermediate_deadline_labels(values: list[Any]) -> list[str]:
+    return [value.strftime("%d-%m-%Y") for value in normalize_master_intermediate_deadline_dates(values)]
+
+
 def sum_master_material_rows(rows: list[Any]) -> float:
     total = 0.0
     for raw_row in rows:
@@ -11489,10 +11525,17 @@ def get_in_progress_master_form_values(
             "material_rows": [{"row_id": "material-0", "name": "", "url": "", "price": ""}],
             "note": "",
             "measurement_rows": [{"row_id": "measure-0", "name": "", "value": "", "unit": ""}],
+            "intermediate_deadline_rows": [{"row_id": "intermediate-0", "value": ""}],
+            "deadline_date": "",
             "references_input": "",
             "cloud_url": "",
             "status_percent": 0,
         }
+    intermediate_deadline_rows = format_master_intermediate_deadline_rows_for_form(
+        as_list(card.intermediate_deadlines_json)
+    )
+    if not intermediate_deadline_rows:
+        intermediate_deadline_rows = [{"row_id": "intermediate-0", "value": ""}]
     return {
         "work_type": card.work_type or MASTER_WORK_TYPE_OTHER,
         "name": card.name or "",
@@ -11503,6 +11546,8 @@ def get_in_progress_master_form_values(
         "material_rows": format_master_work_material_rows(as_list(card.materials_json)),
         "note": card.note or "",
         "measurement_rows": format_master_work_measurement_rows(as_list(card.measurements_json)),
+        "intermediate_deadline_rows": intermediate_deadline_rows,
+        "deadline_date": card.deadline_date.isoformat() if card.deadline_date else "",
         "references_input": "\n".join(as_list(card.references_json)),
         "cloud_url": card.cloud_url or "",
         "status_percent": min(100, max(0, int(card.status_percent or 0))),
@@ -11523,6 +11568,7 @@ def save_in_progress_master_card_from_form(
     note = str(form.get("note", "")).strip()
     cloud_url = str(form.get("cloud_url", "")).strip()
     status_raw = str(form.get("status_percent", "")).strip()
+    deadline_date_raw = str(form.get("deadline_date", "")).strip()
 
     if work_type not in MASTER_WORK_TYPE_OPTIONS:
         return False, "Выберите корректный тип работы."
@@ -11544,10 +11590,18 @@ def save_in_progress_master_card_from_form(
     except ValueError:
         status_percent = 0
     status_percent = max(0, min(100, status_percent))
+    deadline_date = parse_date(deadline_date_raw)
+    if deadline_date_raw and not deadline_date:
+        return False, "Некорректная дата в поле «Дедлайн»."
 
     task_rows = parse_checklist_rows_from_form(form, "task")
     material_rows = parse_master_work_material_rows_from_form(form)
     measurement_rows = parse_master_work_measurement_rows_from_form(form)
+    intermediate_deadline_dates = normalize_master_intermediate_deadline_dates(
+        [str(value).strip() for value in form.getlist("intermediate_deadline_date")]
+    )
+    if len(intermediate_deadline_dates) > 50:
+        return False, "Можно указать не более 50 дат в «Промежуточный дедлайн / Примерка»."
     references = parse_reference_values(str(form.get("references_input", "")))
     if len(references) > 10:
         return False, "Можно добавить не более 10 ссылок на референсы."
@@ -11573,6 +11627,8 @@ def save_in_progress_master_card_from_form(
     card.materials_json = material_rows
     card.note = note or None
     card.measurements_json = measurement_rows
+    card.intermediate_deadlines_json = [value.isoformat() for value in intermediate_deadline_dates]
+    card.deadline_date = deadline_date
     card.references_json = references
     card.cloud_url = cloud_url or None
     card.status_percent = status_percent
@@ -12170,6 +12226,8 @@ async def in_progress_master_create(request: Request, db: Session = Depends(get_
         task_rows_json=[],
         materials_json=[],
         measurements_json=[],
+        intermediate_deadlines_json=[],
+        deadline_date=None,
         references_json=[],
         status_percent=0,
     )
@@ -12230,6 +12288,8 @@ def in_progress_master_detail(card_id: int, request: Request, db: Session = Depe
         material_rows=format_master_work_material_rows(as_list(card.materials_json)),
         material_total=sum_master_material_rows(as_list(card.materials_json)),
         measurement_rows=format_master_work_measurement_rows(as_list(card.measurements_json)),
+        intermediate_deadline_labels=format_master_intermediate_deadline_labels(as_list(card.intermediate_deadlines_json)),
+        deadline_label=card.deadline_date.strftime("%d-%m-%Y") if card.deadline_date else "—",
         references=as_list(card.references_json),
         comments=comments,
         authors_by_id=authors_by_id,
@@ -17765,6 +17825,17 @@ def duplicate_festival_candidates_from_notification(db: Session, message: str | 
     return result
 
 
+def has_mergeable_duplicate_festivals(items: list[Festival]) -> bool:
+    if len(items) < 2:
+        return False
+    per_user_counts: dict[int, int] = defaultdict(int)
+    for item in items:
+        per_user_counts[int(item.user_id)] += 1
+        if per_user_counts[int(item.user_id)] >= 2:
+            return True
+    return False
+
+
 def festival_merge_rank(festival: Festival | None) -> tuple[int, int, int, int, int, int]:
     if not festival:
         return (0, 0, 0, 0, 0, 0)
@@ -19052,7 +19123,23 @@ async def festivals_notification_merge_duplicate(notification_id: int, request: 
     next_url = safe_redirect_target(str(form.get("next", "")).strip(), "/")
     duplicate_items = duplicate_festival_candidates_from_notification(db, notification.message)
     if len(duplicate_items) < 2:
-        add_flash(request, "Для этого оповещения не удалось найти минимум две карточки для объединения.", "error")
+        db.delete(notification)
+        db.commit()
+        add_flash(
+            request,
+            "По этому оповещению дублей больше не найдено. Оповещение снято.",
+            "info",
+        )
+        return redirect(next_url)
+
+    if not has_mergeable_duplicate_festivals(duplicate_items):
+        db.delete(notification)
+        db.commit()
+        add_flash(
+            request,
+            "Найдены только карточки разных пользователей без дублей внутри одного списка. Оповещение снято.",
+            "info",
+        )
         return redirect(next_url)
 
     merge_payload = build_merged_festival_payload(duplicate_items)
@@ -19106,15 +19193,16 @@ async def festivals_notification_merge_duplicate(notification_id: int, request: 
             db.delete(source_announcement)
 
     target_signature = duplicate_festival_notification_signature(notification.message)
+    db.delete(notification)
     if target_signature:
         related_notifications = db.execute(
             select(FestivalNotification).where(FestivalNotification.user_id == user.id)
         ).scalars().all()
         for item in related_notifications:
+            if item.id == notification.id:
+                continue
             if duplicate_festival_notification_signature(item.message) == target_signature:
                 db.delete(item)
-    else:
-        db.delete(notification)
 
     db.commit()
     add_flash(

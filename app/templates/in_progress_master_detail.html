@@ -46,6 +46,17 @@
     {% endif %}
   </p>
   <p class="meta">Заказчик: {{ customer_display }}</p>
+  <p class="meta">Дедлайн: {{ deadline_label }}</p>
+  {% if intermediate_deadline_labels %}
+    <p class="meta">Промежуточный дедлайн / Примерка:</p>
+    <div class="chips-wrap">
+      {% for item in intermediate_deadline_labels %}
+        <span class="chip">{{ item }}</span>
+      {% endfor %}
+    </div>
+  {% else %}
+    <p class="meta">Промежуточный дедлайн / Примерка: —</p>
+  {% endif %}
   <p class="meta">
     Ссылка на облако:
     {% if card.cloud_url %}

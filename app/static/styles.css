@@ -918,6 +918,28 @@ textarea {
   height: 42px;
 }
 
+.master-deadline-rows {
+  display: grid;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.master-deadline-row {
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.48);
+  padding: 10px;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+  align-items: end;
+  box-shadow: var(--glass-highlight-soft);
+}
+
+.master-deadline-row button {
+  height: 42px;
+}
+
 .checklist {
   list-style: none;
   margin: 8px 0;
@@ -2161,6 +2183,10 @@ textarea {
   }
 
   .master-price-row {
+    grid-template-columns: 1fr;
+  }
+
+  .master-deadline-row {
     grid-template-columns: 1fr;
   }
 
