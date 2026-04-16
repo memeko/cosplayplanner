@@ -3066,27 +3066,40 @@ def resolve_threads_api_class() -> Any | None:
     if threads_api_class_cache is not None:
         return threads_api_class_cache
 
-    last_error: Exception | None = None
+    import_errors: list[Exception] = []
     imported_modules = 0
     for module_path in THREADS_API_IMPORT_PATHS:
         try:
             loaded_module = importlib.import_module(module_path)
         except Exception as exc:
-            last_error = exc
+            import_errors.append(exc)
             continue
         imported_modules += 1
         candidate = getattr(loaded_module, "ThreadsAPI", None)
         if candidate is None:
-            if last_error is None:
-                last_error = RuntimeError("В установленной версии threads-api не найден класс ThreadsAPI.")
+            import_errors.append(RuntimeError("В установленной версии threads-api не найден класс ThreadsAPI."))
             continue
         threads_api_class_cache = candidate
         threads_api_import_error_message = ""
         return threads_api_class_cache
 
-    if imported_modules > 0 and last_error is None:
-        last_error = RuntimeError("В установленной версии threads-api не найден класс ThreadsAPI.")
-    threads_api_import_error_message = format_threads_api_import_error(last_error)
+    if imported_modules > 0 and not import_errors:
+        import_errors.append(RuntimeError("В установленной версии threads-api не найден класс ThreadsAPI."))
+
+    selected_error: Exception | None = None
+    for error in import_errors:
+        if isinstance(error, ModuleNotFoundError):
+            missing_name = str(getattr(error, "name", "") or "").strip()
+            if missing_name and not missing_name.startswith("threads_api"):
+                selected_error = error
+                break
+            continue
+        selected_error = error
+        break
+    if selected_error is None and import_errors:
+        selected_error = import_errors[0]
+
+    threads_api_import_error_message = format_threads_api_import_error(selected_error)
     return None
 
 
