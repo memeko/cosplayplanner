@@ -412,7 +412,6 @@ CONTENT_TELEGRAM_LOOP_SLEEP_SECONDS = max(
 THREADS_LIBRARY_UNAVAILABLE_TEXT = "Интеграция Threads сейчас временно недоступна на сервере. Попробуйте позже."
 THREADS_API_IMPORT_PATHS = ("threads_api.src.threads_api", "threads_api")
 threads_api_class_cache: Any | None = None
-threads_api_import_checked = False
 threads_api_import_error_message = ""
 try:
     SITE_TIMEZONE = ZoneInfo(os.getenv("SITE_TIMEZONE", "Europe/Moscow"))
@@ -3053,15 +3052,16 @@ def format_threads_api_import_error(exc: Exception | None) -> str:
                 "Интеграция Threads недоступна: на сервере отсутствует зависимость "
                 f"{missing_name}. Обновите зависимости приложения и перезапустите сервис."
             )
+    if exc is not None:
+        return f"Интеграция Threads недоступна: ошибка загрузки библиотеки ({exc.__class__.__name__})."
     return THREADS_LIBRARY_UNAVAILABLE_TEXT
 
 
 def resolve_threads_api_class() -> Any | None:
-    global threads_api_class_cache, threads_api_import_checked, threads_api_import_error_message
-    if threads_api_import_checked:
+    global threads_api_class_cache, threads_api_import_error_message
+    if threads_api_class_cache is not None:
         return threads_api_class_cache
 
-    threads_api_import_checked = True
     last_error: Exception | None = None
     for module_path in THREADS_API_IMPORT_PATHS:
         try:
