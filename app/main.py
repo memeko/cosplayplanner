@@ -410,7 +410,7 @@ CONTENT_TELEGRAM_LOOP_SLEEP_SECONDS = max(
     min(300, int(os.getenv("CONTENT_TELEGRAM_LOOP_SLEEP", "60"))),
 )
 THREADS_LIBRARY_UNAVAILABLE_TEXT = "Интеграция Threads сейчас временно недоступна на сервере. Попробуйте позже."
-THREADS_API_IMPORT_PATHS = ("threads_api.src.threads_api", "threads_api")
+THREADS_API_IMPORT_PATHS = ("threads_api.src.threads_api", "threads_api.threads_api", "threads_api")
 threads_api_class_cache: Any | None = None
 threads_api_import_error_message = ""
 try:
@@ -3042,16 +3042,20 @@ def clear_content_threads_cache_files(user_id: int) -> None:
 def format_threads_api_import_error(exc: Exception | None) -> str:
     if isinstance(exc, ModuleNotFoundError):
         missing_name = str(getattr(exc, "name", "") or "").strip()
-        if missing_name in {"threads_api"}:
+        if missing_name.startswith("threads_api"):
             return (
-                "Интеграция Threads недоступна: на сервере не установлен пакет threads-api."
-                " Обновите зависимости приложения и перезапустите сервис."
+                "Интеграция Threads недоступна: установлена несовместимая версия пакета threads-api"
+                " или пакет не установлен. Обновите зависимости приложения и перезапустите сервис."
             )
         if missing_name:
             return (
                 "Интеграция Threads недоступна: на сервере отсутствует зависимость "
                 f"{missing_name}. Обновите зависимости приложения и перезапустите сервис."
             )
+    if isinstance(exc, RuntimeError):
+        message = str(exc or "").strip()
+        if message:
+            return f"Интеграция Threads недоступна: {message}"
     if exc is not None:
         return f"Интеграция Threads недоступна: ошибка загрузки библиотеки ({exc.__class__.__name__})."
     return THREADS_LIBRARY_UNAVAILABLE_TEXT
@@ -3063,20 +3067,25 @@ def resolve_threads_api_class() -> Any | None:
         return threads_api_class_cache
 
     last_error: Exception | None = None
+    imported_modules = 0
     for module_path in THREADS_API_IMPORT_PATHS:
         try:
             loaded_module = importlib.import_module(module_path)
         except Exception as exc:
             last_error = exc
             continue
+        imported_modules += 1
         candidate = getattr(loaded_module, "ThreadsAPI", None)
         if candidate is None:
-            last_error = RuntimeError(f"В модуле `{module_path}` не найден класс ThreadsAPI.")
+            if last_error is None:
+                last_error = RuntimeError("В установленной версии threads-api не найден класс ThreadsAPI.")
             continue
         threads_api_class_cache = candidate
         threads_api_import_error_message = ""
         return threads_api_class_cache
 
+    if imported_modules > 0 and last_error is None:
+        last_error = RuntimeError("В установленной версии threads-api не найден класс ThreadsAPI.")
     threads_api_import_error_message = format_threads_api_import_error(last_error)
     return None
 
