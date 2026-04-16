@@ -36,6 +36,7 @@ class User(Base):
     vk_bot_linked_at = Column(DateTime(timezone=True), nullable=True)
     vk_user_id = Column(String(64), nullable=True, unique=True, index=True)
     vk_screen_name = Column(String(255), nullable=True)
+    avatar_path = Column(String(255), nullable=True)
     password_hash = Column(String(255), nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 

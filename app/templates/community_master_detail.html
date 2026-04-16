@@ -59,26 +59,31 @@
         {% set customer = authors_by_id.get(order.user_id) %}
         {% set refs = order.references_json or [] %}
         <article class="comment-card">
-          <p class="comment-meta">
-            {% if customer %}
-              <span class="{% if user_is_special(customer) %}nick-special{% endif %}">@{{ customer.cosplay_nick or customer.username }}</span>
-            {% else %}
-              @unknown
-            {% endif %}
-            • {{ order.created_at.strftime('%d-%m-%Y %H:%M') if order.created_at else '—' }}
-          </p>
-          <p class="meta"><strong>Тема:</strong> {{ order.subject }}</p>
-          {% if order.contact_tg %}
-            <p class="meta"><strong>ТГ для связи:</strong></p>
-            <div class="actions-inline">
-              {% for button in external_contact_buttons(order.contact_tg, include_site=False) %}
-                <a href="{{ button.url }}" target="_blank" rel="noreferrer" class="btn btn-small btn-platform">{{ button.label }}</a>
-              {% endfor %}
+          <div class="comment-row">
+            <img src="{{ user_avatar_url(customer) }}" alt="Аватар заказчика" class="avatar-vh10" loading="lazy" />
+            <div class="comment-body-wrap">
+              <p class="comment-meta">
+                {% if customer %}
+                  <span class="{% if user_is_special(customer) %}nick-special{% endif %}">@{{ customer.cosplay_nick or customer.username }}</span>
+                {% else %}
+                  @unknown
+                {% endif %}
+                • {{ order.created_at.strftime('%d-%m-%Y %H:%M') if order.created_at else '—' }}
+              </p>
+              <p class="meta"><strong>Тема:</strong> {{ order.subject }}</p>
+              {% if order.contact_tg %}
+                <p class="meta"><strong>ТГ для связи:</strong></p>
+                <div class="actions-inline">
+                  {% for button in external_contact_buttons(order.contact_tg, include_site=False) %}
+                    <a href="{{ button.url }}" target="_blank" rel="noreferrer" class="btn btn-small btn-platform">{{ button.label }}</a>
+                  {% endfor %}
+                </div>
+              {% endif %}
+              {% if order.character_fandom %}<p class="meta"><strong>Персонаж и фандом:</strong> {{ order.character_fandom }}</p>{% endif %}
+              {% if order.deadline %}<p class="meta"><strong>Дедлайн:</strong> {{ order.deadline.strftime('%d-%m-%Y') }}</p>{% endif %}
+              {% if order.details %}<p class="notes-block">{{ order.details|render_text }}</p>{% endif %}
             </div>
-          {% endif %}
-          {% if order.character_fandom %}<p class="meta"><strong>Персонаж и фандом:</strong> {{ order.character_fandom }}</p>{% endif %}
-          {% if order.deadline %}<p class="meta"><strong>Дедлайн:</strong> {{ order.deadline.strftime('%d-%m-%Y') }}</p>{% endif %}
-          {% if order.details %}<p class="notes-block">{{ order.details|render_text }}</p>{% endif %}
+          </div>
           {% if refs %}
             <div class="reference-grid top-offset">
               {% for url in refs %}
@@ -209,20 +214,25 @@
       {% for comment in comments %}
         {% set comment_author = authors_by_id.get(comment.user_id) %}
         <article class="comment-card {% if comment.is_client %}comment-client{% endif %}">
-          <p class="comment-meta">
-            {% if comment_author %}
-              <span class="{% if user_is_special(comment_author) %}nick-special{% endif %}">@{{ comment_author.cosplay_nick or comment_author.username }}</span>
-            {% else %}
-              @unknown
-            {% endif %}
-            {% if comment.is_client %}
-              <span class="chip">Я клиент</span>
-            {% endif %}
-            • {{ comment.created_at.strftime('%d-%m-%Y %H:%M') if comment.created_at else '—' }}
-          </p>
-          {% if comment.body %}
-            <p class="notes-block">{{ comment.body|render_text }}</p>
-          {% endif %}
+          <div class="comment-row">
+            <img src="{{ user_avatar_url(comment_author) }}" alt="Аватар автора комментария" class="avatar-vh10" loading="lazy" />
+            <div class="comment-body-wrap">
+              <p class="comment-meta">
+                {% if comment_author %}
+                  <span class="{% if user_is_special(comment_author) %}nick-special{% endif %}">@{{ comment_author.cosplay_nick or comment_author.username }}</span>
+                {% else %}
+                  @unknown
+                {% endif %}
+                {% if comment.is_client %}
+                  <span class="chip">Я клиент</span>
+                {% endif %}
+                • {{ comment.created_at.strftime('%d-%m-%Y %H:%M') if comment.created_at else '—' }}
+              </p>
+              {% if comment.body %}
+                <p class="notes-block">{{ comment.body|render_text }}</p>
+              {% endif %}
+            </div>
+          </div>
           {% set comment_images = comment.images_json or [] %}
           {% if comment_images %}
             <div class="reference-grid top-offset comment-images">
@@ -241,26 +251,31 @@
   {% endif %}
 
   <form method="post" action="/community/masters/{{ master.id }}/comments" class="comment-form top-offset">
-    <label>
-      Добавить комментарий
-      <textarea name="body" rows="4" placeholder="Текст отзыва (можно оставить пустым, если добавляете только фото)"></textarea>
-    </label>
-    <label class="top-offset">
-      Картинки (URL, по одной на строку)
-      <textarea name="images_input" id="comment_images_input" rows="3" placeholder="https://..."></textarea>
-    </label>
-    <div class="gallery-upload-row">
-      <input type="file" id="comment_upload_files" accept="image/*" multiple />
-      <button type="button" class="btn" id="comment_upload_btn">Загрузить фото</button>
-      <span class="muted" id="comment_upload_status"></span>
-    </div>
-    <div class="reference-grid comment-images" id="comment_images_preview"></div>
-    <label class="inline-check top-offset">
-      <input type="checkbox" name="is_client" value="1" />
-      Я клиент
-    </label>
-    <div class="actions-inline">
-      <button type="submit" class="btn btn-accent">Отправить</button>
+    <div class="comment-form-layout">
+      <img src="{{ user_avatar_url(user) }}" alt="Ваш аватар" class="avatar-vh10" loading="lazy" />
+      <div class="comment-form-fields">
+        <label>
+          Добавить комментарий
+          <textarea name="body" rows="4" placeholder="Текст отзыва (можно оставить пустым, если добавляете только фото)"></textarea>
+        </label>
+        <label class="top-offset">
+          Картинки (URL, по одной на строку)
+          <textarea name="images_input" id="comment_images_input" rows="3" placeholder="https://..."></textarea>
+        </label>
+        <div class="gallery-upload-row">
+          <input type="file" id="comment_upload_files" accept="image/*" multiple />
+          <button type="button" class="btn" id="comment_upload_btn">Загрузить фото</button>
+          <span class="muted" id="comment_upload_status"></span>
+        </div>
+        <div class="reference-grid comment-images" id="comment_images_preview"></div>
+        <label class="inline-check top-offset">
+          <input type="checkbox" name="is_client" value="1" />
+          Я клиент
+        </label>
+        <div class="actions-inline">
+          <button type="submit" class="btn btn-accent">Отправить</button>
+        </div>
+      </div>
     </div>
   </form>
 </section>

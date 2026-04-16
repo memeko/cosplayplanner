@@ -255,7 +255,18 @@
     </ul>
   {% endif %}
 
-  {% if coproplayers_display %}
+  {% if coproplayer_people %}
+    <p class="meta">Сокосплеер(ы):</p>
+    <div class="avatar-user-list top-offset">
+      {% for coproplayer in coproplayer_people %}
+        {% set coproplayer_user = coproplayer.get("user") %}
+        <div class="avatar-user-item">
+          <img src="{{ user_avatar_url(coproplayer_user) }}" alt="Аватар {{ coproplayer.get('label', '@user') }}" class="avatar-vh10" loading="lazy" />
+          <span class="avatar-user-label {% if coproplayer_user and user_is_special(coproplayer_user) %}nick-special{% endif %}">{{ coproplayer.get("label", "@unknown") }}</span>
+        </div>
+      {% endfor %}
+    </div>
+  {% elif coproplayers_display %}
     <p class="meta">Сокосплеер(ы): {{ coproplayers_display | join(", ") }}</p>
   {% endif %}
 </section>
@@ -367,29 +378,39 @@
       {% for comment in top_level_comments %}
         {% set author = comment_authors.get(comment.author_id) %}
         <article class="comment-card">
-          <div class="comment-meta">
-            {% if author %}
-              <span class="{% if user_is_special(author) %}nick-special{% endif %}">@{{ author.username }}</span>
-            {% else %}
-              @unknown
-            {% endif %}
-            · {{ comment.created_at.strftime('%d-%m-%Y %H:%M') if comment.created_at else "" }}
+          <div class="comment-row">
+            <img src="{{ user_avatar_url(author) }}" alt="Аватар автора комментария" class="avatar-vh10" loading="lazy" />
+            <div class="comment-body-wrap">
+              <div class="comment-meta">
+                {% if author %}
+                  <span class="{% if user_is_special(author) %}nick-special{% endif %}">@{{ author.username }}</span>
+                {% else %}
+                  @unknown
+                {% endif %}
+                · {{ comment.created_at.strftime('%d-%m-%Y %H:%M') if comment.created_at else "" }}
+              </div>
+              <p class="notes-block">{{ comment.body|render_markdown }}</p>
+            </div>
           </div>
-          <p class="notes-block">{{ comment.body|render_markdown }}</p>
           {% if replies_by_parent.get(comment.id) %}
             <div class="comment-replies">
               {% for reply in replies_by_parent.get(comment.id) %}
                 {% set reply_author = comment_authors.get(reply.author_id) %}
                 <article class="comment-reply">
-                  <div class="comment-meta">
-                    {% if reply_author %}
-                      <span class="{% if user_is_special(reply_author) %}nick-special{% endif %}">@{{ reply_author.username }}</span>
-                    {% else %}
-                      @unknown
-                    {% endif %}
-                    · {{ reply.created_at.strftime('%d-%m-%Y %H:%M') if reply.created_at else "" }}
+                  <div class="comment-row">
+                    <img src="{{ user_avatar_url(reply_author) }}" alt="Аватар автора ответа" class="avatar-vh10" loading="lazy" />
+                    <div class="comment-body-wrap">
+                      <div class="comment-meta">
+                        {% if reply_author %}
+                          <span class="{% if user_is_special(reply_author) %}nick-special{% endif %}">@{{ reply_author.username }}</span>
+                        {% else %}
+                          @unknown
+                        {% endif %}
+                        · {{ reply.created_at.strftime('%d-%m-%Y %H:%M') if reply.created_at else "" }}
+                      </div>
+                      <p class="notes-block">{{ reply.body|render_markdown }}</p>
+                    </div>
                   </div>
-                  <p class="notes-block">{{ reply.body|render_markdown }}</p>
                 </article>
               {% endfor %}
             </div>
@@ -398,11 +419,16 @@
             <form method="post" action="/cosplan/{{ card.id }}/comments" class="comment-form">
               <input type="hidden" name="parent_id" value="{{ comment.id }}" />
               <input type="hidden" name="redirect_to" value="/cosplan/{{ card.id }}" />
-              <label>
-                Ответ
-                <textarea name="comment_body" rows="2" required></textarea>
-              </label>
-              <button type="submit" class="btn">Ответить</button>
+              <div class="comment-form-layout">
+                <img src="{{ user_avatar_url(user) }}" alt="Ваш аватар" class="avatar-vh10" loading="lazy" />
+                <div class="comment-form-fields">
+                  <label>
+                    Ответ
+                    <textarea name="comment_body" rows="2" required></textarea>
+                  </label>
+                  <button type="submit" class="btn">Ответить</button>
+                </div>
+              </div>
             </form>
           {% endif %}
         </article>
@@ -415,11 +441,16 @@
   {% if can_comment %}
     <form method="post" action="/cosplan/{{ card.id }}/comments" class="comment-form">
       <input type="hidden" name="redirect_to" value="/cosplan/{{ card.id }}" />
-      <label>
-        Новое сообщение
-        <textarea name="comment_body" rows="3" required></textarea>
-      </label>
-      <button type="submit" class="btn btn-accent">Отправить</button>
+      <div class="comment-form-layout">
+        <img src="{{ user_avatar_url(user) }}" alt="Ваш аватар" class="avatar-vh10" loading="lazy" />
+        <div class="comment-form-fields">
+          <label>
+            Новое сообщение
+            <textarea name="comment_body" rows="3" required></textarea>
+          </label>
+          <button type="submit" class="btn btn-accent">Отправить</button>
+        </div>
+      </div>
     </form>
   {% else %}
     <p class="muted">Комментирование доступно участнику и руководителю проекта.</p>

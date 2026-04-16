@@ -80,15 +80,20 @@
       {% for comment in comments %}
         {% set author = authors_by_id.get(comment.user_id) %}
         <article class="comment-card">
-          <p class="comment-meta">
-            {% if author %}
-              <span class="{% if user_is_special(author) %}nick-special{% endif %}">@{{ author.cosplay_nick or author.username }}</span>
-            {% else %}
-              @unknown
-            {% endif %}
-            • {{ comment.created_at.strftime('%d-%m-%Y %H:%M') if comment.created_at else "—" }}
-          </p>
-          <p class="notes-block">{{ comment.body|render_text }}</p>
+          <div class="comment-row">
+            <img src="{{ user_avatar_url(author) }}" alt="Аватар автора комментария" class="avatar-vh10" loading="lazy" />
+            <div class="comment-body-wrap">
+              <p class="comment-meta">
+                {% if author %}
+                  <span class="{% if user_is_special(author) %}nick-special{% endif %}">@{{ author.cosplay_nick or author.username }}</span>
+                {% else %}
+                  @unknown
+                {% endif %}
+                • {{ comment.created_at.strftime('%d-%m-%Y %H:%M') if comment.created_at else "—" }}
+              </p>
+              <p class="notes-block">{{ comment.body|render_text }}</p>
+            </div>
+          </div>
         </article>
       {% endfor %}
     </div>
@@ -97,12 +102,17 @@
   {% endif %}
 
   <form method="post" action="/community/cosplayers/{{ cosplayer.id }}/comments" class="comment-form top-offset">
-    <label>
-      Добавить комментарий
-      <textarea name="body" rows="4" placeholder="Ваш комментарий" required></textarea>
-    </label>
-    <div class="actions-inline">
-      <button type="submit" class="btn btn-accent">Отправить</button>
+    <div class="comment-form-layout">
+      <img src="{{ user_avatar_url(user) }}" alt="Ваш аватар" class="avatar-vh10" loading="lazy" />
+      <div class="comment-form-fields">
+        <label>
+          Добавить комментарий
+          <textarea name="body" rows="4" placeholder="Ваш комментарий" required></textarea>
+        </label>
+        <div class="actions-inline">
+          <button type="submit" class="btn btn-accent">Отправить</button>
+        </div>
+      </div>
     </div>
   </form>
 </section>

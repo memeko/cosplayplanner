@@ -5,6 +5,40 @@
 </section>
 
 <section class="box">
+  <h2>Аватар профиля</h2>
+  <div class="profile-avatar-layout top-offset">
+    <div class="profile-avatar-current-wrap">
+      <img
+        src="{{ user_avatar_url(user) }}"
+        alt="Текущий аватар"
+        class="avatar-vh10 profile-avatar-current"
+        id="profile-avatar-current"
+        loading="lazy"
+      />
+      <p class="meta top-offset">Текущий аватар</p>
+    </div>
+    <form id="profile-avatar-form" class="grid one-col profile-avatar-form" enctype="multipart/form-data">
+      <label>
+        Загрузить изображение
+        <input type="file" id="profile-avatar-file" name="avatar" accept="image/*" />
+      </label>
+      <div class="profile-avatar-crop-wrap" id="profile-avatar-crop-wrap" hidden>
+        <canvas id="profile-avatar-crop-canvas" width="360" height="360"></canvas>
+      </div>
+      <div class="profile-avatar-preview-wrap" id="profile-avatar-preview-wrap" hidden>
+        <p class="meta">Предпросмотр квадратной обрезки</p>
+        <canvas id="profile-avatar-preview-canvas" width="160" height="160"></canvas>
+      </div>
+      <p class="muted small-note">Перетащите квадрат обрезки. Файл автоматически сохранится в WEBP и сожмётся до малого размера.</p>
+      <div class="actions-inline">
+        <button type="button" class="btn btn-accent" id="profile-avatar-save" disabled>Сохранить аватар</button>
+      </div>
+      <p id="profile-avatar-status" class="muted"></p>
+    </form>
+  </div>
+</section>
+
+<section class="box">
   <form method="post" action="/profile" class="grid two-col">
     <label>
       Ник
@@ -230,4 +264,230 @@
   {% endif %}
 </section>
 {% endif %}
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+<script>
+(function () {
+  const fileInput = document.getElementById("profile-avatar-file");
+  const saveButton = document.getElementById("profile-avatar-save");
+  const statusNode = document.getElementById("profile-avatar-status");
+  const cropWrap = document.getElementById("profile-avatar-crop-wrap");
+  const previewWrap = document.getElementById("profile-avatar-preview-wrap");
+  const cropCanvas = document.getElementById("profile-avatar-crop-canvas");
+  const previewCanvas = document.getElementById("profile-avatar-preview-canvas");
+  const currentAvatar = document.getElementById("profile-avatar-current");
+  if (!fileInput || !saveButton || !statusNode || !cropWrap || !previewWrap || !cropCanvas || !previewCanvas || !currentAvatar) {
+    return;
+  }
+
+  const cropCtx = cropCanvas.getContext("2d");
+  const previewCtx = previewCanvas.getContext("2d");
+  if (!cropCtx || !previewCtx) {
+    return;
+  }
+
+  const state = {
+    file: null,
+    image: null,
+    drawX: 0,
+    drawY: 0,
+    drawWidth: 0,
+    drawHeight: 0,
+    cropX: 0,
+    cropY: 0,
+    cropSize: 0,
+    dragging: false,
+    dragOffsetX: 0,
+    dragOffsetY: 0,
+  };
+
+  function setStatus(message, isError) {
+    statusNode.textContent = message || "";
+    statusNode.style.color = isError ? "#b91c1c" : "";
+  }
+
+  function clampCropBox() {
+    if (!state.image || !state.cropSize) return;
+    const minX = state.drawX;
+    const maxX = state.drawX + state.drawWidth - state.cropSize;
+    const minY = state.drawY;
+    const maxY = state.drawY + state.drawHeight - state.cropSize;
+    state.cropX = Math.max(minX, Math.min(state.cropX, maxX));
+    state.cropY = Math.max(minY, Math.min(state.cropY, maxY));
+  }
+
+  function drawPreview() {
+    if (!state.image || !state.cropSize) return;
+    previewCtx.clearRect(0, 0, previewCanvas.width, previewCanvas.height);
+    const scale = state.image.width / state.drawWidth;
+    const cropX = Math.max(0, (state.cropX - state.drawX) * scale);
+    const cropY = Math.max(0, (state.cropY - state.drawY) * scale);
+    const cropSize = Math.max(1, state.cropSize * scale);
+    previewCtx.drawImage(
+      state.image,
+      cropX,
+      cropY,
+      cropSize,
+      cropSize,
+      0,
+      0,
+      previewCanvas.width,
+      previewCanvas.height
+    );
+  }
+
+  function drawCropCanvas() {
+    cropCtx.clearRect(0, 0, cropCanvas.width, cropCanvas.height);
+    if (!state.image) return;
+    cropCtx.drawImage(state.image, state.drawX, state.drawY, state.drawWidth, state.drawHeight);
+    cropCtx.fillStyle = "rgba(5, 16, 36, 0.45)";
+    cropCtx.fillRect(0, 0, cropCanvas.width, cropCanvas.height);
+    cropCtx.clearRect(state.cropX, state.cropY, state.cropSize, state.cropSize);
+    cropCtx.strokeStyle = "#ffffff";
+    cropCtx.lineWidth = 2;
+    cropCtx.strokeRect(state.cropX, state.cropY, state.cropSize, state.cropSize);
+    drawPreview();
+  }
+
+  function setupCropBox() {
+    if (!state.image) return;
+    const canvasSize = cropCanvas.width;
+    const scale = Math.min(canvasSize / state.image.width, canvasSize / state.image.height);
+    state.drawWidth = Math.round(state.image.width * scale);
+    state.drawHeight = Math.round(state.image.height * scale);
+    state.drawX = Math.round((canvasSize - state.drawWidth) / 2);
+    state.drawY = Math.round((canvasSize - state.drawHeight) / 2);
+    state.cropSize = Math.min(state.drawWidth, state.drawHeight);
+    state.cropX = state.drawX + Math.round((state.drawWidth - state.cropSize) / 2);
+    state.cropY = state.drawY + Math.round((state.drawHeight - state.cropSize) / 2);
+    clampCropBox();
+    drawCropCanvas();
+  }
+
+  function pointFromEvent(event) {
+    const rect = cropCanvas.getBoundingClientRect();
+    const scaleX = cropCanvas.width / rect.width;
+    const scaleY = cropCanvas.height / rect.height;
+    return {
+      x: (event.clientX - rect.left) * scaleX,
+      y: (event.clientY - rect.top) * scaleY,
+    };
+  }
+
+  function openSelectedFile(file) {
+    if (!file || !/^image\//i.test(file.type || "")) {
+      setStatus("Нужен файл изображения.", true);
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = function () {
+      const image = new Image();
+      image.onload = function () {
+        state.file = file;
+        state.image = image;
+        setupCropBox();
+        cropWrap.hidden = false;
+        previewWrap.hidden = false;
+        saveButton.disabled = false;
+        setStatus("", false);
+      };
+      image.onerror = function () {
+        setStatus("Не удалось прочитать изображение.", true);
+      };
+      image.src = String(reader.result || "");
+    };
+    reader.onerror = function () {
+      setStatus("Не удалось прочитать файл.", true);
+    };
+    reader.readAsDataURL(file);
+  }
+
+  fileInput.addEventListener("change", function () {
+    const file = fileInput.files && fileInput.files[0];
+    if (!file) {
+      return;
+    }
+    openSelectedFile(file);
+  });
+
+  cropCanvas.addEventListener("pointerdown", function (event) {
+    if (!state.image) return;
+    const point = pointFromEvent(event);
+    const insideX = point.x >= state.cropX && point.x <= state.cropX + state.cropSize;
+    const insideY = point.y >= state.cropY && point.y <= state.cropY + state.cropSize;
+    if (!insideX || !insideY) return;
+    state.dragging = true;
+    state.dragOffsetX = point.x - state.cropX;
+    state.dragOffsetY = point.y - state.cropY;
+    cropCanvas.setPointerCapture(event.pointerId);
+  });
+
+  cropCanvas.addEventListener("pointermove", function (event) {
+    if (!state.dragging || !state.image) return;
+    const point = pointFromEvent(event);
+    state.cropX = point.x - state.dragOffsetX;
+    state.cropY = point.y - state.dragOffsetY;
+    clampCropBox();
+    drawCropCanvas();
+  });
+
+  function stopDragging(event) {
+    if (!state.dragging) return;
+    state.dragging = false;
+    if (event) {
+      try {
+        cropCanvas.releasePointerCapture(event.pointerId);
+      } catch (_) {
+        // noop
+      }
+    }
+  }
+
+  cropCanvas.addEventListener("pointerup", stopDragging);
+  cropCanvas.addEventListener("pointercancel", stopDragging);
+  cropCanvas.addEventListener("pointerleave", stopDragging);
+
+  saveButton.addEventListener("click", async function () {
+    if (!state.file || !state.image) {
+      setStatus("Сначала выберите изображение.", true);
+      return;
+    }
+    saveButton.disabled = true;
+    setStatus("Сохраняю аватар...", false);
+
+    const scale = state.image.width / state.drawWidth;
+    const cropX = Math.max(0, Math.round((state.cropX - state.drawX) * scale));
+    const cropY = Math.max(0, Math.round((state.cropY - state.drawY) * scale));
+    const cropSize = Math.max(1, Math.round(state.cropSize * scale));
+
+    const body = new FormData();
+    body.append("avatar", state.file);
+    body.append("crop_x", String(cropX));
+    body.append("crop_y", String(cropY));
+    body.append("crop_size", String(cropSize));
+
+    try {
+      const response = await fetch("/profile/avatar/upload", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "X-Requested-With": "XMLHttpRequest" },
+        body: body,
+      });
+      const payload = await response.json().catch(function () { return {}; });
+      if (!response.ok || !payload || !payload.ok || !payload.path) {
+        throw new Error(payload.detail || "Не удалось сохранить аватар.");
+      }
+      const cacheBuster = Date.now();
+      currentAvatar.src = payload.path + "?v=" + cacheBuster;
+      setStatus("Аватар сохранён.", false);
+    } catch (error) {
+      setStatus(error && error.message ? error.message : "Ошибка сохранения аватара.", true);
+    } finally {
+      saveButton.disabled = false;
+    }
+  });
+})();
+</script>
 {% endblock %}

@@ -30,7 +30,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import requests
 from cryptography.fernet import Fernet, InvalidToken
-from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.exception_handlers import http_exception_handler
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -605,6 +605,9 @@ NETWORK_CACHE: dict[str, tuple[datetime, Any]] = {}
 MAX_UPLOAD_INPUT_BYTES = 20 * 1024 * 1024
 MAX_GALLERY_IMAGE_BYTES = 30 * 1024
 MAX_GALLERY_IMAGE_WIDTH = 512
+MAX_AVATAR_IMAGE_BYTES = 24 * 1024
+MAX_AVATAR_IMAGE_WIDTH = 256
+DEFAULT_AVATAR_PATH = "/static/avatar-placeholder.svg"
 
 RU_MONTH_WORDS_TO_NUM = {
     "января": 1,
@@ -790,6 +793,7 @@ def apply_schema_migrations() -> None:
             ("vk_bot_linked_at", "DATETIME"),
             ("vk_user_id", "VARCHAR(64)"),
             ("vk_screen_name", "VARCHAR(255)"),
+            ("avatar_path", "VARCHAR(255)"),
         ],
         "cosplan_cards": [
             ("costume_bought", "BOOLEAN NOT NULL DEFAULT 0"),
@@ -1287,6 +1291,72 @@ async def media_upload_content_image(
     }
 
 
+@app.post("/profile/avatar/upload")
+async def profile_avatar_upload(
+    request: Request,
+    avatar: UploadFile = File(...),
+    crop_x: str | None = Form(default=None),
+    crop_y: str | None = Form(default=None),
+    crop_size: str | None = Form(default=None),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    user = current_user(request, db)
+    if not user:
+        raise HTTPException(status_code=401, detail="Требуется авторизация.")
+
+    if not avatar.filename:
+        raise HTTPException(status_code=400, detail="Файл не передан.")
+    content_type = (avatar.content_type or "").lower()
+    if not content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="Нужен файл изображения.")
+
+    raw_bytes = await avatar.read(MAX_UPLOAD_INPUT_BYTES + 1)
+    if len(raw_bytes) > MAX_UPLOAD_INPUT_BYTES:
+        raise HTTPException(status_code=400, detail="Изображение слишком большое (до 20 МБ).")
+
+    parsed_crop_x = parse_float(crop_x)
+    parsed_crop_y = parse_float(crop_y)
+    parsed_crop_size = parse_float(crop_size)
+
+    try:
+        webp_bytes, width, height = prepare_avatar_image_upload(
+            raw_bytes,
+            crop_x=parsed_crop_x,
+            crop_y=parsed_crop_y,
+            crop_size=parsed_crop_size,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    file_name = f"avatar-{user.id}-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:10]}.webp"
+    destination = media_storage_path() / file_name
+    destination.write_bytes(webp_bytes)
+    public_path = f"/media/{file_name}"
+
+    old_avatar_path = normalize_user_avatar_path(user.avatar_path)
+    user.avatar_path = public_path
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        destination.unlink(missing_ok=True)
+        raise
+
+    if old_avatar_path and old_avatar_path != public_path:
+        remove_media_file_by_public_path(old_avatar_path)
+
+    base_url = str(request.base_url).rstrip("/")
+    return {
+        "ok": True,
+        "path": public_path,
+        "url": f"{base_url}{public_path}",
+        "size_bytes": len(webp_bytes),
+        "width": width,
+        "height": height,
+        "format": "webp",
+    }
+
+
 def estimate_card_total_and_currency(card: CosplanCard) -> tuple[float, str]:
     total = 0.0
     currencies: set[str] = set()
@@ -1441,6 +1511,22 @@ def user_aliases(user: User) -> list[str]:
 
 def preferred_user_alias(user: User) -> str:
     return normalize_username(user.cosplay_nick) or normalize_username(user.username)
+
+
+def normalize_user_avatar_path(value: str | None) -> str:
+    cleaned = str(value or "").strip()
+    if not cleaned:
+        return ""
+    if cleaned.startswith("/media/") or cleaned.startswith("/static/"):
+        return cleaned
+    return ""
+
+
+def user_avatar_url(user: User | None) -> str:
+    if not user:
+        return DEFAULT_AVATAR_PATH
+    normalized = normalize_user_avatar_path(user.avatar_path)
+    return normalized or DEFAULT_AVATAR_PATH
 
 
 def build_user_alias_lookup(db: Session) -> tuple[dict[str, str], dict[str, User], list[str]]:
@@ -5063,7 +5149,94 @@ def compress_image_to_webp(
 
     if best_blob is not None and len(best_blob) <= max_output_bytes:
         return best_blob, best_dims[0], best_dims[1]
-    raise ValueError("Не удалось сжать изображение до 30 КБ. Попробуйте другое изображение.")
+    target_kb = max(1, int(round(max_output_bytes / 1024)))
+    raise ValueError(f"Не удалось сжать изображение до {target_kb} КБ. Попробуйте другое изображение.")
+
+
+def build_square_crop_box(
+    width: int,
+    height: int,
+    *,
+    crop_x: float | None = None,
+    crop_y: float | None = None,
+    crop_size: float | None = None,
+) -> tuple[int, int, int]:
+    if width <= 0 or height <= 0:
+        raise ValueError("Некорректный размер изображения.")
+
+    max_side = min(width, height)
+    resolved_size = int(round(crop_size)) if crop_size and crop_size > 0 else max_side
+    resolved_size = max(1, min(resolved_size, max_side))
+
+    default_x = (width - resolved_size) // 2
+    default_y = (height - resolved_size) // 2
+    resolved_x = int(round(crop_x)) if crop_x is not None else default_x
+    resolved_y = int(round(crop_y)) if crop_y is not None else default_y
+
+    resolved_x = max(0, min(resolved_x, width - resolved_size))
+    resolved_y = max(0, min(resolved_y, height - resolved_size))
+    return resolved_x, resolved_y, resolved_size
+
+
+def prepare_avatar_image_upload(
+    raw_bytes: bytes,
+    *,
+    crop_x: float | None = None,
+    crop_y: float | None = None,
+    crop_size: float | None = None,
+) -> tuple[bytes, int, int]:
+    if not raw_bytes:
+        raise ValueError("Файл пуст.")
+
+    try:
+        with Image.open(io.BytesIO(raw_bytes)) as source:
+            prepared = ImageOps.exif_transpose(source)
+            if prepared.mode in {"P", "L", "CMYK"}:
+                prepared = prepared.convert("RGB")
+            elif prepared.mode not in {"RGB", "RGBA"}:
+                prepared = prepared.convert("RGB")
+    except UnidentifiedImageError as exc:
+        raise ValueError("Неподдерживаемый формат изображения.") from exc
+    except OSError as exc:
+        raise ValueError("Не удалось прочитать изображение.") from exc
+
+    left, top, side = build_square_crop_box(
+        prepared.width,
+        prepared.height,
+        crop_x=crop_x,
+        crop_y=crop_y,
+        crop_size=crop_size,
+    )
+    cropped = prepared.crop((left, top, left + side, top + side))
+
+    buffer = io.BytesIO()
+    save_format = "PNG" if "A" in cropped.getbands() else "JPEG"
+    if save_format == "PNG":
+        cropped.save(buffer, format="PNG")
+    else:
+        rgb = cropped if cropped.mode == "RGB" else cropped.convert("RGB")
+        rgb.save(buffer, format="JPEG", quality=95, optimize=True)
+
+    try:
+        return compress_image_to_webp(
+            buffer.getvalue(),
+            max_output_bytes=MAX_AVATAR_IMAGE_BYTES,
+            max_width=MAX_AVATAR_IMAGE_WIDTH,
+        )
+    except ValueError as exc:
+        raise ValueError("Не удалось подготовить аватар. Попробуйте другое изображение.") from exc
+
+
+def remove_media_file_by_public_path(value: str | None) -> None:
+    public_path = normalize_user_avatar_path(value)
+    if not public_path.startswith("/media/"):
+        return
+    filename = public_path.removeprefix("/media/")
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", filename):
+        return
+    target = media_storage_path() / filename
+    if target.exists() and target.is_file():
+        target.unlink(missing_ok=True)
 
 
 def create_sqlite_backup_file(prefix: str = "cosplay-backup") -> Path:
@@ -8304,6 +8477,7 @@ def template_response(
         "project_name": PROJECT_NAME,
         "nick_is_special": nick_is_special,
         "user_is_special": user_is_special,
+        "user_avatar_url": user_avatar_url,
         "is_smm_manager_user": is_smm_manager_user,
         "notification_conflict_subject": conflict_subject_from_message,
         "external_contact_buttons": external_contact_buttons,
@@ -10636,6 +10810,20 @@ def cosplan_detail(card_id: int, request: Request, db: Session = Depends(get_db)
 
     raw_coproplayers = merge_unique(as_list(card.coproplayer_nicks_json), as_list(card.coproplayers_json))
     coproplayers_display = format_coproplayer_names(raw_coproplayers, alias_to_username, users_by_username)
+    coproplayer_people: list[dict[str, Any]] = []
+    seen_coproplayer_labels: set[str] = set()
+    for value in raw_coproplayers:
+        normalized = normalize_username(value)
+        if not normalized:
+            continue
+        canonical_username = alias_to_username.get(normalized.casefold(), normalized)
+        matched_user = users_by_username.get(canonical_username.casefold())
+        label = f"@{preferred_user_alias(matched_user)}" if matched_user else f"@{normalized}"
+        dedupe_key = label.casefold()
+        if dedupe_key in seen_coproplayer_labels:
+            continue
+        seen_coproplayer_labels.add(dedupe_key)
+        coproplayer_people.append({"label": label, "user": matched_user})
 
     owner_id = card_owner.id if card_owner else user.id
     all_cards = db.execute(
@@ -10742,6 +10930,7 @@ def cosplan_detail(card_id: int, request: Request, db: Session = Depends(get_db)
         card_owner_display=(f"@{preferred_user_alias(card_owner)}" if card_owner else ""),
         project_leader_display=project_leader_display,
         coproplayers_display=coproplayers_display,
+        coproplayer_people=coproplayer_people,
         cosbands=as_list(card.cosbands_json),
         planned_festivals=as_list(card.planned_festivals_json),
         nominations=as_list(card.nominations_json),
@@ -12283,6 +12472,7 @@ def in_progress_master_detail(card_id: int, request: Request, db: Session = Depe
         in_progress_scope=IN_PROGRESS_SCOPE_MASTER,
         card=card,
         owner=owner,
+        customer_user=customer_user,
         customer_display=customer_display,
         task_rows=format_checklist_for_form(as_list(card.task_rows_json)),
         material_rows=format_master_work_material_rows(as_list(card.materials_json)),
@@ -13090,6 +13280,17 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
         )
         .order_by(PersonalCalendarEvent.event_date, PersonalCalendarEvent.event_time, PersonalCalendarEvent.id)
     ).scalars().all()
+    master_cards = db.execute(
+        select(InProgressMasterCard)
+        .where(
+            or_(
+                InProgressMasterCard.user_id == user.id,
+                InProgressMasterCard.customer_user_id == user.id,
+            ),
+            InProgressMasterCard.is_archived.is_(False),
+        )
+        .order_by(InProgressMasterCard.updated_at.desc(), InProgressMasterCard.id.desc())
+    ).scalars().all()
     work_shifts = db.execute(
         select(WorkShiftDay)
         .where(
@@ -13173,6 +13374,39 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
                 "personal_event_id": event.id,
             }
         )
+    for card in master_cards:
+        card_title = card.name or "Без названия"
+        card_details = f"Тип: {master_work_type_label(card.work_type)}"
+        if isinstance(card.deadline_date, date) and card.deadline_date >= today:
+            entries.append(
+                {
+                    "date": card.deadline_date,
+                    "time": "",
+                    "kind": "Дедлайн мастера",
+                    "type_key": "master-deadline",
+                    "title": card_title,
+                    "city": "—",
+                    "coproplayers": "",
+                    "details": card_details,
+                    "personal_event_id": None,
+                }
+            )
+        for intermediate_date in normalize_master_intermediate_deadline_dates(as_list(card.intermediate_deadlines_json)):
+            if intermediate_date < today:
+                continue
+            entries.append(
+                {
+                    "date": intermediate_date,
+                    "time": "",
+                    "kind": "Промежуточный дедлайн / Примерка",
+                    "type_key": "master-fitting",
+                    "title": card_title,
+                    "city": "—",
+                    "coproplayers": "",
+                    "details": card_details,
+                    "personal_event_id": None,
+                }
+            )
 
     entries.sort(key=lambda item: (item["date"], item.get("time", ""), item["kind"], item["title"]))
     date_counts: dict[date, int] = defaultdict(int)
@@ -14626,6 +14860,17 @@ def my_calendar_export_ics(request: Request, db: Session = Depends(get_db)):
         )
         .order_by(PersonalCalendarEvent.event_date, PersonalCalendarEvent.event_time, PersonalCalendarEvent.id)
     ).scalars().all()
+    master_cards = db.execute(
+        select(InProgressMasterCard)
+        .where(
+            or_(
+                InProgressMasterCard.user_id == user.id,
+                InProgressMasterCard.customer_user_id == user.id,
+            ),
+            InProgressMasterCard.is_archived.is_(False),
+        )
+        .order_by(InProgressMasterCard.updated_at.desc(), InProgressMasterCard.id.desc())
+    ).scalars().all()
     alias_to_username, users_by_username, _ = build_user_alias_lookup(db)
 
     lines = ics_calendar_header()
@@ -14706,6 +14951,31 @@ def my_calendar_export_ics(request: Request, db: Session = Depends(get_db)):
             location=event.event_city or "",
             description=event.details or "",
         )
+
+    for card in master_cards:
+        card_title = card.name or "Без названия"
+        card_type = master_work_type_label(card.work_type)
+        description = f"Карточка мастера. Тип: {card_type}."
+        if isinstance(card.deadline_date, date) and card.deadline_date >= today:
+            append_ics_event(
+                lines,
+                dtstamp=dtstamp,
+                uid_prefix=f"master-deadline-{card.id}",
+                summary=f"Дедлайн мастера: {card_title}",
+                event_date=card.deadline_date,
+                description=description,
+            )
+        for intermediate_date in normalize_master_intermediate_deadline_dates(as_list(card.intermediate_deadlines_json)):
+            if intermediate_date < today:
+                continue
+            append_ics_event(
+                lines,
+                dtstamp=dtstamp,
+                uid_prefix=f"master-fitting-{card.id}-{intermediate_date.isoformat()}",
+                summary=f"Промежуточный дедлайн / Примерка: {card_title}",
+                event_date=intermediate_date,
+                description=description,
+            )
 
     lines.append("END:VCALENDAR")
     body = "\r\n".join(lines) + "\r\n"

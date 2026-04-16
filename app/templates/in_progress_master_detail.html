@@ -45,7 +45,17 @@
       —
     {% endif %}
   </p>
-  <p class="meta">Заказчик: {{ customer_display }}</p>
+  <div class="meta">
+    Заказчик:
+    {% if customer_user %}
+      <span class="avatar-user-item">
+        <img src="{{ user_avatar_url(customer_user) }}" alt="Аватар заказчика" class="avatar-vh10" loading="lazy" />
+        <span class="{% if user_is_special(customer_user) %}nick-special{% endif %}">@{{ customer_user.cosplay_nick or customer_user.username }}</span>
+      </span>
+    {% else %}
+      {{ customer_display }}
+    {% endif %}
+  </div>
   <p class="meta">Дедлайн: {{ deadline_label }}</p>
   {% if intermediate_deadline_labels %}
     <p class="meta">Промежуточный дедлайн / Примерка:</p>
@@ -189,15 +199,20 @@
       {% for comment in comments %}
         {% set author = authors_by_id.get(comment.user_id) %}
         <article class="comment-card">
-          <p class="comment-meta">
-            {% if author %}
-              <span class="{% if user_is_special(author) %}nick-special{% endif %}">@{{ author.cosplay_nick or author.username }}</span>
-            {% else %}
-              @unknown
-            {% endif %}
-            • {{ comment.created_at.strftime('%d-%m-%Y %H:%M') if comment.created_at else '—' }}
-          </p>
-          <p class="notes-block">{{ comment.body|render_markdown }}</p>
+          <div class="comment-row">
+            <img src="{{ user_avatar_url(author) }}" alt="Аватар автора комментария" class="avatar-vh10" loading="lazy" />
+            <div class="comment-body-wrap">
+              <p class="comment-meta">
+                {% if author %}
+                  <span class="{% if user_is_special(author) %}nick-special{% endif %}">@{{ author.cosplay_nick or author.username }}</span>
+                {% else %}
+                  @unknown
+                {% endif %}
+                • {{ comment.created_at.strftime('%d-%m-%Y %H:%M') if comment.created_at else '—' }}
+              </p>
+              <p class="notes-block">{{ comment.body|render_markdown }}</p>
+            </div>
+          </div>
         </article>
       {% endfor %}
     </div>
@@ -206,12 +221,17 @@
   {% endif %}
 
   <form method="post" action="/in-progress/master/{{ card.id }}/comments" class="comment-form top-offset">
-    <label>
-      Новое сообщение
-      <textarea name="body" rows="4" maxlength="5000" placeholder="Введите текст комментария" required></textarea>
-    </label>
-    <div class="actions-inline">
-      <button type="submit" class="btn btn-accent">Отправить</button>
+    <div class="comment-form-layout">
+      <img src="{{ user_avatar_url(user) }}" alt="Ваш аватар" class="avatar-vh10" loading="lazy" />
+      <div class="comment-form-fields">
+        <label>
+          Новое сообщение
+          <textarea name="body" rows="4" maxlength="5000" placeholder="Введите текст комментария" required></textarea>
+        </label>
+        <div class="actions-inline">
+          <button type="submit" class="btn btn-accent">Отправить</button>
+        </div>
+      </div>
     </div>
   </form>
 </section>
