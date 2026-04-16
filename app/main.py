@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import calendar
 import colorsys
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -349,7 +350,7 @@ CALENDAR_VIEW_OPTIONS = {CALENDAR_VIEW_MY, CALENDAR_VIEW_BUDGET, CALENDAR_VIEW_C
 CONTENT_SCOPE_CLIENT = "client"
 CONTENT_SCOPE_PERSONAL = "personal"
 
-CONTENT_SOCIAL_OPTIONS = ["ТГ", "IT", "VK", "Pinterest", "RedNote", "tw", "boosty", "другое"]
+CONTENT_SOCIAL_OPTIONS = ["ТГ", "IT", "VK", "Pinterest", "Threads", "RedNote", "boosty", "другое"]
 CONTENT_SOCIAL_ALIASES = {
     "telegram": "ТГ",
     "tg": "ТГ",
@@ -357,14 +358,18 @@ CONTENT_SOCIAL_ALIASES = {
     "it": "IT",
     "vk": "VK",
     "pinterest": "Pinterest",
+    "threads": "Threads",
+    "thread": "Threads",
+    "тредс": "Threads",
+    "тред": "Threads",
     "rednote": "RedNote",
     "red note": "RedNote",
     "xiaohongshu": "RedNote",
     "xhs": "RedNote",
     "小红书": "RedNote",
-    "tw": "tw",
-    "twitter": "tw",
-    "x": "tw",
+    "tw": "Threads",
+    "twitter": "Threads",
+    "x": "Threads",
     "boosty": "boosty",
     "другое": "другое",
 }
@@ -386,6 +391,8 @@ CONTENT_PINTEREST_REFRESH_TOKEN_GROUP = "content_pinterest_refresh_token"
 CONTENT_PINTEREST_SCOPE_GROUP = "content_pinterest_scope"
 CONTENT_PINTEREST_PROFILE_GROUP = "content_pinterest_profile"
 CONTENT_PINTEREST_BOARD_GROUP = "content_pinterest_board"
+CONTENT_THREADS_USERNAME_GROUP = "content_threads_username"
+CONTENT_THREADS_PASSWORD_GROUP = "content_threads_password"
 CONTENT_REDNOTE_PROFILE_GROUP = "content_rednote_profile"
 CONTENT_RUBRIC_TAG_GROUP = "content_rubric_tag"
 CONTENT_PLAN_ACCESS_VERIFIED_GROUP = "content_plan_brfox_subscription_verified_at"
@@ -950,6 +957,8 @@ def apply_schema_migrations() -> None:
             ("pinterest_boards_json", "JSON NOT NULL DEFAULT '[]'"),
             ("pinterest_pin_ids_json", "JSON NOT NULL DEFAULT '[]'"),
             ("pinterest_published_at", "DATETIME"),
+            ("threads_post_ids_json", "JSON NOT NULL DEFAULT '[]'"),
+            ("threads_published_at", "DATETIME"),
             ("rednote_published_at", "DATETIME"),
         ],
     }
@@ -2890,8 +2899,8 @@ def save_content_plan_post_from_form(form: Any, post: ContentPlanPost, user: Use
         return False, "Краткое описание должно быть не длиннее 4000 символов."
     if len(telegram_body_html) > 12000:
         return False, "Текст для Telegram должен быть не длиннее 12000 символов."
-    if any(normalize_content_social_value(item).casefold() in {"тг", "vk", "pinterest"} for item in socials) and not publish_time:
-        return False, "Для автопубликации в Telegram, VK и Pinterest укажите время публикации."
+    if any(normalize_content_social_value(item).casefold() in {"тг", "vk", "pinterest", "threads"} for item in socials) and not publish_time:
+        return False, "Для автопубликации в Telegram, VK, Pinterest и Threads укажите время публикации."
     if any(normalize_content_social_value(item).casefold() == "тг" for item in socials):
         if not available_telegram_channels:
             return False, "Сначала добавьте хотя бы один Telegram-канал в настройках."
@@ -2985,6 +2994,66 @@ def get_content_rednote_settings(user: User, db: Session) -> dict[str, Any]:
         "profile_value": profile_value,
         "profile_url": profile_url,
         "connected": bool(profile_value),
+    }
+
+
+def normalize_threads_username(value: str | None) -> str:
+    cleaned = str(value or "").strip().lstrip("@")
+    if not cleaned:
+        return ""
+    if re.fullmatch(r"[A-Za-z0-9._]{1,30}", cleaned):
+        return cleaned
+    return ""
+
+
+def content_threads_storage_path() -> Path:
+    data_dir = Path("/data")
+    if data_dir.exists() and os.access(data_dir, os.W_OK):
+        path = (data_dir / "content-threads").resolve()
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    path = Path("./app/runtime/content-threads").resolve()
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def content_threads_settings_path(user_id: int) -> Path:
+    safe_user_id = max(1, int(user_id))
+    return content_threads_storage_path() / f"user-{safe_user_id}.settings.json"
+
+
+def content_threads_token_cache_path(user_id: int) -> Path:
+    safe_user_id = max(1, int(user_id))
+    return content_threads_storage_path() / f"user-{safe_user_id}.token"
+
+
+def clear_content_threads_cache_files(user_id: int) -> None:
+    for cache_path in [content_threads_settings_path(user_id), content_threads_token_cache_path(user_id)]:
+        if cache_path.exists() and cache_path.is_file():
+            cache_path.unlink(missing_ok=True)
+
+
+def content_threads_library_available() -> bool:
+    try:
+        from threads_api.src.threads_api import ThreadsAPI  # noqa: F401
+    except Exception:
+        return False
+    return True
+
+
+def content_threads_error_text(default_text: str) -> str:
+    # Не раскрываем внутренние ошибки библиотеки в UI.
+    return default_text
+
+
+def get_content_threads_settings(user: User, db: Session) -> dict[str, Any]:
+    username_value = normalize_threads_username(get_user_option_value(db, user.id, CONTENT_THREADS_USERNAME_GROUP))
+    password_value = str(get_secret_user_option_value(db, user.id, CONTENT_THREADS_PASSWORD_GROUP) or "").strip()
+    return {
+        "username": username_value,
+        "connected": bool(username_value and password_value),
+        "library_available": content_threads_library_available(),
     }
 
 
@@ -3928,6 +3997,10 @@ def content_post_targets_pinterest(post: ContentPlanPost) -> bool:
     return any(normalize_content_social_value(item).casefold() == "pinterest" for item in as_list(post.socials_json))
 
 
+def content_post_targets_threads(post: ContentPlanPost) -> bool:
+    return any(normalize_content_social_value(item).casefold() == "threads" for item in as_list(post.socials_json))
+
+
 def content_post_targets_rednote(post: ContentPlanPost) -> bool:
     return any(normalize_content_social_value(item).casefold() == "rednote" for item in as_list(post.socials_json))
 
@@ -4058,6 +4131,168 @@ def first_content_post_external_link(post: ContentPlanPost) -> str:
             continue
         return normalized
     return ""
+
+
+def load_threads_api_class() -> Any:
+    try:
+        from threads_api.src.threads_api import ThreadsAPI
+    except Exception as exc:
+        raise RuntimeError("Интеграция Threads временно недоступна на сервере.") from exc
+    return ThreadsAPI
+
+
+async def authorize_content_threads_account(
+    *,
+    user_id: int,
+    username: str,
+    password: str,
+) -> str:
+    normalized_username = normalize_threads_username(username)
+    if not normalized_username:
+        raise RuntimeError("Укажите корректный логин Threads (латиница, цифры, точка, подчёркивание).")
+    if not str(password or "").strip():
+        raise RuntimeError("Укажите пароль для входа в Threads.")
+
+    threads_api_class = load_threads_api_class()
+    api = threads_api_class(settings_path=str(content_threads_settings_path(user_id)))
+    resolved_username = normalized_username
+    try:
+        await api.login(
+            normalized_username,
+            str(password or "").strip(),
+            cached_token_path=str(content_threads_token_cache_path(user_id)),
+        )
+        resolved_username = normalize_threads_username(getattr(api, "username", "") or normalized_username) or normalized_username
+        user_id_value = str(getattr(api, "user_id", "") or "").strip()
+        if user_id_value:
+            try:
+                profile = await api.get_user_profile(user_id_value)
+            except Exception:
+                profile = None
+            profile_username = normalize_threads_username(getattr(profile, "username", "") if profile else "")
+            if profile_username:
+                resolved_username = profile_username
+    except Exception as exc:
+        raise RuntimeError("Не удалось авторизовать аккаунт Threads. Проверьте логин и пароль.") from exc
+    finally:
+        try:
+            await api.close_gracefully()
+        except Exception:
+            pass
+
+    return resolved_username
+
+
+def build_content_post_threads_caption(post: ContentPlanPost, rubric_tag: str | None = None) -> str:
+    message = build_content_post_plain_message(post, rubric_tag).strip()
+    if not message:
+        raise RuntimeError("Для публикации в Threads нужен текст поста.")
+    if len(message) > 500:
+        raise RuntimeError("Текст для Threads должен быть не длиннее 500 символов.")
+    return message
+
+
+def resolve_content_post_threads_media_inputs(post: ContentPlanPost) -> list[str]:
+    resolved: list[str] = []
+    for raw_value in as_list(post.telegram_photos_json):
+        source = str(raw_value or "").strip()
+        if not source:
+            continue
+        local_path = local_media_reference_to_path(source)
+        if local_path and local_path.exists() and local_path.is_file():
+            resolved.append(str(local_path))
+            continue
+        external_url = build_external_url(source)
+        if external_url:
+            resolved.append(external_url)
+    return resolved[:10]
+
+
+def extract_content_threads_post_identity(response_payload: Any) -> tuple[str, str]:
+    media_obj = getattr(response_payload, "media", None)
+    if media_obj is None and isinstance(response_payload, dict):
+        media_obj = response_payload.get("media")
+
+    post_id = ""
+    post_code = ""
+    if isinstance(media_obj, dict):
+        post_id = str(media_obj.get("id") or media_obj.get("pk") or "").strip()
+        post_code = str(media_obj.get("code") or "").strip()
+    elif media_obj is not None:
+        post_id = str(getattr(media_obj, "id", "") or getattr(media_obj, "pk", "") or "").strip()
+        post_code = str(getattr(media_obj, "code", "") or "").strip()
+
+    if not post_id and isinstance(response_payload, dict):
+        post_id = str(response_payload.get("upload_id") or "").strip()
+    return post_id, post_code
+
+
+async def publish_content_post_to_threads_async(
+    *,
+    user_id: int,
+    username: str,
+    password: str,
+    post: ContentPlanPost,
+    rubric_tag: str | None = None,
+) -> dict[str, str]:
+    normalized_username = normalize_threads_username(username)
+    if not normalized_username or not str(password or "").strip():
+        raise RuntimeError("Сначала подключите аккаунт Threads в настройках контент-плана.")
+
+    caption_text = build_content_post_threads_caption(post, rubric_tag)
+    media_inputs = resolve_content_post_threads_media_inputs(post)
+
+    threads_api_class = load_threads_api_class()
+    api = threads_api_class(settings_path=str(content_threads_settings_path(user_id)))
+    try:
+        await api.login(
+            normalized_username,
+            str(password or "").strip(),
+            cached_token_path=str(content_threads_token_cache_path(user_id)),
+        )
+        if not media_inputs:
+            link_value = first_content_post_external_link(post)
+            if link_value:
+                response_payload = await api.post(caption=caption_text, url=link_value)
+            else:
+                response_payload = await api.post(caption=caption_text)
+        elif len(media_inputs) == 1:
+            response_payload = await api.post(caption=caption_text, image_path=media_inputs[0])
+        else:
+            response_payload = await api.post(caption=caption_text, image_path=media_inputs)
+
+        post_id, post_code = extract_content_threads_post_identity(response_payload)
+        return {
+            "post_id": post_id,
+            "post_code": post_code,
+            "username": normalize_threads_username(getattr(api, "username", "") or normalized_username) or normalized_username,
+        }
+    except Exception as exc:
+        raise RuntimeError("Не удалось опубликовать пост в Threads.") from exc
+    finally:
+        try:
+            await api.close_gracefully()
+        except Exception:
+            pass
+
+
+def publish_content_post_to_threads(
+    *,
+    user_id: int,
+    username: str,
+    password: str,
+    post: ContentPlanPost,
+    rubric_tag: str | None = None,
+) -> dict[str, str]:
+    return asyncio.run(
+        publish_content_post_to_threads_async(
+            user_id=user_id,
+            username=username,
+            password=password,
+            post=post,
+            rubric_tag=rubric_tag,
+        )
+    )
 
 
 def load_content_photo_binary(photo_ref: str) -> tuple[str, bytes, str]:
@@ -4195,6 +4430,36 @@ def mark_content_post_pinterest_published(
         and str(item.get("pin_id") or "").strip()
     ]
     post.pinterest_published_at = datetime.utcnow()
+    if normalize_content_status(post.status) != "published":
+        post.status = "published"
+
+
+def mark_content_post_threads_published(
+    post: ContentPlanPost,
+    *,
+    thread_post_id: str,
+    thread_post_code: str = "",
+    thread_username: str = "",
+    rubric_tag: str | None = None,
+) -> None:
+    normalized_tag = normalize_content_rubric_tag(rubric_tag) or normalize_content_rubric_tag(post.rubric_tag)
+    if normalized_tag:
+        post.rubric_tag = normalized_tag
+    normalized_post_id = str(thread_post_id or "").strip()
+    normalized_post_code = str(thread_post_code or "").strip()
+    normalized_username = normalize_threads_username(thread_username)
+    post.threads_post_ids_json = (
+        [
+            {
+                "post_id": normalized_post_id,
+                "post_code": normalized_post_code,
+                "username": normalized_username,
+            }
+        ]
+        if normalized_post_id
+        else []
+    )
+    post.threads_published_at = datetime.utcnow()
     if normalize_content_status(post.status) != "published":
         post.status = "published"
 
@@ -5897,6 +6162,7 @@ def dispatch_scheduled_content_posts() -> None:
         telegram_settings_cache: dict[int, dict[str, Any]] = {}
         vk_settings_cache: dict[int, dict[str, Any]] = {}
         pinterest_settings_cache: dict[int, dict[str, Any]] = {}
+        threads_settings_cache: dict[int, dict[str, Any]] = {}
         rubric_tag_cache: dict[int, dict[str, str]] = {}
         has_changes = False
 
@@ -5904,7 +6170,13 @@ def dispatch_scheduled_content_posts() -> None:
             should_publish_telegram = content_post_targets_telegram(post) and post.telegram_published_at is None
             should_publish_vk = content_post_targets_vk(post) and post.vk_published_at is None
             should_publish_pinterest = content_post_targets_pinterest(post) and post.pinterest_published_at is None
-            if not should_publish_telegram and not should_publish_vk and not should_publish_pinterest:
+            should_publish_threads = content_post_targets_threads(post) and post.threads_published_at is None
+            if (
+                not should_publish_telegram
+                and not should_publish_vk
+                and not should_publish_pinterest
+                and not should_publish_threads
+            ):
                 continue
             publish_at = content_post_publish_datetime(post)
             if publish_at is None or publish_at > now_local:
@@ -5999,6 +6271,35 @@ def dispatch_scheduled_content_posts() -> None:
                                 rubric_tag=rubric_tag,
                             )
                             has_changes = True
+
+            if should_publish_threads:
+                if user.id not in threads_settings_cache:
+                    threads_settings_cache[user.id] = get_content_threads_settings(user, db)
+                threads_settings = threads_settings_cache[user.id]
+                threads_username = normalize_threads_username(threads_settings.get("username"))
+                threads_password = str(
+                    get_secret_user_option_value(db, user.id, CONTENT_THREADS_PASSWORD_GROUP) or ""
+                ).strip()
+                if threads_username and threads_password:
+                    try:
+                        published_post = publish_content_post_to_threads(
+                            user_id=user.id,
+                            username=threads_username,
+                            password=threads_password,
+                            post=post,
+                            rubric_tag=rubric_tag,
+                        )
+                    except RuntimeError:
+                        published_post = {}
+                    if published_post:
+                        mark_content_post_threads_published(
+                            post,
+                            thread_post_id=str(published_post.get("post_id") or "").strip(),
+                            thread_post_code=str(published_post.get("post_code") or "").strip(),
+                            thread_username=str(published_post.get("username") or threads_username).strip(),
+                            rubric_tag=rubric_tag,
+                        )
+                        has_changes = True
 
         if has_changes:
             db.commit()
@@ -13514,6 +13815,11 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
         "profile_url": "",
         "connected": False,
     }
+    threads_settings: dict[str, Any] = {
+        "username": "",
+        "connected": False,
+        "library_available": content_threads_library_available(),
+    }
     pinterest_settings: dict[str, Any] = {
         "app_configured": pinterest_app_configured(),
         "redirect_uri": PINTEREST_REDIRECT_URI,
@@ -13544,6 +13850,7 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
         telegram_settings = get_content_telegram_settings(content_owner, db)
         vk_settings = get_content_vk_settings(content_owner, db)
         rednote_settings = get_content_rednote_settings(content_owner, db)
+        threads_settings = get_content_threads_settings(content_owner, db)
         pinterest_settings = get_content_pinterest_settings(content_owner, db)
         pinterest_settings["connect_url"] = f"/my-calendar/content/pinterest/oauth/start?{content_action_query}"
         pinterest_settings["sync_url"] = f"/my-calendar/content/pinterest/sync?{content_action_query}"
@@ -13626,6 +13933,7 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
                     if str(board.get("name") or board.get("id") or "").strip()
                 ) or "—",
                 "pinterest_published_at": post.pinterest_published_at,
+                "threads_published_at": post.threads_published_at,
                 "rednote_published_at": post.rednote_published_at,
             }
         )
@@ -13704,6 +14012,7 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
         telegram_settings=telegram_settings,
         vk_settings=vk_settings,
         rednote_settings=rednote_settings,
+        threads_settings=threads_settings,
         pinterest_settings=pinterest_settings,
         telegram_settings_masked={
             "bot_token": mask_secret_value(telegram_settings.get("bot_token")) if content_can_manage_connections else "",
@@ -13714,13 +14023,16 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
         },
         telegram_content_connected=bool(telegram_settings.get("bot_token") and telegram_channels),
         vk_content_connected=bool(vk_groups),
+        threads_content_connected=bool(threads_settings.get("connected")),
         rednote_content_connected=bool(rednote_settings.get("connected")),
         pinterest_content_connected=bool(pinterest_settings.get("connected")),
         content_initial_platform=(
             "pinterest"
             if pinterest_settings.get("connected") and not (telegram_settings.get("bot_token") and telegram_channels) and not vk_groups
+            else "threads"
+            if threads_settings.get("connected") and not (telegram_settings.get("bot_token") and telegram_channels) and not vk_groups and not pinterest_settings.get("connected")
             else "rednote"
-            if rednote_settings.get("connected") and not (telegram_settings.get("bot_token") and telegram_channels) and not vk_groups and not pinterest_settings.get("connected")
+            if rednote_settings.get("connected") and not (telegram_settings.get("bot_token") and telegram_channels) and not vk_groups and not pinterest_settings.get("connected") and not threads_settings.get("connected")
             else "vk"
             if not (telegram_settings.get("bot_token") and telegram_channels) and vk_groups
             else "telegram"
@@ -14398,6 +14710,84 @@ def my_calendar_content_rednote_disconnect(request: Request, db: Session = Depen
     return content_calendar_redirect(request, user, content_owner=content_owner)
 
 
+@app.post("/my-calendar/content/threads/connect")
+async def my_calendar_content_threads_connect(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    access_redirect = ensure_content_plan_access(request, user, db)
+    if access_redirect:
+        return access_redirect
+
+    form = await request.form()
+    content_owner, owner_redirect = ensure_content_owner_for_action(request, user, db, form=form)
+    if owner_redirect or not content_owner:
+        return owner_redirect or content_calendar_redirect(request, user, form=form)
+    if not content_connections_editable(user, content_owner):
+        add_flash(request, "Настройки Threads может менять только владелец контент-плана.", "error")
+        return content_calendar_redirect(request, user, form=form, content_owner=content_owner)
+
+    if not content_threads_library_available():
+        add_flash(request, "Интеграция Threads временно недоступна на сервере.", "error")
+        return content_calendar_redirect(request, user, form=form, content_owner=content_owner)
+
+    username_raw = str(form.get("threads_username", "")).strip()
+    username = normalize_threads_username(username_raw)
+    existing_username = normalize_threads_username(get_user_option_value(db, content_owner.id, CONTENT_THREADS_USERNAME_GROUP))
+    existing_password = str(get_secret_user_option_value(db, content_owner.id, CONTENT_THREADS_PASSWORD_GROUP) or "").strip()
+    password = str(form.get("threads_password", "")).strip() or existing_password
+
+    if not username:
+        add_flash(request, "Укажите корректный логин Threads (латиница, цифры, точка или подчёркивание).", "error")
+        return content_calendar_redirect(request, user, form=form, content_owner=content_owner)
+    if not password:
+        add_flash(request, "Укажите пароль для подключения Threads.", "error")
+        return content_calendar_redirect(request, user, form=form, content_owner=content_owner)
+
+    if existing_username and existing_username.casefold() != username.casefold():
+        clear_content_threads_cache_files(content_owner.id)
+
+    try:
+        resolved_username = await authorize_content_threads_account(
+            user_id=content_owner.id,
+            username=username,
+            password=password,
+        )
+    except RuntimeError as exc:
+        add_flash(request, content_threads_error_text(str(exc)), "error")
+        return content_calendar_redirect(request, user, form=form, content_owner=content_owner)
+
+    set_user_option_value(db, content_owner.id, CONTENT_THREADS_USERNAME_GROUP, resolved_username or username)
+    set_secret_user_option_value(db, content_owner.id, CONTENT_THREADS_PASSWORD_GROUP, password)
+    db.commit()
+    add_flash(request, f"Аккаунт Threads подключён: @{resolved_username or username}.", "success")
+    return content_calendar_redirect(request, user, form=form, content_owner=content_owner)
+
+
+@app.post("/my-calendar/content/threads/disconnect")
+def my_calendar_content_threads_disconnect(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    access_redirect = ensure_content_plan_access(request, user, db)
+    if access_redirect:
+        return access_redirect
+
+    content_owner, owner_redirect = ensure_content_owner_for_action(request, user, db)
+    if owner_redirect or not content_owner:
+        return owner_redirect or content_calendar_redirect(request, user)
+    if not content_connections_editable(user, content_owner):
+        add_flash(request, "Настройки Threads может менять только владелец контент-плана.", "error")
+        return content_calendar_redirect(request, user, content_owner=content_owner)
+
+    set_user_option_value(db, content_owner.id, CONTENT_THREADS_USERNAME_GROUP, "")
+    set_secret_user_option_value(db, content_owner.id, CONTENT_THREADS_PASSWORD_GROUP, "")
+    clear_content_threads_cache_files(content_owner.id)
+    db.commit()
+    add_flash(request, "Настройки Threads удалены.", "info")
+    return content_calendar_redirect(request, user, content_owner=content_owner)
+
+
 @app.get("/my-calendar/content/pinterest/oauth/start")
 def my_calendar_content_pinterest_oauth_start(request: Request, db: Session = Depends(get_db)):
     user = current_user(request, db)
@@ -14719,6 +15109,66 @@ def my_calendar_content_publish_pinterest(post_id: int, request: Request, db: Se
     if send_errors:
         success_text = f"{success_text} Не удалось отправить в: {'; '.join(send_errors)}"
     add_flash(request, success_text, "success")
+    return content_calendar_redirect(request, user, content_owner=content_owner)
+
+
+@app.post("/my-calendar/content/{post_id}/threads-publish")
+def my_calendar_content_publish_threads(post_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    access_redirect = ensure_content_plan_access(request, user, db)
+    if access_redirect:
+        return access_redirect
+
+    content_owner, owner_redirect = ensure_content_owner_for_action(request, user, db)
+    if owner_redirect or not content_owner:
+        return owner_redirect or content_calendar_redirect(request, user)
+
+    post = db.execute(
+        select(ContentPlanPost).where(
+            ContentPlanPost.id == post_id,
+            ContentPlanPost.user_id == content_owner.id,
+        )
+    ).scalar_one_or_none()
+    if not post:
+        add_flash(request, "Пост контент-плана не найден.", "error")
+        return content_calendar_redirect(request, user, content_owner=content_owner)
+
+    threads_settings = get_content_threads_settings(content_owner, db)
+    threads_username = normalize_threads_username(threads_settings.get("username"))
+    threads_password = str(get_secret_user_option_value(db, content_owner.id, CONTENT_THREADS_PASSWORD_GROUP) or "").strip()
+    if not threads_username or not threads_password:
+        add_flash(request, "Сначала подключите аккаунт Threads в настройках контент-плана.", "error")
+        return content_calendar_redirect(request, user, content_owner=content_owner)
+
+    try:
+        rubric_tag = normalize_content_rubric_tag(post.rubric_tag) or get_content_rubric_tags(db, content_owner.id).get(post.rubric or "", "")
+        published_post = publish_content_post_to_threads(
+            user_id=content_owner.id,
+            username=threads_username,
+            password=threads_password,
+            post=post,
+            rubric_tag=rubric_tag,
+        )
+    except RuntimeError as exc:
+        add_flash(request, content_threads_error_text(str(exc)), "error")
+        return content_calendar_redirect(request, user, content_owner=content_owner)
+
+    thread_post_id = str(published_post.get("post_id") or "").strip()
+    thread_post_code = str(published_post.get("post_code") or "").strip()
+    resolved_username = normalize_threads_username(published_post.get("username")) or threads_username
+    if not thread_post_id:
+        add_flash(request, "Пост отправлен, но не удалось получить ID публикации Threads.", "info")
+    mark_content_post_threads_published(
+        post,
+        thread_post_id=thread_post_id,
+        thread_post_code=thread_post_code,
+        thread_username=resolved_username,
+        rubric_tag=rubric_tag,
+    )
+    db.commit()
+    add_flash(request, f"Пост опубликован в Threads (@{resolved_username}).", "success")
     return content_calendar_redirect(request, user, content_owner=content_owner)
 
 

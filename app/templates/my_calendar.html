@@ -344,6 +344,7 @@
     <div class="calendar-tabs">
       <button type="button" class="tab active" data-platform-tab="telegram">Telegram</button>
       <button type="button" class="tab" data-platform-tab="vk">VK</button>
+      <button type="button" class="tab" data-platform-tab="threads">Threads</button>
       <button type="button" class="tab" data-platform-tab="rednote">RedNote</button>
       <button type="button" class="tab" data-platform-tab="pinterest">Pinterest</button>
     </div>
@@ -442,6 +443,51 @@
       {% if vk_content_connected %}
         <form method="post" action="/my-calendar/content/vk/disconnect?{{ content_action_query }}" class="top-offset" onsubmit="return confirm('Удалить настройки VK-сообществ?');">
           <button type="submit" class="btn btn-danger">Отключить VK-сообщества</button>
+        </form>
+      {% endif %}
+      {% endif %}
+    </div>
+
+    <div class="content-platform-panel" data-platform-panel="threads" hidden>
+      <p class="muted">
+        Threads подключается через логин и пароль аккаунта. После подключения можно публиковать посты вручную
+        и по расписанию из контент-плана.
+      </p>
+      <div class="notes-block telegram-editor-note">
+        В публикацию уйдёт текст карточки и до 10 изображений из блока фотографий. Для Threads используется plain-text версия контента.
+      </div>
+      {% if threads_settings.connected %}
+        <p class="muted top-offset">Подключён аккаунт: <strong>@{{ threads_settings.username }}</strong></p>
+      {% endif %}
+      {% if not threads_settings.library_available %}
+        <div class="notes-block telegram-editor-note telegram-editor-note-warning top-offset">
+          Интеграция Threads сейчас временно недоступна на сервере. Попробуйте позже.
+        </div>
+      {% endif %}
+      {% if not content_can_manage_connections %}
+        <div class="notes-block telegram-editor-note top-offset">
+          Настройки Threads может менять только владелец этого контент-плана.
+        </div>
+      {% else %}
+      <form method="post" action="/my-calendar/content/threads/connect" class="grid one-col top-offset">
+        <input type="hidden" name="content_scope" value="{{ content_scope }}" />
+        {% if content_owner_id %}<input type="hidden" name="content_owner_id" value="{{ content_owner_id }}" />{% endif %}
+        <label>
+          Логин Threads
+          <input type="text" name="threads_username" value="{{ threads_settings.username }}" maxlength="30" placeholder="@username" />
+        </label>
+        <label>
+          Пароль
+          <input type="password" name="threads_password" value="" placeholder="Пароль аккаунта" />
+          <small class="muted">Можно оставить пустым, если пароль уже сохранён и не меняется.</small>
+        </label>
+        <div class="actions-inline">
+          <button type="submit" class="btn btn-accent" {% if not threads_settings.library_available %}disabled{% endif %}>Сохранить Threads</button>
+        </div>
+      </form>
+      {% if threads_content_connected %}
+        <form method="post" action="/my-calendar/content/threads/disconnect?{{ content_action_query }}" class="top-offset" onsubmit="return confirm('Удалить настройки Threads?');">
+          <button type="submit" class="btn btn-danger">Отключить Threads</button>
         </form>
       {% endif %}
       {% endif %}
@@ -660,7 +706,7 @@
           </div>
         </label>
       </div>
-      <p class="muted">Если отмечены <strong>ТГ</strong>, <strong>VK</strong> и/или <strong>Pinterest</strong>, пост отправится автоматически по указанным дате и времени. Для <strong>RedNote</strong> в текущей версии сохраняется только ручной трекинг публикации без автопоста.</p>
+      <p class="muted">Если отмечены <strong>ТГ</strong>, <strong>VK</strong>, <strong>Pinterest</strong> и/или <strong>Threads</strong>, пост отправится автоматически по указанным дате и времени. Для <strong>RedNote</strong> в текущей версии сохраняется только ручной трекинг публикации без автопоста.</p>
       <div>
         <p class="muted">Telegram-каналы для публикации</p>
         {% if telegram_settings.channels %}
@@ -741,6 +787,14 @@
         {% endif %}
       </div>
       <div>
+        <p class="muted">Threads</p>
+        {% if threads_content_connected %}
+          <p class="muted">Публикация уйдёт в аккаунт <strong>@{{ threads_settings.username }}</strong>. Для автопубликации нужен заполненный блок даты и времени.</p>
+        {% else %}
+          <p class="muted">Сначала подключите аккаунт Threads в блоке настроек выше.</p>
+        {% endif %}
+      </div>
+      <div>
         <p class="muted">Соцсеть</p>
         <div class="chips-wrap">
           {% for social in content_social_options %}
@@ -790,6 +844,9 @@
           {% endif %}
           {% if pinterest_content_connected %}
             <button type="submit" class="btn" formaction="/my-calendar/content/{{ editing_content_post.id }}/pinterest-publish?{{ content_action_query }}" formmethod="post">Опубликовать в Pinterest</button>
+          {% endif %}
+          {% if threads_content_connected %}
+            <button type="submit" class="btn" formaction="/my-calendar/content/{{ editing_content_post.id }}/threads-publish?{{ content_action_query }}" formmethod="post">Опубликовать в Threads</button>
           {% endif %}
           {% if 'RedNote' in content_form.socials_json %}
             <button type="submit" class="btn" formaction="/my-calendar/content/{{ editing_content_post.id }}/rednote-publish?{{ content_action_query }}" formmethod="post">Отметить в RedNote</button>
@@ -903,6 +960,9 @@
                 {% if item.pinterest_boards_text and item.pinterest_boards_text != "—" %}
                   <span class="muted">Pinterest-доски: {{ item.pinterest_boards_text }}</span>
                 {% endif %}
+                {% if item.threads_published_at %}
+                  <span class="muted">Threads: {{ item.threads_published_at.strftime('%d-%m-%Y %H:%M') }}</span>
+                {% endif %}
                 {% if item.rednote_published_at %}
                   <span class="muted">RedNote: {{ item.rednote_published_at.strftime('%d-%m-%Y %H:%M') }}</span>
                 {% endif %}
@@ -920,6 +980,11 @@
                 {% if pinterest_content_connected %}
                   <form method="post" action="/my-calendar/content/{{ item.post_id }}/pinterest-publish?{{ content_action_query }}">
                     <button type="submit" class="btn btn-small">В Pinterest</button>
+                  </form>
+                {% endif %}
+                {% if threads_content_connected %}
+                  <form method="post" action="/my-calendar/content/{{ item.post_id }}/threads-publish?{{ content_action_query }}">
+                    <button type="submit" class="btn btn-small">В Threads</button>
                   </form>
                 {% endif %}
                 {% if item.rednote_targeted %}
