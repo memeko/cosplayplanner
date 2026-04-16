@@ -461,7 +461,7 @@
       {% endif %}
       {% if not threads_settings.library_available %}
         <div class="notes-block telegram-editor-note telegram-editor-note-warning top-offset">
-          Интеграция Threads сейчас временно недоступна на сервере. Попробуйте позже.
+          {{ threads_settings.library_error or "Интеграция Threads сейчас временно недоступна на сервере. Попробуйте позже." }}
         </div>
       {% endif %}
       {% if not content_can_manage_connections %}

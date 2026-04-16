@@ -5,6 +5,7 @@ import calendar
 import colorsys
 import asyncio
 import base64
+import importlib
 import hashlib
 import hmac
 import html
@@ -408,6 +409,11 @@ CONTENT_TELEGRAM_LOOP_SLEEP_SECONDS = max(
     15,
     min(300, int(os.getenv("CONTENT_TELEGRAM_LOOP_SLEEP", "60"))),
 )
+THREADS_LIBRARY_UNAVAILABLE_TEXT = "Интеграция Threads сейчас временно недоступна на сервере. Попробуйте позже."
+THREADS_API_IMPORT_PATHS = ("threads_api.src.threads_api", "threads_api")
+threads_api_class_cache: Any | None = None
+threads_api_import_checked = False
+threads_api_import_error_message = ""
 try:
     SITE_TIMEZONE = ZoneInfo(os.getenv("SITE_TIMEZONE", "Europe/Moscow"))
 except ZoneInfoNotFoundError:
@@ -3034,15 +3040,60 @@ def clear_content_threads_cache_files(user_id: int) -> None:
             cache_path.unlink(missing_ok=True)
 
 
+def format_threads_api_import_error(exc: Exception | None) -> str:
+    if isinstance(exc, ModuleNotFoundError):
+        missing_name = str(getattr(exc, "name", "") or "").strip()
+        if missing_name in {"threads_api"}:
+            return (
+                "Интеграция Threads недоступна: на сервере не установлен пакет threads-api."
+                " Обновите зависимости приложения и перезапустите сервис."
+            )
+        if missing_name:
+            return (
+                "Интеграция Threads недоступна: на сервере отсутствует зависимость "
+                f"{missing_name}. Обновите зависимости приложения и перезапустите сервис."
+            )
+    return THREADS_LIBRARY_UNAVAILABLE_TEXT
+
+
+def resolve_threads_api_class() -> Any | None:
+    global threads_api_class_cache, threads_api_import_checked, threads_api_import_error_message
+    if threads_api_import_checked:
+        return threads_api_class_cache
+
+    threads_api_import_checked = True
+    last_error: Exception | None = None
+    for module_path in THREADS_API_IMPORT_PATHS:
+        try:
+            loaded_module = importlib.import_module(module_path)
+        except Exception as exc:
+            last_error = exc
+            continue
+        candidate = getattr(loaded_module, "ThreadsAPI", None)
+        if candidate is None:
+            last_error = RuntimeError(f"В модуле `{module_path}` не найден класс ThreadsAPI.")
+            continue
+        threads_api_class_cache = candidate
+        threads_api_import_error_message = ""
+        return threads_api_class_cache
+
+    threads_api_import_error_message = format_threads_api_import_error(last_error)
+    return None
+
+
 def content_threads_library_available() -> bool:
-    try:
-        from threads_api.src.threads_api import ThreadsAPI  # noqa: F401
-    except Exception:
-        return False
-    return True
+    return resolve_threads_api_class() is not None
+
+
+def content_threads_library_error() -> str:
+    if resolve_threads_api_class() is not None:
+        return ""
+    return threads_api_import_error_message or THREADS_LIBRARY_UNAVAILABLE_TEXT
 
 
 def content_threads_error_text(default_text: str) -> str:
+    if default_text == THREADS_LIBRARY_UNAVAILABLE_TEXT:
+        return content_threads_library_error() or THREADS_LIBRARY_UNAVAILABLE_TEXT
     # Не раскрываем внутренние ошибки библиотеки в UI.
     return default_text
 
@@ -3050,10 +3101,12 @@ def content_threads_error_text(default_text: str) -> str:
 def get_content_threads_settings(user: User, db: Session) -> dict[str, Any]:
     username_value = normalize_threads_username(get_user_option_value(db, user.id, CONTENT_THREADS_USERNAME_GROUP))
     password_value = str(get_secret_user_option_value(db, user.id, CONTENT_THREADS_PASSWORD_GROUP) or "").strip()
+    library_available = content_threads_library_available()
     return {
         "username": username_value,
         "connected": bool(username_value and password_value),
-        "library_available": content_threads_library_available(),
+        "library_available": library_available,
+        "library_error": content_threads_library_error() if not library_available else "",
     }
 
 
@@ -4134,11 +4187,10 @@ def first_content_post_external_link(post: ContentPlanPost) -> str:
 
 
 def load_threads_api_class() -> Any:
-    try:
-        from threads_api.src.threads_api import ThreadsAPI
-    except Exception as exc:
-        raise RuntimeError("Интеграция Threads временно недоступна на сервере.") from exc
-    return ThreadsAPI
+    threads_api_class = resolve_threads_api_class()
+    if threads_api_class is None:
+        raise RuntimeError(content_threads_library_error() or THREADS_LIBRARY_UNAVAILABLE_TEXT)
+    return threads_api_class
 
 
 async def authorize_content_threads_account(
@@ -13819,6 +13871,7 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
         "username": "",
         "connected": False,
         "library_available": content_threads_library_available(),
+        "library_error": content_threads_library_error(),
     }
     pinterest_settings: dict[str, Any] = {
         "app_configured": pinterest_app_configured(),
@@ -14728,7 +14781,7 @@ async def my_calendar_content_threads_connect(request: Request, db: Session = De
         return content_calendar_redirect(request, user, form=form, content_owner=content_owner)
 
     if not content_threads_library_available():
-        add_flash(request, "Интеграция Threads временно недоступна на сервере.", "error")
+        add_flash(request, content_threads_library_error(), "error")
         return content_calendar_redirect(request, user, form=form, content_owner=content_owner)
 
     username_raw = str(form.get("threads_username", "")).strip()
