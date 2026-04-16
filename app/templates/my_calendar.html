@@ -459,6 +459,12 @@
       {% if threads_settings.connected %}
         <p class="muted top-offset">Подключён аккаунт: <strong>@{{ threads_settings.username }}</strong></p>
       {% endif %}
+      {% if threads_settings.connected and threads_settings.requires_password_refresh %}
+        <div class="notes-block telegram-editor-note telegram-editor-note-warning top-offset">
+          Аккаунт Threads определён, но сохранённый пароль недоступен в текущем окружении.
+          Введите пароль ещё раз и нажмите «Сохранить Threads».
+        </div>
+      {% endif %}
       {% if not threads_settings.library_available %}
         <div class="notes-block telegram-editor-note telegram-editor-note-warning top-offset">
           {{ threads_settings.library_error or "Интеграция Threads сейчас временно недоступна на сервере. Попробуйте позже." }}
@@ -485,7 +491,7 @@
           <button type="submit" class="btn btn-accent" {% if not threads_settings.library_available %}disabled{% endif %}>Сохранить Threads</button>
         </div>
       </form>
-      {% if threads_content_connected %}
+      {% if threads_content_account_connected %}
         <form method="post" action="/my-calendar/content/threads/disconnect?{{ content_action_query }}" class="top-offset" onsubmit="return confirm('Удалить настройки Threads?');">
           <button type="submit" class="btn btn-danger">Отключить Threads</button>
         </form>
@@ -790,6 +796,10 @@
         <p class="muted">Threads</p>
         {% if threads_content_connected %}
           <p class="muted">Публикация уйдёт в аккаунт <strong>@{{ threads_settings.username }}</strong>. Для автопубликации нужен заполненный блок даты и времени.</p>
+        {% elif threads_content_account_connected and threads_content_password_issue %}
+          <p class="muted">Аккаунт <strong>@{{ threads_settings.username }}</strong> подключён, но пароль нужно сохранить заново в блоке настроек выше.</p>
+        {% elif threads_content_account_connected %}
+          <p class="muted">Аккаунт <strong>@{{ threads_settings.username }}</strong> подключён. Для публикации сохраните пароль в блоке настроек выше.</p>
         {% else %}
           <p class="muted">Сначала подключите аккаунт Threads в блоке настроек выше.</p>
         {% endif %}

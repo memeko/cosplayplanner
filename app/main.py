@@ -3033,8 +3033,56 @@ def content_threads_token_cache_path(user_id: int) -> Path:
     return content_threads_storage_path() / f"user-{safe_user_id}.token"
 
 
+def content_threads_password_backup_path(user_id: int) -> Path:
+    safe_user_id = max(1, int(user_id))
+    return content_threads_storage_path() / f"user-{safe_user_id}.password"
+
+
+def read_content_threads_password_backup(user_id: int) -> str:
+    backup_path = content_threads_password_backup_path(user_id)
+    if not backup_path.exists() or not backup_path.is_file():
+        return ""
+    try:
+        return backup_path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def write_content_threads_password_backup(user_id: int, password: str | None) -> None:
+    backup_path = content_threads_password_backup_path(user_id)
+    normalized_password = str(password or "").strip()
+    if not normalized_password:
+        if backup_path.exists() and backup_path.is_file():
+            backup_path.unlink(missing_ok=True)
+        return
+    try:
+        descriptor = os.open(str(backup_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(normalized_password)
+    except OSError:
+        return
+
+
+def get_content_threads_password_state(db: Session, user_id: int) -> dict[str, Any]:
+    raw_secret = str(get_user_option_value(db, user_id, CONTENT_THREADS_PASSWORD_GROUP) or "").strip()
+    decrypted_password = decrypt_secret_option_value(raw_secret)
+    backup_password = read_content_threads_password_backup(user_id)
+    password_value = str(decrypted_password or backup_password or "").strip()
+    source = "db" if decrypted_password else "backup" if backup_password else ""
+    has_saved_password = bool(raw_secret or backup_password)
+    return {
+        "password": password_value,
+        "password_source": source,
+        "has_saved_password": has_saved_password,
+    }
+
+
 def clear_content_threads_cache_files(user_id: int) -> None:
-    for cache_path in [content_threads_settings_path(user_id), content_threads_token_cache_path(user_id)]:
+    for cache_path in [
+        content_threads_settings_path(user_id),
+        content_threads_token_cache_path(user_id),
+        content_threads_password_backup_path(user_id),
+    ]:
         if cache_path.exists() and cache_path.is_file():
             cache_path.unlink(missing_ok=True)
 
@@ -3122,11 +3170,18 @@ def content_threads_error_text(default_text: str) -> str:
 
 def get_content_threads_settings(user: User, db: Session) -> dict[str, Any]:
     username_value = normalize_threads_username(get_user_option_value(db, user.id, CONTENT_THREADS_USERNAME_GROUP))
-    password_value = str(get_secret_user_option_value(db, user.id, CONTENT_THREADS_PASSWORD_GROUP) or "").strip()
+    password_state = get_content_threads_password_state(db, user.id)
+    password_value = str(password_state.get("password") or "").strip()
+    has_saved_password = bool(password_state.get("has_saved_password"))
     library_available = content_threads_library_available()
     return {
         "username": username_value,
-        "connected": bool(username_value and password_value),
+        "connected": bool(username_value),
+        "publish_ready": bool(username_value and password_value),
+        "password_saved": has_saved_password,
+        "password_readable": bool(password_value),
+        "password_source": str(password_state.get("password_source") or ""),
+        "requires_password_refresh": bool(username_value and has_saved_password and not password_value),
         "library_available": library_available,
         "library_error": content_threads_library_error() if not library_available else "",
     }
@@ -6351,9 +6406,7 @@ def dispatch_scheduled_content_posts() -> None:
                     threads_settings_cache[user.id] = get_content_threads_settings(user, db)
                 threads_settings = threads_settings_cache[user.id]
                 threads_username = normalize_threads_username(threads_settings.get("username"))
-                threads_password = str(
-                    get_secret_user_option_value(db, user.id, CONTENT_THREADS_PASSWORD_GROUP) or ""
-                ).strip()
+                threads_password = str(get_content_threads_password_state(db, user.id).get("password") or "").strip()
                 if threads_username and threads_password:
                     try:
                         published_post = publish_content_post_to_threads(
@@ -13892,6 +13945,11 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
     threads_settings: dict[str, Any] = {
         "username": "",
         "connected": False,
+        "publish_ready": False,
+        "password_saved": False,
+        "password_readable": False,
+        "password_source": "",
+        "requires_password_refresh": False,
         "library_available": content_threads_library_available(),
         "library_error": content_threads_library_error(),
     }
@@ -14098,7 +14156,9 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
         },
         telegram_content_connected=bool(telegram_settings.get("bot_token") and telegram_channels),
         vk_content_connected=bool(vk_groups),
-        threads_content_connected=bool(threads_settings.get("connected")),
+        threads_content_connected=bool(threads_settings.get("publish_ready")),
+        threads_content_account_connected=bool(threads_settings.get("connected")),
+        threads_content_password_issue=bool(threads_settings.get("requires_password_refresh")),
         rednote_content_connected=bool(rednote_settings.get("connected")),
         pinterest_content_connected=bool(pinterest_settings.get("connected")),
         content_initial_platform=(
@@ -14809,7 +14869,7 @@ async def my_calendar_content_threads_connect(request: Request, db: Session = De
     username_raw = str(form.get("threads_username", "")).strip()
     username = normalize_threads_username(username_raw)
     existing_username = normalize_threads_username(get_user_option_value(db, content_owner.id, CONTENT_THREADS_USERNAME_GROUP))
-    existing_password = str(get_secret_user_option_value(db, content_owner.id, CONTENT_THREADS_PASSWORD_GROUP) or "").strip()
+    existing_password = str(get_content_threads_password_state(db, content_owner.id).get("password") or "").strip()
     password = str(form.get("threads_password", "")).strip() or existing_password
 
     if not username:
@@ -14834,6 +14894,7 @@ async def my_calendar_content_threads_connect(request: Request, db: Session = De
 
     set_user_option_value(db, content_owner.id, CONTENT_THREADS_USERNAME_GROUP, resolved_username or username)
     set_secret_user_option_value(db, content_owner.id, CONTENT_THREADS_PASSWORD_GROUP, password)
+    write_content_threads_password_backup(content_owner.id, password)
     db.commit()
     add_flash(request, f"Аккаунт Threads подключён: @{resolved_username or username}.", "success")
     return content_calendar_redirect(request, user, form=form, content_owner=content_owner)
@@ -15212,9 +15273,20 @@ def my_calendar_content_publish_threads(post_id: int, request: Request, db: Sess
 
     threads_settings = get_content_threads_settings(content_owner, db)
     threads_username = normalize_threads_username(threads_settings.get("username"))
-    threads_password = str(get_secret_user_option_value(db, content_owner.id, CONTENT_THREADS_PASSWORD_GROUP) or "").strip()
+    threads_password_state = get_content_threads_password_state(db, content_owner.id)
+    threads_password = str(threads_password_state.get("password") or "").strip()
     if not threads_username or not threads_password:
-        add_flash(request, "Сначала подключите аккаунт Threads в настройках контент-плана.", "error")
+        if threads_username and threads_settings.get("requires_password_refresh"):
+            add_flash(
+                request,
+                "Аккаунт Threads сохранён, но пароль недоступен в текущем окружении. "
+                "Введите пароль заново в настройках Threads и нажмите «Сохранить Threads».",
+                "error",
+            )
+        elif threads_username:
+            add_flash(request, "Для публикации в Threads сохраните пароль в блоке настроек выше.", "error")
+        else:
+            add_flash(request, "Сначала подключите аккаунт Threads в настройках контент-плана.", "error")
         return content_calendar_redirect(request, user, content_owner=content_owner)
 
     try:
