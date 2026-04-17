@@ -89,6 +89,9 @@
                 <span>{{ card.fandom or "—" }}</span>
                 <span>{{ card.project_deadline.strftime('%d-%m-%Y') if card.project_deadline else "—" }}</span>
               </div>
+              {% if card.id in frozen_card_ids %}
+                <span class="chip chip-alert">Заморожено</span>
+              {% endif %}
             </div>
             <div class="actions-inline cosplan-list-actions">
               {% if editable_id and current_tab == 'current' %}
@@ -98,6 +101,12 @@
                 </form>
               {% endif %}
               {% if current_tab == 'current' %}
+                <form method="post" action="/cosplan/{{ card.id }}/freeze-toggle">
+                  <input type="hidden" name="next" value="{{ current_url }}" />
+                  <button type="submit" class="btn {% if card.id in frozen_card_ids %}btn-accent{% endif %}">
+                    {{ "Разморозить" if card.id in frozen_card_ids else "Заморозить" }}
+                  </button>
+                </form>
                 {% if card.id not in in_progress_ids %}
                   <form method="post" action="/in-progress/add/{{ card.id }}">
                     <button type="submit" class="btn">В работу</button>
@@ -129,6 +138,9 @@
             {% endif %}
             {% if card.is_completed %}
               <span class="chip">Сделан!</span>
+            {% endif %}
+            {% if card.id in frozen_card_ids %}
+              <span class="chip chip-alert">Заморожено</span>
             {% endif %}
             {% if card.is_shared_copy %}
               <span class="chip chip-shared">Общий доступ</span>
@@ -171,6 +183,14 @@
                 <button type="submit" class="btn">{{ "Вернуть в текущие" if card.is_completed else "Сделан!" }}</button>
               </form>
               <a href="/cosplan/{{ editable_id }}/edit" class="btn">Редактировать</a>
+            {% endif %}
+            {% if not card.is_completed %}
+              <form method="post" action="/cosplan/{{ card.id }}/freeze-toggle">
+                <input type="hidden" name="next" value="{{ current_url }}" />
+                <button type="submit" class="btn {% if card.id in frozen_card_ids %}btn-accent{% endif %}">
+                  {{ "Разморозить" if card.id in frozen_card_ids else "Заморозить" }}
+                </button>
+              </form>
             {% endif %}
             {% if not card.is_completed and card.id not in in_progress_ids %}
               <form method="post" action="/in-progress/add/{{ card.id }}">

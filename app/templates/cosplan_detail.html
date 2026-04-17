@@ -15,6 +15,19 @@
   <h1>{{ card.character_name }}</h1>
   <div class="actions-inline">
     <a href="/cosplan" class="btn">К списку</a>
+    {% if can_manage_progress %}
+      <form method="post" action="/cosplan/{{ card.id }}/freeze-toggle">
+        <input type="hidden" name="next" value="/cosplan/{{ card.id }}" />
+        <button type="submit" class="btn {% if card_is_frozen %}btn-accent{% endif %}">
+          {{ "Разморозить" if card_is_frozen else "Заморозить" }}
+        </button>
+      </form>
+      {% if not card_in_progress %}
+        <form method="post" action="/in-progress/add/{{ card.id }}">
+          <button type="submit" class="btn">В работу</button>
+        </form>
+      {% endif %}
+    {% endif %}
     {% if can_edit_card and edit_card_id %}
       <a href="/cosplan/{{ edit_card_id }}/edit" class="btn">Редактировать</a>
     {% endif %}
@@ -28,6 +41,9 @@
   {% if card.fandom %}<p class="meta">Фандом: {{ card.fandom }}</p>{% endif %}
   {% if card.plan_type %}
     <p class="meta">Тип: {{ "Проект" if card.plan_type == "project" else "Личное" }}</p>
+  {% endif %}
+  {% if card_is_frozen %}
+    <p class="meta"><strong>Статус: Заморожено</strong></p>
   {% endif %}
   {% if project_leader_display %}<p class="meta">Руководитель: {{ project_leader_display }}</p>{% endif %}
   {% if card.city %}<p class="meta">Город: {{ card.city }}</p>{% endif %}

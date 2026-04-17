@@ -11346,6 +11346,11 @@ def cosplan_detail(card_id: int, request: Request, db: Session = Depends(get_db)
 
     card_total, card_total_currency = estimate_card_total_and_currency(card)
     performance_total = performance_rehearsal_total(card)
+    progress_row = db.execute(
+        select(InProgressCard).where(InProgressCard.user_id == user.id, InProgressCard.cosplan_card_id == card.id)
+    ).scalar_one_or_none()
+    card_in_progress = bool(progress_row)
+    card_is_frozen = bool(progress_row and progress_row.is_frozen)
     related_cards: list[dict[str, Any]] = []
     related_links = parse_related_card_links(as_list(card.related_cards_json), legacy_user_id=card.user_id)
     if related_links:
@@ -11410,6 +11415,9 @@ def cosplan_detail(card_id: int, request: Request, db: Session = Depends(get_db)
         can_comment=can_comment_on_card(card, user),
         can_edit_card=bool(editable_card),
         edit_card_id=editable_card.id if editable_card else None,
+        can_manage_progress=bool(card.user_id == user.id),
+        card_in_progress=card_in_progress,
+        card_is_frozen=card_is_frozen,
         top_level_comments=top_level_comments,
         replies_by_parent=replies_by_parent,
         comment_authors=authors_by_id,
@@ -11967,6 +11975,46 @@ async def cosplan_completed_toggle(card_id: int, request: Request, db: Session =
     add_flash(
         request,
         "Карточка перенесена в завершенные." if card.is_completed else "Карточка возвращена в текущие планы.",
+        "success",
+    )
+    return redirect(next_url)
+
+
+@app.post("/cosplan/{card_id}/freeze-toggle")
+async def cosplan_freeze_toggle(card_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    card = db.execute(select(CosplanCard).where(CosplanCard.id == card_id, CosplanCard.user_id == user.id)).scalar_one_or_none()
+    if not card:
+        add_flash(request, "Карточка косплана не найдена.", "error")
+        return redirect("/cosplan")
+
+    form = await request.form()
+    next_url = safe_redirect_target(str(form.get("next", "")).strip(), "/cosplan")
+
+    progress = db.execute(
+        select(InProgressCard).where(InProgressCard.user_id == user.id, InProgressCard.cosplan_card_id == card.id)
+    ).scalar_one_or_none()
+    if not progress:
+        progress = InProgressCard(
+            user_id=user.id,
+            cosplan_card_id=card.id,
+            checklist_json=[],
+            task_rows_json=[],
+            is_frozen=True,
+        )
+        db.add(progress)
+        db.commit()
+        add_flash(request, "Карточка добавлена в «В работе» и заморожена.", "info")
+        return redirect(next_url)
+
+    progress.is_frozen = not bool(progress.is_frozen)
+    db.commit()
+    add_flash(
+        request,
+        "Проект заморожен." if progress.is_frozen else "Проект разморожен.",
         "success",
     )
     return redirect(next_url)
