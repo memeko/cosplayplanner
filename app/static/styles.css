@@ -608,6 +608,21 @@ textarea {
   border-color: rgba(251, 146, 60, 0.9);
 }
 
+.card.studio-card-temporary {
+  background: linear-gradient(155deg, rgba(255, 236, 179, 0.88), rgba(255, 248, 220, 0.66));
+  border-color: rgba(245, 158, 11, 0.92);
+  box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.18), var(--glass-highlight);
+}
+
+.card.studio-card-temporary .studio-preview-hero {
+  border-color: rgba(245, 158, 11, 0.5);
+}
+
+.box.studio-detail-temporary {
+  background: linear-gradient(155deg, rgba(255, 246, 213, 0.84), rgba(255, 255, 255, 0.62));
+  border-color: rgba(245, 158, 11, 0.72);
+}
+
 .priority-card {
   background: linear-gradient(155deg, rgba(255, 249, 219, 0.88), rgba(255, 236, 153, 0.58));
   border-color: rgba(245, 158, 11, 0.9);
@@ -773,6 +788,13 @@ textarea {
   background: rgba(177, 134, 255, 0.28);
   border-color: rgba(140, 82, 255, 0.56);
   color: #5f26b1;
+}
+
+.chip-studio-temporary {
+  background: rgba(255, 237, 180, 0.92);
+  border-color: rgba(245, 158, 11, 0.64);
+  color: #92400e;
+  font-weight: 700;
 }
 
 .city-highlight-chip {

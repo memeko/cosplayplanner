@@ -5,8 +5,8 @@
   <a href="/cosplan" class="btn">Добавить из косплана</a>
 </section>
 <nav class="calendar-tabs">
-  <a href="/in-progress?scope=cosplayer" class="tab {% if (in_progress_scope or 'cosplayer') == 'cosplayer' %}active{% endif %}">Косплеер</a>
-  <a href="/in-progress?scope=master" class="tab {% if (in_progress_scope or 'cosplayer') == 'master' %}active{% endif %}">Мастер</a>
+  <a href="/in-progress?scope=cosplayer" class="tab {% if (in_progress_scope or 'cosplayer') == 'cosplayer' %}active{% endif %}">Косплеер ({{ cosplayer_active_projects_count or 0 }})</a>
+  <a href="/in-progress?scope=master" class="tab {% if (in_progress_scope or 'cosplayer') == 'master' %}active{% endif %}">Мастер ({{ master_active_projects_count or 0 }})</a>
 </nav>
 
 <style>

@@ -41,8 +41,14 @@
     {% set owner = owners_by_id.get(studio.user_id) %}
     {% set gallery = studio.gallery_json or [] %}
     {% set tags = studio.tags_json or [] %}
+    {% set studio_flags = namespace(is_temporary=false) %}
+    {% for tag in tags %}
+      {% if ((tag ~ '')|trim|lower) == 'временная' %}
+        {% set studio_flags.is_temporary = true %}
+      {% endif %}
+    {% endfor %}
     {% set contact_buttons = external_contact_buttons(studio.contact, include_site=True) %}
-    <article class="card">
+    <article class="card {% if studio_flags.is_temporary %}studio-card-temporary{% endif %}">
       {% if gallery %}
         <a href="/community/studios/{{ studio.id }}" class="studio-preview-hero">
           <img src="{{ gallery[0] }}" alt="Фото студии {{ studio.name }}" loading="lazy" />
@@ -58,7 +64,7 @@
       {% if tags %}
         <div class="chips-wrap">
           {% for tag in tags %}
-            <span class="chip">{{ tag }}</span>
+            <span class="chip {% if ((tag ~ '')|trim|lower) == 'временная' %}chip-studio-temporary{% endif %}">{{ tag }}</span>
           {% endfor %}
         </div>
       {% endif %}

@@ -2,6 +2,12 @@
 {% block content %}
 {% include "community_tabs.html" %}
 {% set contact_buttons = external_contact_buttons(studio.contact, include_site=True) %}
+{% set studio_flags = namespace(is_temporary=false) %}
+{% for tag in studio_tags %}
+  {% if ((tag ~ '')|trim|lower) == 'временная' %}
+    {% set studio_flags.is_temporary = true %}
+  {% endif %}
+{% endfor %}
 
 <section class="section-head">
   <h1>{{ studio.name }}</h1>
@@ -16,7 +22,7 @@
   </div>
 </section>
 
-<section class="box">
+<section class="box {% if studio_flags.is_temporary %}studio-detail-temporary{% endif %}">
   <div class="row-between">
     <p class="meta">Город: {{ studio.city }}</p>
     {% if owner %}
@@ -39,7 +45,7 @@
     <p class="meta">Теги:</p>
     <div class="chips-wrap">
       {% for tag in studio_tags %}
-        <span class="chip">{{ tag }}</span>
+        <span class="chip {% if ((tag ~ '')|trim|lower) == 'временная' %}chip-studio-temporary{% endif %}">{{ tag }}</span>
       {% endfor %}
     </div>
   {% endif %}

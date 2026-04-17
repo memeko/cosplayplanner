@@ -585,6 +585,7 @@ STUDIO_TAG_OPTIONS = [
     "циклорама",
     "природа",
     "уличная",
+    "Временная",
     "частная",
 ]
 
@@ -2522,6 +2523,34 @@ def normalize_in_progress_scope(raw: str | None) -> str:
     if value in IN_PROGRESS_SCOPE_OPTIONS:
         return value
     return IN_PROGRESS_SCOPE_COSPLAYER
+
+
+def get_in_progress_active_project_counters(db: Session, user: User) -> dict[str, int]:
+    cosplayer_active = int(
+        db.execute(
+            select(func.count(InProgressCard.id)).where(
+                InProgressCard.user_id == user.id,
+                InProgressCard.is_frozen.is_(False),
+            )
+        ).scalar()
+        or 0
+    )
+    master_active = int(
+        db.execute(
+            select(func.count(InProgressMasterCard.id)).where(
+                or_(
+                    InProgressMasterCard.user_id == user.id,
+                    InProgressMasterCard.customer_user_id == user.id,
+                ),
+                InProgressMasterCard.is_archived.is_(False),
+            )
+        ).scalar()
+        or 0
+    )
+    return {
+        "cosplayer_active": cosplayer_active,
+        "master_active": master_active,
+    }
 
 
 def normalize_master_archive_scope(raw: str | None) -> str:
@@ -12323,6 +12352,7 @@ def in_progress_list(request: Request, db: Session = Depends(get_db)):
     if not user:
         return redirect("/login")
     scope = normalize_in_progress_scope(request.query_params.get("scope"))
+    active_project_counters = get_in_progress_active_project_counters(db, user)
 
     if scope == IN_PROGRESS_SCOPE_MASTER:
         master_search_query = str(request.query_params.get("q", "")).strip()
@@ -12474,6 +12504,8 @@ def in_progress_list(request: Request, db: Session = Depends(get_db)):
             master_cards_total_active=total_active_count,
             master_cards_total_archived=total_archived_count,
             master_cards_filtered_count=len(master_cards),
+            cosplayer_active_projects_count=active_project_counters.get("cosplayer_active", 0),
+            master_active_projects_count=active_project_counters.get("master_active", 0),
         )
 
     try:
@@ -12579,6 +12611,8 @@ def in_progress_list(request: Request, db: Session = Depends(get_db)):
             REHEARSAL_STATUS_ACCEPTED: rehearsal_status_label(REHEARSAL_STATUS_ACCEPTED),
             REHEARSAL_STATUS_DECLINED: rehearsal_status_label(REHEARSAL_STATUS_DECLINED),
         },
+        cosplayer_active_projects_count=active_project_counters.get("cosplayer_active", 0),
+        master_active_projects_count=active_project_counters.get("master_active", 0),
     )
 
 
@@ -12852,6 +12886,7 @@ def in_progress_master_new(request: Request, db: Session = Depends(get_db)):
     if not user:
         return redirect("/login")
 
+    active_project_counters = get_in_progress_active_project_counters(db, user)
     _, _, alias_options = build_user_alias_lookup(db)
     return template_response(
         request,
@@ -12865,6 +12900,8 @@ def in_progress_master_new(request: Request, db: Session = Depends(get_db)):
         customer_alias_options=alias_options,
         master_work_type_options=MASTER_WORK_TYPE_OPTIONS,
         master_work_type_labels=MASTER_WORK_TYPE_LABELS,
+        cosplayer_active_projects_count=active_project_counters.get("cosplayer_active", 0),
+        master_active_projects_count=active_project_counters.get("master_active", 0),
     )
 
 
@@ -12904,6 +12941,7 @@ def in_progress_master_detail(card_id: int, request: Request, db: Session = Depe
     if not user:
         return redirect("/login")
 
+    active_project_counters = get_in_progress_active_project_counters(db, user)
     card = get_accessible_in_progress_master_card(db, user=user, card_id=card_id)
     if not card:
         add_flash(request, "Карточка мастера не найдена или недоступна.", "error")
@@ -12952,6 +12990,8 @@ def in_progress_master_detail(card_id: int, request: Request, db: Session = Depe
         authors_by_id=authors_by_id,
         can_edit_master_card=can_edit_in_progress_master_card(user, card),
         master_work_type_labels=MASTER_WORK_TYPE_LABELS,
+        cosplayer_active_projects_count=active_project_counters.get("cosplayer_active", 0),
+        master_active_projects_count=active_project_counters.get("master_active", 0),
     )
 
 
@@ -13083,6 +13123,7 @@ def in_progress_master_edit(card_id: int, request: Request, db: Session = Depend
     if not user:
         return redirect("/login")
 
+    active_project_counters = get_in_progress_active_project_counters(db, user)
     card = db.get(InProgressMasterCard, card_id)
     if not card:
         add_flash(request, "Карточка мастера не найдена.", "error")
@@ -13110,6 +13151,8 @@ def in_progress_master_edit(card_id: int, request: Request, db: Session = Depend
         customer_alias_options=alias_options,
         master_work_type_options=MASTER_WORK_TYPE_OPTIONS,
         master_work_type_labels=MASTER_WORK_TYPE_LABELS,
+        cosplayer_active_projects_count=active_project_counters.get("cosplayer_active", 0),
+        master_active_projects_count=active_project_counters.get("master_active", 0),
     )
 
 
