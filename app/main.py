@@ -11443,6 +11443,45 @@ async def cosplan_add_comment(card_id: int, request: Request, db: Session = Depe
     return redirect(redirect_to)
 
 
+@app.post("/cosplan/{card_id}/comments/{comment_id}/delete")
+def cosplan_delete_comment(card_id: int, comment_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    card = get_accessible_card(db, card_id, user, allow_project_leader=True, allow_coproplayer=True)
+    if not card:
+        add_flash(request, "Карточка не найдена.", "error")
+        return redirect("/cosplan")
+
+    comment = db.execute(
+        select(CardComment).where(
+            CardComment.id == comment_id,
+            CardComment.card_id == card.id,
+        )
+    ).scalar_one_or_none()
+    if not comment:
+        add_flash(request, "Комментарий не найден.", "error")
+        return redirect(f"/cosplan/{card.id}")
+    if comment.author_id != user.id:
+        add_flash(request, "Удалить комментарий может только его автор.", "error")
+        return redirect(f"/cosplan/{card.id}")
+
+    replies = db.execute(
+        select(CardComment).where(
+            CardComment.card_id == card.id,
+            CardComment.parent_id == comment.id,
+        )
+    ).scalars().all()
+    for reply in replies:
+        reply.parent_id = None
+
+    db.delete(comment)
+    db.commit()
+    add_flash(request, "Комментарий удалён.", "info")
+    return redirect(f"/cosplan/{card.id}")
+
+
 @app.get("/cosplan/{card_id}/edit", response_class=HTMLResponse)
 def cosplan_edit(card_id: int, request: Request, db: Session = Depends(get_db)):
     user = current_user(request, db)
@@ -13164,6 +13203,36 @@ async def in_progress_master_add_comment(card_id: int, request: Request, db: Ses
     db.commit()
     add_flash(request, "Комментарий добавлен.", "success")
     return redirect(f"/in-progress/master/{card_id}")
+
+
+@app.post("/in-progress/master/{card_id}/comments/{comment_id}/delete")
+def in_progress_master_delete_comment(card_id: int, comment_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    card = get_accessible_in_progress_master_card(db, user=user, card_id=card_id)
+    if not card:
+        add_flash(request, "Карточка мастера не найдена или недоступна.", "error")
+        return redirect("/in-progress?scope=master")
+
+    comment = db.execute(
+        select(InProgressMasterComment).where(
+            InProgressMasterComment.id == comment_id,
+            InProgressMasterComment.card_id == card.id,
+        )
+    ).scalar_one_or_none()
+    if not comment:
+        add_flash(request, "Комментарий не найден.", "error")
+        return redirect(f"/in-progress/master/{card.id}")
+    if comment.user_id != user.id:
+        add_flash(request, "Удалить комментарий может только его автор.", "error")
+        return redirect(f"/in-progress/master/{card.id}")
+
+    db.delete(comment)
+    db.commit()
+    add_flash(request, "Комментарий удалён.", "info")
+    return redirect(f"/in-progress/master/{card.id}")
 
 
 @app.get("/rehearsals", response_class=HTMLResponse)
@@ -15972,6 +16041,36 @@ async def project_board_add_comment(post_id: int, request: Request, db: Session 
     return redirect("/project-board")
 
 
+@app.post("/project-board/{post_id}/comments/{comment_id}/delete")
+def project_board_delete_comment(post_id: int, comment_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    post = db.get(ProjectSearchPost, post_id)
+    if not post:
+        add_flash(request, "Объявление не найдено.", "error")
+        return redirect("/project-board")
+
+    comment = db.execute(
+        select(ProjectSearchComment).where(
+            ProjectSearchComment.id == comment_id,
+            ProjectSearchComment.post_id == post.id,
+        )
+    ).scalar_one_or_none()
+    if not comment:
+        add_flash(request, "Комментарий не найден.", "error")
+        return redirect("/project-board")
+    if comment.user_id != user.id:
+        add_flash(request, "Удалить комментарий может только его автор.", "error")
+        return redirect("/project-board")
+
+    db.delete(comment)
+    db.commit()
+    add_flash(request, "Комментарий удалён.", "info")
+    return redirect("/project-board")
+
+
 @app.get("/community")
 def community_index(request: Request, db: Session = Depends(get_db)):
     user = current_user(request, db)
@@ -16282,6 +16381,41 @@ async def community_questions_add_comment(question_id: int, request: Request, db
     db.commit()
     add_flash(request, "Комментарий добавлен.", "success")
     return redirect(f"/community/questions/{question_id}")
+
+
+@app.post("/community/questions/{question_id}/comments/{comment_id}/delete")
+def community_questions_delete_comment(
+    question_id: int,
+    comment_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    question = db.get(CommunityQuestion, question_id)
+    if not question:
+        add_flash(request, "Вопрос не найден.", "error")
+        return redirect("/community/questions")
+
+    comment = db.execute(
+        select(CommunityQuestionComment).where(
+            CommunityQuestionComment.id == comment_id,
+            CommunityQuestionComment.question_id == question.id,
+        )
+    ).scalar_one_or_none()
+    if not comment:
+        add_flash(request, "Комментарий не найден.", "error")
+        return redirect(f"/community/questions/{question.id}")
+    if comment.user_id != user.id:
+        add_flash(request, "Удалить комментарий может только его автор.", "error")
+        return redirect(f"/community/questions/{question.id}")
+
+    db.delete(comment)
+    db.commit()
+    add_flash(request, "Комментарий удалён.", "info")
+    return redirect(f"/community/questions/{question.id}")
 
 
 def get_master_form_values(master: CommunityMaster | None = None) -> dict[str, Any]:
@@ -16650,6 +16784,41 @@ async def community_masters_add_comment(master_id: int, request: Request, db: Se
     db.commit()
     add_flash(request, "Комментарий добавлен.", "success")
     return redirect(f"/community/masters/{master_id}")
+
+
+@app.post("/community/masters/{master_id}/comments/{comment_id}/delete")
+def community_masters_delete_comment(
+    master_id: int,
+    comment_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    master = db.get(CommunityMaster, master_id)
+    if not master:
+        add_flash(request, "Карточка мастера не найдена.", "error")
+        return redirect("/community/masters")
+
+    comment = db.execute(
+        select(CommunityMasterComment).where(
+            CommunityMasterComment.id == comment_id,
+            CommunityMasterComment.master_id == master.id,
+        )
+    ).scalar_one_or_none()
+    if not comment:
+        add_flash(request, "Комментарий не найден.", "error")
+        return redirect(f"/community/masters/{master.id}")
+    if comment.user_id != user.id:
+        add_flash(request, "Удалить комментарий может только его автор.", "error")
+        return redirect(f"/community/masters/{master.id}")
+
+    db.delete(comment)
+    db.commit()
+    add_flash(request, "Комментарий удалён.", "info")
+    return redirect(f"/community/masters/{master.id}")
 
 
 @app.post("/community/masters/{master_id}/orders")
@@ -17118,6 +17287,41 @@ async def community_cosplayers_add_comment(cosplayer_id: int, request: Request, 
     return redirect(f"/community/cosplayers/{cosplayer_id}")
 
 
+@app.post("/community/cosplayers/{cosplayer_id}/comments/{comment_id}/delete")
+def community_cosplayers_delete_comment(
+    cosplayer_id: int,
+    comment_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    cosplayer = db.get(CommunityCosplayer, cosplayer_id)
+    if not cosplayer:
+        add_flash(request, "Карточка косплеера не найдена.", "error")
+        return redirect("/community/cosplayers")
+
+    comment = db.execute(
+        select(CommunityCosplayerComment).where(
+            CommunityCosplayerComment.id == comment_id,
+            CommunityCosplayerComment.cosplayer_id == cosplayer.id,
+        )
+    ).scalar_one_or_none()
+    if not comment:
+        add_flash(request, "Комментарий не найден.", "error")
+        return redirect(f"/community/cosplayers/{cosplayer.id}")
+    if comment.user_id != user.id:
+        add_flash(request, "Удалить комментарий может только его автор.", "error")
+        return redirect(f"/community/cosplayers/{cosplayer.id}")
+
+    db.delete(comment)
+    db.commit()
+    add_flash(request, "Комментарий удалён.", "info")
+    return redirect(f"/community/cosplayers/{cosplayer.id}")
+
+
 def normalize_studio_tags(raw_tags: list[str]) -> list[str]:
     normalized_map = {value.casefold(): value for value in STUDIO_TAG_OPTIONS}
     result: list[str] = []
@@ -17437,6 +17641,41 @@ async def community_studios_add_comment(studio_id: int, request: Request, db: Se
     db.commit()
     add_flash(request, "Комментарий добавлен.", "success")
     return redirect(f"/community/studios/{studio_id}")
+
+
+@app.post("/community/studios/{studio_id}/comments/{comment_id}/delete")
+def community_studios_delete_comment(
+    studio_id: int,
+    comment_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    studio = db.get(CommunityStudio, studio_id)
+    if not studio:
+        add_flash(request, "Карточка студии не найдена.", "error")
+        return redirect("/community/studios")
+
+    comment = db.execute(
+        select(CommunityStudioComment).where(
+            CommunityStudioComment.id == comment_id,
+            CommunityStudioComment.studio_id == studio.id,
+        )
+    ).scalar_one_or_none()
+    if not comment:
+        add_flash(request, "Комментарий не найден.", "error")
+        return redirect(f"/community/studios/{studio.id}")
+    if comment.user_id != user.id:
+        add_flash(request, "Удалить комментарий может только его автор.", "error")
+        return redirect(f"/community/studios/{studio.id}")
+
+    db.delete(comment)
+    db.commit()
+    add_flash(request, "Комментарий удалён.", "info")
+    return redirect(f"/community/studios/{studio.id}")
 
 
 def can_manage_marketplace_sale(user: User | None, sale: CommunityMarketplaceSale | None) -> bool:
@@ -18295,6 +18534,41 @@ async def community_articles_add_comment(article_id: int, request: Request, db: 
     db.commit()
     add_flash(request, "Комментарий добавлен.", "success")
     return redirect(f"/community/articles/{article_id}")
+
+
+@app.post("/community/articles/{article_id}/comments/{comment_id}/delete")
+def community_articles_delete_comment(
+    article_id: int,
+    comment_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    article = db.get(CommunityArticle, article_id)
+    if not article:
+        add_flash(request, "Статья не найдена.", "error")
+        return redirect("/community/articles")
+
+    comment = db.execute(
+        select(CommunityArticleComment).where(
+            CommunityArticleComment.id == comment_id,
+            CommunityArticleComment.article_id == article.id,
+        )
+    ).scalar_one_or_none()
+    if not comment:
+        add_flash(request, "Комментарий не найден.", "error")
+        return redirect(f"/community/articles/{article.id}")
+    if comment.user_id != user.id:
+        add_flash(request, "Удалить комментарий может только его автор.", "error")
+        return redirect(f"/community/articles/{article.id}")
+
+    db.delete(comment)
+    db.commit()
+    add_flash(request, "Комментарий удалён.", "info")
+    return redirect(f"/community/articles/{article.id}")
 
 
 def app_state_storage_path() -> Path:

@@ -231,6 +231,13 @@
               {% if comment.body %}
                 <p class="notes-block">{{ comment.body|render_text }}</p>
               {% endif %}
+              {% if user and comment.user_id == user.id %}
+                <div class="actions-inline top-offset">
+                  <form method="post" action="/community/masters/{{ master.id }}/comments/{{ comment.id }}/delete" onsubmit="return confirm('Удалить комментарий?');">
+                    <button type="submit" class="btn btn-small btn-danger">Удалить</button>
+                  </form>
+                </div>
+              {% endif %}
             </div>
           </div>
           {% set comment_images = comment.images_json or [] %}

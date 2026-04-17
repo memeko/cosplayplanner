@@ -390,6 +390,13 @@
                 · {{ comment.created_at.strftime('%d-%m-%Y %H:%M') if comment.created_at else "" }}
               </div>
               <p class="notes-block">{{ comment.body|render_markdown }}</p>
+              {% if user and comment.author_id == user.id %}
+                <div class="actions-inline top-offset">
+                  <form method="post" action="/cosplan/{{ card.id }}/comments/{{ comment.id }}/delete" onsubmit="return confirm('Удалить комментарий?');">
+                    <button type="submit" class="btn btn-small btn-danger">Удалить</button>
+                  </form>
+                </div>
+              {% endif %}
             </div>
           </div>
           {% if replies_by_parent.get(comment.id) %}
@@ -409,6 +416,13 @@
                         · {{ reply.created_at.strftime('%d-%m-%Y %H:%M') if reply.created_at else "" }}
                       </div>
                       <p class="notes-block">{{ reply.body|render_markdown }}</p>
+                      {% if user and reply.author_id == user.id %}
+                        <div class="actions-inline top-offset">
+                          <form method="post" action="/cosplan/{{ card.id }}/comments/{{ reply.id }}/delete" onsubmit="return confirm('Удалить комментарий?');">
+                            <button type="submit" class="btn btn-small btn-danger">Удалить</button>
+                          </form>
+                        </div>
+                      {% endif %}
                     </div>
                   </div>
                 </article>
