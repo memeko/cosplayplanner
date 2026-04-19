@@ -3,9 +3,20 @@
 {% include "community_tabs.html" %}
 
 <section class="section-head">
-  <h1>Статьи</h1>
+  <h1>Статьи и материалы</h1>
   <div class="actions-inline">
-    <form method="get" action="/community/articles" class="search-inline">
+    {% if can_import_studio_articles %}
+      <form method="post" action="/community/articles/import-cosplay-studio">
+        <button type="submit" class="btn">Импорт из Cosplay Studio ({{ studio_import_lookback_days }} дней)</button>
+      </form>
+    {% endif %}
+    <a href="/community/articles/new" class="btn btn-accent">Новая статья</a>
+  </div>
+</section>
+
+<section class="box">
+  <form method="get" action="/community/articles" class="grid one-col">
+    <div class="search-inline">
       <input type="text" name="q" value="{{ q }}" placeholder="Поиск по теме и тегам" />
       <label class="inline-check">
         <input type="checkbox" name="favorites" value="1" {% if only_favorites %}checked{% endif %} />
@@ -13,19 +24,45 @@
       </label>
       <button type="submit" class="btn">Найти</button>
       <a href="/community/articles" class="btn">Сброс</a>
-    </form>
-    <a href="/community/articles/new" class="btn btn-accent">Новая статья</a>
-  </div>
+    </div>
+
+    <label>Фильтр по официальным тегам Cosplay Studio</label>
+    <div class="chips-wrap">
+      {% for item in studio_article_tag_details %}
+        <label class="chip-check">
+          <input type="checkbox" name="tag" value="{{ item.tag }}" {% if item.tag in selected_tags %}checked{% endif %} />
+          {{ item.tag }}
+        </label>
+      {% endfor %}
+    </div>
+
+    <details class="card-expand">
+      <summary>Официальные теги Cosplay Studio (спойлер)</summary>
+      <div class="top-offset">
+        <ul>
+          {% for item in studio_article_tag_details %}
+            <li><strong>{{ item.hashtag }}</strong> — {{ item.description }}</li>
+          {% endfor %}
+        </ul>
+      </div>
+    </details>
+  </form>
 </section>
 
 {% if articles %}
-<div class="cards-grid">
+<div class="cards-grid top-offset">
   {% for article in articles %}
     {% set owner = owners_by_id.get(article.user_id) %}
     {% set tags = article.tags_json or [] %}
     {% set is_favorite = article.id in favorite_article_ids %}
     {% set owner_is_authority = author_is_authority.get(article.user_id) %}
+    {% set preview_image = article_preview_images.get(article.id) %}
     <article class="card">
+      {% if preview_image %}
+        <a href="/community/articles/{{ article.id }}" class="studio-preview-hero">
+          <img src="{{ preview_image }}" alt="Превью материала {{ article.topic }}" loading="lazy" />
+        </a>
+      {% endif %}
       <div class="row-between">
         <h3><a href="/community/articles/{{ article.id }}" class="card-title-link">{{ article.topic }}</a></h3>
         <form method="post" action="/community/articles/{{ article.id }}/favorite" class="inline-form">
@@ -50,15 +87,21 @@
         {% for tag in tags %}
           <span class="chip">#{{ tag }}</span>
         {% endfor %}
+        {% if article.import_source %}
+          <span class="chip">{{ import_source_labels.get(article.import_source, article.import_source) }}</span>
+        {% endif %}
       </div>
       {% endif %}
 
-      <p class="notes-block">{{ (article.body_markdown or '')|preview_text(320)|render_text }}</p>
+      <p class="notes-block">{{ article_preview_texts.get(article.id, '')|render_text }}</p>
       <p class="meta">Комментариев: {{ comment_counts.get(article.id, 0) }} · В избранном: {{ favorite_counts.get(article.id, 0) }}</p>
 
       <div class="actions-inline">
         <a href="/community/articles/{{ article.id }}" class="btn">Подробнее</a>
-        {% if user and user.id == article.user_id %}
+        {% if article.import_source == 'cosplay_studio' and article.import_url %}
+          <a href="{{ article.import_url }}" target="_blank" rel="noreferrer" class="btn btn-platform">Больше в Cosplay Studio</a>
+        {% endif %}
+        {% if user and (user.id == article.user_id or (user_is_special(user) and article.import_source == 'cosplay_studio')) %}
           <a href="/community/articles/{{ article.id }}/edit" class="btn">Редактировать</a>
         {% endif %}
       </div>
@@ -66,7 +109,7 @@
   {% endfor %}
 </div>
 {% else %}
-<section class="box">
+<section class="box top-offset">
   <p class="muted">Статей пока нет. Опубликуйте первую статью.</p>
 </section>
 {% endif %}

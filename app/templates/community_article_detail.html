@@ -7,7 +7,10 @@
   <h1>{{ article.topic }}</h1>
   <div class="actions-inline">
     <a href="/community/articles" class="btn">Назад к статьям</a>
-    {% if user and user.id == article.user_id %}
+    {% if article.import_source == 'cosplay_studio' and article.import_url %}
+      <a href="{{ article.import_url }}" target="_blank" rel="noreferrer" class="btn btn-platform">Больше в Cosplay Studio</a>
+    {% endif %}
+    {% if user and (user.id == article.user_id or (user_is_special(user) and article.import_source == 'cosplay_studio')) %}
       <a href="/community/articles/{{ article.id }}/edit" class="btn">Редактировать</a>
       <form method="post" action="/community/articles/{{ article.id }}/delete" onsubmit="return confirm('Удалить статью?');">
         <button type="submit" class="btn btn-danger">Удалить</button>
@@ -36,6 +39,9 @@
       {% for tag in article.tags_json %}
         <span class="chip">#{{ tag }}</span>
       {% endfor %}
+      {% if article.import_source %}
+        <span class="chip">{{ import_source_labels.get(article.import_source, article.import_source) }}</span>
+      {% endif %}
     </div>
   {% endif %}
 

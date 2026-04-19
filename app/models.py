@@ -703,6 +703,9 @@ class CommunityArticle(Base):
     author_name = Column(String(120), nullable=False)
     body_markdown = Column(Text, nullable=False)
     tags_json = Column(JSON, nullable=False, default=list)
+    import_source = Column(String(64), nullable=True, index=True)
+    import_external_id = Column(String(128), nullable=True, index=True)
+    import_url = Column(Text, nullable=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)

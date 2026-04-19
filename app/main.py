@@ -513,6 +513,8 @@ VK_API_TOKEN = (os.getenv("VK_API_TOKEN", "") or os.getenv("VK_IMPORT_TOKEN", ""
 VK_IMPORT_ENABLED = bool(VK_API_TOKEN) and to_bool(os.getenv("VK_IMPORT_ENABLED", "1"))
 VK_IMPORT_WALL_DOMAIN = (os.getenv("VK_IMPORT_WALL_DOMAIN", "cosplay_teamm") or "cosplay_teamm").strip()
 VK_IMPORT_WALL_COUNT = max(10, min(100, int(os.getenv("VK_IMPORT_WALL_COUNT", "50") or "50")))
+VK_STUDIO_IMPORT_WALL_DOMAIN = (os.getenv("VK_STUDIO_IMPORT_WALL_DOMAIN", "cosplays_studio") or "cosplays_studio").strip()
+VK_STUDIO_IMPORT_WALL_COUNT = max(10, min(100, int(os.getenv("VK_STUDIO_IMPORT_WALL_COUNT", "80") or "80")))
 RAF_OWNER_ID = int(os.getenv("RAF_OWNER_ID", "-22664912") or "-22664912")
 RAF_PAGE_TITLES = [
     "Календарь_2026_январь-май",
@@ -526,14 +528,24 @@ RAF_PAGE_URLS = [
 ]
 MASTER_IMPORT_INTERVAL_HOURS = max(1, min(24, int(os.getenv("MASTER_IMPORT_INTERVAL_HOURS", "12") or "12")))
 RAF_IMPORT_INTERVAL_HOURS = max(1, min(72, int(os.getenv("RAF_IMPORT_INTERVAL_HOURS", "24") or "24")))
+STUDIO_ARTICLE_IMPORT_INTERVAL_HOURS = max(
+    1,
+    min(72, int(os.getenv("STUDIO_ARTICLE_IMPORT_INTERVAL_HOURS", "24") or "24")),
+)
+STUDIO_ARTICLE_IMPORT_LOOKBACK_DAYS = max(
+    1,
+    min(60, int(os.getenv("STUDIO_ARTICLE_IMPORT_LOOKBACK_DAYS", "7") or "7")),
+)
 MASTER_IMPORT_SOURCE_LABEL = "cosplay_team"
 COSPLAY2_IMPORT_SOURCE_LABEL = "cos2"
 RAF_IMPORT_SOURCE_LABEL = "raf"
+STUDIO_ARTICLE_IMPORT_SOURCE_LABEL = "cosplay_studio"
 VKID_PUBLIC_INFO_URL = "https://id.vk.ru/oauth2/public_info"
 IMPORT_SOURCE_LABELS = {
     MASTER_IMPORT_SOURCE_LABEL: "Cosplay Team",
     COSPLAY2_IMPORT_SOURCE_LABEL: "взято с Cos2",
     RAF_IMPORT_SOURCE_LABEL: "взято с РАФ",
+    STUDIO_ARTICLE_IMPORT_SOURCE_LABEL: "взято с Cosplay Studio",
 }
 FESTIVAL_NAME_DUPLICATE_STOP_WORDS = {
     "fest",
@@ -591,6 +603,52 @@ STUDIO_TAG_OPTIONS = [
 
 ARTICLE_MAX_TAGS = 15
 ARTICLE_MAX_BODY_LENGTH = 15000
+STUDIO_ARTICLE_AUTHOR_NAME = "Cosplay Studio"
+STUDIO_ARTICLE_OFFICIAL_TAGS: list[dict[str, str]] = [
+    {"tag": "Makeup", "description": "макияж, пластический грим, обзоры на косметику, туториалы по макияжу."},
+    {"tag": "Wig", "description": "укладка париков/причесок, окрашивание париков, создание каркасов и сложных укладок."},
+    {"tag": "Accessories", "description": "аксессуары, стафф, элементы костюмов."},
+    {"tag": "Sewing", "description": "пошив костюмов, лайфхаки для шитья, основы шитья, построение выкроек."},
+    {"tag": "Weapons", "description": "создание разного вида оружия."},
+    {"tag": "Armor", "description": "создание разного вида брони, крепления для брони."},
+    {"tag": "Headdress", "description": "создание головных уборов."},
+    {"tag": "Shoes", "description": "оформление/создание обуви, накладок."},
+    {"tag": "Wing", "description": "оформление/создание крыльев."},
+    {"tag": "Painting", "description": "процессы покраски, обзор на краски и материалы."},
+    {"tag": "Pattern", "description": "выкройки одежды, плюшевых игрушек, Eva foam, элементов костюма и грима."},
+    {"tag": "Светодиоды", "description": "светодиоды, создание подсветки, пайка."},
+    {"tag": "Decoration", "description": "создание декораций, фонов, оформления элементов декора."},
+    {"tag": "Fursuit", "description": "создание фурсьютов, отдельных элементов фурсьюта (маски, лапы, хвосты, уши)."},
+    {"tag": "3Dprinter", "description": "3D печать, обзоры на материалы, настройка принтера, создание элементов костюма при помощи 3D печати."},
+    {"tag": "Вышивка", "description": "вышивка, инструменты и материалы для вышивки."},
+    {"tag": "Sculpting", "description": "скульптурирование, обзоры на материалы, процессы лепки."},
+    {"tag": "Plush", "description": "идеи оформления, выкройки и процессы создания плюшевых игрушек."},
+    {"tag": "Ideas", "description": "необычные идеи, вдохновение и полезные материалы, которые могут быть использованы при создании образа."},
+    {"tag": "Book", "description": "книги по пошиву, косплею, гриму, укладке париков, страницы для оформления гримуаров."},
+    {"tag": "Pose", "description": "позирование, идеи для поз."},
+    {"tag": "Kigurumi", "description": "создание масок Kigurumi."},
+    {"tag": "Photo", "description": "идеи для фотографий/фотосессий, правила фотографии, мобильная фотосъемка."},
+    {"tag": "Photoshop", "description": "обработка фотографий в различных программах."},
+    {"tag": "Pepakura", "description": "развертки для пепакуры (бумажное моделирование), работа с программами."},
+    {"tag": "Материалы", "description": "обзоры на материалы, инструменты и способы крафта с их использованием."},
+    {"tag": "Airbrush", "description": "работа с аэрографией (аэрографом)."},
+    {"tag": "Leather", "description": "работа с кожей, выбор материалов, обработка, рисунок и крепление."},
+    {"tag": "Полезности", "description": "полезные материалы, идеи для хранения, статьи, ссылки на сайты и товары для образов."},
+    {"tag": "Комиксы", "description": "переводы комиксов про косплей/гик культуру."},
+    {"tag": "Товары", "description": "ссылки на товары и продавцов (преимущественно с AliExpress)."},
+    {"tag": "Юмор", "description": "забавные ролики, комиксы, мемы про жизнь косплееров."},
+    {"tag": "Обсуждение", "description": "срочные новости, обсуждения в косплей-сообществе, обзоры фестивалей."},
+    {"tag": "Социальное", "description": "инфографика и статьи, посвященные косплей-сообществу."},
+]
+STUDIO_ARTICLE_TAG_DETAILS: list[dict[str, str]] = [
+    {
+        "tag": str(item.get("tag") or "").strip(),
+        "hashtag": f"#{str(item.get('tag') or '').strip()}@{VK_STUDIO_IMPORT_WALL_DOMAIN}",
+        "description": str(item.get("description") or "").strip(),
+    }
+    for item in STUDIO_ARTICLE_OFFICIAL_TAGS
+    if str(item.get("tag") or "").strip()
+]
 
 ANNOUNCEMENT_STATUS_PENDING = "pending"
 ANNOUNCEMENT_STATUS_APPROVED = "approved"
@@ -943,6 +1001,11 @@ def apply_schema_migrations() -> None:
             ("is_anonymous", "BOOLEAN NOT NULL DEFAULT 0"),
             ("topics_json", "JSON NOT NULL DEFAULT '[]'"),
         ],
+        "community_articles": [
+            ("import_source", "VARCHAR(64)"),
+            ("import_external_id", "VARCHAR(128)"),
+            ("import_url", "TEXT"),
+        ],
         "content_plan_posts": [
             ("description", "TEXT"),
             ("publish_time", "VARCHAR(8)"),
@@ -1098,6 +1161,18 @@ def apply_schema_migrations() -> None:
             text(
                 "CREATE INDEX IF NOT EXISTS ix_festival_notifications_vk_sent_at "
                 "ON festival_notifications (vk_sent_at)"
+            )
+        )
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_community_articles_import_source "
+                "ON community_articles (import_source)"
+            )
+        )
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_community_articles_import_external_id "
+                "ON community_articles (import_external_id)"
             )
         )
 
@@ -7189,6 +7264,138 @@ def parse_article_tags(raw_value: str) -> list[str]:
         if len(normalized) >= ARTICLE_MAX_TAGS:
             break
     return normalized
+
+
+def normalize_studio_article_tag_key(value: str | None) -> str:
+    raw = (value or "").strip().casefold().replace("ё", "е")
+    if not raw:
+        return ""
+    return re.sub(r"[^0-9a-zа-я]+", "", raw)
+
+
+STUDIO_ARTICLE_TAG_BY_NORMALIZED_KEY = {
+    normalize_studio_article_tag_key(item["tag"]): item["tag"]
+    for item in STUDIO_ARTICLE_TAG_DETAILS
+    if normalize_studio_article_tag_key(item.get("tag"))
+}
+
+
+def normalize_studio_article_tags(raw_values: list[str] | tuple[str, ...] | None) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw_value in raw_values or []:
+        value = str(raw_value or "").strip()
+        if not value:
+            continue
+        value = value.lstrip("#")
+        if "@" in value:
+            value = value.split("@", 1)[0]
+        tag = STUDIO_ARTICLE_TAG_BY_NORMALIZED_KEY.get(normalize_studio_article_tag_key(value))
+        if not tag or tag in seen:
+            continue
+        seen.add(tag)
+        normalized.append(tag)
+    return normalized
+
+
+def extract_studio_article_tags(text_value: str | None) -> list[str]:
+    text = str(text_value or "")
+    if not text:
+        return []
+    tag_matches = re.findall(
+        r"#([0-9A-Za-zА-Яа-яЁё_]+)@" + re.escape(VK_STUDIO_IMPORT_WALL_DOMAIN) + r"\b",
+        text,
+        flags=re.IGNORECASE,
+    )
+    return normalize_studio_article_tags(tag_matches)
+
+
+def extract_article_markdown_image_urls(body_markdown: str | None) -> list[str]:
+    text_value = str(body_markdown or "")
+    if not text_value:
+        return []
+    urls = [
+        str(match.group(1) or "").strip()
+        for match in re.finditer(r"!\[[^\]]*\]\(((?:https?://|/)[^\s)]+)\)", text_value)
+    ]
+    return merge_unique([url for url in urls if url])
+
+
+def build_article_preview_text(body_markdown: str | None, limit: int = 200) -> str:
+    text_value = str(body_markdown or "")
+    if not text_value:
+        return ""
+    text_value = re.sub(r"!\[[^\]]*\]\(((?:https?://|/)[^\s)]+)\)", " ", text_value)
+    text_value = re.sub(r"\[color=[^\]]+\](.+?)\[/color\]", r"\1", text_value, flags=re.IGNORECASE)
+    text_value = re.sub(r"\[([^\]]+)\]\((https?://[^\s)]+)\)", r"\1", text_value)
+    return build_text_preview(text_value, limit)
+
+
+def build_studio_article_topic(text_value: str | None, *, post_id: int, post_date: date) -> str:
+    text = str(text_value or "").replace("\r\n", "\n")
+    for raw_line in text.split("\n"):
+        line = raw_line.strip()
+        if not line:
+            continue
+        line = re.sub(
+            r"#([0-9A-Za-zА-Яа-яЁё_]+)@" + re.escape(VK_STUDIO_IMPORT_WALL_DOMAIN) + r"\b",
+            "",
+            line,
+            flags=re.IGNORECASE,
+        )
+        line = re.sub(r"https?://\S+", "", line)
+        line = re.sub(r"\s+", " ", line).strip(" -—–|•:;,")
+        if line:
+            preview = build_text_preview(line, 255)
+            return (preview[:-1] if preview.endswith("…") else preview).strip() or (
+                f"Материал Cosplay Studio #{post_id} ({post_date.strftime('%d.%m.%Y')})"
+            )
+    return f"Материал Cosplay Studio #{post_id} ({post_date.strftime('%d.%m.%Y')})"
+
+
+def flatten_vk_post_history(post: dict[str, Any]) -> list[dict[str, Any]]:
+    queue: list[dict[str, Any]] = [post]
+    flattened: list[dict[str, Any]] = []
+    index = 0
+    while index < len(queue):
+        item = queue[index]
+        index += 1
+        if not isinstance(item, dict):
+            continue
+        flattened.append(item)
+        copy_history = item.get("copy_history")
+        if isinstance(copy_history, list):
+            for copy_item in copy_history:
+                if isinstance(copy_item, dict):
+                    queue.append(copy_item)
+    return flattened
+
+
+def collect_vk_post_text_and_images(post: dict[str, Any]) -> tuple[str, list[str]]:
+    flattened_posts = flatten_vk_post_history(post)
+    text_parts: list[str] = []
+    attachments: list[Any] = []
+    for item in flattened_posts:
+        text_value = str(item.get("text") or "").strip()
+        if text_value:
+            text_parts.append(text_value)
+        item_attachments = item.get("attachments")
+        if isinstance(item_attachments, list):
+            attachments.extend(item_attachments)
+    return "\n\n".join(text_parts).strip(), attachment_photo_urls(attachments)
+
+
+def serialize_studio_article_body(text_value: str | None, image_urls: list[str] | None) -> str:
+    parts: list[str] = []
+    text = str(text_value or "").strip()
+    if text:
+        parts.append(text)
+    normalized_images = merge_unique([str(url).strip() for url in as_list(image_urls) if str(url).strip()])
+    if normalized_images:
+        if parts:
+            parts.append("")
+        parts.extend(f"![Фото из VK]({url})" for url in normalized_images)
+    return "\n".join(parts).strip()
 
 
 def extract_youtube_embed_url(raw_url: str) -> str | None:
@@ -18329,6 +18536,16 @@ def save_article_from_form(form: Any, article: CommunityArticle) -> tuple[bool, 
     return True, ""
 
 
+def can_manage_article(user: User | None, article: CommunityArticle | None) -> bool:
+    if not user or not article:
+        return False
+    if article.user_id == user.id:
+        return True
+    if not user_is_special(user):
+        return False
+    return str(article.import_source or "").strip() == STUDIO_ARTICLE_IMPORT_SOURCE_LABEL
+
+
 def build_authority_map(db: Session) -> dict[int, bool]:
     rows = db.execute(
         select(
@@ -18350,6 +18567,7 @@ def community_articles_list(request: Request, db: Session = Depends(get_db)):
 
     q = request.query_params.get("q", "").strip()
     only_favorites = to_bool(request.query_params.get("favorites", ""))
+    selected_tags = normalize_studio_article_tags([str(item) for item in request.query_params.getlist("tag")])
 
     articles = db.execute(
         select(CommunityArticle).order_by(CommunityArticle.updated_at.desc(), CommunityArticle.id.desc())
@@ -18362,6 +18580,19 @@ def community_articles_list(request: Request, db: Session = Depends(get_db)):
             for item in articles
             if needle in (item.topic or "").casefold()
             or any(needle in tag.casefold() for tag in as_list(item.tags_json))
+        ]
+
+    if selected_tags:
+        selected_keys = {normalize_studio_article_tag_key(tag) for tag in selected_tags}
+        articles = [
+            item
+            for item in articles
+            if selected_keys
+            & {
+                normalize_studio_article_tag_key(tag)
+                for tag in as_list(item.tags_json)
+                if normalize_studio_article_tag_key(tag)
+            }
         ]
 
     favorite_article_ids = set(
@@ -18399,6 +18630,13 @@ def community_articles_list(request: Request, db: Session = Depends(get_db)):
             ).all()
         }
 
+    article_preview_texts: dict[int, str] = {}
+    article_preview_images: dict[int, str] = {}
+    for item in articles:
+        article_preview_texts[item.id] = build_article_preview_text(item.body_markdown, 200)
+        image_urls = extract_article_markdown_image_urls(item.body_markdown)
+        article_preview_images[item.id] = image_urls[0] if image_urls else ""
+
     return template_response(
         request,
         "community_articles_list.html",
@@ -18409,9 +18647,16 @@ def community_articles_list(request: Request, db: Session = Depends(get_db)):
         owners_by_id=owners_by_id,
         q=q,
         only_favorites=only_favorites,
+        selected_tags=selected_tags,
         favorite_article_ids=favorite_article_ids,
         favorite_counts=favorite_counts,
         comment_counts=comment_counts,
+        article_preview_texts=article_preview_texts,
+        article_preview_images=article_preview_images,
+        studio_article_tag_details=STUDIO_ARTICLE_TAG_DETAILS,
+        can_import_studio_articles=user_is_special(user) and VK_IMPORT_ENABLED,
+        studio_import_lookback_days=STUDIO_ARTICLE_IMPORT_LOOKBACK_DAYS,
+        import_source_labels=IMPORT_SOURCE_LABELS,
         author_is_authority=build_authority_map(db),
     )
 
@@ -18501,6 +18746,7 @@ def community_articles_detail(article_id: int, request: Request, db: Session = D
         article_html=render_article_markdown(article.body_markdown or ""),
         favorite_count=favorite_count,
         is_favorite=is_favorite,
+        import_source_labels=IMPORT_SOURCE_LABELS,
         author_is_authority=build_authority_map(db),
     )
 
@@ -18515,8 +18761,8 @@ def community_articles_edit(article_id: int, request: Request, db: Session = Dep
     if not article:
         add_flash(request, "Статья не найдена.", "error")
         return redirect("/community/articles")
-    if article.user_id != user.id:
-        add_flash(request, "Редактировать можно только свою статью.", "error")
+    if not can_manage_article(user, article):
+        add_flash(request, "Редактировать можно только свою статью или импорт Cosplay Studio для администратора.", "error")
         return redirect(f"/community/articles/{article_id}")
 
     return template_response(
@@ -18541,8 +18787,8 @@ async def community_articles_update(article_id: int, request: Request, db: Sessi
     if not article:
         add_flash(request, "Статья не найдена.", "error")
         return redirect("/community/articles")
-    if article.user_id != user.id:
-        add_flash(request, "Редактировать можно только свою статью.", "error")
+    if not can_manage_article(user, article):
+        add_flash(request, "Редактировать можно только свою статью или импорт Cosplay Studio для администратора.", "error")
         return redirect(f"/community/articles/{article_id}")
 
     form = await request.form()
@@ -18566,8 +18812,8 @@ def community_articles_delete(article_id: int, request: Request, db: Session = D
     if not article:
         add_flash(request, "Статья не найдена.", "error")
         return redirect("/community/articles")
-    if article.user_id != user.id:
-        add_flash(request, "Удалять можно только свою статью.", "error")
+    if not can_manage_article(user, article):
+        add_flash(request, "Удалять можно только свою статью или импорт Cosplay Studio для администратора.", "error")
         return redirect(f"/community/articles/{article_id}")
 
     db.delete(article)
@@ -19223,6 +19469,115 @@ def attachment_photo_urls(attachments: list[Any]) -> list[str]:
     return merge_unique(urls)
 
 
+def import_cosplays_studio_articles(db: Session, *, since_date: date, fetch_count: int | None = None) -> dict[str, Any]:
+    count_value = max(10, min(100, int(fetch_count or VK_STUDIO_IMPORT_WALL_COUNT or 80)))
+    payload = vk_api_call(
+        "wall.get",
+        {
+            "domain": VK_STUDIO_IMPORT_WALL_DOMAIN,
+            "count": count_value,
+            "filter": "owner",
+        },
+    )
+    items = payload.get("items")
+    if not isinstance(items, list):
+        return {"imported": 0, "skipped_existing": 0, "skipped_by_tag": 0, "skipped_old": 0, "total": 0}
+
+    import_owner = get_import_owner_user(db)
+    if not import_owner:
+        return {
+            "imported": 0,
+            "skipped_existing": 0,
+            "skipped_by_tag": 0,
+            "skipped_old": 0,
+            "total": len(items),
+            "error": "Нет пользователей в системе.",
+        }
+
+    existing_external_ids = {
+        str(value).strip()
+        for value in db.execute(
+            select(CommunityArticle.import_external_id).where(CommunityArticle.import_external_id.is_not(None))
+        ).scalars().all()
+        if str(value).strip()
+    }
+    existing_import_urls = {
+        str(value).strip()
+        for value in db.execute(
+            select(CommunityArticle.import_url).where(CommunityArticle.import_url.is_not(None))
+        ).scalars().all()
+        if str(value).strip()
+    }
+
+    imported = 0
+    skipped_existing = 0
+    skipped_by_tag = 0
+    skipped_old = 0
+    for post in items:
+        if not isinstance(post, dict):
+            continue
+        if int(post.get("is_deleted") or 0) == 1:
+            continue
+        if int(post.get("marked_as_ads") or 0) == 1:
+            continue
+
+        post_id = post.get("id")
+        owner_id = post.get("owner_id")
+        post_ts = int(post.get("date") or 0)
+        if not post_id or not owner_id or post_ts <= 0:
+            continue
+
+        post_date = datetime.utcfromtimestamp(post_ts).date()
+        if post_date < since_date:
+            skipped_old += 1
+            continue
+
+        external_id = f"wall{int(owner_id)}_{int(post_id)}"
+        post_url = f"https://vk.com/{external_id}"
+        if external_id in existing_external_ids or post_url in existing_import_urls:
+            skipped_existing += 1
+            continue
+
+        combined_text, image_urls = collect_vk_post_text_and_images(post)
+        matched_tags = extract_studio_article_tags(combined_text)
+        if not matched_tags:
+            skipped_by_tag += 1
+            continue
+
+        body_markdown = serialize_studio_article_body(combined_text, image_urls)
+        if not body_markdown:
+            skipped_by_tag += 1
+            continue
+
+        created_at = datetime.utcfromtimestamp(post_ts)
+        topic = build_studio_article_topic(combined_text, post_id=int(post_id), post_date=post_date)
+        db.add(
+            CommunityArticle(
+                user_id=import_owner.id,
+                topic=topic,
+                author_name=STUDIO_ARTICLE_AUTHOR_NAME,
+                body_markdown=body_markdown,
+                tags_json=matched_tags,
+                import_source=STUDIO_ARTICLE_IMPORT_SOURCE_LABEL,
+                import_external_id=external_id,
+                import_url=post_url,
+                created_at=created_at,
+                updated_at=created_at,
+            )
+        )
+        existing_external_ids.add(external_id)
+        existing_import_urls.add(post_url)
+        imported += 1
+
+    return {
+        "imported": imported,
+        "skipped_existing": skipped_existing,
+        "skipped_by_tag": skipped_by_tag,
+        "skipped_old": skipped_old,
+        "total": len(items),
+    }
+
+
 def import_cosplay_team_masters(db: Session, *, since_date: date, fetch_count: int | None = None) -> dict[str, Any]:
     count_value = max(10, min(100, int(fetch_count or VK_IMPORT_WALL_COUNT or 50)))
     payload = vk_api_call(
@@ -19824,6 +20179,25 @@ def auto_import_external_sources_if_needed() -> None:
             except Exception:
                 db.rollback()
 
+        if should_run_import_by_interval(
+            state,
+            "studio_articles_last_run_at",
+            STUDIO_ARTICLE_IMPORT_INTERVAL_HOURS,
+            now,
+        ):
+            studio_since = date.today() - timedelta(days=STUDIO_ARTICLE_IMPORT_LOOKBACK_DAYS)
+            state["studio_articles_last_run_at"] = now.isoformat()
+            changed = True
+            try:
+                import_cosplays_studio_articles(
+                    db,
+                    since_date=studio_since,
+                    fetch_count=VK_STUDIO_IMPORT_WALL_COUNT,
+                )
+                db.commit()
+            except Exception:
+                db.rollback()
+
     if changed:
         save_external_import_state(state)
 
@@ -19862,6 +20236,51 @@ def community_masters_import_cosplay_team(request: Request, db: Session = Depend
             "success",
         )
     return redirect("/community/masters")
+
+
+@app.post("/community/articles/import-cosplay-studio")
+def community_articles_import_cosplay_studio(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    if not user_is_special(user):
+        add_flash(request, "Импорт доступен только @brfox_cosplay.", "error")
+        return redirect("/community/articles")
+    if not VK_IMPORT_ENABLED:
+        add_flash(request, "Импорт недоступен: задайте VK_API_TOKEN в переменных окружения.", "error")
+        return redirect("/community/articles")
+
+    state = load_external_import_state()
+    state["studio_articles_last_run_at"] = datetime.utcnow().isoformat()
+    save_external_import_state(state)
+    manual_since = date.today() - timedelta(days=STUDIO_ARTICLE_IMPORT_LOOKBACK_DAYS)
+
+    try:
+        result = import_cosplays_studio_articles(
+            db,
+            since_date=manual_since,
+            fetch_count=max(VK_STUDIO_IMPORT_WALL_COUNT, 100),
+        )
+        db.commit()
+    except RuntimeError as exc:
+        db.rollback()
+        add_flash(request, str(exc), "error")
+        return redirect("/community/articles")
+
+    if result.get("error"):
+        add_flash(request, str(result.get("error")), "error")
+    else:
+        add_flash(
+            request,
+            (
+                f"Импорт материалов из Cosplay Studio за последние {STUDIO_ARTICLE_IMPORT_LOOKBACK_DAYS} дней: "
+                f"добавлено {result.get('imported', 0)}, "
+                f"уже было {result.get('skipped_existing', 0)}, "
+                f"без официальных тегов {result.get('skipped_by_tag', 0)}."
+            ),
+            "success",
+        )
+    return redirect("/community/articles")
 
 
 @app.post("/festivals/import-raf")
