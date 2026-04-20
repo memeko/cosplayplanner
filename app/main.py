@@ -515,6 +515,10 @@ VK_IMPORT_WALL_DOMAIN = (os.getenv("VK_IMPORT_WALL_DOMAIN", "cosplay_teamm") or 
 VK_IMPORT_WALL_COUNT = max(10, min(100, int(os.getenv("VK_IMPORT_WALL_COUNT", "50") or "50")))
 VK_STUDIO_IMPORT_WALL_DOMAIN = (os.getenv("VK_STUDIO_IMPORT_WALL_DOMAIN", "cosplays_studio") or "cosplays_studio").strip()
 VK_STUDIO_IMPORT_WALL_COUNT = max(10, min(100, int(os.getenv("VK_STUDIO_IMPORT_WALL_COUNT", "80") or "80")))
+EXTERNAL_IMPORT_LOOP_SLEEP_SECONDS = max(
+    300,
+    min(3600, int(os.getenv("EXTERNAL_IMPORT_LOOP_SLEEP", "900") or "900")),
+)
 RAF_OWNER_ID = int(os.getenv("RAF_OWNER_ID", "-22664912") or "-22664912")
 RAF_PAGE_TITLES = [
     "Календарь_2026_январь-май",
@@ -573,6 +577,8 @@ vk_bot_auth_state_lock = threading.Lock()
 vk_bot_auth_state: dict[str, dict[str, str]] = {}
 vk_bot_worker_lock = threading.Lock()
 vk_bot_worker_thread: threading.Thread | None = None
+external_import_worker_lock = threading.Lock()
+external_import_worker_thread: threading.Thread | None = None
 
 MASTER_TYPE_OPTIONS = [
     "фотограф",
@@ -1184,18 +1190,11 @@ def startup() -> None:
     start_telegram_worker()
     start_content_telegram_worker()
     start_vk_bot_worker()
+    start_external_import_worker()
     try:
         auto_backup_if_needed()
     except OSError:
         # Backup creation must not block app startup.
-        pass
-    except sqlite3.Error:
-        pass
-    except RuntimeError:
-        pass
-    try:
-        auto_import_external_sources_if_needed()
-    except OSError:
         pass
     except sqlite3.Error:
         pass
@@ -1207,14 +1206,6 @@ def startup() -> None:
 async def ensure_daily_backup(request: Request, call_next):
     try:
         auto_backup_if_needed()
-    except OSError:
-        pass
-    except sqlite3.Error:
-        pass
-    except RuntimeError:
-        pass
-    try:
-        auto_import_external_sources_if_needed()
     except OSError:
         pass
     except sqlite3.Error:
@@ -6932,6 +6923,32 @@ def start_vk_bot_worker() -> None:
             daemon=True,
         )
         vk_bot_worker_thread.start()
+
+
+def external_import_loop() -> None:
+    if not VK_IMPORT_ENABLED:
+        return
+    while True:
+        try:
+            auto_import_external_sources_if_needed()
+        except Exception:
+            pass
+        time.sleep(EXTERNAL_IMPORT_LOOP_SLEEP_SECONDS)
+
+
+def start_external_import_worker() -> None:
+    global external_import_worker_thread
+    if not VK_IMPORT_ENABLED:
+        return
+    with external_import_worker_lock:
+        if external_import_worker_thread and external_import_worker_thread.is_alive():
+            return
+        external_import_worker_thread = threading.Thread(
+            target=external_import_loop,
+            name="external-import-worker",
+            daemon=True,
+        )
+        external_import_worker_thread.start()
 
 
 def user_busy_items_on_date(
