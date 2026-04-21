@@ -1241,7 +1241,7 @@ async def restrict_smm_manager_scope(request: Request, call_next):
         or path.startswith("/profile")
         or path.startswith("/my-calendar/content")
         or path.startswith("/notifications/pigeon")
-        or path.startswith("/festivals/notifications")
+        or path.startswith("/festivals")
         or path.startswith("/media/")
     ):
         return await call_next(request)
@@ -1251,7 +1251,7 @@ async def restrict_smm_manager_scope(request: Request, call_next):
         return await call_next(request)
 
     with SessionLocal() as db:
-        if not bool(get_user_option_value(db, normalized_user_id, SMM_MANAGER_ROLE_GROUP)):
+        if not to_bool(get_user_option_value(db, normalized_user_id, SMM_MANAGER_ROLE_GROUP)):
             return await call_next(request)
 
     if path == "/my-calendar":
@@ -8152,7 +8152,7 @@ def current_user(request: Request, db: Session) -> User | None:
         return None
     user = db.get(User, int(user_id))
     if user:
-        setattr(user, "_is_smm_manager", bool(get_user_option_value(db, user.id, SMM_MANAGER_ROLE_GROUP)))
+        setattr(user, "_is_smm_manager", to_bool(get_user_option_value(db, user.id, SMM_MANAGER_ROLE_GROUP)))
     return user
 
 
@@ -10582,7 +10582,7 @@ async def auth_vk_complete(request: Request, db: Session = Depends(get_db)) -> d
         "ok": True,
         "redirect": (
             "/my-calendar?view=content&content_scope=client"
-            if bool(get_user_option_value(db, user.id, SMM_MANAGER_ROLE_GROUP))
+            if to_bool(get_user_option_value(db, user.id, SMM_MANAGER_ROLE_GROUP))
             else "/cosplan"
         ),
     }
@@ -10766,7 +10766,7 @@ async def login_submit(request: Request, db: Session = Depends(get_db)):
     add_flash(request, "Вход выполнен.", "success")
     return redirect(
         "/my-calendar?view=content&content_scope=client"
-        if bool(get_user_option_value(db, user.id, SMM_MANAGER_ROLE_GROUP))
+        if to_bool(get_user_option_value(db, user.id, SMM_MANAGER_ROLE_GROUP))
         else "/cosplan"
     )
 
@@ -14879,7 +14879,7 @@ async def my_calendar_content_managers_save(request: Request, db: Session = Depe
         if manager_user.id == content_owner.id:
             add_flash(request, "Нельзя назначить менеджером самого себя.", "error")
             return content_calendar_redirect(request, user, form=form, content_owner=content_owner)
-        if not bool(get_user_option_value(db, manager_user.id, SMM_MANAGER_ROLE_GROUP)):
+        if not to_bool(get_user_option_value(db, manager_user.id, SMM_MANAGER_ROLE_GROUP)):
             add_flash(request, "Этот пользователь не зарегистрирован как СММ-менеджер.", "error")
             return content_calendar_redirect(request, user, form=form, content_owner=content_owner)
         if manager_user.id not in seen_manager_ids:
@@ -20368,10 +20368,6 @@ def festivals_list(request: Request, db: Session = Depends(get_db)):
     coproplayer_filter = request.query_params.get("coproplayer", "").strip()
     nomination_filter_key = normalize_nomination_title_key(nomination_filter)
     only_going = to_bool(request.query_params.get("only_going", ""))
-
-    shared_added = ensure_user_has_shared_festivals(db, user.id)
-    if shared_added:
-        db.commit()
 
     festivals = db.execute(
         select(Festival).where(Festival.user_id == user.id).order_by(Festival.event_date.is_(None), Festival.event_date, Festival.name)
