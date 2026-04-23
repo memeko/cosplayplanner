@@ -3128,9 +3128,24 @@ def content_threads_token_cache_path(user_id: int) -> Path:
     return content_threads_storage_path() / f"user-{safe_user_id}.token"
 
 
+def content_threads_username_backup_path(user_id: int) -> Path:
+    safe_user_id = max(1, int(user_id))
+    return content_threads_storage_path() / f"user-{safe_user_id}.username"
+
+
 def content_threads_password_backup_path(user_id: int) -> Path:
     safe_user_id = max(1, int(user_id))
     return content_threads_storage_path() / f"user-{safe_user_id}.password"
+
+
+def read_content_threads_username_backup(user_id: int) -> str:
+    backup_path = content_threads_username_backup_path(user_id)
+    if not backup_path.exists() or not backup_path.is_file():
+        return ""
+    try:
+        return normalize_threads_username(backup_path.read_text(encoding="utf-8").strip())
+    except OSError:
+        return ""
 
 
 def read_content_threads_password_backup(user_id: int) -> str:
@@ -3158,6 +3173,21 @@ def write_content_threads_password_backup(user_id: int, password: str | None) ->
         return
 
 
+def write_content_threads_username_backup(user_id: int, username: str | None) -> None:
+    backup_path = content_threads_username_backup_path(user_id)
+    normalized_username = normalize_threads_username(username)
+    if not normalized_username:
+        if backup_path.exists() and backup_path.is_file():
+            backup_path.unlink(missing_ok=True)
+        return
+    try:
+        descriptor = os.open(str(backup_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(normalized_username)
+    except OSError:
+        return
+
+
 def get_content_threads_password_state(db: Session, user_id: int) -> dict[str, Any]:
     raw_secret = str(get_user_option_value(db, user_id, CONTENT_THREADS_PASSWORD_GROUP) or "").strip()
     decrypted_password = decrypt_secret_option_value(raw_secret)
@@ -3176,6 +3206,7 @@ def clear_content_threads_cache_files(user_id: int) -> None:
     for cache_path in [
         content_threads_settings_path(user_id),
         content_threads_token_cache_path(user_id),
+        content_threads_username_backup_path(user_id),
         content_threads_password_backup_path(user_id),
     ]:
         if cache_path.exists() and cache_path.is_file():
@@ -3265,6 +3296,8 @@ def content_threads_error_text(default_text: str) -> str:
 
 def get_content_threads_settings(user: User, db: Session) -> dict[str, Any]:
     username_value = normalize_threads_username(get_user_option_value(db, user.id, CONTENT_THREADS_USERNAME_GROUP))
+    if not username_value:
+        username_value = read_content_threads_username_backup(user.id)
     password_state = get_content_threads_password_state(db, user.id)
     password_value = str(password_state.get("password") or "").strip()
     has_saved_password = bool(password_state.get("has_saved_password"))
@@ -14463,11 +14496,16 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
         content_by_month[(publish_date.year, publish_date.month)].append(row)
 
     content_month_groups: list[dict[str, Any]] = []
-    for year_month in sorted(content_by_month.keys()):
+    content_calendar_start_index = 0
+    content_current_month_key = (today.year, today.month)
+    content_month_keys = set(content_by_month.keys())
+    if content_month_keys:
+        content_month_keys.add(content_current_month_key)
+    for year_month in sorted(content_month_keys):
         year, month = year_month
         month_date = date(year, month, 1)
         month_rows = sorted(
-            content_by_month[year_month],
+            content_by_month.get(year_month, []),
             key=lambda item: (item.get("date"), item.get("time") or "", item.get("title") or ""),
         )
         content_month_groups.append(
@@ -14477,6 +14515,8 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
                 "grid_weeks": content_calendar_grid(year, month, month_rows),
             }
         )
+        if year_month == content_current_month_key:
+            content_calendar_start_index = len(content_month_groups) - 1
 
     editing_content_post = None
     if edit_post_id and content_owner:
@@ -14497,6 +14537,7 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
         work_shift_count=len(work_shifts),
         budget_month_groups=budget_month_groups,
         content_month_groups=content_month_groups,
+        content_calendar_start_index=content_calendar_start_index,
         content_social_options=CONTENT_SOCIAL_OPTIONS,
         content_status_options=CONTENT_STATUS_OPTIONS,
         content_status_labels=CONTENT_STATUS_LABELS,
@@ -15251,10 +15292,17 @@ async def my_calendar_content_threads_connect(request: Request, db: Session = De
         return content_calendar_redirect(request, user, form=form, content_owner=content_owner)
 
     username_raw = str(form.get("threads_username", "")).strip()
-    username = normalize_threads_username(username_raw)
-    existing_username = normalize_threads_username(get_user_option_value(db, content_owner.id, CONTENT_THREADS_USERNAME_GROUP))
+    password_raw = str(form.get("threads_password", "")).strip()
+    provided_username = normalize_threads_username(username_raw)
+    existing_username = (
+        normalize_threads_username(get_user_option_value(db, content_owner.id, CONTENT_THREADS_USERNAME_GROUP))
+        or read_content_threads_username_backup(content_owner.id)
+    )
+    username = provided_username or existing_username
     existing_password = str(get_content_threads_password_state(db, content_owner.id).get("password") or "").strip()
-    password = str(form.get("threads_password", "")).strip() or existing_password
+    password = password_raw or existing_password
+    username_source = "form" if provided_username else "saved" if existing_username else "missing"
+    password_source = "form" if password_raw else "saved" if existing_password else "missing"
 
     if not username:
         add_flash(request, "Укажите корректный логин Threads (латиница, цифры, точка или подчёркивание).", "error")
@@ -15273,14 +15321,48 @@ async def my_calendar_content_threads_connect(request: Request, db: Session = De
             password=password,
         )
     except RuntimeError as exc:
-        add_flash(request, content_threads_error_text(str(exc)), "error")
+        print(
+            "[threads-connect] auth-failed "
+            f"actor={user.id} owner={content_owner.id} "
+            f"username_source={username_source} password_source={password_source} "
+            f"provided_username={bool(provided_username)} provided_password={bool(password_raw)} "
+            f"existing_username={bool(existing_username)} existing_password={bool(existing_password)} "
+            f"error={exc}"
+        )
+        add_flash(
+            request,
+            f"{content_threads_error_text(str(exc))} "
+            f"Диагностика: логин={username_source}, пароль={password_source}.",
+            "error",
+        )
         return content_calendar_redirect(request, user, form=form, content_owner=content_owner)
 
-    set_user_option_value(db, content_owner.id, CONTENT_THREADS_USERNAME_GROUP, resolved_username or username)
+    saved_username = normalize_threads_username(resolved_username or username) or username
+    set_user_option_value(db, content_owner.id, CONTENT_THREADS_USERNAME_GROUP, saved_username)
     set_secret_user_option_value(db, content_owner.id, CONTENT_THREADS_PASSWORD_GROUP, password)
+    write_content_threads_username_backup(content_owner.id, saved_username)
     write_content_threads_password_backup(content_owner.id, password)
+    db_username_saved = bool(normalize_threads_username(get_user_option_value(db, content_owner.id, CONTENT_THREADS_USERNAME_GROUP)))
+    db_password_saved = bool(str(get_user_option_value(db, content_owner.id, CONTENT_THREADS_PASSWORD_GROUP) or "").strip())
+    backup_username_saved = bool(read_content_threads_username_backup(content_owner.id))
+    backup_password_saved = bool(read_content_threads_password_backup(content_owner.id))
     db.commit()
-    add_flash(request, f"Аккаунт Threads подключён: @{resolved_username or username}.", "success")
+    print(
+        "[threads-connect] connected "
+        f"actor={user.id} owner={content_owner.id} "
+        f"username_source={username_source} password_source={password_source} "
+        f"saved_username={saved_username} "
+        f"db_username_saved={db_username_saved} db_password_saved={db_password_saved} "
+        f"backup_username_saved={backup_username_saved} backup_password_saved={backup_password_saved}"
+    )
+    add_flash(
+        request,
+        f"Аккаунт Threads подключён: @{saved_username}. "
+        f"Диагностика: логин={username_source}, пароль={password_source}, "
+        f"db_login={'ok' if db_username_saved else 'нет'}, db_pass={'ok' if db_password_saved else 'нет'}, "
+        f"backup_login={'ok' if backup_username_saved else 'нет'}, backup_pass={'ok' if backup_password_saved else 'нет'}.",
+        "success",
+    )
     return content_calendar_redirect(request, user, form=form, content_owner=content_owner)
 
 

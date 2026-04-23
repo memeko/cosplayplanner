@@ -307,40 +307,44 @@
   {% endif %}
 
   {% if content_can_manage_manager_access %}
-  <section class="box top-offset">
-    <h2>Добавить менеджера</h2>
-    <p class="muted">Укажите ник на сайте. Доступ получат только аккаунты, зарегистрированные как СММ-менеджеры.</p>
-    <form method="post" action="/my-calendar/content/managers/save" class="grid one-col top-offset">
-      <input type="hidden" name="content_scope" value="{{ content_scope }}" />
-      <label>
-        Ник менеджера
-        <input type="text" name="manager_alias" placeholder="@username или cosplay_nick" />
-      </label>
-      {% if content_manager_users %}
-        <div>
-          <p class="muted">Активные менеджеры</p>
-          <div class="chips-wrap">
-            {% for manager_user in content_manager_users %}
-              <label class="chip-check">
-                <input type="checkbox" name="manager_user_ids" value="{{ manager_user.id }}" checked />
-                @{{ manager_user.cosplay_nick or manager_user.username }}
-              </label>
-            {% endfor %}
+  <details class="box top-offset calendar-spoiler" id="content-managers-settings">
+    <summary>Добавить менеджера</summary>
+    <div class="calendar-spoiler-body">
+      <p class="muted">Укажите ник на сайте. Доступ получат только аккаунты, зарегистрированные как СММ-менеджеры.</p>
+      <form method="post" action="/my-calendar/content/managers/save" class="grid one-col top-offset">
+        <input type="hidden" name="content_scope" value="{{ content_scope }}" />
+        <label>
+          Ник менеджера
+          <input type="text" name="manager_alias" placeholder="@username или cosplay_nick" />
+        </label>
+        {% if content_manager_users %}
+          <div>
+            <p class="muted">Активные менеджеры</p>
+            <div class="chips-wrap">
+              {% for manager_user in content_manager_users %}
+                <label class="chip-check">
+                  <input type="checkbox" name="manager_user_ids" value="{{ manager_user.id }}" checked />
+                  @{{ manager_user.cosplay_nick or manager_user.username }}
+                </label>
+              {% endfor %}
+            </div>
+            <small class="muted">Снимите галочку и сохраните, чтобы отозвать доступ.</small>
           </div>
-          <small class="muted">Снимите галочку и сохраните, чтобы отозвать доступ.</small>
+        {% else %}
+          <p class="muted">Пока менеджеров нет.</p>
+        {% endif %}
+        <div class="actions-inline">
+          <button type="submit" class="btn btn-accent">Сохранить менеджеров</button>
         </div>
-      {% else %}
-        <p class="muted">Пока менеджеров нет.</p>
-      {% endif %}
-      <div class="actions-inline">
-        <button type="submit" class="btn btn-accent">Сохранить менеджеров</button>
-      </div>
-    </form>
-  </section>
+      </form>
+    </div>
+  </details>
   {% endif %}
 
   {% if content_owner %}
-  <section class="box content-platform-settings" data-initial-platform="{{ content_initial_platform }}">
+  <details class="box top-offset calendar-spoiler content-platform-settings" id="content-social-settings" data-initial-platform="{{ content_initial_platform }}">
+    <summary>Подключить соцсети</summary>
+    <div class="calendar-spoiler-body">
     <div class="calendar-tabs">
       <button type="button" class="tab active" data-platform-tab="telegram">Telegram</button>
       <button type="button" class="tab" data-platform-tab="vk">VK</button>
@@ -598,7 +602,8 @@
         </div>
       {% endif %}
     </div>
-  </section>
+    </div>
+  </details>
 
   <details class="box calendar-spoiler" id="content-form" {% if editing_content_post %}open{% endif %}>
     <summary>{{ "Редактировать пост" if editing_content_post else "Добавить пост в контент-план" }}</summary>
@@ -884,18 +889,18 @@
   </section>
 
   {% if content_month_groups %}
-    <section class="box top-offset calendar-carousel" data-calendar-carousel>
+    <section class="box top-offset calendar-carousel" data-calendar-carousel data-calendar-start-index="{{ content_calendar_start_index }}">
       <div class="calendar-carousel-head">
         <button type="button" class="calendar-carousel-nav" data-calendar-nav="prev" aria-label="Предыдущий месяц">←</button>
         <div class="calendar-carousel-meta">
-          <h2 class="calendar-carousel-title" data-calendar-title>{{ content_month_groups[0].title }}</h2>
+          <h2 class="calendar-carousel-title" data-calendar-title>{{ content_month_groups[content_calendar_start_index].title }}</h2>
           <p class="muted calendar-carousel-counter" data-calendar-counter></p>
         </div>
         <button type="button" class="calendar-carousel-nav" data-calendar-nav="next" aria-label="Следующий месяц">→</button>
       </div>
 
       {% for group in content_month_groups %}
-        <div class="calendar-carousel-panel" data-calendar-panel data-calendar-label="{{ group.title }}" {% if not loop.first %}hidden{% endif %}>
+        <div class="calendar-carousel-panel" data-calendar-panel data-calendar-label="{{ group.title }}" {% if loop.index0 != content_calendar_start_index %}hidden{% endif %}>
           <div class="calendar-grid-wrap">
             <table class="calendar-grid">
               <thead>
