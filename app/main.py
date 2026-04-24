@@ -114,13 +114,42 @@ def load_project_name() -> str:
 
 def load_secret_key() -> str:
     secret = os.getenv("SECRET_KEY", "").strip()
-    if not secret:
-        raise RuntimeError(
-            "SECRET_KEY is required. Set a strong random SECRET_KEY in environment variables."
+    if secret and secret != "change-this-secret-key":
+        return secret
+
+    runtime_key_path = Path(
+        os.getenv("RUNTIME_SECRET_KEY_FILE", "./app/.runtime-secret-key").strip() or "./app/.runtime-secret-key"
+    ).expanduser()
+    try:
+        if runtime_key_path.exists():
+            persisted_secret = runtime_key_path.read_text(encoding="utf-8").strip()
+            if persisted_secret:
+                print(
+                    "[security] SECRET_KEY is not configured, using persisted runtime key from "
+                    f"{runtime_key_path}."
+                )
+                return persisted_secret
+    except OSError:
+        pass
+
+    generated_secret = secrets.token_urlsafe(64)
+    try:
+        runtime_key_path.parent.mkdir(parents=True, exist_ok=True)
+        runtime_key_path.write_text(generated_secret, encoding="utf-8")
+        try:
+            os.chmod(runtime_key_path, 0o600)
+        except OSError:
+            pass
+        print(
+            "[security] SECRET_KEY is not configured, generated and saved runtime key to "
+            f"{runtime_key_path}."
         )
-    if secret == "change-this-secret-key":
-        raise RuntimeError("Insecure default SECRET_KEY is not allowed.")
-    return secret
+    except OSError:
+        print(
+            "[security] SECRET_KEY is not configured and runtime key could not be persisted. "
+            "Using in-memory fallback key for current process."
+        )
+    return generated_secret
 
 
 PROJECT_NAME = load_project_name()
