@@ -549,6 +549,10 @@ class ContentPlanPost(Base):
 
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    shared_pair_id = Column(String(64), nullable=True, index=True)
+    shared_partner_user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    is_repost = Column(Boolean, nullable=False, default=False)
+    manual_publish_only = Column(Boolean, nullable=False, default=False)
     title = Column(String(255), nullable=False)
     description = Column(Text, nullable=True)
     publish_date = Column(Date, nullable=False, index=True)

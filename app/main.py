@@ -400,6 +400,7 @@ CONTENT_PLAN_ACCESS_VERIFIED_GROUP = "content_plan_brfox_subscription_verified_a
 SMM_MANAGER_ROLE_GROUP = "profile_is_smm_manager"
 CONTENT_MANAGER_OWNER_GROUP = "content_manager_owner"
 CONTENT_MANAGER_USER_GROUP = "content_manager_user"
+CONTENT_REPOST_TAG = "РЕПОСТ"
 CONTENT_TELEGRAM_IMAGE_MAX_SIDE = 2000
 CONTENT_TELEGRAM_IMAGE_RETENTION_HOURS = max(
     1,
@@ -1019,6 +1020,10 @@ def apply_schema_migrations() -> None:
             ("import_url", "TEXT"),
         ],
         "content_plan_posts": [
+            ("shared_pair_id", "VARCHAR(64)"),
+            ("shared_partner_user_id", "INTEGER"),
+            ("is_repost", "BOOLEAN NOT NULL DEFAULT 0"),
+            ("manual_publish_only", "BOOLEAN NOT NULL DEFAULT 0"),
             ("description", "TEXT"),
             ("publish_time", "VARCHAR(8)"),
             ("socials_json", "JSON NOT NULL DEFAULT '[]'"),
@@ -2922,6 +2927,100 @@ def normalize_content_social_values(raw_values: list[Any] | None) -> list[str]:
     return normalized
 
 
+def content_post_shared_pair_id(post: ContentPlanPost | None) -> str:
+    if not post:
+        return ""
+    return str(post.shared_pair_id or "").strip()
+
+
+def content_post_manual_publish_only(post: ContentPlanPost | None) -> bool:
+    if not post:
+        return False
+    return bool(post.manual_publish_only or post.is_repost or content_post_shared_pair_id(post))
+
+
+def content_post_shared_partner_user(db: Session, post: ContentPlanPost | None) -> User | None:
+    if not post:
+        return None
+    partner_user_id = parse_positive_int(str(post.shared_partner_user_id or "").strip())
+    if not partner_user_id:
+        return None
+    return db.get(User, partner_user_id)
+
+
+def resolve_content_copost_user(db: Session, owner_user: User, raw_alias: str | None) -> tuple[User | None, str]:
+    alias = normalize_username(raw_alias)
+    if not alias:
+        return None, ""
+    partner_user = find_user_by_site_alias(db, alias)
+    if not partner_user:
+        return None, "Пользователь для совместного поста не найден."
+    if partner_user.id == owner_user.id:
+        return None, "Нельзя указать себя в поле «Совместный пост с»."
+    return partner_user, ""
+
+
+def sync_content_post_shared_fields(source: ContentPlanPost, target: ContentPlanPost) -> None:
+    target.title = source.title
+    target.description = source.description
+    target.publish_date = source.publish_date
+    target.publish_time = source.publish_time
+    target.socials_json = as_list(source.socials_json)
+    target.rubric = source.rubric
+    target.rubric_tag = source.rubric_tag
+    target.status = source.status
+    target.telegram_body_html = source.telegram_body_html
+    target.telegram_photos_json = as_list(source.telegram_photos_json)
+
+
+def find_content_post_shared_peer(db: Session, post: ContentPlanPost) -> ContentPlanPost | None:
+    pair_id = content_post_shared_pair_id(post)
+    if not pair_id:
+        return None
+    stmt = select(ContentPlanPost).where(
+        ContentPlanPost.shared_pair_id == pair_id,
+        ContentPlanPost.id != post.id,
+    )
+    partner_user_id = parse_positive_int(str(post.shared_partner_user_id or "").strip())
+    if partner_user_id:
+        stmt = stmt.where(ContentPlanPost.user_id == partner_user_id)
+    return db.execute(stmt.order_by(ContentPlanPost.id)).scalars().first()
+
+
+def ensure_content_post_shared_pair(db: Session, post: ContentPlanPost, partner_user: User) -> ContentPlanPost:
+    pair_id = content_post_shared_pair_id(post) or uuid.uuid4().hex
+    post.shared_pair_id = pair_id
+    post.shared_partner_user_id = partner_user.id
+    post.manual_publish_only = True
+
+    peer_post = find_content_post_shared_peer(db, post)
+    if not peer_post:
+        peer_post = ContentPlanPost(
+            user_id=partner_user.id,
+            title=post.title or "Без названия",
+            publish_date=post.publish_date or date.today(),
+            rubric=post.rubric or "Неизвестно",
+        )
+        db.add(peer_post)
+
+    sync_content_post_shared_fields(post, peer_post)
+    peer_post.shared_pair_id = pair_id
+    peer_post.shared_partner_user_id = post.user_id
+    peer_post.manual_publish_only = True
+    peer_post.is_repost = not bool(post.is_repost)
+    return peer_post
+
+
+def detach_content_post_shared_pair(db: Session, post: ContentPlanPost) -> None:
+    peer_post = find_content_post_shared_peer(db, post)
+    if not peer_post:
+        return
+    peer_post.shared_pair_id = None
+    peer_post.shared_partner_user_id = None
+    peer_post.is_repost = False
+    peer_post.manual_publish_only = False
+
+
 def get_content_plan_form_values(
     post: ContentPlanPost | None = None,
     rubric_tags: dict[str, str] | None = None,
@@ -2929,6 +3028,7 @@ def get_content_plan_form_values(
     vk_groups: list[dict[str, str]] | None = None,
     pinterest_boards: list[dict[str, str]] | None = None,
     premium_emoji_map: dict[str, str] | None = None,
+    copost_user: User | None = None,
 ) -> dict[str, Any]:
     tag_map = rubric_tags or {}
     available_telegram_channels = telegram_channels or []
@@ -2966,6 +3066,9 @@ def get_content_plan_form_values(
             "status": "plan",
             "telegram_body_html": "",
             "telegram_photos_input": "",
+            "copost_alias": "",
+            "copost_locked": False,
+            "manual_publish_only": False,
         }
 
     socials = normalize_content_social_values(as_list(post.socials_json))
@@ -2986,10 +3089,20 @@ def get_content_plan_form_values(
         "status": normalize_content_status(post.status),
         "telegram_body_html": normalize_telegram_custom_emoji_html(post.telegram_body_html or "", premium_emoji_map),
         "telegram_photos_input": "\n".join(as_list(post.telegram_photos_json)),
+        "copost_alias": preferred_user_alias(copost_user) if copost_user else "",
+        "copost_locked": bool(content_post_shared_pair_id(post)),
+        "manual_publish_only": content_post_manual_publish_only(post),
     }
 
 
-def save_content_plan_post_from_form(form: Any, post: ContentPlanPost, user: User, db: Session) -> tuple[bool, str]:
+def save_content_plan_post_from_form(
+    form: Any,
+    post: ContentPlanPost,
+    user: User,
+    db: Session,
+    *,
+    manual_publish_only: bool = False,
+) -> tuple[bool, str]:
     title = str(form.get("title", "")).strip()
     description = str(form.get("description", "")).strip()
     publish_date = parse_date(str(form.get("publish_date", "")).strip())
@@ -3050,9 +3163,13 @@ def save_content_plan_post_from_form(form: Any, post: ContentPlanPost, user: Use
         return False, "Краткое описание должно быть не длиннее 4000 символов."
     if len(telegram_body_html) > 12000:
         return False, "Текст для Telegram должен быть не длиннее 12000 символов."
-    if any(normalize_content_social_value(item).casefold() in {"тг", "vk", "pinterest", "threads"} for item in socials) and not publish_time:
+    if (
+        not manual_publish_only
+        and any(normalize_content_social_value(item).casefold() in {"тг", "vk", "pinterest", "threads"} for item in socials)
+        and not publish_time
+    ):
         return False, "Для автопубликации в Telegram, VK, Pinterest и Threads укажите время публикации."
-    if any(normalize_content_social_value(item).casefold() == "тг" for item in socials):
+    if not manual_publish_only and any(normalize_content_social_value(item).casefold() == "тг" for item in socials):
         if not available_telegram_channels:
             return False, "Сначала добавьте хотя бы один Telegram-канал в настройках."
         if not selected_telegram_channel_ids:
@@ -3060,7 +3177,7 @@ def save_content_plan_post_from_form(form: Any, post: ContentPlanPost, user: Use
                 selected_telegram_channel_ids = [available_telegram_channels[0]["chat_id"]]
             else:
                 return False, "Выберите хотя бы один Telegram-канал для публикации."
-    if any(normalize_content_social_value(item).casefold() == "vk" for item in socials):
+    if not manual_publish_only and any(normalize_content_social_value(item).casefold() == "vk" for item in socials):
         if not available_vk_groups:
             return False, "Сначала добавьте хотя бы одно сообщество VK в настройках."
         if not selected_vk_group_ids:
@@ -3068,7 +3185,7 @@ def save_content_plan_post_from_form(form: Any, post: ContentPlanPost, user: Use
                 selected_vk_group_ids = [available_vk_groups[0]["owner_id"]]
             else:
                 return False, "Выберите хотя бы одно сообщество VK для публикации."
-    if any(normalize_content_social_value(item).casefold() == "pinterest" for item in socials):
+    if not manual_publish_only and any(normalize_content_social_value(item).casefold() == "pinterest" for item in socials):
         if not available_pinterest_boards:
             return False, "Сначала подключите Pinterest и подтяните хотя бы одну доску."
         if not telegram_photos:
@@ -3097,6 +3214,7 @@ def save_content_plan_post_from_form(form: Any, post: ContentPlanPost, user: Use
     post.telegram_channels_json = selected_telegram_channel_ids
     post.vk_groups_json = selected_vk_group_ids
     post.pinterest_boards_json = selected_pinterest_board_ids
+    post.manual_publish_only = bool(manual_publish_only)
 
     if resolved_rubric_tag and (rubric_new or rubric_existing):
         rubric_tags[rubric] = resolved_rubric_tag
@@ -6515,6 +6633,8 @@ def dispatch_scheduled_content_posts() -> None:
         has_changes = False
 
         for post in pending_posts:
+            if content_post_manual_publish_only(post):
+                continue
             should_publish_telegram = content_post_targets_telegram(post) and post.telegram_published_at is None
             should_publish_vk = content_post_targets_vk(post) and post.vk_published_at is None
             should_publish_pinterest = content_post_targets_pinterest(post) and post.pinterest_published_at is None
@@ -14247,7 +14367,7 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
         )
         .order_by(WorkShiftDay.shift_date, WorkShiftDay.id)
     ).scalars().all()
-    alias_to_username, users_by_username, _ = build_user_alias_lookup(db)
+    alias_to_username, users_by_username, user_alias_options = build_user_alias_lookup(db)
 
     entries: list[dict[str, Any]] = []
     for festival in festivals:
@@ -14492,6 +14612,7 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
     pinterest_boards_by_id: dict[str, dict[str, str]] = {}
     rubric_tags: dict[str, str] = {}
     rubric_options: list[str] = []
+    content_partner_users_by_id: dict[int, User] = {}
 
     if content_owner:
         content_posts = db.execute(
@@ -14499,6 +14620,15 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
             .where(ContentPlanPost.user_id == content_owner.id)
             .order_by(ContentPlanPost.publish_date, ContentPlanPost.publish_time, ContentPlanPost.id)
         ).scalars().all()
+        partner_user_ids = sorted(
+            {
+                partner_id
+                for post in content_posts
+                if (partner_id := parse_positive_int(str(post.shared_partner_user_id or "").strip()))
+            }
+        )
+        if partner_user_ids:
+            content_partner_users_by_id = {item.id: item for item in get_users_by_ids(db, partner_user_ids)}
         telegram_settings = get_content_telegram_settings(content_owner, db)
         vk_settings = get_content_vk_settings(content_owner, db)
         rednote_settings = get_content_rednote_settings(content_owner, db)
@@ -14554,6 +14684,9 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
             for board_id in as_list(post.pinterest_boards_json)
             if board_id in pinterest_boards_by_id
         ]
+        partner_user_id = parse_positive_int(str(post.shared_partner_user_id or "").strip())
+        partner_user = content_partner_users_by_id.get(partner_user_id) if partner_user_id else None
+        partner_alias = preferred_user_alias(partner_user) if partner_user else ""
         content_rows.append(
             {
                 "post_id": post.id,
@@ -14567,6 +14700,9 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
                 "status": normalize_content_status(post.status),
                 "status_label": CONTENT_STATUS_LABELS.get(normalize_content_status(post.status), "План"),
                 "rednote_targeted": content_post_targets_rednote(post),
+                "is_repost": bool(post.is_repost),
+                "manual_publish_only": content_post_manual_publish_only(post),
+                "copost_alias": f"@{partner_alias}" if partner_alias else "",
                 "telegram_channels_text": ", ".join(
                     str(channel.get("title") or channel.get("chat_id") or "").strip()
                     for channel in row_telegram_channels
@@ -14621,6 +14757,7 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
             content_calendar_start_index = len(content_month_groups) - 1
 
     editing_content_post = None
+    editing_content_post_copost_user = None
     if edit_post_id and content_owner:
         editing_content_post = db.execute(
             select(ContentPlanPost).where(
@@ -14628,6 +14765,8 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
                 ContentPlanPost.user_id == content_owner.id,
             )
         ).scalar_one_or_none()
+    if editing_content_post:
+        editing_content_post_copost_user = content_post_shared_partner_user(db, editing_content_post)
 
     return template_response(
         request,
@@ -14654,6 +14793,7 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
             vk_groups,
             pinterest_boards,
             premium_emoji_map,
+            editing_content_post_copost_user,
         ),
         editing_content_post=editing_content_post,
         content_scope=content_scope,
@@ -14669,6 +14809,7 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
         content_manager_users=content_manager_users,
         content_can_manage_connections=content_can_manage_connections,
         content_can_manage_manager_access=content_can_manage_manager_access,
+        content_copost_alias_options=user_alias_options,
         telegram_settings=telegram_settings,
         vk_settings=vk_settings,
         rednote_settings=rednote_settings,
@@ -15044,20 +15185,42 @@ async def my_calendar_content_create(request: Request, db: Session = Depends(get
         return access_redirect
 
     form = await request.form()
-    next_view = normalize_calendar_view(str(form.get("next_view", CALENDAR_VIEW_CONTENT)))
     content_owner, owner_redirect = ensure_content_owner_for_action(request, user, db, form=form)
     if owner_redirect or not content_owner:
         return owner_redirect or content_calendar_redirect(request, user, form=form)
 
+    copost_user, copost_error = resolve_content_copost_user(db, content_owner, str(form.get("copost_alias", "")).strip())
+    if copost_error:
+        add_flash(request, copost_error, "error")
+        return content_calendar_redirect(request, user, form=form, content_owner=content_owner)
+
     post = ContentPlanPost(user_id=content_owner.id, title="", publish_date=date.today(), rubric="Неизвестно")
-    ok, error_text = save_content_plan_post_from_form(form, post, content_owner, db)
+    ok, error_text = save_content_plan_post_from_form(
+        form,
+        post,
+        content_owner,
+        db,
+        manual_publish_only=bool(copost_user),
+    )
     if not ok:
         add_flash(request, error_text, "error")
         return content_calendar_redirect(request, user, form=form, content_owner=content_owner)
 
     db.add(post)
+    db.flush()
+    if copost_user:
+        post.is_repost = False
+        ensure_content_post_shared_pair(db, post, copost_user)
     db.commit()
-    add_flash(request, "Пост добавлен в контент-план.", "success")
+    if copost_user:
+        add_flash(
+            request,
+            f"Совместный пост добавлен. Для @{preferred_user_alias(copost_user)} создана карточка с тегом {CONTENT_REPOST_TAG}. "
+            "Автопубликация для этой пары отключена: публикация только вручную.",
+            "success",
+        )
+    else:
+        add_flash(request, "Пост добавлен в контент-план.", "success")
     return content_calendar_redirect(request, user, form=form, content_owner=content_owner)
 
 
@@ -15071,7 +15234,6 @@ async def my_calendar_content_update(post_id: int, request: Request, db: Session
         return access_redirect
 
     form = await request.form()
-    next_view = normalize_calendar_view(str(form.get("next_view", CALENDAR_VIEW_CONTENT)))
     content_owner, owner_redirect = ensure_content_owner_for_action(request, user, db, form=form)
     if owner_redirect or not content_owner:
         return owner_redirect or content_calendar_redirect(request, user, form=form)
@@ -15086,13 +15248,49 @@ async def my_calendar_content_update(post_id: int, request: Request, db: Session
         add_flash(request, "Пост контент-плана не найден.", "error")
         return content_calendar_redirect(request, user, form=form, content_owner=content_owner)
 
-    ok, error_text = save_content_plan_post_from_form(form, post, content_owner, db)
+    shared_pair_id = content_post_shared_pair_id(post)
+    copost_user = content_post_shared_partner_user(db, post) if shared_pair_id else None
+    if not copost_user and not shared_pair_id:
+        copost_user, copost_error = resolve_content_copost_user(
+            db,
+            content_owner,
+            str(form.get("copost_alias", "")).strip(),
+        )
+        if copost_error:
+            add_flash(request, copost_error, "error")
+            return content_calendar_redirect(request, user, form=form, content_owner=content_owner)
+    manual_publish_only = bool(shared_pair_id or copost_user)
+
+    ok, error_text = save_content_plan_post_from_form(
+        form,
+        post,
+        content_owner,
+        db,
+        manual_publish_only=manual_publish_only,
+    )
     if not ok:
         add_flash(request, error_text, "error")
         return content_calendar_redirect(request, user, form=form, content_owner=content_owner)
 
+    if copost_user:
+        if not shared_pair_id:
+            post.is_repost = False
+        ensure_content_post_shared_pair(db, post, copost_user)
+    elif not shared_pair_id:
+        post.shared_pair_id = None
+        post.shared_partner_user_id = None
+        post.is_repost = False
+        post.manual_publish_only = False
+
     db.commit()
-    add_flash(request, "Пост контент-плана обновлен.", "success")
+    if manual_publish_only:
+        add_flash(
+            request,
+            "Совместный пост обновлён. Автопубликация отключена: публикация только вручную.",
+            "success",
+        )
+    else:
+        add_flash(request, "Пост контент-плана обновлен.", "success")
     return content_calendar_redirect(request, user, form=form, content_owner=content_owner)
 
 
@@ -15105,7 +15303,6 @@ def my_calendar_content_delete(post_id: int, request: Request, db: Session = Dep
     if access_redirect:
         return access_redirect
 
-    next_view = normalize_calendar_view(str(request.query_params.get("view", CALENDAR_VIEW_CONTENT)))
     content_owner, owner_redirect = ensure_content_owner_for_action(request, user, db)
     if owner_redirect or not content_owner:
         return owner_redirect or content_calendar_redirect(request, user)
@@ -15120,6 +15317,7 @@ def my_calendar_content_delete(post_id: int, request: Request, db: Session = Dep
         add_flash(request, "Пост контент-плана не найден.", "error")
         return content_calendar_redirect(request, user, content_owner=content_owner)
 
+    detach_content_post_shared_pair(db, post)
     db.delete(post)
     db.commit()
     add_flash(request, "Пост удален из контент-плана.", "info")
@@ -16186,13 +16384,24 @@ def my_calendar_content_export_ics(request: Request, db: Session = Depends(get_d
             f"Площадки: {socials_text}",
             f"Статус: {CONTENT_STATUS_LABELS.get(normalize_content_status(post.status), 'План')}",
         ]
+        if content_post_manual_publish_only(post):
+            description_parts.append("Публикация: только вручную")
+        if post.is_repost:
+            description_parts.append(f"Метка: {CONTENT_REPOST_TAG}")
+        partner_user = content_post_shared_partner_user(db, post)
+        if partner_user:
+            description_parts.append(f"Совместный пост с: @{preferred_user_alias(partner_user)}")
         if post.description:
             description_parts.append(post.description)
         append_ics_event(
             lines,
             dtstamp=dtstamp,
             uid_prefix=f"content-{post.id}",
-            summary=f"Контент: {post.title or 'Пост'}",
+            summary=(
+                f"Контент ({CONTENT_REPOST_TAG}): {post.title or 'Пост'}"
+                if post.is_repost
+                else f"Контент: {post.title or 'Пост'}"
+            ),
             event_date=post.publish_date,
             time_hhmm=post.publish_time or "",
             duration_minutes=30,

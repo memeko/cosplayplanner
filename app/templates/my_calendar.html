@@ -630,6 +630,32 @@
         Краткое описание
         <textarea name="description" rows="2" maxlength="4000">{{ content_form.description }}</textarea>
       </label>
+      <label>
+        Совместный пост с
+        <input
+          type="text"
+          name="copost_alias"
+          id="content_copost_alias"
+          value="{{ content_form.copost_alias }}"
+          list="content_copost_alias_options"
+          maxlength="100"
+          placeholder="@username или cosplay_nick"
+          {% if content_form.copost_locked %}readonly{% endif %}
+        />
+        <small class="muted">
+          Укажите ник косплеера, чтобы создать общую карточку. У второго косплеера появится дубликат с тегом <strong>РЕПОСТ</strong>.
+          Для таких карточек автопубликация отключена и доступна только ручная публикация.
+        </small>
+        {% if content_form.copost_locked %}
+          <small class="muted">Для уже созданной общей карточки сокосплеера менять нельзя: создайте новую карточку при необходимости.</small>
+        {% endif %}
+      </label>
+      <datalist id="content_copost_alias_options">
+        {% for alias in content_copost_alias_options %}
+          <option value="{{ alias }}"></option>
+          <option value="@{{ alias }}"></option>
+        {% endfor %}
+      </datalist>
       <section class="top-offset">
         <h3>Оформление для Telegram</h3>
         <p class="muted">Редактор использует HTML-разметку Telegram Bot API. Обычные эмодзи можно вставлять прямо в текст. Для премиум-эмодзи можно использовать сохраненные кнопки ниже или вставить тег <code>&lt;tg-emoji&gt;</code> вручную. ID удобно брать через <code>@Emoji_ID_Extractor_bot</code>.</p>
@@ -717,7 +743,12 @@
           </div>
         </label>
       </div>
-      <p class="muted">Если отмечены <strong>ТГ</strong>, <strong>VK</strong>, <strong>Pinterest</strong> и/или <strong>Threads</strong>, пост отправится автоматически по указанным дате и времени. Для <strong>RedNote</strong> в текущей версии сохраняется только ручной трекинг публикации без автопоста.</p>
+      <p class="muted" id="content_auto_publish_hint" {% if content_form.manual_publish_only %}hidden{% endif %}>
+        Если отмечены <strong>ТГ</strong>, <strong>VK</strong>, <strong>Pinterest</strong> и/или <strong>Threads</strong>, пост отправится автоматически по указанным дате и времени. Для <strong>RedNote</strong> в текущей версии сохраняется только ручной трекинг публикации без автопоста.
+      </p>
+      <p class="muted" id="content_manual_publish_hint" data-force-manual="{{ 1 if content_form.manual_publish_only else 0 }}" {% if not content_form.manual_publish_only %}hidden{% endif %}>
+        Для совместных карточек автопубликация отключена. Даже при указанном времени публикация возможна только вручную кнопками «В Telegram», «В VK», «В Pinterest», «В Threads» и «В RedNote».
+      </p>
       <div>
         <p class="muted">Telegram-каналы для публикации</p>
         {% if telegram_settings.channels %}
@@ -952,8 +983,17 @@
                   {{ item.rubric }}
                 </span>
                 <span class="chip">{{ item.status_label }}</span>
+                {% if item.is_repost %}
+                  <span class="chip">РЕПОСТ</span>
+                {% endif %}
+                {% if item.manual_publish_only %}
+                  <span class="chip chip-alert">Только вручную</span>
+                {% endif %}
                 <strong>{{ item.title }}</strong>
                 <span class="muted">Соцсети: {{ item.socials_text }}</span>
+                {% if item.copost_alias %}
+                  <span class="muted">Совместный пост с: {{ item.copost_alias }}</span>
+                {% endif %}
                 {% if item.description %}
                   <span class="muted">{{ item.description|render_text }}</span>
                 {% endif %}
@@ -1186,6 +1226,18 @@
       const timeField = document.getElementById('content_publish_time');
       const todayButton = document.getElementById('content_publish_today_btn');
       const nowButton = document.getElementById('content_publish_now_btn');
+      const copostAliasField = document.getElementById('content_copost_alias');
+      const autoHint = document.getElementById('content_auto_publish_hint');
+      const manualHint = document.getElementById('content_manual_publish_hint');
+
+      const updatePublishModeHints = () => {
+        const copostValue = copostAliasField ? copostAliasField.value : '';
+        const hasCopost = Boolean(String(copostValue || '').trim());
+        const forcedManual = Boolean(manualHint && manualHint.dataset && manualHint.dataset.forceManual === '1');
+        const manualOnly = hasCopost || forcedManual;
+        if (autoHint) autoHint.hidden = manualOnly;
+        if (manualHint) manualHint.hidden = !manualOnly;
+      };
 
       if (todayButton && dateField) {
         todayButton.addEventListener('click', function () {
@@ -1201,6 +1253,12 @@
           timeField.value = `${padTimePart(now.getHours())}:${padTimePart(now.getMinutes())}`;
         });
       }
+
+      if (copostAliasField && !copostAliasField.readOnly) {
+        copostAliasField.addEventListener('input', updatePublishModeHints);
+        copostAliasField.addEventListener('change', updatePublishModeHints);
+      }
+      updatePublishModeHints();
     }
 
     initializeContentScheduleHelpers();
