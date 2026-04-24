@@ -588,15 +588,28 @@ textarea {
   letter-spacing: 0.01em;
 }
 
-.festival-card-icon {
-  display: block;
+.festival-list-card {
+  overflow: hidden;
+}
+
+.festival-card-icon-wrap {
   width: 60%;
+  max-width: 60%;
   aspect-ratio: 1 / 1;
-  object-fit: cover;
   margin: 0 auto 0.7rem;
   border-radius: 12px;
   border: 1px solid rgba(15, 23, 42, 0.14);
   background: #fff;
+  overflow: hidden;
+  min-width: 0;
+}
+
+.festival-card-icon {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 
 .chip-partner {
