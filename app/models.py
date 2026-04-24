@@ -600,6 +600,7 @@ class Festival(Base):
     has_photo_cosplay = Column(Boolean, nullable=False, default=False)
     is_partner_festival = Column(Boolean, nullable=False, default=False)
     shared_note = Column(Text, nullable=True)
+    icon_path = Column(String(255), nullable=True)
 
     is_going = Column(Boolean, nullable=False, default=False)
     going_coproplayers_json = Column(JSON, nullable=False, default=list)

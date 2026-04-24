@@ -566,6 +566,11 @@ FESTIVAL_NAME_DUPLICATE_STOP_WORDS = {
     "эвент",
     "event",
 }
+PARTNER_FESTIVAL_NAME_MARKERS = (
+    "akamaru fest",
+    "raxus prime",
+)
+FESTIVAL_ICON_UNSET = object()
 
 telegram_auth_state_lock = threading.Lock()
 telegram_auth_state: dict[str, dict[str, str]] = {}
@@ -982,6 +987,7 @@ def apply_schema_migrations() -> None:
             ("has_photo_cosplay", "BOOLEAN NOT NULL DEFAULT 0"),
             ("is_partner_festival", "BOOLEAN NOT NULL DEFAULT 0"),
             ("shared_note", "TEXT"),
+            ("icon_path", "VARCHAR(255)"),
         ],
         "work_shift_days": [
             ("is_half_day", "BOOLEAN NOT NULL DEFAULT 0"),
@@ -1103,7 +1109,6 @@ def apply_schema_migrations() -> None:
             InProgressMasterComment.__table__.create(bind=conn, checkfirst=True)
 
         community_masters_added_allow_site_orders = False
-        festivals_added_partner_flag = False
 
         for table_name, columns in required_columns.items():
             if table_name not in existing_tables and table_name != "festival_notifications":
@@ -1119,17 +1124,16 @@ def apply_schema_migrations() -> None:
                 conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}"))
                 if table_name == "community_masters" and column_name == "allow_site_orders":
                     community_masters_added_allow_site_orders = True
-                if table_name == "festivals" and column_name == "is_partner_festival":
-                    festivals_added_partner_flag = True
 
         if community_masters_added_allow_site_orders:
             conn.execute(text("UPDATE community_masters SET allow_site_orders = 1"))
-        if festivals_added_partner_flag:
+        if "festivals" in existing_tables:
             conn.execute(
                 text(
                     "UPDATE festivals "
                     "SET is_partner_festival = 1 "
-                    "WHERE lower(coalesce(name, '')) LIKE '%akamaru fest%'"
+                    "WHERE replace(lower(coalesce(name, '')), '-', ' ') LIKE '%akamaru fest%' "
+                    "OR replace(lower(coalesce(name, '')), '-', ' ') LIKE '%raxus prime%'"
                 )
             )
 
@@ -1328,6 +1332,47 @@ async def media_upload_image(
         "height": height,
         "format": "webp",
     }
+
+
+async def save_uploaded_festival_icon(image: UploadFile) -> str:
+    if not image.filename:
+        raise ValueError("Файл иконки не передан.")
+    content_type = (image.content_type or "").lower()
+    if not content_type.startswith("image/"):
+        raise ValueError("Для иконки нужен файл изображения.")
+
+    raw_bytes = await image.read(MAX_UPLOAD_INPUT_BYTES + 1)
+    if len(raw_bytes) > MAX_UPLOAD_INPUT_BYTES:
+        raise ValueError("Изображение иконки слишком большое (до 20 МБ).")
+
+    webp_bytes, _width, _height = compress_image_to_webp(
+        raw_bytes,
+        max_output_bytes=MAX_GALLERY_IMAGE_BYTES,
+        max_width=MAX_GALLERY_IMAGE_WIDTH,
+    )
+
+    file_name = f"festival-icon-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:14]}.webp"
+    destination = media_storage_path() / file_name
+    destination.write_bytes(webp_bytes)
+    return f"/media/{file_name}"
+
+
+async def parse_festival_icon_path_from_form(
+    form: Any,
+    *,
+    allow_upload: bool,
+) -> tuple[Any, str]:
+    raw_icon = form.get("icon_file")
+    if raw_icon is None or not hasattr(raw_icon, "filename") or not hasattr(raw_icon, "read"):
+        return FESTIVAL_ICON_UNSET, ""
+    if not str(getattr(raw_icon, "filename", "") or "").strip():
+        return FESTIVAL_ICON_UNSET, ""
+    if not allow_upload:
+        return FESTIVAL_ICON_UNSET, "Добавлять иконку фестиваля может только @brfox_cosplay."
+    try:
+        return await save_uploaded_festival_icon(raw_icon), ""
+    except ValueError as exc:
+        return FESTIVAL_ICON_UNSET, str(exc)
 
 
 @app.post("/media/upload-content-image")
@@ -1542,6 +1587,12 @@ def can_manage_festival_globally(user: User | None) -> bool:
         normalize_username(user.cosplay_nick).casefold(),
     }
     return any(alias in FESTIVAL_GLOBAL_EDITOR_USERNAMES for alias in aliases if alias)
+
+
+def can_edit_festival_icon(user: User | None) -> bool:
+    if not user:
+        return False
+    return nick_is_special(user.username) or nick_is_special(user.cosplay_nick)
 
 
 def is_smm_manager_user(user: User | None) -> bool:
@@ -4398,6 +4449,37 @@ def load_threads_api_class() -> Any:
     return threads_api_class
 
 
+def classify_threads_auth_error(exc: Exception) -> tuple[str, str]:
+    class_name = str(exc.__class__.__name__ or "").strip()
+    raw_message = str(exc or "").strip()
+    signature = f"{class_name} {raw_message}".casefold()
+
+    if any(token in signature for token in ("challenge", "checkpoint", "2fa", "twofactor", "two-factor", "otp", "security code", "verification")):
+        return (
+            "challenge",
+            "Нужна дополнительная проверка входа (challenge/2FA). Подтвердите вход в приложении Threads/Instagram и попробуйте снова.",
+        )
+    if any(token in signature for token in ("rate", "too many", "throttl", "429", "slow down", "wait a few minutes")):
+        return (
+            "rate_limit",
+            "Слишком много попыток входа. Подождите 10-15 минут и попробуйте снова.",
+        )
+    if any(token in signature for token in ("timeout", "timed out", "connection", "network", "temporar", "proxy", "dns", "ssl")):
+        return (
+            "network",
+            "Проблема сети или временная недоступность Threads API. Попробуйте позже.",
+        )
+    if any(token in signature for token in ("password", "credential", "invalid", "unauthorized", "auth", "login")):
+        return (
+            "credentials",
+            "Проверьте логин и пароль. Логин должен быть без @, только латиница/цифры/./_.",
+        )
+    return (
+        "unknown",
+        "Неожиданная ошибка авторизации Threads API. Проверьте подключение позже.",
+    )
+
+
 async def authorize_content_threads_account(
     *,
     user_id: int,
@@ -4430,7 +4512,16 @@ async def authorize_content_threads_account(
             if profile_username:
                 resolved_username = profile_username
     except Exception as exc:
-        raise RuntimeError("Не удалось авторизовать аккаунт Threads. Проверьте логин и пароль.") from exc
+        reason_code, reason_text = classify_threads_auth_error(exc)
+        print(
+            "[threads-auth] login-failed "
+            f"user={user_id} username={normalized_username} "
+            f"reason={reason_code} exc_class={exc.__class__.__name__} exc={exc}"
+        )
+        raise RuntimeError(
+            f"Не удалось авторизовать аккаунт Threads. {reason_text} "
+            f"(код: {reason_code})."
+        ) from exc
     finally:
         try:
             await api.close_gracefully()
@@ -9999,6 +10090,7 @@ def get_festival_form_values(festival: Festival | None = None) -> dict[str, Any]
             "has_photo_cosplay": False,
             "is_partner_festival": False,
             "shared_note": "",
+            "icon_path": "",
             "is_going": False,
             "going_coproplayers_json": [],
             "going_coproplayers_input": "",
@@ -10017,6 +10109,7 @@ def get_festival_form_values(festival: Festival | None = None) -> dict[str, Any]
         "has_photo_cosplay": bool(festival.has_photo_cosplay),
         "is_partner_festival": bool(festival.is_partner_festival),
         "shared_note": festival.shared_note or "",
+        "icon_path": str(festival.icon_path or "").strip(),
         "is_going": bool(festival.is_going),
         "going_coproplayers_json": as_list(festival.going_coproplayers_json),
         "going_coproplayers_input": ", ".join(as_list(festival.going_coproplayers_json)),
@@ -10066,6 +10159,8 @@ def apply_festival_common_fields_from_form(
     can_edit_photo_cosplay: bool = False,
     can_edit_partner_festival: bool = False,
     can_edit_shared_note: bool = False,
+    can_edit_icon: bool = False,
+    icon_path: Any = FESTIVAL_ICON_UNSET,
 ) -> None:
     event_date = parse_date(str(form.get("event_date", "")))
     event_end_date = parse_date(str(form.get("event_end_date", "")))
@@ -10087,10 +10182,15 @@ def apply_festival_common_fields_from_form(
     festival.nomination_3 = nomination_items[2]["title"] if len(nomination_items) > 2 else None
     if can_edit_photo_cosplay:
         festival.has_photo_cosplay = to_bool(form.get("has_photo_cosplay"))
+    partner_by_name = festival_is_partner_by_name(festival.name)
     if can_edit_partner_festival:
-        festival.is_partner_festival = to_bool(form.get("is_partner_festival"))
+        festival.is_partner_festival = to_bool(form.get("is_partner_festival")) or partner_by_name
+    elif partner_by_name:
+        festival.is_partner_festival = True
     if can_edit_shared_note:
         festival.shared_note = str(form.get("shared_note", "")).strip() or None
+    if can_edit_icon and icon_path is not FESTIVAL_ICON_UNSET:
+        festival.icon_path = str(icon_path or "").strip() or None
 
 
 def apply_festival_personal_fields_from_form(form: Any, festival: Festival, db: Session) -> None:
@@ -10205,6 +10305,7 @@ def propagate_approved_announcement(
                 planned_nominations_json=[],
                 is_going=False,
                 going_coproplayers_json=[],
+                is_partner_festival=festival_is_partner_by_name(announcement.name),
                 is_global_announcement=True,
                 source_announcement_id=announcement.id,
             )
@@ -10315,8 +10416,9 @@ def propagate_shared_festivals_to_user(
             nominations_json=nomination_items,
             planned_nominations_json=[],
             has_photo_cosplay=bool(seed.has_photo_cosplay),
-            is_partner_festival=bool(seed.is_partner_festival),
+            is_partner_festival=bool(seed.is_partner_festival) or festival_is_partner_by_name(seed.name),
             shared_note=seed.shared_note,
+            icon_path=seed.icon_path,
             is_going=False,
             going_coproplayers_json=[],
             import_source=seed.import_source,
@@ -19139,6 +19241,13 @@ def normalize_festival_name_text(value: str | None) -> str:
     return " ".join(re.findall(r"[0-9a-zа-я]+", raw))
 
 
+def festival_is_partner_by_name(name: str | None) -> bool:
+    normalized = normalize_festival_name_text(name)
+    if not normalized:
+        return False
+    return any(marker in normalized for marker in PARTNER_FESTIVAL_NAME_MARKERS)
+
+
 def festival_name_tokens(value: str | None) -> list[str]:
     normalized = normalize_festival_name_text(value)
     if not normalized:
@@ -19453,8 +19562,12 @@ def build_merged_festival_payload(items: list[Festival]) -> dict[str, Any]:
         "nomination_2": merged_nomination_items[1]["title"] if len(merged_nomination_items) > 1 else None,
         "nomination_3": merged_nomination_items[2]["title"] if len(merged_nomination_items) > 2 else None,
         "has_photo_cosplay": any(bool(item.has_photo_cosplay) for item in ordered),
-        "is_partner_festival": any(bool(item.is_partner_festival) for item in ordered),
+        "is_partner_festival": any(
+            bool(item.is_partner_festival) or festival_is_partner_by_name(item.name)
+            for item in ordered
+        ),
         "shared_note": max(shared_notes, key=len) if shared_notes else None,
+        "icon_path": next((item.icon_path for item in ordered if item.icon_path), None),
         "is_global_announcement": any(bool(item.is_global_announcement) for item in ordered),
         "source_announcement_id": next(
             (item.source_announcement_id for item in ordered if item.source_announcement_id),
@@ -19477,8 +19590,9 @@ def apply_merged_festival_payload(festival: Festival, payload: dict[str, Any]) -
     festival.nomination_2 = payload.get("nomination_2")
     festival.nomination_3 = payload.get("nomination_3")
     festival.has_photo_cosplay = bool(payload.get("has_photo_cosplay"))
-    festival.is_partner_festival = bool(payload.get("is_partner_festival"))
+    festival.is_partner_festival = bool(payload.get("is_partner_festival")) or festival_is_partner_by_name(festival.name)
     festival.shared_note = payload.get("shared_note")
+    festival.icon_path = payload.get("icon_path")
     festival.is_global_announcement = bool(payload.get("is_global_announcement"))
     festival.source_announcement_id = payload.get("source_announcement_id")
     festival.import_source = payload.get("import_source")
@@ -20087,6 +20201,7 @@ def import_raf_events_for_user(db: Session, user: User, events: list[dict[str, A
             event_end_date=event.get("event_end_date") if isinstance(event.get("event_end_date"), date) else None,
             import_source=RAF_IMPORT_SOURCE_LABEL,
             import_external_id=external_id or None,
+            is_partner_festival=festival_is_partner_by_name(event_name),
         )
         db.add(festival)
         existing_festivals.append(festival)
@@ -20163,6 +20278,9 @@ def import_cosplay2_events_for_user(db: Session, user: User, parsed_events: list
             if existing.import_external_id != normalized_url:
                 existing.import_external_id = normalized_url
                 changed = True
+            if festival_is_partner_by_name(existing.name) and not existing.is_partner_festival:
+                existing.is_partner_festival = True
+                changed = True
 
             if changed:
                 updated += 1
@@ -20193,6 +20311,7 @@ def import_cosplay2_events_for_user(db: Session, user: User, parsed_events: list
             submission_deadline=event.submission_deadline,
             import_source=COSPLAY2_IMPORT_SOURCE_LABEL,
             import_external_id=normalized_url,
+            is_partner_festival=festival_is_partner_by_name(event.name),
         )
         db.add(festival)
         existing_by_url[normalized_url] = festival
@@ -21114,6 +21233,7 @@ def festivals_new(request: Request, db: Session = Depends(get_db)):
         can_edit_photo_cosplay=user_is_special(user),
         can_edit_partner_festival=user_is_special(user),
         can_edit_shared_note=user_is_special(user),
+        can_edit_festival_icon=can_edit_festival_icon(user),
     )
 
 
@@ -21153,16 +21273,26 @@ def festivals_edit(festival_id: int, request: Request, db: Session = Depends(get
         can_edit_photo_cosplay=user_is_special(user),
         can_edit_partner_festival=user_is_special(user),
         can_edit_shared_note=user_is_special(user),
+        can_edit_festival_icon=can_edit_festival_icon(user),
     )
 
 
-def save_festival_from_form(form: Any, festival: Festival, user: User, db: Session) -> None:
+def save_festival_from_form(
+    form: Any,
+    festival: Festival,
+    user: User,
+    db: Session,
+    *,
+    icon_path: Any = FESTIVAL_ICON_UNSET,
+) -> None:
     apply_festival_common_fields_from_form(
         form,
         festival,
         can_edit_photo_cosplay=user_is_special(user),
         can_edit_partner_festival=user_is_special(user),
         can_edit_shared_note=user_is_special(user),
+        can_edit_icon=can_edit_festival_icon(user),
+        icon_path=icon_path,
     )
     apply_festival_personal_fields_from_form(form, festival, db)
 
@@ -21193,13 +21323,20 @@ async def festivals_create(request: Request, db: Session = Depends(get_db)):
         return redirect("/login")
 
     form = await request.form()
+    icon_path, icon_error = await parse_festival_icon_path_from_form(
+        form,
+        allow_upload=can_edit_festival_icon(user),
+    )
+    if icon_error:
+        add_flash(request, icon_error, "error")
+        return redirect("/festivals/new")
     name = str(form.get("name", "")).strip()
     if not name:
         add_flash(request, "Название фестиваля обязательно.", "error")
         return redirect("/festivals/new")
 
     festival = Festival(user_id=user.id, name=name)
-    save_festival_from_form(form, festival, user, db)
+    save_festival_from_form(form, festival, user, db, icon_path=icon_path)
 
     db.add(festival)
     db.flush()
@@ -21248,6 +21385,13 @@ async def festivals_update(festival_id: int, request: Request, db: Session = Dep
     if not name:
         add_flash(request, "Название фестиваля обязательно.", "error")
         return redirect(f"/festivals/{festival_id}/edit")
+    icon_path, icon_error = await parse_festival_icon_path_from_form(
+        form,
+        allow_upload=can_edit_festival_icon(user),
+    )
+    if icon_error:
+        add_flash(request, icon_error, "error")
+        return redirect(f"/festivals/{festival_id}/edit")
 
     identity_before_update = {
         "source_announcement_id": festival.source_announcement_id,
@@ -21258,12 +21402,15 @@ async def festivals_update(festival_id: int, request: Request, db: Session = Dep
         "event_date": festival.event_date,
     }
     can_edit_photo_cosplay = user_is_special(user)
+    can_edit_icon = can_edit_festival_icon(user)
     apply_festival_common_fields_from_form(
         form,
         festival,
         can_edit_photo_cosplay=can_edit_photo_cosplay,
         can_edit_partner_festival=user_is_special(user),
         can_edit_shared_note=user_is_special(user),
+        can_edit_icon=can_edit_icon,
+        icon_path=icon_path,
     )
 
     raw_coproplayer_aliases: list[str] = []
@@ -21303,6 +21450,8 @@ async def festivals_update(festival_id: int, request: Request, db: Session = Dep
                 can_edit_photo_cosplay=can_edit_photo_cosplay,
                 can_edit_partner_festival=user_is_special(user),
                 can_edit_shared_note=user_is_special(user),
+                can_edit_icon=can_edit_icon,
+                icon_path=icon_path,
             )
             updated_festival_ids.add(item.id)
 

@@ -588,6 +588,17 @@ textarea {
   letter-spacing: 0.01em;
 }
 
+.festival-card-icon {
+  display: block;
+  width: 60%;
+  aspect-ratio: 1 / 1;
+  object-fit: cover;
+  margin: 0 auto 0.7rem;
+  border-radius: 12px;
+  border: 1px solid rgba(15, 23, 42, 0.14);
+  background: #fff;
+}
+
 .chip-partner {
   background: #dc2626;
   color: #fff;

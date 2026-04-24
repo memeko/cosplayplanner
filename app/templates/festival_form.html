@@ -38,6 +38,16 @@
     cursor: pointer;
   }
   .alias-suggest-item:hover { background: #f2f6ff; }
+  .festival-icon-current {
+    display: block;
+    width: min(220px, 60%);
+    aspect-ratio: 1 / 1;
+    object-fit: cover;
+    border-radius: 12px;
+    border: 1px solid #d9d9d9;
+    margin-top: 0.6rem;
+    background: #fff;
+  }
   @media (max-width: 780px) {
     .festival-nomination-row {
       grid-template-columns: 1fr;
@@ -45,7 +55,7 @@
   }
 </style>
 
-<form method="post" action="{{ '/festivals/' ~ festival_id ~ '/edit' if editing else '/festivals/new' }}" class="grid one-col big-form" id="festival-form">
+<form method="post" action="{{ '/festivals/' ~ festival_id ~ '/edit' if editing else '/festivals/new' }}" class="grid one-col big-form" id="festival-form" enctype="multipart/form-data">
   <section class="box">
     {% if global_festival_edit_mode %}
       <div class="flash flash-info">
@@ -133,6 +143,19 @@
         <textarea name="shared_note" rows="4" placeholder="Заметка, которая будет видна всем пользователям">{{ form.shared_note }}</textarea>
       </label>
       <p class="muted">Можно использовать Markdown: **жирный**, *курсив*, `код`, [ссылка](https://...).</p>
+    {% endif %}
+
+    {% if can_edit_festival_icon %}
+      <label class="top-offset">
+        Иконка фестиваля
+        <input type="file" name="icon_file" accept="image/*" />
+      </label>
+      {% if form.icon_path %}
+        <p class="muted">Текущая иконка. Оставьте поле пустым, чтобы не менять.</p>
+        <img src="{{ form.icon_path }}" alt="Текущая иконка фестиваля" class="festival-icon-current" loading="lazy" />
+      {% else %}
+        <p class="muted">Загружать иконку может только админ @brfox_cosplay.</p>
+      {% endif %}
     {% endif %}
 
     <div class="top-offset">

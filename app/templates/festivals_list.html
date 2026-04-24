@@ -245,6 +245,9 @@
     {% if is_partner_festival %}
       <div class="festival-partner-banner">❤️ Партнёр</div>
     {% endif %}
+    {% if festival.icon_path %}
+      <img src="{{ festival.icon_path }}" alt="Иконка фестиваля {{ festival.name }}" class="festival-card-icon" loading="lazy" />
+    {% endif %}
     <div class="row-between">
       <h3>{{ festival.name }}</h3>
       <div class="actions-inline">
