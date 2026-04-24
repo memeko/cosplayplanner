@@ -185,6 +185,7 @@ class User(Base):
         "ContentPlanPost",
         back_populates="user",
         cascade="all, delete-orphan",
+        foreign_keys="ContentPlanPost.user_id",
     )
     title_entries = relationship(
         "TitleEntry",
@@ -580,7 +581,7 @@ class ContentPlanPost(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
-    user = relationship("User", back_populates="content_plan_posts")
+    user = relationship("User", back_populates="content_plan_posts", foreign_keys=[user_id])
 
 
 class Festival(Base):
