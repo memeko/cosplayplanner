@@ -429,6 +429,12 @@ CONTENT_PLAN_ACCESS_VERIFIED_GROUP = "content_plan_brfox_subscription_verified_a
 SMM_MANAGER_ROLE_GROUP = "profile_is_smm_manager"
 CONTENT_MANAGER_OWNER_GROUP = "content_manager_owner"
 CONTENT_MANAGER_USER_GROUP = "content_manager_user"
+BIRTHDAY_PIGEON_LAST_SENT_GROUP = "birthday_pigeon_last_sent_date"
+BIRTHDAY_PIGEON_SYSTEM_ALIAS = "cosplayplanner"
+BIRTHDAY_PIGEON_MESSAGE = (
+    "С днем рождения! Желаем творческих успехов, больше времени, "
+    "а также бесконечных материалов для крафта и идей для дефиле!"
+)
 CONTENT_REPOST_TAG = "РЕПОСТ"
 CONTENT_TELEGRAM_IMAGE_MAX_SIDE = 2000
 CONTENT_TELEGRAM_IMAGE_RETENTION_HOURS = max(
@@ -6801,10 +6807,49 @@ def dispatch_scheduled_content_posts() -> None:
         cleanup_expired_content_telegram_media(db)
 
 
+def user_has_birthday_on(target_day: date, birth_date: date | None) -> bool:
+    if not birth_date:
+        return False
+    candidate = safe_date_with_leap_support(target_day.year, birth_date.month, birth_date.day)
+    return bool(candidate and candidate == target_day)
+
+
+def dispatch_birthday_pigeon_notifications(today_local: date | None = None) -> int:
+    target_day = today_local or datetime.now(SITE_TIMEZONE).date()
+    target_day_key = target_day.isoformat()
+
+    with SessionLocal() as db:
+        users_with_birthdays = db.execute(select(User).where(User.birth_date.is_not(None))).scalars().all()
+        if not users_with_birthdays:
+            return 0
+
+        sent_count = 0
+        for user in users_with_birthdays:
+            if not user_has_birthday_on(target_day, user.birth_date):
+                continue
+            if get_user_option_value(db, user.id, BIRTHDAY_PIGEON_LAST_SENT_GROUP) == target_day_key:
+                continue
+            send_system_pigeon_notification(
+                db,
+                recipient=user,
+                message_body=BIRTHDAY_PIGEON_MESSAGE,
+            )
+            set_user_option_value(db, user.id, BIRTHDAY_PIGEON_LAST_SENT_GROUP, target_day_key)
+            sent_count += 1
+
+        if sent_count:
+            db.commit()
+        return sent_count
+
+
 def content_telegram_loop() -> None:
     while True:
         try:
             dispatch_scheduled_content_posts()
+        except Exception:
+            pass
+        try:
+            dispatch_birthday_pigeon_notifications()
         except Exception:
             pass
         time.sleep(CONTENT_TELEGRAM_LOOP_SLEEP_SECONDS)
@@ -7824,6 +7869,27 @@ def send_pigeon_notification(
         source_card_id=None,
         reply_to_notification_id=reply_to_notification_id,
         message=payload,
+    )
+
+
+def send_system_pigeon_notification(
+    db: Session,
+    *,
+    recipient: User,
+    message_body: str,
+    sender_alias: str = BIRTHDAY_PIGEON_SYSTEM_ALIAS,
+) -> None:
+    normalized_alias = normalize_username(sender_alias) or BIRTHDAY_PIGEON_SYSTEM_ALIAS
+    payload = f"Курлык! (@{normalized_alias}) {message_body.strip()}"
+    db.add(
+        FestivalNotification(
+            user_id=recipient.id,
+            from_user_id=None,
+            source_card_id=None,
+            reply_to_notification_id=None,
+            message=payload,
+            is_read=False,
+        )
     )
 
 
