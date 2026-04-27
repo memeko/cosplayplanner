@@ -338,6 +338,13 @@
   {% endfor %}
 </div>
 {% else %}
-<p class="muted">Фестивали пока не добавлены.</p>
+<section class="box">
+  <p class="muted">Фестивали пока не добавлены.</p>
+  <div class="actions-inline top-offset">
+    <a href="/festivals/new" class="btn btn-accent">Новый фестиваль</a>
+    <a href="/festivals/announcements/new" class="btn">Добавить анонс</a>
+    <a href="/profile" class="btn">Заполнить город в профиле</a>
+  </div>
+</section>
 {% endif %}
 {% endblock %}

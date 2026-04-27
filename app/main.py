@@ -9881,6 +9881,52 @@ def get_card_form_values(card: CosplanCard | None = None, *, actor_user_id: int 
     }
 
 
+def apply_card_form_prefill_from_query(form_values: dict[str, Any], request: Request) -> dict[str, Any]:
+    prefilled = dict(form_values)
+    query = request.query_params
+
+    def query_value(name: str, max_len: int = 255) -> str:
+        return str(query.get(name, "")).strip()[:max_len]
+
+    preset = query_value("preset", max_len=32).casefold()
+    source = query_value("source", max_len=64).casefold()
+    if preset == "project" or source == "project-board":
+        prefilled["plan_type"] = "project"
+
+    plan_type = query_value("plan_type", max_len=32).casefold()
+    if plan_type in {"personal", "project"}:
+        prefilled["plan_type"] = plan_type
+
+    character_name = query_value("character_name")
+    if character_name:
+        prefilled["character_name"] = character_name
+
+    fandom = query_value("fandom")
+    if fandom:
+        prefilled["fandom"] = fandom
+
+    city = query_value("city")
+    if city:
+        prefilled["city"] = city
+
+    planned_festival_values = [value for value in split_csv(query_value("planned_festival", max_len=1000)) if value]
+    if planned_festival_values:
+        prefilled["planned_festivals_json"] = merge_unique(prefilled.get("planned_festivals_json", []), planned_festival_values)
+
+    event_type = query_value("event_type", max_len=32).casefold()
+    event_date = parse_date(query_value("event_date", max_len=64))
+    if event_date:
+        event_date_iso = event_date.isoformat()
+        if not prefilled.get("project_deadline"):
+            prefilled["project_deadline"] = event_date_iso
+        if event_type == "photoset" and not prefilled.get("photoset_date"):
+            prefilled["photoset_date"] = event_date_iso
+        if event_type == "festival" and not prefilled.get("submission_date"):
+            prefilled["submission_date"] = event_date_iso
+
+    return prefilled
+
+
 def get_title_form_values(entry: TitleEntry | None = None) -> dict[str, Any]:
     if not entry:
         return {
@@ -11805,6 +11851,7 @@ def cosplan_new(request: Request, db: Session = Depends(get_db)):
     if not user:
         return redirect("/login")
 
+    form_values = apply_card_form_prefill_from_query(get_card_form_values(), request)
     return template_response(
         request,
         "cosplan_form.html",
@@ -11812,7 +11859,7 @@ def cosplan_new(request: Request, db: Session = Depends(get_db)):
         active_tab="cosplan",
         editing=False,
         card_id=None,
-        form=get_card_form_values(),
+        form=form_values,
         **card_options(db, user, current_card_id=None, related_cards_user_id=user.id),
     )
 

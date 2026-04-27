@@ -272,6 +272,13 @@
   {% endfor %}
 </div>
 {% else %}
-<p class="muted">Нет карточек в работе. Добавьте их из вкладки «Косплан».</p>
+<section class="box">
+  <p class="muted">Нет карточек в работе. Добавьте их из вкладки «Косплан».</p>
+  <div class="actions-inline top-offset">
+    <a href="/cosplan?tab=current&plan_filter=project" class="btn btn-accent">Открыть проектный косплан</a>
+    <a href="/rehearsals" class="btn">Репетиции</a>
+    <a href="/festivals" class="btn">Фестивали</a>
+  </div>
+</section>
 {% endif %}
 {% endblock %}

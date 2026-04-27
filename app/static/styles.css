@@ -1096,6 +1096,25 @@ textarea {
   -webkit-backdrop-filter: blur(14px) saturate(130%);
 }
 
+.pigeon-popup-card::before {
+  content: "";
+  position: absolute;
+  left: -18px;
+  bottom: -20px;
+  width: 170px;
+  height: 170px;
+  background-image: url("/static/foxy.png");
+  background-repeat: no-repeat;
+  background-size: contain;
+  opacity: 0.14;
+  pointer-events: none;
+}
+
+.pigeon-popup-card > * {
+  position: relative;
+  z-index: 1;
+}
+
 .pigeon-popup-close {
   position: absolute;
   top: 10px;
@@ -2107,6 +2126,7 @@ textarea {
   width: min(720px, 100%);
   max-height: 85vh;
   overflow: auto;
+  position: relative;
   background: linear-gradient(165deg, rgba(255, 255, 255, 0.86), rgba(255, 255, 255, 0.62));
   color: var(--text);
   border: 1px solid var(--line-strong);
@@ -2117,6 +2137,25 @@ textarea {
   -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(140%);
 }
 
+.welcome-modal::before {
+  content: "";
+  position: absolute;
+  right: -22px;
+  bottom: -22px;
+  width: 220px;
+  height: 220px;
+  background-image: url("/static/foxy.png");
+  background-repeat: no-repeat;
+  background-size: contain;
+  opacity: 0.16;
+  pointer-events: none;
+}
+
+.welcome-modal > * {
+  position: relative;
+  z-index: 1;
+}
+
 .welcome-modal h2 {
   margin-bottom: 10px;
 }
@@ -2124,6 +2163,12 @@ textarea {
 .welcome-modal p {
   margin: 0 0 10px;
   line-height: 1.45;
+}
+
+.welcome-actions-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .calendar-spoiler {

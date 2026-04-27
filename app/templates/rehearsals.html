@@ -107,6 +107,10 @@
 {% else %}
 <section class="box">
   <p class="muted">Карточек репетиций пока нет. Создайте первую карточку, выбрав косплан.</p>
+  <div class="actions-inline top-offset">
+    <a href="/cosplan?tab=current&plan_filter=project" class="btn btn-accent">Открыть проектные карточки</a>
+    <a href="/in-progress" class="btn">В работу</a>
+  </div>
 </section>
 {% endif %}
 {% endblock %}

@@ -70,6 +70,15 @@
     {% else %}
       <p class="meta">Для связи: {{ post.contact_link or "—" }}</p>
     {% endif %}
+    {% set cosplan_from_post_url = '/cosplan/new?preset=project&source=project-board'
+      ~ '&fandom=' ~ ((post.fandom or '')|urlencode)
+      ~ '&city=' ~ ((post.city or '')|urlencode)
+      ~ '&event_type=' ~ ((post.event_type or '')|urlencode)
+      ~ '&event_date=' ~ ((post.event_date.isoformat() if post.event_date else '')|urlencode)
+    %}
+    <div class="actions-inline">
+      <a href="{{ cosplan_from_post_url }}" class="btn">Создать карточку в косплане</a>
+    </div>
     {% if post.comment %}
       {% set preview_text = (post.comment or '')|preview_text(150) %}
       <p class="notes-block">{{ preview_text|render_text }}</p>
@@ -157,6 +166,12 @@
       Объявлений пока нет. Опубликуйте первое объявление для поиска в проекты.
     {% endif %}
   </p>
+  {% if board_view != 'archive' %}
+    <div class="actions-inline top-offset">
+      <a href="/project-board/new" class="btn btn-accent">Опубликовать объявление</a>
+      <a href="/cosplan/new?preset=project" class="btn">Создать карточку косплана</a>
+    </div>
+  {% endif %}
 </section>
 {% endif %}
 {% endblock %}

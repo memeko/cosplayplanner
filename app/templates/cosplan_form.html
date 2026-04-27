@@ -384,6 +384,11 @@
 
   <section class="box">
     <h2>Проект / личное</h2>
+    <div class="actions-inline wrap top-offset">
+      <a href="/project-board/new" class="btn btn-small">Поиск участников</a>
+      <a href="/community/cosplayers" class="btn btn-small">Каталог косплееров</a>
+      <a href="/my-projects" class="btn btn-small">Мои проекты</a>
+    </div>
     <div class="grid two-col">
       <label>
         Тип
@@ -455,6 +460,10 @@
     </div>
 
     <label>Планируемый фестиваль</label>
+    <div class="actions-inline wrap top-offset">
+      <a href="/festivals" class="btn btn-small">Открыть фестивали</a>
+      <a href="/festivals/announcements/new" class="btn btn-small">Добавить анонс</a>
+    </div>
     <details class="festival-spoiler" {% if form.planned_festivals_json %}open{% endif %}>
       <summary>Показать/скрыть список фестивалей</summary>
       <div class="grid two-col">
@@ -506,6 +515,11 @@
 
   <section class="box">
     <h2>Фотосет и сокосплееры</h2>
+    <div class="actions-inline wrap top-offset">
+      <a href="/community/studios" class="btn btn-small">Найти студию</a>
+      <a href="/community/masters" class="btn btn-small">Найти мастера</a>
+      <a href="/rehearsals" class="btn btn-small">Репетиции</a>
+    </div>
     <label>Фотограф(ы)</label>
     <div class="chips-wrap">
       {% for value in photographer_options %}

@@ -15,6 +15,7 @@
   <h1>{{ card.character_name }}</h1>
   <div class="actions-inline">
     <a href="/cosplan" class="btn">К списку</a>
+    <a href="/festivals{% if card.city %}?city={{ card.city|urlencode }}{% endif %}" class="btn">Фестивали</a>
     {% if can_manage_progress %}
       <form method="post" action="/cosplan/{{ card.id }}/freeze-toggle">
         <input type="hidden" name="next" value="/cosplan/{{ card.id }}" />

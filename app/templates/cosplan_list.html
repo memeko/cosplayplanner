@@ -94,6 +94,7 @@
               {% endif %}
             </div>
             <div class="actions-inline cosplan-list-actions">
+              <a href="/festivals{% if card.city %}?city={{ card.city|urlencode }}{% endif %}" class="btn">Фестивали</a>
               {% if editable_id and current_tab == 'current' %}
                 <form method="post" action="/cosplan/{{ editable_id }}/priority-toggle">
                   <input type="hidden" name="next" value="{{ current_url }}" />
@@ -173,6 +174,7 @@
             </div>
           {% endif %}
           <div class="actions-inline">
+            <a href="/festivals{% if card.city %}?city={{ card.city|urlencode }}{% endif %}" class="btn">Фестивали</a>
             {% if editable_id %}
               <form method="post" action="/cosplan/{{ editable_id }}/priority-toggle">
                 <input type="hidden" name="next" value="{{ current_url }}" />
@@ -208,6 +210,13 @@
     </div>
   {% endif %}
 {% else %}
-  <p class="muted">Карточек пока нет. Создайте первую карточку косплана.</p>
+  <section class="box">
+    <p class="muted">Карточек пока нет. Создайте первую карточку косплана.</p>
+    <div class="actions-inline top-offset">
+      <a href="/cosplan/new" class="btn btn-accent">Создать карточку</a>
+      <a href="/cosplan/new?preset=project" class="btn">Проектная карточка</a>
+      <a href="/festivals" class="btn">Открыть фестивали</a>
+    </div>
+  </section>
 {% endif %}
 {% endblock %}

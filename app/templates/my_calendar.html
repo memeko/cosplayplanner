@@ -233,6 +233,11 @@
   {% else %}
     <section class="box">
       <p class="muted">Занятых дат пока нет. Даты появятся, когда добавите фотосеты, фестивали, репетиции, дедлайны мастера или личные события.</p>
+      <div class="actions-inline top-offset">
+        <a href="/cosplan/new" class="btn btn-accent">Новая карточка косплана</a>
+        <a href="/festivals" class="btn">Открыть фестивали</a>
+        <a href="/rehearsals" class="btn">Открыть репетиции</a>
+      </div>
     </section>
   {% endif %}
 {% elif active_calendar_view == "budget" %}

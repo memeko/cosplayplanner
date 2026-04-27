@@ -138,6 +138,12 @@
   {% endfor %}
 </div>
 {% else %}
-<p class="muted">Вас пока не указали руководителем ни в одной проектной карточке.</p>
+<section class="box">
+  <p class="muted">Вас пока не указали руководителем ни в одной проектной карточке.</p>
+  <div class="actions-inline top-offset">
+    <a href="/cosplan/new?preset=project" class="btn btn-accent">Создать проектную карточку</a>
+    <a href="/in-progress" class="btn">Открыть «В работе»</a>
+  </div>
+</section>
 {% endif %}
 {% endblock %}
