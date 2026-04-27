@@ -1283,6 +1283,7 @@ async def restrict_smm_manager_scope(request: Request, call_next):
         path in {"/healthz", "/readyz", "/privacy-policy", "/logout", "/"}
         or path.startswith("/static/")
         or path.startswith("/profile")
+        or path.startswith("/admin/")
         or path.startswith("/my-calendar/content")
         or path.startswith("/notifications/pigeon")
         or path.startswith("/festivals")
@@ -11221,46 +11222,673 @@ def users_search_api(request: Request, q: str = "", limit: int = 8, db: Session 
     return {"items": values}
 
 
+def can_view_admin_dashboard(user: User | None) -> bool:
+    return user_is_special(user)
+
+
+def build_admin_city_stats(db: Session) -> list[dict[str, Any]]:
+    raw_cities = db.execute(select(User.home_city)).scalars().all()
+    city_counts: dict[str, int] = defaultdict(int)
+    city_labels: dict[str, str] = {}
+    for raw_city in raw_cities:
+        cleaned = (raw_city or "").strip()
+        key = cleaned.casefold() if cleaned else "__empty__"
+        city_counts[key] += 1
+        if key not in city_labels:
+            city_labels[key] = cleaned or "Не указан"
+
+    city_stats = [
+        {"city": city_labels[key], "count": count}
+        for key, count in city_counts.items()
+    ]
+    city_stats.sort(key=lambda item: (-item["count"], item["city"]))
+    return city_stats
+
+
+def build_profile_admin_stats(db: Session) -> dict[str, Any]:
+    total_users = int(db.execute(select(func.count(User.id))).scalar() or 0)
+    total_cosplan_cards = int(
+        db.execute(select(func.count(CosplanCard.id)).where(CosplanCard.is_shared_copy.is_(False))).scalar() or 0
+    )
+    city_stats = build_admin_city_stats(db)
+    return {
+        "total_users": total_users,
+        "total_cosplan_cards": total_cosplan_cards,
+        "city_stats": city_stats,
+        "unique_city_count": sum(1 for item in city_stats if item["city"] != "Не указан"),
+    }
+
+
+def percentage(part: int, total: int) -> float:
+    if total <= 0:
+        return 0.0
+    return round((part / total) * 100, 1)
+
+
+def median_float(values: list[float]) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    middle = len(ordered) // 2
+    if len(ordered) % 2:
+        return round(ordered[middle], 1)
+    return round((ordered[middle - 1] + ordered[middle]) / 2, 1)
+
+
+def normalize_datetime(value: Any) -> datetime | None:
+    if not isinstance(value, datetime):
+        return None
+    if value.tzinfo is not None:
+        return value.replace(tzinfo=None)
+    return value
+
+
+def normalize_sqlite_date_key(value: Any) -> str:
+    if isinstance(value, date):
+        return value.isoformat()
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    return raw[:10]
+
+
+def build_admin_dashboard_stats(db: Session) -> dict[str, Any]:
+    now_utc = datetime.utcnow()
+    today = date.today()
+    since_30_dt = now_utc - timedelta(days=30)
+    since_14_date = today - timedelta(days=13)
+    since_14_dt = datetime.combine(since_14_date, datetime.min.time())
+
+    profile_stats = build_profile_admin_stats(db)
+    total_users = int(profile_stats["total_users"])
+    total_cosplan_cards = int(profile_stats["total_cosplan_cards"])
+    city_stats = list(profile_stats["city_stats"])
+    city_not_set_count = next((int(item["count"]) for item in city_stats if item["city"] == "Не указан"), 0)
+    users_with_city = max(0, total_users - city_not_set_count)
+
+    completed_cards = int(
+        db.execute(
+            select(func.count(CosplanCard.id)).where(
+                CosplanCard.is_shared_copy.is_(False),
+                CosplanCard.is_completed.is_(True),
+            )
+        ).scalar()
+        or 0
+    )
+    project_cards = int(
+        db.execute(
+            select(func.count(CosplanCard.id)).where(
+                CosplanCard.is_shared_copy.is_(False),
+                CosplanCard.plan_type == "project",
+            )
+        ).scalar()
+        or 0
+    )
+    personal_cards = int(
+        db.execute(
+            select(func.count(CosplanCard.id)).where(
+                CosplanCard.is_shared_copy.is_(False),
+                CosplanCard.plan_type == "personal",
+            )
+        ).scalar()
+        or 0
+    )
+    cards_created_30 = int(
+        db.execute(
+            select(func.count(CosplanCard.id)).where(
+                CosplanCard.is_shared_copy.is_(False),
+                CosplanCard.created_at >= since_30_dt,
+            )
+        ).scalar()
+        or 0
+    )
+    users_with_any_card = int(
+        db.execute(
+            select(func.count(func.distinct(CosplanCard.user_id))).where(CosplanCard.is_shared_copy.is_(False))
+        ).scalar()
+        or 0
+    )
+
+    in_progress_total = int(db.execute(select(func.count(InProgressCard.id))).scalar() or 0)
+    frozen_in_progress = int(
+        db.execute(select(func.count(InProgressCard.id)).where(InProgressCard.is_frozen.is_(True))).scalar() or 0
+    )
+    users_with_in_progress = int(
+        db.execute(select(func.count(func.distinct(InProgressCard.user_id)))).scalar() or 0
+    )
+    users_with_festivals = int(db.execute(select(func.count(func.distinct(Festival.user_id)))).scalar() or 0)
+
+    new_users_rows = db.execute(
+        select(User.id, User.created_at).where(User.created_at >= since_30_dt)
+    ).all()
+    new_users_total = len(new_users_rows)
+    new_user_ids = [int(row[0]) for row in new_users_rows if row and row[0]]
+    new_users_created_map: dict[int, datetime | None] = {
+        int(user_id): normalize_datetime(created_at)
+        for user_id, created_at in new_users_rows
+        if user_id
+    }
+
+    new_users_card_user_ids: set[int] = set()
+    new_users_first_card_created: dict[int, datetime] = {}
+    new_users_in_progress_ids: set[int] = set()
+    new_users_festival_ids: set[int] = set()
+    if new_user_ids:
+        new_user_card_rows = db.execute(
+            select(CosplanCard.user_id, CosplanCard.created_at).where(
+                CosplanCard.is_shared_copy.is_(False),
+                CosplanCard.user_id.in_(new_user_ids),
+            )
+        ).all()
+        for raw_user_id, raw_created_at in new_user_card_rows:
+            if not raw_user_id:
+                continue
+            user_id = int(raw_user_id)
+            created_at = normalize_datetime(raw_created_at)
+            new_users_card_user_ids.add(user_id)
+            if not created_at:
+                continue
+            current_first = new_users_first_card_created.get(user_id)
+            if current_first is None or created_at < current_first:
+                new_users_first_card_created[user_id] = created_at
+
+        new_users_in_progress_ids = {
+            int(item)
+            for item in db.execute(
+                select(func.distinct(InProgressCard.user_id)).where(InProgressCard.user_id.in_(new_user_ids))
+            ).scalars().all()
+            if item
+        }
+        new_users_festival_ids = {
+            int(item)
+            for item in db.execute(
+                select(func.distinct(Festival.user_id)).where(Festival.user_id.in_(new_user_ids))
+            ).scalars().all()
+            if item
+        }
+
+    new_users_first_card_24h = 0
+    for user_id, created_user_at in new_users_created_map.items():
+        first_card_at = new_users_first_card_created.get(user_id)
+        if not created_user_at or not first_card_at:
+            continue
+        if first_card_at <= created_user_at + timedelta(hours=24):
+            new_users_first_card_24h += 1
+
+    onboarding_steps = [
+        {
+            "title": "Новые пользователи (30 дней)",
+            "count": new_users_total,
+            "rate": 100.0 if new_users_total else 0.0,
+            "cta_url": "/profile",
+            "cta_label": "Профиль",
+        },
+        {
+            "title": "Создали хотя бы одну карточку",
+            "count": len(new_users_card_user_ids),
+            "rate": percentage(len(new_users_card_user_ids), new_users_total),
+            "cta_url": "/cosplan",
+            "cta_label": "Косплан",
+        },
+        {
+            "title": "Сделали карточку в первые 24 часа",
+            "count": new_users_first_card_24h,
+            "rate": percentage(new_users_first_card_24h, new_users_total),
+            "cta_url": "/cosplan/new",
+            "cta_label": "Создать карточку",
+        },
+        {
+            "title": "Добавили карточку в «В работе»",
+            "count": len(new_users_in_progress_ids),
+            "rate": percentage(len(new_users_in_progress_ids), new_users_total),
+            "cta_url": "/in-progress",
+            "cta_label": "В работе",
+        },
+        {
+            "title": "Добавили фестивали в план",
+            "count": len(new_users_festival_ids),
+            "rate": percentage(len(new_users_festival_ids), new_users_total),
+            "cta_url": "/festivals",
+            "cta_label": "Фестивали",
+        },
+    ]
+
+    pending_announcements = int(
+        db.execute(
+            select(func.count(FestivalAnnouncement.id)).where(
+                FestivalAnnouncement.status == ANNOUNCEMENT_STATUS_PENDING
+            )
+        ).scalar()
+        or 0
+    )
+    approved_announcements = int(
+        db.execute(
+            select(func.count(FestivalAnnouncement.id)).where(
+                FestivalAnnouncement.status == ANNOUNCEMENT_STATUS_APPROVED
+            )
+        ).scalar()
+        or 0
+    )
+    rejected_announcements = int(
+        db.execute(
+            select(func.count(FestivalAnnouncement.id)).where(
+                FestivalAnnouncement.status == ANNOUNCEMENT_STATUS_REJECTED
+            )
+        ).scalar()
+        or 0
+    )
+    stale_pending_announcements = int(
+        db.execute(
+            select(func.count(FestivalAnnouncement.id)).where(
+                FestivalAnnouncement.status == ANNOUNCEMENT_STATUS_PENDING,
+                FestivalAnnouncement.created_at <= now_utc - timedelta(days=3),
+            )
+        ).scalar()
+        or 0
+    )
+    reviewed_rows = db.execute(
+        select(FestivalAnnouncement.created_at, FestivalAnnouncement.reviewed_at).where(
+            FestivalAnnouncement.status.in_([ANNOUNCEMENT_STATUS_APPROVED, ANNOUNCEMENT_STATUS_REJECTED]),
+            FestivalAnnouncement.created_at.is_not(None),
+            FestivalAnnouncement.reviewed_at.is_not(None),
+        )
+    ).all()
+    review_hours = []
+    for raw_created_at, raw_reviewed_at in reviewed_rows:
+        created_at = normalize_datetime(raw_created_at)
+        reviewed_at = normalize_datetime(raw_reviewed_at)
+        if not created_at or not reviewed_at:
+            continue
+        diff_hours = (reviewed_at - created_at).total_seconds() / 3600
+        if diff_hours >= 0:
+            review_hours.append(diff_hours)
+    median_announcement_review_hours = median_float(review_hours)
+
+    total_notifications = int(db.execute(select(func.count(FestivalNotification.id))).scalar() or 0)
+    delivered_notifications = int(
+        db.execute(
+            select(func.count(FestivalNotification.id)).where(
+                or_(
+                    FestivalNotification.telegram_sent_at.is_not(None),
+                    FestivalNotification.vk_sent_at.is_not(None),
+                )
+            )
+        ).scalar()
+        or 0
+    )
+    unread_notifications = int(
+        db.execute(select(func.count(FestivalNotification.id)).where(FestivalNotification.is_read.is_(False))).scalar() or 0
+    )
+    stale_unread_notifications = int(
+        db.execute(
+            select(func.count(FestivalNotification.id)).where(
+                FestivalNotification.is_read.is_(False),
+                FestivalNotification.created_at <= now_utc - timedelta(days=7),
+            )
+        ).scalar()
+        or 0
+    )
+
+    project_posts_total = int(db.execute(select(func.count(ProjectSearchPost.id))).scalar() or 0)
+    project_posts_active = int(
+        db.execute(
+            select(func.count(ProjectSearchPost.id)).where(
+                ProjectSearchPost.status == PROJECT_BOARD_STATUS_ACTIVE
+            )
+        ).scalar()
+        or 0
+    )
+    project_posts_found = int(
+        db.execute(
+            select(func.count(ProjectSearchPost.id)).where(
+                ProjectSearchPost.status == PROJECT_BOARD_STATUS_FOUND
+            )
+        ).scalar()
+        or 0
+    )
+    project_posts_inactive = int(
+        db.execute(
+            select(func.count(ProjectSearchPost.id)).where(
+                ProjectSearchPost.status == PROJECT_BOARD_STATUS_INACTIVE
+            )
+        ).scalar()
+        or 0
+    )
+    stale_active_project_posts = int(
+        db.execute(
+            select(func.count(ProjectSearchPost.id)).where(
+                ProjectSearchPost.status == PROJECT_BOARD_STATUS_ACTIVE,
+                ProjectSearchPost.event_date.is_not(None),
+                ProjectSearchPost.event_date < today,
+            )
+        ).scalar()
+        or 0
+    )
+
+    open_questions = int(
+        db.execute(
+            select(func.count(CommunityQuestion.id)).where(
+                CommunityQuestion.status == QUESTION_STATUS_OPEN
+            )
+        ).scalar()
+        or 0
+    )
+    resolved_questions = int(
+        db.execute(
+            select(func.count(CommunityQuestion.id)).where(
+                CommunityQuestion.status == QUESTION_STATUS_RESOLVED
+            )
+        ).scalar()
+        or 0
+    )
+    open_question_ids = [
+        int(item)
+        for item in db.execute(
+            select(CommunityQuestion.id).where(CommunityQuestion.status == QUESTION_STATUS_OPEN)
+        ).scalars().all()
+        if item
+    ]
+    commented_open_question_ids: set[int] = set()
+    if open_question_ids:
+        commented_open_question_ids = {
+            int(item)
+            for item in db.execute(
+                select(func.distinct(CommunityQuestionComment.question_id)).where(
+                    CommunityQuestionComment.question_id.in_(open_question_ids)
+                )
+            ).scalars().all()
+            if item
+        }
+    unanswered_open_questions = max(0, len(open_question_ids) - len(commented_open_question_ids))
+
+    project_comments_30 = int(
+        db.execute(
+            select(func.count(ProjectSearchComment.id)).where(ProjectSearchComment.created_at >= since_30_dt)
+        ).scalar()
+        or 0
+    )
+    question_comments_30 = int(
+        db.execute(
+            select(func.count(CommunityQuestionComment.id)).where(CommunityQuestionComment.created_at >= since_30_dt)
+        ).scalar()
+        or 0
+    )
+    article_comments_30 = int(
+        db.execute(
+            select(func.count(CommunityArticleComment.id)).where(CommunityArticleComment.created_at >= since_30_dt)
+        ).scalar()
+        or 0
+    )
+    articles_created_30 = int(
+        db.execute(
+            select(func.count(CommunityArticle.id)).where(CommunityArticle.created_at >= since_30_dt)
+        ).scalar()
+        or 0
+    )
+
+    activity_dates = [since_14_date + timedelta(days=offset) for offset in range(14)]
+    activity_map: dict[str, dict[str, Any]] = {
+        item.isoformat(): {
+            "label": item.strftime("%d.%m"),
+            "users": 0,
+            "cards": 0,
+            "festivals": 0,
+            "total": 0,
+            "total_percent": 0.0,
+        }
+        for item in activity_dates
+    }
+
+    daily_user_rows = db.execute(
+        select(func.date(User.created_at), func.count(User.id))
+        .where(User.created_at >= since_14_dt)
+        .group_by(func.date(User.created_at))
+    ).all()
+    for raw_day, raw_count in daily_user_rows:
+        key = normalize_sqlite_date_key(raw_day)
+        if key in activity_map:
+            activity_map[key]["users"] = int(raw_count or 0)
+
+    daily_card_rows = db.execute(
+        select(func.date(CosplanCard.created_at), func.count(CosplanCard.id))
+        .where(
+            CosplanCard.is_shared_copy.is_(False),
+            CosplanCard.created_at >= since_14_dt,
+        )
+        .group_by(func.date(CosplanCard.created_at))
+    ).all()
+    for raw_day, raw_count in daily_card_rows:
+        key = normalize_sqlite_date_key(raw_day)
+        if key in activity_map:
+            activity_map[key]["cards"] = int(raw_count or 0)
+
+    daily_festival_rows = db.execute(
+        select(func.date(Festival.created_at), func.count(Festival.id))
+        .where(Festival.created_at >= since_14_dt)
+        .group_by(func.date(Festival.created_at))
+    ).all()
+    for raw_day, raw_count in daily_festival_rows:
+        key = normalize_sqlite_date_key(raw_day)
+        if key in activity_map:
+            activity_map[key]["festivals"] = int(raw_count or 0)
+
+    activity_rows: list[dict[str, Any]] = []
+    activity_peak = 0
+    for item in activity_dates:
+        key = item.isoformat()
+        row = activity_map[key]
+        row["total"] = int(row["users"]) + int(row["cards"]) + int(row["festivals"])
+        activity_peak = max(activity_peak, int(row["total"]))
+        activity_rows.append(row)
+    if activity_peak > 0:
+        for row in activity_rows:
+            row["total_percent"] = percentage(int(row["total"]), activity_peak)
+
+    city_top = []
+    for row in city_stats[:10]:
+        city_top.append(
+            {
+                "city": row["city"],
+                "count": int(row["count"]),
+                "share": percentage(int(row["count"]), total_users),
+            }
+        )
+
+    alerts: list[dict[str, Any]] = []
+    if stale_pending_announcements > 0:
+        alerts.append(
+            {
+                "level": "danger",
+                "title": "Заявки на фестивали висят без решения",
+                "text": f"{stale_pending_announcements} заявок pending старше 3 дней.",
+                "url": "/festivals",
+                "button": "Открыть модерацию",
+            }
+        )
+    if stale_unread_notifications > 0:
+        alerts.append(
+            {
+                "level": "warn",
+                "title": "Неразобранные уведомления",
+                "text": f"{stale_unread_notifications} непрочитанных уведомлений старше 7 дней.",
+                "url": "/festivals",
+                "button": "Проверить уведомления",
+            }
+        )
+    if new_users_total >= 8 and percentage(len(new_users_card_user_ids), new_users_total) < 60:
+        alerts.append(
+            {
+                "level": "warn",
+                "title": "Просадка старта онбординга",
+                "text": "Менее 60% новичков создали первую карточку за 30 дней.",
+                "url": "/cosplan/new",
+                "button": "Проверить первый шаг",
+            }
+        )
+    if unanswered_open_questions > 0:
+        alerts.append(
+            {
+                "level": "info",
+                "title": "Вопросы без ответа",
+                "text": f"{unanswered_open_questions} открытых вопросов без комментариев.",
+                "url": "/community/questions",
+                "button": "Открыть вопросы",
+            }
+        )
+    if stale_active_project_posts > 0:
+        alerts.append(
+            {
+                "level": "info",
+                "title": "Устаревшие объявления проект-борда",
+                "text": f"{stale_active_project_posts} активных объявлений с уже прошедшей датой события.",
+                "url": "/project-board",
+                "button": "Проверить объявления",
+            }
+        )
+
+    return {
+        "generated_at": datetime.now(SITE_TIMEZONE).strftime("%d.%m.%Y %H:%M"),
+        "overview_cards": [
+            {
+                "title": "Пользователи",
+                "value": total_users,
+                "hint": f"+{new_users_total} за 30 дней",
+            },
+            {
+                "title": "Карточки косплана",
+                "value": total_cosplan_cards,
+                "hint": f"+{cards_created_30} за 30 дней",
+            },
+            {
+                "title": "Города в профилях",
+                "value": users_with_city,
+                "hint": f"{percentage(users_with_city, total_users)}% пользователей заполнили город",
+            },
+            {
+                "title": "Карточки завершены",
+                "value": completed_cards,
+                "hint": f"{percentage(completed_cards, total_cosplan_cards)}% от всех карточек",
+            },
+        ],
+        "card_health_cards": [
+            {
+                "title": "Проектные карточки",
+                "value": project_cards,
+                "hint": f"{percentage(project_cards, total_cosplan_cards)}% от всех",
+            },
+            {
+                "title": "Личные карточки",
+                "value": personal_cards,
+                "hint": f"{percentage(personal_cards, total_cosplan_cards)}% от всех",
+            },
+            {
+                "title": "Карточки в «В работе»",
+                "value": in_progress_total,
+                "hint": f"Заморожено: {frozen_in_progress} ({percentage(frozen_in_progress, in_progress_total)}%)",
+            },
+            {
+                "title": "Покрытие флоу",
+                "value": users_with_any_card,
+                "hint": (
+                    f"С карточкой: {percentage(users_with_any_card, total_users)}%, "
+                    f"в работе: {percentage(users_with_in_progress, total_users)}%, "
+                    f"с фестивалями: {percentage(users_with_festivals, total_users)}%"
+                ),
+            },
+        ],
+        "onboarding_steps": onboarding_steps,
+        "ops_cards": [
+            {
+                "title": "Анонсы фестивалей",
+                "value": pending_announcements,
+                "hint": (
+                    f"approved: {approved_announcements}, rejected: {rejected_announcements}, "
+                    f"pending >3 дней: {stale_pending_announcements}"
+                ),
+            },
+            {
+                "title": "Скорость модерации",
+                "value": "—" if median_announcement_review_hours is None else f"{median_announcement_review_hours} ч",
+                "hint": "Медианное время от заявки до решения",
+            },
+            {
+                "title": "Уведомления",
+                "value": unread_notifications,
+                "hint": (
+                    f"Доставлено: {delivered_notifications}/{total_notifications} "
+                    f"({percentage(delivered_notifications, total_notifications)}%)"
+                ),
+            },
+            {
+                "title": "Импорт фестивалей",
+                "value": count_distinct_imported_festivals(db),
+                "hint": "Уникальные фестивали из внешних источников",
+            },
+        ],
+        "community_cards": [
+            {
+                "title": "Проект-борд",
+                "value": project_posts_total,
+                "hint": (
+                    f"active: {project_posts_active}, found: {project_posts_found}, "
+                    f"archive: {project_posts_inactive}"
+                ),
+            },
+            {
+                "title": "Вопросы сообщества",
+                "value": open_questions,
+                "hint": f"resolved: {resolved_questions}, без ответа: {unanswered_open_questions}",
+            },
+            {
+                "title": "Комментарии за 30 дней",
+                "value": project_comments_30 + question_comments_30 + article_comments_30,
+                "hint": (
+                    f"board: {project_comments_30}, questions: {question_comments_30}, "
+                    f"articles: {article_comments_30}"
+                ),
+            },
+            {
+                "title": "Новые статьи за 30 дней",
+                "value": articles_created_30,
+                "hint": "Темп наполнения базы знаний",
+            },
+        ],
+        "city_rows": city_top,
+        "city_rows_total": len(city_stats),
+        "activity_rows": activity_rows,
+        "alerts": alerts,
+    }
+
+
+@app.get("/admin/dashboard", response_class=HTMLResponse)
+def admin_dashboard(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    if not can_view_admin_dashboard(user):
+        add_flash(request, "Дашборд администратора доступен только модератору.", "error")
+        return redirect("/profile")
+
+    dashboard = build_admin_dashboard_stats(db)
+    return template_response(
+        request,
+        "admin_dashboard.html",
+        user=user,
+        active_tab="admin",
+        title="Админ-дашборд — Cosplay Planner",
+        seo_robots="noindex,nofollow,noarchive",
+        **dashboard,
+    )
+
+
 @app.get("/profile", response_class=HTMLResponse)
 def profile_page(request: Request, db: Session = Depends(get_db)):
     user = current_user(request, db)
     if not user:
         return redirect("/login")
 
-    is_stats_admin = (
-        (user.email or "").strip().casefold() == "angenzel@gmail.com"
-        or normalize_username(user.username).casefold() == "brfox_cosplay"
-        or normalize_username(user.cosplay_nick).casefold() == "brfox_cosplay"
-    )
-    admin_stats: dict[str, Any] | None = None
-    if is_stats_admin:
-        total_users = int(db.execute(select(func.count(User.id))).scalar() or 0)
-        total_cosplan_cards = int(
-            db.execute(select(func.count(CosplanCard.id)).where(CosplanCard.is_shared_copy.is_(False))).scalar() or 0
-        )
-
-        raw_cities = db.execute(select(User.home_city)).scalars().all()
-        city_counts: dict[str, int] = defaultdict(int)
-        city_labels: dict[str, str] = {}
-        for raw_city in raw_cities:
-            cleaned = (raw_city or "").strip()
-            key = cleaned.casefold() if cleaned else "__empty__"
-            city_counts[key] += 1
-            if key not in city_labels:
-                city_labels[key] = cleaned or "Не указан"
-
-        city_stats = [
-            {"city": city_labels[key], "count": count}
-            for key, count in city_counts.items()
-        ]
-        city_stats.sort(key=lambda item: (-item["count"], item["city"]))
-
-        admin_stats = {
-            "total_users": total_users,
-            "total_cosplan_cards": total_cosplan_cards,
-            "city_stats": city_stats,
-            "unique_city_count": sum(1 for item in city_stats if item["city"] != "Не указан"),
-        }
+    is_stats_admin = can_view_admin_dashboard(user)
+    admin_stats: dict[str, Any] | None = build_profile_admin_stats(db) if is_stats_admin else None
 
     return template_response(
         request,
@@ -11268,6 +11896,7 @@ def profile_page(request: Request, db: Session = Depends(get_db)):
         user=user,
         active_tab="profile",
         admin_stats=admin_stats,
+        can_view_admin_dashboard=is_stats_admin,
     )
 
 

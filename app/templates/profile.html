@@ -259,6 +259,9 @@
 {% if admin_stats %}
 <section class="box">
   <h2>Статистика сервиса</h2>
+  <div class="actions-inline top-offset">
+    <a href="/admin/dashboard" class="btn btn-accent">Открыть админ-дашборд</a>
+  </div>
   <p class="meta">Всего зарегистрированных пользователей: <strong>{{ admin_stats.total_users }}</strong></p>
   <p class="meta">Всего созданных карточек косплана: <strong>{{ admin_stats.total_cosplan_cards }}</strong></p>
   <p class="meta">Уникальных городов (без «Не указан»): <strong>{{ admin_stats.unique_city_count }}</strong></p>

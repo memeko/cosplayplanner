@@ -73,6 +73,9 @@
           <a href="/my-calendar" class="tab {% if active_tab == 'calendars' %}active{% endif %}">Календари</a>
           <a href="/festivals" class="tab {% if active_tab == 'festivals' %}active{% endif %}">Фестивали</a>
         {% endif %}
+        {% if user_is_special(user) %}
+          <a href="/admin/dashboard" class="tab {% if active_tab == 'admin' %}active{% endif %}">Админ</a>
+        {% endif %}
         <a href="/profile" class="tab {% if active_tab == 'profile' %}active{% endif %}">Профиль</a>
       </nav>
       <form method="post" action="/logout">

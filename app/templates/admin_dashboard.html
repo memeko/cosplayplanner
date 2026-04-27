@@ -1,0 +1,179 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="section-head">
+  <h1>Админ-дашборд</h1>
+  <p class="meta">Обновлено: <strong>{{ generated_at }}</strong>. Основное окно: 30 дней, график активности: 14 дней.</p>
+</section>
+
+{% if alerts %}
+<section class="box">
+  <h2>Алерты</h2>
+  <div class="cards-grid admin-alert-grid top-offset">
+    {% for alert in alerts %}
+    <article class="card admin-alert-card {% if alert.level == 'danger' %}admin-alert-danger{% elif alert.level == 'warn' %}admin-alert-warn{% else %}admin-alert-info{% endif %}">
+      <h3>{{ alert.title }}</h3>
+      <p class="muted">{{ alert.text }}</p>
+      <div class="actions-inline top-offset">
+        <a href="{{ alert.url }}" class="btn btn-small btn-accent">{{ alert.button }}</a>
+      </div>
+    </article>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
+<section class="box">
+  <h2>Ключевые показатели</h2>
+  <div class="cards-grid admin-kpi-grid top-offset">
+    {% for item in overview_cards %}
+    <article class="card admin-kpi-card">
+      <p class="meta">{{ item.title }}</p>
+      <p class="admin-kpi-value">{{ item.value }}</p>
+      <p class="muted">{{ item.hint }}</p>
+    </article>
+    {% endfor %}
+  </div>
+</section>
+
+<section class="box">
+  <h2>Здоровье карточек</h2>
+  <div class="cards-grid admin-kpi-grid top-offset">
+    {% for item in card_health_cards %}
+    <article class="card admin-kpi-card">
+      <p class="meta">{{ item.title }}</p>
+      <p class="admin-kpi-value">{{ item.value }}</p>
+      <p class="muted">{{ item.hint }}</p>
+    </article>
+    {% endfor %}
+  </div>
+</section>
+
+<section class="box">
+  <div class="admin-section-head">
+    <h2>Воронка онбординга</h2>
+    <div class="actions-inline">
+      <a href="/cosplan/new" class="btn btn-small">Новая карточка</a>
+      <a href="/in-progress" class="btn btn-small">В работу</a>
+      <a href="/festivals" class="btn btn-small">Фестивали</a>
+    </div>
+  </div>
+  <div class="admin-funnel-list top-offset">
+    {% for step in onboarding_steps %}
+    <article class="admin-funnel-item">
+      <div class="admin-funnel-head">
+        <strong>{{ step.title }}</strong>
+        <span class="meta">{{ step.count }} · {{ step.rate }}%</span>
+      </div>
+      <div class="admin-progress-track">
+        <span class="admin-progress-fill" style="width: {{ step.rate }}%;"></span>
+      </div>
+      <div class="actions-inline top-offset">
+        <a href="{{ step.cta_url }}" class="btn btn-small">{{ step.cta_label }}</a>
+      </div>
+    </article>
+    {% endfor %}
+  </div>
+</section>
+
+<section class="box">
+  <h2>Операции</h2>
+  <div class="cards-grid admin-kpi-grid top-offset">
+    {% for item in ops_cards %}
+    <article class="card admin-kpi-card">
+      <p class="meta">{{ item.title }}</p>
+      <p class="admin-kpi-value">{{ item.value }}</p>
+      <p class="muted">{{ item.hint }}</p>
+    </article>
+    {% endfor %}
+  </div>
+</section>
+
+<section class="box">
+  <h2>Сообщество</h2>
+  <div class="cards-grid admin-kpi-grid top-offset">
+    {% for item in community_cards %}
+    <article class="card admin-kpi-card">
+      <p class="meta">{{ item.title }}</p>
+      <p class="admin-kpi-value">{{ item.value }}</p>
+      <p class="muted">{{ item.hint }}</p>
+    </article>
+    {% endfor %}
+  </div>
+</section>
+
+<section class="box">
+  <h2>Города пользователей (топ-10)</h2>
+  {% if city_rows %}
+  <table class="table top-offset">
+    <thead>
+      <tr>
+        <th>Город</th>
+        <th>Пользователи</th>
+        <th>Доля</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in city_rows %}
+      <tr>
+        <td>{{ row.city }}</td>
+        <td>{{ row.count }}</td>
+        <td>
+          <div class="admin-progress-track admin-progress-track-compact">
+            <span class="admin-progress-fill admin-progress-fill-muted" style="width: {{ row.share }}%;"></span>
+          </div>
+          <span class="meta">{{ row.share }}%</span>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% if city_rows_total > city_rows|length %}
+  <p class="muted top-offset">Показано {{ city_rows|length }} из {{ city_rows_total }} городов.</p>
+  {% endif %}
+  {% else %}
+  <p class="muted top-offset">Пока нет данных по городам.</p>
+  {% endif %}
+</section>
+
+<section class="box">
+  <h2>Активность по дням</h2>
+  <table class="table top-offset">
+    <thead>
+      <tr>
+        <th>Дата</th>
+        <th>Новые пользователи</th>
+        <th>Новые карточки</th>
+        <th>Новые фестивали</th>
+        <th>Сумма событий</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in activity_rows %}
+      <tr>
+        <td>{{ row.label }}</td>
+        <td>{{ row.users }}</td>
+        <td>{{ row.cards }}</td>
+        <td>{{ row.festivals }}</td>
+        <td>
+          <div class="admin-progress-track admin-progress-track-compact">
+            <span class="admin-progress-fill" style="width: {{ row.total_percent }}%;"></span>
+          </div>
+          <span class="meta">{{ row.total }}</span>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section class="box">
+  <h2>Быстрые переходы</h2>
+  <div class="actions-inline wrap-start top-offset">
+    <a href="/festivals" class="btn btn-accent">Модерация фестивалей</a>
+    <a href="/project-board" class="btn">Проект-борд</a>
+    <a href="/community/questions" class="btn">Вопросы сообщества</a>
+    <a href="/in-progress" class="btn">Карточки в работе</a>
+    <a href="/profile" class="btn">Профиль</a>
+  </div>
+</section>
+{% endblock %}
