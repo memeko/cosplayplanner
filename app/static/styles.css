@@ -1431,6 +1431,22 @@ textarea {
   display: block;
 }
 
+.profile-chatbot-banner {
+  border: 1px solid #93c5fd;
+  border-radius: 12px;
+  padding: 12px;
+  background: linear-gradient(145deg, rgba(219, 234, 254, 0.8), rgba(224, 242, 254, 0.62));
+  box-shadow: var(--glass-highlight-soft);
+}
+
+.profile-chatbot-banner p {
+  margin: 0;
+}
+
+.profile-chatbot-banner p + p {
+  margin-top: 6px;
+}
+
 @media (max-width: 760px) {
   .avatar-vh10 {
     width: 56px;
