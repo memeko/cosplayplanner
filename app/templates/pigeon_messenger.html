@@ -7,7 +7,7 @@
   </div>
 </section>
 
-<section class="box">
+<section class="box pigeon-new-dialog-box">
   <h2>Новый диалог</h2>
   <form method="post" action="/notifications/pigeon" class="grid one-col top-offset">
     <input type="hidden" name="next" value="/pigeons" />
@@ -31,6 +31,9 @@
         required
       ></textarea>
     </label>
+    <div class="actions-inline">
+      <button type="submit" class="btn btn-accent">Начать диалог</button>
+    </div>
     {% if pixel_emoji_catalog %}
       <details class="top-offset">
         <summary>Эмодзи</summary>
@@ -44,9 +47,6 @@
         <p class="muted small-note top-offset">За эмодзи спасибо fava-beans.</p>
       </details>
     {% endif %}
-    <div class="actions-inline">
-      <button type="submit" class="btn btn-accent">Начать диалог</button>
-    </div>
   </form>
 </section>
 
@@ -54,24 +54,51 @@
   <div class="pigeon-messenger-grid">
     <aside class="pigeon-chat-sidebar">
       <h2>Чаты</h2>
+      <label class="pigeon-chat-search top-offset">
+        <input type="text" placeholder="Поиск чатов..." disabled />
+      </label>
       {% if chats %}
         <div class="pigeon-chat-list top-offset">
           {% for chat in chats %}
-            <a
-              href="/pigeons?chat={{ chat.user_id }}"
-              class="pigeon-chat-link {% if selected_chat and selected_chat.user_id == chat.user_id %}active{% endif %}"
-            >
-              <div class="row-between">
-                <strong>@{{ chat.chat_alias }}</strong>
-                {% if chat.unread_count %}
-                  <span class="chip chip-alert">{{ chat.unread_count }}</span>
+            <details class="pigeon-chat-spoiler {% if selected_chat and selected_chat.user_id == chat.user_id %}active{% endif %}" {% if selected_chat and selected_chat.user_id == chat.user_id %}open{% endif %}>
+              <summary class="pigeon-chat-summary">
+                <span class="pigeon-chat-avatar">
+                  <img src="{{ chat.chat_avatar_url }}" alt="@{{ chat.chat_alias }}" loading="lazy" />
+                </span>
+                <span class="pigeon-chat-summary-main">
+                  <strong>@{{ chat.chat_alias }}</strong>
+                  <span class="muted">{{ chat.last_preview or "Без текста" }}</span>
+                </span>
+                <span class="pigeon-chat-summary-meta">
+                  <span class="muted small-note">{{ chat.updated_at.strftime('%H:%M') if chat.updated_at else "—" }}</span>
+                  {% if chat.unread_count %}
+                    <span class="chip chip-alert">{{ chat.unread_count }}</span>
+                  {% endif %}
+                </span>
+              </summary>
+              <div class="pigeon-chat-spoiler-frame">
+                {% if chat.messages %}
+                  {% for message in chat.messages[-25:] %}
+                    <article class="pigeon-chat-peek pigeon-chat-peek-{{ message.direction }}">
+                      <p class="pigeon-chat-peek-meta">
+                        {% if message.direction == "in" %}
+                          Входящее
+                        {% else %}
+                          Исходящее
+                        {% endif %}
+                        • {{ message.created_at.strftime('%d-%m %H:%M') if message.created_at else "—" }}
+                      </p>
+                      <div class="notes-block">{{ message.body_html }}</div>
+                    </article>
+                  {% endfor %}
+                {% else %}
+                  <p class="muted">В этом чате пока нет сообщений.</p>
                 {% endif %}
               </div>
-              <p class="muted top-offset">{{ chat.last_preview or "Без текста" }}</p>
-              <p class="muted small-note top-offset">
-                {{ chat.updated_at.strftime('%d-%m-%Y %H:%M') if chat.updated_at else "—" }}
-              </p>
-            </a>
+              <div class="actions-inline top-offset">
+                <a href="/pigeons?chat={{ chat.user_id }}" class="btn btn-small">Открыть диалог</a>
+              </div>
+            </details>
           {% endfor %}
         </div>
       {% else %}
@@ -81,41 +108,55 @@
 
     <div class="pigeon-chat-thread">
       {% if selected_chat %}
-        <h2>Диалог с @{{ selected_chat.chat_alias }}</h2>
-        {% if selected_chat.messages %}
-          <div class="pigeon-thread-messages top-offset">
-            {% for message in selected_chat.messages %}
-              <article class="pigeon-thread-item pigeon-thread-{{ message.direction }}">
-                <p class="comment-meta">
-                  {% if message.direction == "in" %}
-                    Входящее
-                  {% else %}
-                    Исходящее
-                  {% endif %}
-                  • {{ message.created_at.strftime('%d-%m-%Y %H:%M') if message.created_at else "—" }}
-                </p>
-                <div class="notes-block">{{ message.body_html }}</div>
-              </article>
-            {% endfor %}
-          </div>
-        {% else %}
-          <p class="muted top-offset">В этом чате пока нет сообщений.</p>
-        {% endif %}
+        <section class="pigeon-chat-phone">
+          <header class="pigeon-phone-head">
+            <span class="pigeon-chat-avatar">
+              <img src="{{ selected_chat.chat_avatar_url }}" alt="@{{ selected_chat.chat_alias }}" loading="lazy" />
+            </span>
+            <div class="pigeon-phone-user">
+              <h2>@{{ selected_chat.chat_alias }}</h2>
+              <p class="muted small-note">
+                {% if selected_chat.unread_count %}
+                  Непрочитанных: {{ selected_chat.unread_count }}
+                {% else %}
+                  Онлайн
+                {% endif %}
+              </p>
+            </div>
+          </header>
 
-        <form method="post" action="/notifications/pigeon" class="grid one-col top-offset">
-          <input type="hidden" name="next" value="/pigeons?chat={{ selected_chat.user_id }}" />
-          <input type="hidden" name="recipient_user_id" value="{{ selected_chat.user_id }}" />
-          <label>
-            Сообщение
+          {% if selected_chat.messages %}
+            <div class="pigeon-thread-messages top-offset" id="pigeon-active-thread">
+              {% for message in selected_chat.messages %}
+                <article class="pigeon-thread-item pigeon-thread-{{ message.direction }}">
+                  <div class="pigeon-thread-bubble">
+                    <div class="notes-block">{{ message.body_html }}</div>
+                    <p class="pigeon-thread-time">{{ message.created_at.strftime('%d-%m %H:%M') if message.created_at else "—" }}</p>
+                  </div>
+                </article>
+              {% endfor %}
+            </div>
+          {% else %}
+            <div class="pigeon-thread-empty top-offset">
+              <p><strong>Пока пусто</strong></p>
+              <p class="muted">Отправьте первое сообщение в этом чате.</p>
+            </div>
+          {% endif %}
+
+          <form method="post" action="/notifications/pigeon" class="pigeon-phone-compose top-offset">
+            <input type="hidden" name="next" value="/pigeons?chat={{ selected_chat.user_id }}" />
+            <input type="hidden" name="recipient_user_id" value="{{ selected_chat.user_id }}" />
             <textarea
               name="message"
               id="pigeon-chat-message-input"
-              rows="3"
+              rows="2"
               maxlength="1500"
-              placeholder="Напишите сообщение для @{{ selected_chat.chat_alias }}"
+              placeholder="Напишите сообщение..."
               required
             ></textarea>
-          </label>
+            <button type="submit" class="btn btn-accent">Отправить</button>
+          </form>
+
           {% if pixel_emoji_catalog %}
             <details class="top-offset">
               <summary>Эмодзи</summary>
@@ -128,13 +169,14 @@
               </div>
             </details>
           {% endif %}
-          <div class="actions-inline">
-            <button type="submit" class="btn btn-accent">Отправить</button>
-          </div>
-        </form>
+        </section>
       {% else %}
-        <h2>Диалог</h2>
-        <p class="muted top-offset">Выберите чат слева или начните новый диалог.</p>
+        <section class="pigeon-chat-phone pigeon-chat-phone-empty">
+          <div class="pigeon-thread-empty">
+            <p><strong>Нет сообщений</strong></p>
+            <p class="muted">Выберите чат слева или начните новый диалог.</p>
+          </div>
+        </section>
       {% endif %}
     </div>
   </div>
@@ -166,6 +208,11 @@
         });
       });
     });
+
+    const activeThread = document.getElementById('pigeon-active-thread');
+    if (activeThread) {
+      activeThread.scrollTop = activeThread.scrollHeight;
+    }
   })();
 </script>
 {% endblock %}

@@ -7961,6 +7961,7 @@ def build_pigeon_dialogs_for_user(db: Session, user: User) -> list[dict[str, Any
                 "updated_at": None,
                 "chat_user": None,
                 "chat_alias": "",
+                "chat_avatar_url": DEFAULT_AVATAR_PATH,
             },
         )
 
@@ -8002,6 +8003,7 @@ def build_pigeon_dialogs_for_user(db: Session, user: User) -> list[dict[str, Any
             continue
         dialog["chat_user"] = chat_user
         dialog["chat_alias"] = preferred_user_alias(chat_user)
+        dialog["chat_avatar_url"] = user_avatar_url(chat_user)
         dialogs.append(dialog)
 
     dialogs.sort(key=lambda item: int(item.get("last_notification_id") or 0), reverse=True)
