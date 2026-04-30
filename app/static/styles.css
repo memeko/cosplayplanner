@@ -1067,6 +1067,84 @@ textarea {
   white-space: pre-wrap;
 }
 
+.pigeon-messenger-shell {
+  padding: 14px;
+}
+
+.pigeon-messenger-grid {
+  display: grid;
+  grid-template-columns: minmax(240px, 320px) minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+}
+
+.pigeon-chat-sidebar {
+  border: 1px solid rgba(158, 197, 255, 0.9);
+  border-radius: 14px;
+  padding: 12px;
+  background: linear-gradient(145deg, rgba(234, 244, 255, 0.82), rgba(219, 234, 254, 0.64));
+  box-shadow: var(--glass-highlight-soft);
+}
+
+.pigeon-chat-sidebar h2 {
+  margin: 0;
+}
+
+.pigeon-chat-list {
+  display: grid;
+  gap: 8px;
+}
+
+.pigeon-chat-link {
+  display: block;
+  text-decoration: none;
+  color: inherit;
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  padding: 10px;
+  background: rgba(255, 255, 255, 0.58);
+  box-shadow: var(--glass-highlight-soft);
+}
+
+.pigeon-chat-link p {
+  margin: 0;
+}
+
+.pigeon-chat-link.active {
+  border-color: rgba(56, 149, 218, 0.8);
+  background: linear-gradient(145deg, rgba(224, 242, 254, 0.9), rgba(191, 219, 254, 0.66));
+}
+
+.pigeon-chat-thread {
+  min-width: 0;
+}
+
+.pigeon-thread-messages {
+  display: grid;
+  gap: 8px;
+  max-height: 62vh;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.pigeon-thread-item {
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  padding: 10px;
+  background: rgba(255, 255, 255, 0.6);
+  box-shadow: var(--glass-highlight-soft);
+}
+
+.pigeon-thread-in {
+  border-color: rgba(147, 197, 253, 0.9);
+  background: rgba(234, 244, 255, 0.9);
+}
+
+.pigeon-thread-out {
+  border-color: rgba(166, 213, 255, 0.9);
+  background: rgba(224, 242, 254, 0.8);
+}
+
 .pigeon-popup {
   position: fixed;
   inset: 0;
@@ -2487,6 +2565,14 @@ textarea {
 
   .cards-grid {
     grid-template-columns: 1fr;
+  }
+
+  .pigeon-messenger-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .pigeon-thread-messages {
+    max-height: none;
   }
 
   .cosplan-list-row {

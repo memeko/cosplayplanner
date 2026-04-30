@@ -1285,6 +1285,7 @@ async def restrict_smm_manager_scope(request: Request, call_next):
         or path.startswith("/profile")
         or path.startswith("/admin/")
         or path.startswith("/my-calendar/content")
+        or path.startswith("/pigeons")
         or path.startswith("/notifications/pigeon")
         or path.startswith("/festivals")
         or path.startswith("/media/")
@@ -7863,14 +7864,17 @@ def send_pigeon_notification(
 ) -> bool:
     sender_alias = preferred_user_alias(sender)
     payload = f"Курлык! (@{sender_alias}) {message_body.strip()}"
-    return enqueue_notification_if_missing(
-        db,
-        user_id=recipient.id,
-        from_user_id=sender.id,
-        source_card_id=None,
-        reply_to_notification_id=reply_to_notification_id,
-        message=payload,
+    db.add(
+        FestivalNotification(
+            user_id=recipient.id,
+            from_user_id=sender.id,
+            source_card_id=None,
+            reply_to_notification_id=reply_to_notification_id,
+            message=payload,
+            is_read=False,
+        )
     )
+    return True
 
 
 def send_system_pigeon_notification(
@@ -7892,6 +7896,151 @@ def send_system_pigeon_notification(
             is_read=False,
         )
     )
+
+
+def mark_pigeon_dialog_as_read(db: Session, user_id: int, chat_user_id: int) -> bool:
+    unread_rows = db.execute(
+        select(FestivalNotification).where(
+            FestivalNotification.user_id == int(user_id),
+            FestivalNotification.from_user_id == int(chat_user_id),
+            FestivalNotification.is_read.is_(False),
+        )
+    ).scalars().all()
+    was_updated = False
+    for note in unread_rows:
+        if not is_pigeon_message(note.message):
+            continue
+        note.is_read = True
+        was_updated = True
+    return was_updated
+
+
+def build_pigeon_dialogs_for_user(db: Session, user: User) -> list[dict[str, Any]]:
+    notes = db.execute(
+        select(FestivalNotification)
+        .where(
+            FestivalNotification.from_user_id.is_not(None),
+            or_(
+                FestivalNotification.user_id == user.id,
+                FestivalNotification.from_user_id == user.id,
+            ),
+        )
+        .order_by(FestivalNotification.created_at.asc(), FestivalNotification.id.asc())
+    ).scalars().all()
+
+    dialogs_by_user_id: dict[int, dict[str, Any]] = {}
+
+    for note in notes:
+        parsed = parse_pigeon_message(note.message)
+        if not parsed:
+            continue
+
+        direction = ""
+        dialog_user_id: int | None = None
+
+        if note.from_user_id == user.id and note.user_id != user.id:
+            direction = "out"
+            dialog_user_id = int(note.user_id)
+        elif note.user_id == user.id and note.from_user_id and note.from_user_id != user.id:
+            direction = "in"
+            dialog_user_id = int(note.from_user_id)
+
+        if not dialog_user_id:
+            continue
+
+        sender_alias, body = parsed
+        body_text = body or "Без текста"
+        dialog = dialogs_by_user_id.setdefault(
+            dialog_user_id,
+            {
+                "user_id": dialog_user_id,
+                "messages": [],
+                "unread_count": 0,
+                "last_notification_id": 0,
+                "last_preview": "",
+                "updated_at": None,
+                "chat_user": None,
+                "chat_alias": "",
+            },
+        )
+
+        dialog["messages"].append(
+            {
+                "id": note.id,
+                "direction": direction,
+                "sender_alias": sender_alias,
+                "body": body_text,
+                "body_html": render_text_content(body_text),
+                "created_at": note.created_at,
+                "is_read": bool(note.is_read),
+            }
+        )
+        if direction == "in" and not note.is_read:
+            dialog["unread_count"] += 1
+
+        note_id = int(note.id or 0)
+        if note_id >= int(dialog["last_notification_id"] or 0):
+            preview = " ".join(body_text.split())
+            if len(preview) > 120:
+                preview = preview[:117].rstrip() + "..."
+            dialog["last_notification_id"] = note_id
+            dialog["last_preview"] = preview
+            dialog["updated_at"] = note.created_at
+
+    if not dialogs_by_user_id:
+        return []
+
+    chat_users = db.execute(
+        select(User).where(User.id.in_(list(dialogs_by_user_id.keys())))
+    ).scalars().all()
+    users_by_id = {int(item.id): item for item in chat_users}
+
+    dialogs: list[dict[str, Any]] = []
+    for dialog_user_id, dialog in dialogs_by_user_id.items():
+        chat_user = users_by_id.get(dialog_user_id)
+        if not chat_user:
+            continue
+        dialog["chat_user"] = chat_user
+        dialog["chat_alias"] = preferred_user_alias(chat_user)
+        dialogs.append(dialog)
+
+    dialogs.sort(key=lambda item: int(item.get("last_notification_id") or 0), reverse=True)
+    return dialogs
+
+
+def build_pigeon_alias_options(db: Session, user: User) -> list[str]:
+    _, _, alias_options = build_user_alias_lookup(db)
+    own_aliases = {item.casefold() for item in user_aliases(user)}
+    return sorted(
+        [alias for alias in alias_options if alias and alias.casefold() not in own_aliases],
+        key=lambda value: value.casefold(),
+    )
+
+
+def mark_regular_notifications_read(db: Session, user_id: int) -> int:
+    rows = db.execute(
+        select(FestivalNotification).where(FestivalNotification.user_id == int(user_id))
+    ).scalars().all()
+    changed_count = 0
+    for note in rows:
+        if note.is_read or is_pigeon_message(note.message):
+            continue
+        note.is_read = True
+        changed_count += 1
+    return changed_count
+
+
+def clear_regular_notifications(db: Session, user_id: int) -> int:
+    rows = db.execute(
+        select(FestivalNotification).where(FestivalNotification.user_id == int(user_id))
+    ).scalars().all()
+    deleted_count = 0
+    for note in rows:
+        if is_pigeon_message(note.message):
+            continue
+        db.delete(note)
+        deleted_count += 1
+    return deleted_count
 
 
 def get_latest_unread_pigeon(db: Session, user_id: int) -> dict[str, Any] | None:
@@ -10740,29 +10889,16 @@ def index(request: Request, db: Session = Depends(get_db)):
         notifications = db.execute(
             select(FestivalNotification)
             .where(FestivalNotification.user_id == user.id)
-            .order_by(FestivalNotification.created_at.desc())
-            .limit(50)
+            .order_by(FestivalNotification.created_at.desc(), FestivalNotification.id.desc())
+            .limit(300)
         ).scalars().all()
-        pigeon_notifications: list[dict[str, Any]] = []
         regular_notifications: list[FestivalNotification] = []
         for note in notifications:
-            pigeon_payload = parse_pigeon_message(note.message)
-            if pigeon_payload:
-                sender_alias, body = pigeon_payload
-                pigeon_notifications.append(
-                    {
-                        "id": note.id,
-                        "from_user_id": note.from_user_id,
-                        "reply_to_notification_id": note.reply_to_notification_id,
-                        "sender_alias": sender_alias,
-                        "body": body,
-                        "body_html": render_text_content(body),
-                        "created_at": note.created_at,
-                        "is_read": bool(note.is_read),
-                    }
-                )
-            else:
-                regular_notifications.append(note)
+            if is_pigeon_message(note.message):
+                continue
+            regular_notifications.append(note)
+            if len(regular_notifications) >= 60:
+                break
 
         mergeable_duplicate_notification_ids: set[int] = set()
         if is_moderator_user(user):
@@ -10771,27 +10907,19 @@ def index(request: Request, db: Session = Depends(get_db)):
                 if has_mergeable_duplicate_festivals(duplicate_candidates):
                     mergeable_duplicate_notification_ids.add(note.id)
 
-        _, _, alias_options = build_user_alias_lookup(db)
-        own_aliases = {item.casefold() for item in user_aliases(user)}
-        pigeon_alias_options = sorted(
-            [alias for alias in alias_options if alias and alias.casefold() not in own_aliases],
-            key=lambda value: value.casefold(),
-        )
         users_with_birthdays = db.execute(
             select(User).where(User.birth_date.is_not(None))
         ).scalars().all()
         birthdays_this_week = upcoming_user_birthdays_this_week(users_with_birthdays, today)
         info_events_week = weekly_infopovods(today)
         character_birthdays_today_rows = character_birthdays_today(today)
-        unread_notifications = sum(1 for note in notifications if not note.is_read)
+        unread_notifications = sum(1 for note in regular_notifications if not note.is_read)
         return template_response(
             request,
             "news.html",
             user=user,
             active_tab=None,
             notifications=regular_notifications,
-            pigeon_notifications=pigeon_notifications,
-            pigeon_alias_options=pigeon_alias_options,
             birthdays_this_week=birthdays_this_week,
             info_events_week=info_events_week,
             character_birthdays_today=character_birthdays_today_rows,
@@ -10801,6 +10929,39 @@ def index(request: Request, db: Session = Depends(get_db)):
             mergeable_duplicate_notification_ids=mergeable_duplicate_notification_ids,
         )
     return template_response(request, "landing.html", user=None, active_tab=None)
+
+
+@app.get("/pigeons", response_class=HTMLResponse)
+def pigeons_messenger(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    selected_chat_user_id = parse_positive_int(str(request.query_params.get("chat") or "").strip())
+    if selected_chat_user_id and selected_chat_user_id != user.id:
+        if mark_pigeon_dialog_as_read(db, user.id, selected_chat_user_id):
+            db.commit()
+
+    dialogs = build_pigeon_dialogs_for_user(db, user)
+    dialogs_by_user_id = {int(item["user_id"]): item for item in dialogs}
+    selected_chat = dialogs_by_user_id.get(int(selected_chat_user_id or 0))
+    if not selected_chat and dialogs:
+        selected_chat = dialogs[0]
+        selected_chat_user_id = int(selected_chat["user_id"])
+
+    unread_chat_total = sum(int(item.get("unread_count") or 0) for item in dialogs)
+
+    return template_response(
+        request,
+        "pigeon_messenger.html",
+        user=user,
+        active_tab="pigeons",
+        chats=dialogs,
+        selected_chat=selected_chat,
+        selected_chat_user_id=selected_chat_user_id,
+        unread_chat_total=unread_chat_total,
+        pigeon_alias_options=build_pigeon_alias_options(db, user),
+    )
 
 
 @app.post("/home-news/new")
@@ -11887,16 +12048,12 @@ def profile_page(request: Request, db: Session = Depends(get_db)):
     if not user:
         return redirect("/login")
 
-    is_stats_admin = can_view_admin_dashboard(user)
-    admin_stats: dict[str, Any] | None = build_profile_admin_stats(db) if is_stats_admin else None
-
     return template_response(
         request,
         "profile.html",
         user=user,
         active_tab="profile",
-        admin_stats=admin_stats,
-        can_view_admin_dashboard=is_stats_admin,
+        can_view_admin_dashboard=can_view_admin_dashboard(user),
     )
 
 
@@ -21794,10 +21951,7 @@ async def festivals_notifications_mark_read(request: Request, db: Session = Depe
         return redirect("/login")
     form = await request.form()
     next_url = safe_redirect_target(str(form.get("next", "")).strip(), "/festivals")
-    db.execute(
-        text("UPDATE festival_notifications SET is_read = 1 WHERE user_id = :user_id"),
-        {"user_id": user.id},
-    )
+    mark_regular_notifications_read(db, user.id)
     db.commit()
     add_flash(request, "Уведомления отмечены как прочитанные.", "success")
     return redirect(next_url)
@@ -21856,14 +22010,13 @@ async def notifications_send_pigeon(request: Request, db: Session = Depends(get_
         return redirect("/login")
 
     form = await request.form()
+    recipient_user_id = parse_positive_int(str(form.get("recipient_user_id", "")).strip())
     recipient_alias_raw = str(form.get("recipient_alias", "")).strip()
     message_body = str(form.get("message", "")).strip()
     reply_to_raw = str(form.get("reply_to_notification_id", "")).strip()
-    next_url = safe_redirect_target(str(form.get("next", "")).strip(), "/")
+    next_target_raw = str(form.get("next", "")).strip()
+    next_url = safe_redirect_target(next_target_raw, "/pigeons")
 
-    if not recipient_alias_raw:
-        add_flash(request, "Укажите ник получателя.", "error")
-        return redirect(next_url)
     if not message_body:
         add_flash(request, "Введите текст сообщения.", "error")
         return redirect(next_url)
@@ -21871,15 +22024,29 @@ async def notifications_send_pigeon(request: Request, db: Session = Depends(get_
         add_flash(request, "Сообщение слишком длинное (максимум 1500 символов).", "error")
         return redirect(next_url)
 
-    alias_to_username, users_by_username, _ = build_user_alias_lookup(db)
-    canonical_username = resolve_alias_to_username(recipient_alias_raw, alias_to_username)
-    recipient = users_by_username.get(canonical_username.casefold())
+    recipient: User | None = None
+    if recipient_user_id:
+        recipient = db.get(User, recipient_user_id)
+
+    if not recipient:
+        if not recipient_alias_raw:
+            add_flash(request, "Укажите ник получателя.", "error")
+            return redirect(next_url)
+        alias_to_username, users_by_username, _ = build_user_alias_lookup(db)
+        canonical_username = resolve_alias_to_username(recipient_alias_raw, alias_to_username)
+        recipient = users_by_username.get(canonical_username.casefold())
+
     if not recipient:
         add_flash(request, "Пользователь с таким ником не найден.", "error")
         return redirect(next_url)
     if recipient.id == user.id:
         add_flash(request, "Нельзя отправить голубя самому себе.", "error")
         return redirect(next_url)
+
+    if next_target_raw in {"", "/pigeons"}:
+        next_url = f"/pigeons?chat={recipient.id}"
+    else:
+        next_url = safe_redirect_target(next_target_raw, f"/pigeons?chat={recipient.id}")
 
     reply_to_notification_id = None
     if reply_to_raw.isdigit():
@@ -21911,10 +22078,7 @@ async def festivals_notifications_clear(request: Request, db: Session = Depends(
         return redirect("/login")
     form = await request.form()
     next_url = safe_redirect_target(str(form.get("next", "")).strip(), "/festivals")
-    db.execute(
-        text("DELETE FROM festival_notifications WHERE user_id = :user_id"),
-        {"user_id": user.id},
-    )
+    clear_regular_notifications(db, user.id)
     db.commit()
     add_flash(request, "Список оповещений очищен.", "success")
     return redirect(next_url)

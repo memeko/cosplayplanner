@@ -76,6 +76,7 @@
         {% if user_is_special(user) %}
           <a href="/admin/dashboard" class="tab {% if active_tab == 'admin' %}active{% endif %}">Админ</a>
         {% endif %}
+        <a href="/pigeons" class="tab {% if active_tab == 'pigeons' %}active{% endif %}">Голуби</a>
         <a href="/profile" class="tab {% if active_tab == 'profile' %}active{% endif %}">Профиль</a>
       </nav>
       <form method="post" action="/logout">

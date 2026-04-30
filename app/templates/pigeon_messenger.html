@@ -1,0 +1,171 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="section-head">
+  <div>
+    <h1>Голубиная почта {% if unread_chat_total %}<span class="chip chip-alert">{{ unread_chat_total }}</span>{% endif %}</h1>
+    <p class="muted">Один адресат — один чат.</p>
+  </div>
+</section>
+
+<section class="box">
+  <h2>Новый диалог</h2>
+  <form method="post" action="/notifications/pigeon" class="grid one-col top-offset">
+    <input type="hidden" name="next" value="/pigeons" />
+    <label>
+      Ник косплеера
+      <input type="text" name="recipient_alias" list="pigeon-recipients" placeholder="Введите ник" required />
+      <datalist id="pigeon-recipients">
+        {% for alias in pigeon_alias_options %}
+          <option value="{{ alias }}"></option>
+        {% endfor %}
+      </datalist>
+    </label>
+    <label>
+      Сообщение
+      <textarea
+        name="message"
+        id="pigeon-new-message-input"
+        rows="3"
+        maxlength="1500"
+        placeholder="Напишите сообщение..."
+        required
+      ></textarea>
+    </label>
+    {% if pixel_emoji_catalog %}
+      <details class="top-offset">
+        <summary>Эмодзи</summary>
+        <div class="emoji-picker-grid top-offset" data-emoji-target="pigeon-new-message-input">
+          {% for emoji in pixel_emoji_catalog %}
+            <button type="button" class="emoji-picker-btn" data-emoji-code="{{ emoji.code }}" title="{{ emoji.label }}">
+              <img src="{{ emoji.url }}" alt="{{ emoji.label }}" loading="lazy" />
+            </button>
+          {% endfor %}
+        </div>
+        <p class="muted small-note top-offset">За эмодзи спасибо fava-beans.</p>
+      </details>
+    {% endif %}
+    <div class="actions-inline">
+      <button type="submit" class="btn btn-accent">Начать диалог</button>
+    </div>
+  </form>
+</section>
+
+<section class="box top-offset pigeon-messenger-shell">
+  <div class="pigeon-messenger-grid">
+    <aside class="pigeon-chat-sidebar">
+      <h2>Чаты</h2>
+      {% if chats %}
+        <div class="pigeon-chat-list top-offset">
+          {% for chat in chats %}
+            <a
+              href="/pigeons?chat={{ chat.user_id }}"
+              class="pigeon-chat-link {% if selected_chat and selected_chat.user_id == chat.user_id %}active{% endif %}"
+            >
+              <div class="row-between">
+                <strong>@{{ chat.chat_alias }}</strong>
+                {% if chat.unread_count %}
+                  <span class="chip chip-alert">{{ chat.unread_count }}</span>
+                {% endif %}
+              </div>
+              <p class="muted top-offset">{{ chat.last_preview or "Без текста" }}</p>
+              <p class="muted small-note top-offset">
+                {{ chat.updated_at.strftime('%d-%m-%Y %H:%M') if chat.updated_at else "—" }}
+              </p>
+            </a>
+          {% endfor %}
+        </div>
+      {% else %}
+        <p class="muted top-offset">Пока нет диалогов. Отправьте первое сообщение выше.</p>
+      {% endif %}
+    </aside>
+
+    <div class="pigeon-chat-thread">
+      {% if selected_chat %}
+        <h2>Диалог с @{{ selected_chat.chat_alias }}</h2>
+        {% if selected_chat.messages %}
+          <div class="pigeon-thread-messages top-offset">
+            {% for message in selected_chat.messages %}
+              <article class="pigeon-thread-item pigeon-thread-{{ message.direction }}">
+                <p class="comment-meta">
+                  {% if message.direction == "in" %}
+                    Входящее
+                  {% else %}
+                    Исходящее
+                  {% endif %}
+                  • {{ message.created_at.strftime('%d-%m-%Y %H:%M') if message.created_at else "—" }}
+                </p>
+                <div class="notes-block">{{ message.body_html }}</div>
+              </article>
+            {% endfor %}
+          </div>
+        {% else %}
+          <p class="muted top-offset">В этом чате пока нет сообщений.</p>
+        {% endif %}
+
+        <form method="post" action="/notifications/pigeon" class="grid one-col top-offset">
+          <input type="hidden" name="next" value="/pigeons?chat={{ selected_chat.user_id }}" />
+          <input type="hidden" name="recipient_user_id" value="{{ selected_chat.user_id }}" />
+          <label>
+            Сообщение
+            <textarea
+              name="message"
+              id="pigeon-chat-message-input"
+              rows="3"
+              maxlength="1500"
+              placeholder="Напишите сообщение для @{{ selected_chat.chat_alias }}"
+              required
+            ></textarea>
+          </label>
+          {% if pixel_emoji_catalog %}
+            <details class="top-offset">
+              <summary>Эмодзи</summary>
+              <div class="emoji-picker-grid top-offset" data-emoji-target="pigeon-chat-message-input">
+                {% for emoji in pixel_emoji_catalog %}
+                  <button type="button" class="emoji-picker-btn" data-emoji-code="{{ emoji.code }}" title="{{ emoji.label }}">
+                    <img src="{{ emoji.url }}" alt="{{ emoji.label }}" loading="lazy" />
+                  </button>
+                {% endfor %}
+              </div>
+            </details>
+          {% endif %}
+          <div class="actions-inline">
+            <button type="submit" class="btn btn-accent">Отправить</button>
+          </div>
+        </form>
+      {% else %}
+        <h2>Диалог</h2>
+        <p class="muted top-offset">Выберите чат слева или начните новый диалог.</p>
+      {% endif %}
+    </div>
+  </div>
+</section>
+{% endblock %}
+{% block scripts %}
+<script>
+  (function () {
+    function insertAtCursor(textarea, value) {
+      if (!textarea) return;
+      const start = textarea.selectionStart || 0;
+      const end = textarea.selectionEnd || 0;
+      const current = textarea.value || '';
+      textarea.value = current.slice(0, start) + value + current.slice(end);
+      const nextPos = start + value.length;
+      textarea.focus();
+      textarea.setSelectionRange(nextPos, nextPos);
+    }
+
+    document.querySelectorAll('.emoji-picker-grid').forEach((grid) => {
+      const targetId = grid.getAttribute('data-emoji-target');
+      const target = targetId ? document.getElementById(targetId) : null;
+      if (!target) return;
+      grid.querySelectorAll('.emoji-picker-btn').forEach((button) => {
+        button.addEventListener('click', function () {
+          const code = button.getAttribute('data-emoji-code');
+          if (!code) return;
+          insertAtCursor(target, `[[emoji:${code}]]`);
+        });
+      });
+    });
+  })();
+</script>
+{% endblock %}
