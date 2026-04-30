@@ -23,7 +23,7 @@
             <a
               href="/pigeons?chat={{ chat.user_id }}"
               class="pigeon-chat-link {% if selected_chat and selected_chat.user_id == chat.user_id %}active{% endif %}"
-              data-search-text="{{ (chat.chat_alias ~ ' ' ~ (chat.last_preview or '') ~ ' ' ~ (chat.chat_custom_label or ''))|lower }}"
+              data-search-text="{{ (('@' ~ chat.chat_alias) ~ ' ' ~ chat.chat_alias ~ ' ' ~ (chat.last_preview or '') ~ ' ' ~ (chat.chat_custom_label or ''))|lower }}"
             >
               <span class="pigeon-chat-avatar">
                 <img src="{{ chat.chat_avatar_url }}" alt="@{{ chat.chat_alias }}" loading="lazy" />

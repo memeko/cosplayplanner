@@ -1125,6 +1125,10 @@ textarea {
   transition: border-color 0.16s ease, background 0.16s ease, transform 0.16s ease;
 }
 
+.pigeon-chat-link[hidden] {
+  display: none !important;
+}
+
 .pigeon-chat-link:hover {
   border-color: rgba(129, 140, 248, 0.5);
   background: rgba(243, 246, 255, 0.9);
@@ -1250,6 +1254,10 @@ textarea {
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 8px;
   align-items: center;
+}
+
+.pigeon-chat-label-form[hidden] {
+  display: none !important;
 }
 
 .pigeon-chat-label-form input {
