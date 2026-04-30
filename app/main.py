@@ -7839,6 +7839,21 @@ def is_pigeon_message(message: str | None) -> bool:
     return parse_pigeon_message(message) is not None
 
 
+def pigeon_dialog_day_label(value: datetime | None, *, today_local: date | None = None) -> str:
+    if not value:
+        return ""
+    today_value = today_local or date.today()
+    message_day = value.date()
+    delta_days = (today_value - message_day).days
+    if delta_days == 0:
+        return "Сегодня"
+    if delta_days == 1:
+        return "Вчера"
+    if delta_days == 2:
+        return "Позавчера"
+    return message_day.strftime("%d.%m.%Y")
+
+
 def latest_pigeon_notification_for_reply(db: Session, user_id: int) -> FestivalNotification | None:
     notifications = db.execute(
         select(FestivalNotification)
@@ -7917,6 +7932,7 @@ def mark_pigeon_dialog_as_read(db: Session, user_id: int, chat_user_id: int) -> 
 
 
 def build_pigeon_dialogs_for_user(db: Session, user: User) -> list[dict[str, Any]]:
+    today_local = date.today()
     notes = db.execute(
         select(FestivalNotification)
         .where(
@@ -7960,6 +7976,7 @@ def build_pigeon_dialogs_for_user(db: Session, user: User) -> list[dict[str, Any
                 "last_notification_id": 0,
                 "last_preview": "",
                 "updated_at": None,
+                "last_day_label": "",
                 "chat_user": None,
                 "chat_alias": "",
                 "chat_avatar_url": DEFAULT_AVATAR_PATH,
@@ -7988,6 +8005,7 @@ def build_pigeon_dialogs_for_user(db: Session, user: User) -> list[dict[str, Any
             dialog["last_notification_id"] = note_id
             dialog["last_preview"] = preview
             dialog["updated_at"] = note.created_at
+            dialog["last_day_label"] = pigeon_dialog_day_label(note.created_at, today_local=today_local)
 
     if not dialogs_by_user_id:
         return []

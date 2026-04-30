@@ -1069,10 +1069,10 @@ textarea {
 
 .pigeon-messenger-shell {
   padding: 14px;
-  border-color: rgba(255, 206, 225, 0.68);
+  border-color: rgba(182, 194, 255, 0.68);
   background:
-    radial-gradient(480px 240px at 12% 0%, rgba(255, 244, 250, 0.68), rgba(255, 244, 250, 0)),
-    linear-gradient(155deg, rgba(255, 239, 247, 0.84), rgba(255, 230, 241, 0.7));
+    radial-gradient(480px 240px at 12% 0%, rgba(236, 243, 255, 0.68), rgba(236, 243, 255, 0)),
+    linear-gradient(155deg, rgba(232, 239, 255, 0.84), rgba(224, 228, 255, 0.7));
 }
 
 .pigeon-messenger-grid {
@@ -1083,7 +1083,7 @@ textarea {
 }
 
 .pigeon-chat-sidebar {
-  border: 1px solid rgba(255, 206, 225, 0.9);
+  border: 1px solid rgba(182, 194, 255, 0.9);
   border-radius: 20px;
   padding: 12px;
   background: rgba(255, 255, 255, 0.74);
@@ -1097,8 +1097,8 @@ textarea {
 .pigeon-chat-search input {
   width: 100%;
   border-radius: 999px;
-  border: 1px solid rgba(255, 206, 225, 0.66);
-  background: rgba(255, 246, 250, 0.84);
+  border: 1px solid rgba(182, 194, 255, 0.66);
+  background: rgba(239, 244, 255, 0.84);
 }
 
 .pigeon-new-dialog-btn {
@@ -1117,7 +1117,7 @@ textarea {
   align-items: center;
   text-decoration: none;
   color: inherit;
-  border: 1px solid rgba(255, 206, 225, 0.78);
+  border: 1px solid rgba(182, 194, 255, 0.78);
   border-radius: 16px;
   background: rgba(255, 255, 255, 0.78);
   padding: 10px;
@@ -1126,14 +1126,14 @@ textarea {
 }
 
 .pigeon-chat-link:hover {
-  border-color: rgba(244, 114, 182, 0.5);
-  background: rgba(255, 248, 252, 0.9);
+  border-color: rgba(129, 140, 248, 0.5);
+  background: rgba(243, 246, 255, 0.9);
   transform: translateY(-1px);
 }
 
 .pigeon-chat-link.active {
-  border-color: rgba(236, 72, 153, 0.42);
-  background: linear-gradient(145deg, rgba(255, 241, 247, 0.9), rgba(255, 228, 238, 0.74));
+  border-color: rgba(99, 102, 241, 0.42);
+  background: linear-gradient(145deg, rgba(237, 241, 255, 0.9), rgba(227, 231, 255, 0.74));
 }
 
 .pigeon-chat-avatar {
@@ -1142,7 +1142,7 @@ textarea {
   border-radius: 999px;
   overflow: hidden;
   flex-shrink: 0;
-  border: 1px solid rgba(255, 206, 225, 0.8);
+  border: 1px solid rgba(182, 194, 255, 0.8);
   background: rgba(255, 255, 255, 0.95);
 }
 
@@ -1179,14 +1179,23 @@ textarea {
 
 .pigeon-chat-thread {
   min-width: 0;
+  align-self: start;
+  position: sticky;
+  top: 74px;
 }
 
 .pigeon-chat-phone {
-  border: 1px solid rgba(255, 206, 225, 0.82);
+  border: 1px solid rgba(182, 194, 255, 0.82);
   border-radius: 28px;
-  background: linear-gradient(160deg, rgba(255, 255, 255, 0.92), rgba(255, 246, 250, 0.82));
-  box-shadow: 0 18px 36px rgba(170, 74, 116, 0.16), var(--glass-highlight-soft);
+  background: linear-gradient(160deg, rgba(255, 255, 255, 0.92), rgba(236, 240, 255, 0.82));
+  box-shadow: 0 18px 36px rgba(87, 103, 181, 0.16), var(--glass-highlight-soft);
   padding: 12px;
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto auto;
+  gap: 10px;
+  height: min(78vh, calc(100vh - 160px));
+  min-height: 460px;
+  overflow: hidden;
 }
 
 .pigeon-phone-head {
@@ -1194,7 +1203,7 @@ textarea {
   align-items: center;
   gap: 10px;
   border-radius: 18px;
-  border: 1px solid rgba(255, 206, 225, 0.7);
+  border: 1px solid rgba(182, 194, 255, 0.7);
   background: rgba(255, 255, 255, 0.88);
   padding: 9px 10px;
 }
@@ -1212,6 +1221,30 @@ textarea {
   margin: 2px 0 0;
 }
 
+.pigeon-chat-label-tag {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(129, 140, 248, 0.4);
+  background: rgba(233, 239, 255, 0.78);
+  color: #3730a3;
+  font-weight: 600;
+}
+
+.pigeon-chat-label-tag:not(.is-empty) {
+  cursor: pointer;
+}
+
+.pigeon-chat-label-tag.is-empty {
+  border-style: dashed;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.pigeon-chat-phone > .top-offset {
+  margin-top: 0;
+}
+
 .pigeon-chat-label-form {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -1222,7 +1255,7 @@ textarea {
 .pigeon-chat-label-form input {
   margin: 0;
   border-radius: 12px;
-  border: 1px solid rgba(255, 206, 225, 0.76);
+  border: 1px solid rgba(182, 194, 255, 0.76);
   background: rgba(255, 255, 255, 0.92);
 }
 
@@ -1230,7 +1263,7 @@ textarea {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  max-height: 58vh;
+  min-height: 0;
   overflow-y: auto;
   padding: 3px 2px 3px 0;
 }
@@ -1244,7 +1277,7 @@ textarea {
   border-radius: 18px;
   padding: 10px 12px;
   box-shadow: var(--glass-highlight-soft);
-  border: 1px solid rgba(255, 214, 230, 0.82);
+  border: 1px solid rgba(198, 210, 255, 0.82);
 }
 
 .pigeon-thread-bubble .notes-block {
@@ -1271,12 +1304,12 @@ textarea {
 }
 
 .pigeon-thread-out .pigeon-thread-bubble {
-  background: rgba(255, 234, 244, 0.9);
-  border-color: rgba(251, 146, 188, 0.5);
+  background: rgba(231, 237, 255, 0.9);
+  border-color: rgba(129, 140, 248, 0.5);
 }
 
 .pigeon-thread-empty {
-  border: 1px dashed rgba(251, 146, 188, 0.56);
+  border: 1px dashed rgba(129, 140, 248, 0.56);
   border-radius: 16px;
   padding: 24px 18px;
   text-align: center;
@@ -1296,8 +1329,11 @@ textarea {
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 8px;
   align-items: end;
-  padding-top: 10px;
-  border-top: 1px solid rgba(255, 206, 225, 0.72);
+  padding-top: 8px;
+  border-top: 1px solid rgba(182, 194, 255, 0.72);
+  background: rgba(255, 255, 255, 0.9);
+  border-radius: 12px;
+  padding: 8px;
 }
 
 .pigeon-phone-compose textarea {
@@ -1305,7 +1341,7 @@ textarea {
   min-height: 48px;
   max-height: 120px;
   border-radius: 16px;
-  border: 1px solid rgba(255, 206, 225, 0.7);
+  border: 1px solid rgba(182, 194, 255, 0.7);
   background: rgba(255, 255, 255, 0.92);
   resize: vertical;
 }
@@ -1319,13 +1355,14 @@ textarea {
   display: flex;
   align-items: center;
   justify-content: center;
+  height: min(64vh, calc(100vh - 220px));
 }
 
 .pigeon-dialog-modal {
   position: fixed;
   inset: 0;
   z-index: 1300;
-  background: rgba(30, 10, 22, 0.34);
+  background: rgba(20, 28, 52, 0.34);
   backdrop-filter: blur(4px);
   -webkit-backdrop-filter: blur(4px);
   display: flex;
@@ -1340,12 +1377,12 @@ textarea {
 
 .pigeon-dialog-card {
   width: min(560px, 96vw);
-  border: 1px solid rgba(255, 206, 225, 0.82);
+  border: 1px solid rgba(182, 194, 255, 0.82);
   border-radius: 20px;
-  background: linear-gradient(150deg, rgba(255, 255, 255, 0.94), rgba(255, 244, 250, 0.86));
+  background: linear-gradient(150deg, rgba(255, 255, 255, 0.94), rgba(236, 243, 255, 0.86));
   padding: 16px;
   position: relative;
-  box-shadow: 0 22px 42px rgba(84, 26, 52, 0.24), var(--glass-highlight-soft);
+  box-shadow: 0 22px 42px rgba(45, 56, 112, 0.24), var(--glass-highlight-soft);
 }
 
 .pigeon-dialog-card h2 {
@@ -2788,8 +2825,9 @@ textarea {
     grid-template-columns: 1fr;
   }
 
-  .pigeon-thread-messages {
-    max-height: none;
+  .pigeon-chat-thread {
+    position: static;
+    top: auto;
   }
 
   .pigeon-chat-sidebar {
@@ -2811,10 +2849,17 @@ textarea {
   .pigeon-chat-phone {
     border-radius: 20px;
     padding: 10px;
+    height: min(72vh, calc(100vh - 210px));
+    min-height: 400px;
   }
 
   .pigeon-thread-bubble {
     max-width: 90%;
+  }
+
+  .pigeon-chat-phone-empty {
+    height: min(56vh, calc(100vh - 260px));
+    min-height: 280px;
   }
 
   .pigeon-chat-label-form {

@@ -15,12 +15,16 @@
         <button type="button" id="pigeon-open-new-dialog" class="btn btn-accent pigeon-new-dialog-btn">Новый диалог</button>
       </div>
       <label class="pigeon-chat-search top-offset">
-        <input type="text" placeholder="Поиск чатов..." disabled />
+        <input id="pigeon-chat-search-input" type="text" placeholder="Поиск чатов..." autocomplete="off" />
       </label>
       {% if chats %}
         <div class="pigeon-chat-list top-offset">
           {% for chat in chats %}
-            <a href="/pigeons?chat={{ chat.user_id }}" class="pigeon-chat-link {% if selected_chat and selected_chat.user_id == chat.user_id %}active{% endif %}">
+            <a
+              href="/pigeons?chat={{ chat.user_id }}"
+              class="pigeon-chat-link {% if selected_chat and selected_chat.user_id == chat.user_id %}active{% endif %}"
+              data-search-text="{{ (chat.chat_alias ~ ' ' ~ (chat.last_preview or '') ~ ' ' ~ (chat.chat_custom_label or ''))|lower }}"
+            >
               <span class="pigeon-chat-avatar">
                 <img src="{{ chat.chat_avatar_url }}" alt="@{{ chat.chat_alias }}" loading="lazy" />
               </span>
@@ -29,7 +33,7 @@
                 <span class="muted">{{ chat.last_preview or "Без текста" }}</span>
               </span>
               <span class="pigeon-chat-summary-meta">
-                <span class="muted small-note">{{ chat.updated_at.strftime('%H:%M') if chat.updated_at else "—" }}</span>
+                <span class="muted small-note">{{ chat.last_day_label or "—" }}</span>
                 {% if chat.unread_count %}
                   <span class="chip chip-alert">{{ chat.unread_count }}</span>
                 {% endif %}
@@ -37,6 +41,7 @@
             </a>
           {% endfor %}
         </div>
+        <p id="pigeon-chat-search-empty" class="muted top-offset" hidden>Ничего не найдено.</p>
       {% else %}
         <p class="muted top-offset">Пока нет диалогов. Нажмите «Новый диалог».</p>
       {% endif %}
@@ -52,20 +57,34 @@
             <div class="pigeon-phone-user">
               <h2>@{{ selected_chat.chat_alias }}</h2>
               <p class="muted small-note">
-                {% if selected_chat.chat_custom_label %}
-                  {{ selected_chat.chat_custom_label }}
-                {% elif selected_chat.unread_count %}
-                  Непрочитанных сообщений: {{ selected_chat.unread_count }}
-                {% else %}
-                  Метка не задана
-                {% endif %}
+                <span
+                  id="pigeon-chat-label-tag"
+                  class="pigeon-chat-label-tag {% if not selected_chat.chat_custom_label %}is-empty{% endif %}"
+                  data-has-label="{% if selected_chat.chat_custom_label %}1{% else %}0{% endif %}"
+                  title="{% if selected_chat.chat_custom_label %}Двойной клик для редактирования метки{% else %}Введите метку ниже{% endif %}"
+                >
+                  {% if selected_chat.chat_custom_label %}
+                    {{ selected_chat.chat_custom_label }}
+                  {% elif selected_chat.unread_count %}
+                    Непрочитанных сообщений: {{ selected_chat.unread_count }}
+                  {% else %}
+                    Метка не задана
+                  {% endif %}
+                </span>
               </p>
             </div>
           </header>
-          <form method="post" action="/pigeons/chat-label" class="pigeon-chat-label-form top-offset">
+          <form
+            method="post"
+            action="/pigeons/chat-label"
+            id="pigeon-chat-label-form"
+            class="pigeon-chat-label-form top-offset"
+            {% if selected_chat.chat_custom_label %}hidden{% endif %}
+          >
             <input type="hidden" name="next" value="/pigeons?chat={{ selected_chat.user_id }}" />
             <input type="hidden" name="chat_user_id" value="{{ selected_chat.user_id }}" />
             <input
+              id="pigeon-chat-label-input"
               type="text"
               name="chat_label"
               maxlength="60"
@@ -218,6 +237,12 @@
     const closeNewDialogBtn = document.getElementById('pigeon-close-new-dialog');
     const newDialogModal = document.getElementById('pigeon-new-dialog-modal');
     const newDialogRecipient = document.getElementById('pigeon-new-dialog-recipient');
+    const chatLabelTag = document.getElementById('pigeon-chat-label-tag');
+    const chatLabelForm = document.getElementById('pigeon-chat-label-form');
+    const chatLabelInput = document.getElementById('pigeon-chat-label-input');
+    const chatSearchInput = document.getElementById('pigeon-chat-search-input');
+    const chatSearchEmpty = document.getElementById('pigeon-chat-search-empty');
+    const chatLinks = Array.from(document.querySelectorAll('.pigeon-chat-link'));
 
     function openNewDialogModal() {
       if (!newDialogModal) return;
@@ -250,6 +275,44 @@
         closeNewDialogModal();
       }
     });
+
+    if (chatLabelTag && chatLabelForm && chatLabelInput) {
+      chatLabelTag.addEventListener('dblclick', function () {
+        if (chatLabelTag.getAttribute('data-has-label') !== '1') return;
+        chatLabelForm.hidden = false;
+        window.setTimeout(function () {
+          chatLabelInput.focus();
+          chatLabelInput.select();
+        }, 20);
+      });
+    }
+
+    function normalizeSearchValue(value) {
+      return String(value || '')
+        .toLowerCase()
+        .replace(/ё/g, 'е')
+        .trim();
+    }
+
+    function applyChatSearchFilter() {
+      if (!chatLinks.length) return;
+      const query = normalizeSearchValue(chatSearchInput ? chatSearchInput.value : '');
+      let visibleCount = 0;
+      chatLinks.forEach((link) => {
+        const haystack = normalizeSearchValue(link.getAttribute('data-search-text') || link.textContent || '');
+        const isVisible = !query || haystack.includes(query);
+        link.hidden = !isVisible;
+        if (isVisible) visibleCount += 1;
+      });
+      if (chatSearchEmpty) {
+        chatSearchEmpty.hidden = visibleCount > 0 || !query;
+      }
+    }
+
+    if (chatSearchInput) {
+      chatSearchInput.addEventListener('input', applyChatSearchFilter);
+      applyChatSearchFilter();
+    }
 
     async function pollDialogFrames() {
       if (statePollBusy) return;
