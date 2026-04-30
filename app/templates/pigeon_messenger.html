@@ -125,19 +125,6 @@
             ></textarea>
             <button type="submit" class="btn btn-accent">Отправить</button>
           </form>
-
-          {% if pixel_emoji_catalog %}
-            <details class="top-offset">
-              <summary>Эмодзи</summary>
-              <div class="emoji-picker-grid top-offset" data-emoji-target="pigeon-chat-message-input">
-                {% for emoji in pixel_emoji_catalog %}
-                  <button type="button" class="emoji-picker-btn" data-emoji-code="{{ emoji.code }}" title="{{ emoji.label }}">
-                    <img src="{{ emoji.url }}" alt="{{ emoji.label }}" loading="lazy" />
-                  </button>
-                {% endfor %}
-              </div>
-            </details>
-          {% endif %}
         </section>
       {% else %}
         <section class="pigeon-chat-phone pigeon-chat-phone-empty">
