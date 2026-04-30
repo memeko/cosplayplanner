@@ -1067,15 +1067,6 @@ textarea {
   white-space: pre-wrap;
 }
 
-.pigeon-new-dialog-box {
-  border-color: rgba(255, 206, 225, 0.78);
-  background: linear-gradient(145deg, rgba(255, 240, 246, 0.82), rgba(255, 228, 238, 0.64));
-}
-
-.pigeon-new-dialog-box textarea {
-  min-height: 84px;
-}
-
 .pigeon-messenger-shell {
   padding: 14px;
   border-color: rgba(255, 206, 225, 0.68);
@@ -1110,38 +1101,39 @@ textarea {
   background: rgba(255, 246, 250, 0.84);
 }
 
+.pigeon-new-dialog-btn {
+  width: 100%;
+}
+
 .pigeon-chat-list {
   display: grid;
   gap: 10px;
 }
 
-.pigeon-chat-spoiler {
-  border: 1px solid rgba(255, 206, 225, 0.78);
-  border-radius: 16px;
-  background: rgba(255, 255, 255, 0.78);
-  padding: 9px;
-  box-shadow: var(--glass-highlight-soft);
-}
-
-.pigeon-chat-spoiler summary {
-  list-style: none;
-  cursor: pointer;
-}
-
-.pigeon-chat-spoiler summary::-webkit-details-marker {
-  display: none;
-}
-
-.pigeon-chat-spoiler.active {
-  border-color: rgba(236, 72, 153, 0.42);
-  background: linear-gradient(145deg, rgba(255, 241, 247, 0.9), rgba(255, 228, 238, 0.74));
-}
-
-.pigeon-chat-summary {
+.pigeon-chat-link {
   display: grid;
   grid-template-columns: auto 1fr auto;
   gap: 10px;
   align-items: center;
+  text-decoration: none;
+  color: inherit;
+  border: 1px solid rgba(255, 206, 225, 0.78);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.78);
+  padding: 10px;
+  box-shadow: var(--glass-highlight-soft);
+  transition: border-color 0.16s ease, background 0.16s ease, transform 0.16s ease;
+}
+
+.pigeon-chat-link:hover {
+  border-color: rgba(244, 114, 182, 0.5);
+  background: rgba(255, 248, 252, 0.9);
+  transform: translateY(-1px);
+}
+
+.pigeon-chat-link.active {
+  border-color: rgba(236, 72, 153, 0.42);
+  background: linear-gradient(145deg, rgba(255, 241, 247, 0.9), rgba(255, 228, 238, 0.74));
 }
 
 .pigeon-chat-avatar {
@@ -1185,46 +1177,6 @@ textarea {
   justify-items: end;
 }
 
-.pigeon-chat-spoiler-frame {
-  margin-top: 8px;
-  border: 1px solid rgba(255, 206, 225, 0.64);
-  border-radius: 12px;
-  background: rgba(255, 250, 252, 0.86);
-  padding: 8px;
-  max-height: 200px;
-  overflow-y: auto;
-  display: grid;
-  gap: 6px;
-}
-
-.pigeon-chat-peek {
-  border-radius: 10px;
-  padding: 7px 8px;
-  border: 1px solid rgba(255, 214, 230, 0.8);
-  background: rgba(255, 255, 255, 0.86);
-}
-
-.pigeon-chat-peek-in {
-  border-color: rgba(251, 146, 188, 0.42);
-}
-
-.pigeon-chat-peek-out {
-  border-color: rgba(244, 114, 182, 0.42);
-  background: rgba(255, 242, 248, 0.86);
-}
-
-.pigeon-chat-peek-meta {
-  margin: 0 0 4px;
-  color: var(--muted);
-  font-size: 11px;
-}
-
-.pigeon-chat-peek .notes-block {
-  margin: 0;
-  font-size: 12px;
-  line-height: 1.35;
-}
-
 .pigeon-chat-thread {
   min-width: 0;
 }
@@ -1258,6 +1210,20 @@ textarea {
 
 .pigeon-phone-user p {
   margin: 2px 0 0;
+}
+
+.pigeon-chat-label-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.pigeon-chat-label-form input {
+  margin: 0;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 206, 225, 0.76);
+  background: rgba(255, 255, 255, 0.92);
 }
 
 .pigeon-thread-messages {
@@ -1353,6 +1319,47 @@ textarea {
   display: flex;
   align-items: center;
   justify-content: center;
+}
+
+.pigeon-dialog-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 1300;
+  background: rgba(30, 10, 22, 0.34);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+
+.pigeon-dialog-modal[hidden] {
+  display: none !important;
+}
+
+.pigeon-dialog-card {
+  width: min(560px, 96vw);
+  border: 1px solid rgba(255, 206, 225, 0.82);
+  border-radius: 20px;
+  background: linear-gradient(150deg, rgba(255, 255, 255, 0.94), rgba(255, 244, 250, 0.86));
+  padding: 16px;
+  position: relative;
+  box-shadow: 0 22px 42px rgba(84, 26, 52, 0.24), var(--glass-highlight-soft);
+}
+
+.pigeon-dialog-card h2 {
+  margin: 0;
+}
+
+.pigeon-dialog-close {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+}
+
+.pigeon-dialog-card textarea {
+  min-height: 92px;
 }
 
 .pigeon-popup {
@@ -2789,7 +2796,7 @@ textarea {
     border-radius: 16px;
   }
 
-  .pigeon-chat-summary {
+  .pigeon-chat-link {
     grid-template-columns: auto 1fr;
   }
 
@@ -2801,10 +2808,6 @@ textarea {
     gap: 8px;
   }
 
-  .pigeon-chat-spoiler-frame {
-    max-height: 170px;
-  }
-
   .pigeon-chat-phone {
     border-radius: 20px;
     padding: 10px;
@@ -2812,6 +2815,14 @@ textarea {
 
   .pigeon-thread-bubble {
     max-width: 90%;
+  }
+
+  .pigeon-chat-label-form {
+    grid-template-columns: 1fr;
+  }
+
+  .pigeon-chat-label-form .btn {
+    width: 100%;
   }
 
   .pigeon-phone-compose {

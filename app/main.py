@@ -429,6 +429,7 @@ CONTENT_PLAN_ACCESS_VERIFIED_GROUP = "content_plan_brfox_subscription_verified_a
 SMM_MANAGER_ROLE_GROUP = "profile_is_smm_manager"
 CONTENT_MANAGER_OWNER_GROUP = "content_manager_owner"
 CONTENT_MANAGER_USER_GROUP = "content_manager_user"
+PIGEON_CHAT_LABEL_GROUP = "pigeon_chat_label"
 BIRTHDAY_PIGEON_LAST_SENT_GROUP = "birthday_pigeon_last_sent_date"
 BIRTHDAY_PIGEON_SYSTEM_ALIAS = "cosplayplanner"
 BIRTHDAY_PIGEON_MESSAGE = (
@@ -8019,6 +8020,52 @@ def build_pigeon_alias_options(db: Session, user: User) -> list[str]:
     )
 
 
+def parse_pigeon_chat_label_entry(raw_value: str | None) -> tuple[int, str] | None:
+    raw = str(raw_value or "").strip()
+    if not raw:
+        return None
+    if "\t" not in raw:
+        return None
+    user_id_raw, label_raw = raw.split("\t", 1)
+    user_id = parse_positive_int(user_id_raw.strip())
+    label = str(label_raw or "").strip()
+    if not user_id or not label:
+        return None
+    return user_id, label
+
+
+def encode_pigeon_chat_label_entry(chat_user_id: int, label: str) -> str:
+    return f"{int(chat_user_id)}\t{str(label).strip()}"
+
+
+def get_pigeon_chat_labels(db: Session, user_id: int) -> dict[int, str]:
+    values = get_user_option_values(db, int(user_id), PIGEON_CHAT_LABEL_GROUP)
+    labels: dict[int, str] = {}
+    for value in values:
+        parsed = parse_pigeon_chat_label_entry(value)
+        if not parsed:
+            continue
+        chat_user_id, label = parsed
+        labels[chat_user_id] = label
+    return labels
+
+
+def set_pigeon_chat_label(db: Session, user_id: int, chat_user_id: int, label: str | None) -> None:
+    labels = get_pigeon_chat_labels(db, int(user_id))
+    normalized = str(label or "").strip()
+    if normalized:
+        labels[int(chat_user_id)] = normalized
+    elif int(chat_user_id) in labels:
+        labels.pop(int(chat_user_id), None)
+
+    entries = [
+        encode_pigeon_chat_label_entry(chat_id, value)
+        for chat_id, value in sorted(labels.items(), key=lambda item: item[0])
+        if str(value or "").strip()
+    ]
+    replace_user_option_values(db, int(user_id), PIGEON_CHAT_LABEL_GROUP, entries)
+
+
 def mark_regular_notifications_read(db: Session, user_id: int) -> int:
     rows = db.execute(
         select(FestivalNotification).where(FestivalNotification.user_id == int(user_id))
@@ -10945,6 +10992,9 @@ def pigeons_messenger(request: Request, db: Session = Depends(get_db)):
             db.commit()
 
     dialogs = build_pigeon_dialogs_for_user(db, user)
+    chat_labels = get_pigeon_chat_labels(db, user.id)
+    for dialog in dialogs:
+        dialog["chat_custom_label"] = str(chat_labels.get(int(dialog["user_id"]), "") or "").strip()
     dialogs_by_user_id = {int(item["user_id"]): item for item in dialogs}
     selected_chat = dialogs_by_user_id.get(int(selected_chat_user_id or 0))
     if not selected_chat and dialogs:
@@ -10964,6 +11014,40 @@ def pigeons_messenger(request: Request, db: Session = Depends(get_db)):
         unread_chat_total=unread_chat_total,
         pigeon_alias_options=build_pigeon_alias_options(db, user),
     )
+
+
+@app.post("/pigeons/chat-label")
+async def pigeons_chat_label_update(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    form = await request.form()
+    chat_user_id = parse_positive_int(str(form.get("chat_user_id", "")).strip())
+    label_value = str(form.get("chat_label", "")).strip()
+    next_url = safe_redirect_target(str(form.get("next", "")).strip(), "/pigeons")
+
+    if not chat_user_id or chat_user_id == user.id:
+        add_flash(request, "Нельзя сохранить метку для этого чата.", "error")
+        return redirect(next_url)
+
+    chat_user = db.get(User, chat_user_id)
+    if not chat_user:
+        add_flash(request, "Пользователь чата не найден.", "error")
+        return redirect(next_url)
+
+    if len(label_value) > 60:
+        add_flash(request, "Метка слишком длинная (максимум 60 символов).", "error")
+        return redirect(next_url)
+
+    set_pigeon_chat_label(db, user.id, chat_user_id, label_value)
+    db.commit()
+
+    if label_value:
+        add_flash(request, "Метка чата сохранена.", "success")
+    else:
+        add_flash(request, "Метка чата очищена.", "info")
+    return redirect(next_url)
 
 
 @app.post("/home-news/new")
