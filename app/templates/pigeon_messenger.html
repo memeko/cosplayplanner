@@ -5,6 +5,7 @@
     <h1>Голубиная почта {% if unread_chat_total %}<span class="chip chip-alert">{{ unread_chat_total }}</span>{% endif %}</h1>
   </div>
 </section>
+<div id="pigeon-live-state" data-latest-id="{{ latest_pigeon_id or 0 }}"></div>
 
 <section class="box pigeon-messenger-shell">
   <div class="pigeon-messenger-grid">
@@ -209,6 +210,10 @@
       activeThread.scrollTop = activeThread.scrollHeight;
     }
 
+    const liveStateNode = document.getElementById('pigeon-live-state');
+    let latestKnownPigeonId = Number(liveStateNode?.getAttribute('data-latest-id') || '0');
+    let statePollBusy = false;
+
     const openNewDialogBtn = document.getElementById('pigeon-open-new-dialog');
     const closeNewDialogBtn = document.getElementById('pigeon-close-new-dialog');
     const newDialogModal = document.getElementById('pigeon-new-dialog-modal');
@@ -245,6 +250,37 @@
         closeNewDialogModal();
       }
     });
+
+    async function pollDialogFrames() {
+      if (statePollBusy) return;
+      statePollBusy = true;
+      try {
+        const response = await fetch('/notifications/pigeon/state', {
+          method: 'GET',
+          credentials: 'same-origin',
+          cache: 'no-store',
+          headers: { 'X-Requested-With': 'XMLHttpRequest' }
+        });
+        if (!response.ok) return;
+        const payload = await response.json();
+        if (!payload || !payload.ok) return;
+        const latestId = Number(payload.latest_id || 0);
+        if (latestId > latestKnownPigeonId) {
+          window.location.reload();
+          return;
+        }
+        if (latestId > 0 && latestKnownPigeonId <= 0) {
+          latestKnownPigeonId = latestId;
+        }
+      } catch (_) {
+        // Ignore transient errors and retry on next tick.
+      } finally {
+        statePollBusy = false;
+      }
+    }
+
+    pollDialogFrames();
+    window.setInterval(pollDialogFrames, 4000);
   })();
 </script>
 {% endblock %}

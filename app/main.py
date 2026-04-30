@@ -8117,6 +8117,25 @@ def get_latest_unread_pigeon(db: Session, user_id: int) -> dict[str, Any] | None
     return None
 
 
+def latest_pigeon_activity_id(db: Session, user_id: int) -> int:
+    rows = db.execute(
+        select(FestivalNotification)
+        .where(
+            FestivalNotification.from_user_id.is_not(None),
+            or_(
+                FestivalNotification.user_id == int(user_id),
+                FestivalNotification.from_user_id == int(user_id),
+            ),
+        )
+        .order_by(FestivalNotification.id.desc())
+        .limit(500)
+    ).scalars().all()
+    for note in rows:
+        if is_pigeon_message(note.message):
+            return int(note.id or 0)
+    return 0
+
+
 def get_user_pigeon_notification(db: Session, user_id: int, notification_id: int) -> FestivalNotification | None:
     notification = db.execute(
         select(FestivalNotification).where(
@@ -11002,6 +11021,7 @@ def pigeons_messenger(request: Request, db: Session = Depends(get_db)):
         selected_chat_user_id = int(selected_chat["user_id"])
 
     unread_chat_total = sum(int(item.get("unread_count") or 0) for item in dialogs)
+    latest_pigeon_id = latest_pigeon_activity_id(db, user.id)
 
     return template_response(
         request,
@@ -11012,8 +11032,17 @@ def pigeons_messenger(request: Request, db: Session = Depends(get_db)):
         selected_chat=selected_chat,
         selected_chat_user_id=selected_chat_user_id,
         unread_chat_total=unread_chat_total,
+        latest_pigeon_id=latest_pigeon_id,
         pigeon_alias_options=build_pigeon_alias_options(db, user),
     )
+
+
+@app.get("/notifications/pigeon/state")
+def notifications_pigeon_state(request: Request, db: Session = Depends(get_db)) -> dict[str, Any]:
+    user = current_user(request, db)
+    if not user:
+        return {"ok": False, "latest_id": 0}
+    return {"ok": True, "latest_id": latest_pigeon_activity_id(db, user.id)}
 
 
 @app.post("/pigeons/chat-label")
