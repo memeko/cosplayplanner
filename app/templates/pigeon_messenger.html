@@ -41,7 +41,7 @@
             </a>
           {% endfor %}
         </div>
-        <p id="pigeon-chat-search-empty" class="muted top-offset" hidden>Ничего не найдено.</p>
+        <p id="pigeon-chat-search-empty" class="muted top-offset" style="display:none;">Ничего не найдено.</p>
       {% else %}
         <p class="muted top-offset">Пока нет диалогов. Нажмите «Новый диалог».</p>
       {% endif %}
@@ -79,7 +79,7 @@
             action="/pigeons/chat-label"
             id="pigeon-chat-label-form"
             class="pigeon-chat-label-form top-offset"
-            {% if selected_chat.chat_custom_label %}hidden{% endif %}
+            {% if selected_chat.chat_custom_label %}hidden style="display:none;"{% endif %}
           >
             <input type="hidden" name="next" value="/pigeons?chat={{ selected_chat.user_id }}" />
             <input type="hidden" name="chat_user_id" value="{{ selected_chat.user_id }}" />
@@ -277,9 +277,13 @@
     });
 
     if (chatLabelTag && chatLabelForm && chatLabelInput) {
+      if (chatLabelTag.getAttribute('data-has-label') === '1') {
+        chatLabelForm.style.display = 'none';
+      }
       chatLabelTag.addEventListener('dblclick', function () {
         if (chatLabelTag.getAttribute('data-has-label') !== '1') return;
         chatLabelForm.hidden = false;
+        chatLabelForm.style.display = 'grid';
         window.setTimeout(function () {
           chatLabelInput.focus();
           chatLabelInput.select();
@@ -301,11 +305,11 @@
       chatLinks.forEach((link) => {
         const haystack = normalizeSearchValue(link.getAttribute('data-search-text') || link.textContent || '');
         const isVisible = !query || haystack.includes(query);
-        link.hidden = !isVisible;
+        link.style.display = isVisible ? '' : 'none';
         if (isVisible) visibleCount += 1;
       });
       if (chatSearchEmpty) {
-        chatSearchEmpty.hidden = visibleCount > 0 || !query;
+        chatSearchEmpty.style.display = (visibleCount > 0 || !query) ? 'none' : '';
       }
     }
 
