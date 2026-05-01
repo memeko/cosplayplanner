@@ -1341,14 +1341,10 @@ textarea {
 
 .pigeon-phone-compose {
   grid-row: 4;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  grid-template-areas:
-    "emoji emoji"
-    "input send";
-  column-gap: 10px;
-  row-gap: 8px;
-  align-items: center;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: stretch;
   padding-top: 8px;
   border-top: 1px solid rgba(182, 194, 255, 0.72);
   background: rgba(255, 255, 255, 0.9);
@@ -1358,7 +1354,6 @@ textarea {
 }
 
 .pigeon-chat-emoji-picker {
-  grid-area: emoji;
   margin: 0;
 }
 
@@ -1386,8 +1381,14 @@ textarea {
   padding-right: 2px;
 }
 
-.pigeon-phone-compose textarea {
-  grid-area: input;
+.pigeon-phone-compose-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+}
+
+.pigeon-phone-compose-row textarea {
   margin: 0;
   width: 100%;
   height: 48px;
@@ -1403,8 +1404,7 @@ textarea {
   overflow-x: hidden;
 }
 
-.pigeon-phone-compose .btn {
-  grid-area: send;
+.pigeon-phone-compose-row .btn {
   white-space: nowrap;
   min-height: 48px;
   align-self: stretch;
@@ -2942,14 +2942,14 @@ textarea {
   }
 
   .pigeon-phone-compose {
-    grid-template-columns: 1fr;
-    grid-template-areas:
-      "emoji"
-      "input"
-      "send";
+    display: flex;
   }
 
-  .pigeon-phone-compose .btn {
+  .pigeon-phone-compose-row {
+    grid-template-columns: 1fr;
+  }
+
+  .pigeon-phone-compose-row .btn {
     width: 100%;
   }
 

@@ -127,15 +127,17 @@
                 </div>
               </details>
             {% endif %}
-            <textarea
-              name="message"
-              id="pigeon-chat-message-input"
-              rows="2"
-              maxlength="1500"
-              placeholder="Напишите сообщение..."
-              required
-            ></textarea>
-            <button type="submit" class="btn btn-accent">Отправить</button>
+            <div class="pigeon-phone-compose-row">
+              <textarea
+                name="message"
+                id="pigeon-chat-message-input"
+                rows="2"
+                maxlength="1500"
+                placeholder="Напишите сообщение..."
+                required
+              ></textarea>
+              <button type="submit" class="btn btn-accent">Отправить</button>
+            </div>
           </form>
         </section>
       {% else %}
