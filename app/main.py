@@ -170,6 +170,8 @@ secret_key = load_secret_key()
 secret_key_hash = hashlib.sha256(secret_key.encode("utf-8")).digest()
 content_secret_fernet = Fernet(base64.urlsafe_b64encode(secret_key_hash))
 session_https_only = to_bool(os.getenv("SESSION_HTTPS_ONLY", "0"))
+force_https_redirect = to_bool(os.getenv("FORCE_HTTPS_REDIRECT", "0"))
+hsts_enabled = to_bool(os.getenv("SECURITY_HSTS_ENABLED", "1"))
 trusted_hosts = [item.strip() for item in os.getenv("TRUSTED_HOSTS", "").split(",") if item.strip()]
 SESSION_COOKIE_NAME = "cosplay_session"
 SESSION_COOKIE_MAX_AGE_SECONDS = 60 * 60 * 24 * 30
@@ -187,6 +189,27 @@ app.add_middleware(
     https_only=session_https_only,
     session_cookie=SESSION_COOKIE_NAME,
 )
+
+
+@app.middleware("http")
+async def apply_transport_security_headers(request: Request, call_next: Callable) -> Any:
+    forwarded_proto = str(request.headers.get("x-forwarded-proto", "")).split(",", 1)[0].strip().lower()
+    is_https_request = request.url.scheme == "https" or forwarded_proto == "https"
+
+    if force_https_redirect and not is_https_request and request.method in {"GET", "HEAD"}:
+        secure_url = request.url.replace(scheme="https")
+        return RedirectResponse(str(secure_url), status_code=307)
+
+    response = await call_next(request)
+
+    if is_https_request and hsts_enabled:
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    return response
+
 
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 templates = Jinja2Templates(directory="app/templates")
@@ -430,6 +453,8 @@ SMM_MANAGER_ROLE_GROUP = "profile_is_smm_manager"
 CONTENT_MANAGER_OWNER_GROUP = "content_manager_owner"
 CONTENT_MANAGER_USER_GROUP = "content_manager_user"
 PIGEON_CHAT_LABEL_GROUP = "pigeon_chat_label"
+PIGEON_MESSAGE_ENCRYPTED_PREFIX = "pg2:"
+PIGEON_MESSAGE_ENCRYPTION_SCOPE = "pigeon-messages-v2"
 BIRTHDAY_PIGEON_LAST_SENT_GROUP = "birthday_pigeon_last_sent_date"
 BIRTHDAY_PIGEON_SYSTEM_ALIAS = "cosplayplanner"
 BIRTHDAY_PIGEON_MESSAGE = (
@@ -6466,19 +6491,19 @@ def handle_telegram_update(update: dict[str, Any]) -> None:
 
 
 def format_external_bot_notification_message(message: str | None) -> str:
-    text_value = replace_pixel_emoji_tokens_for_bots(message)
+    text_value = decrypt_pigeon_message_payload(message)
     text_value = (text_value or "").strip()
     if not text_value:
         return ""
     pigeon_payload = parse_pigeon_message(text_value)
     if pigeon_payload:
         sender_alias, body = pigeon_payload
-        body_text = body.strip() or "Без текста"
+        body_text = replace_pixel_emoji_tokens_for_bots(body).strip() or "Без текста"
         return (
             f"Вам пришло сообщение от пользователя @{sender_alias} с текстом:\n\n{body_text}\n\n"
             "Чтобы ответить, отправьте: /reply ваш текст"
         )
-    return text_value
+    return replace_pixel_emoji_tokens_for_bots(text_value)
 
 
 def format_telegram_notification_message(message: str | None) -> str:
@@ -7821,8 +7846,44 @@ def parse_duplicate_festival_notification(message: str | None) -> dict[str, Any]
     }
 
 
+def build_scoped_fernet(scope: str) -> Fernet:
+    scope_value = str(scope or "").strip() or "default"
+    scoped_digest = hmac.new(
+        secret_key.encode("utf-8"),
+        scope_value.encode("utf-8"),
+        hashlib.sha256,
+    ).digest()
+    return Fernet(base64.urlsafe_b64encode(scoped_digest))
+
+
+pigeon_secret_fernet = build_scoped_fernet(PIGEON_MESSAGE_ENCRYPTION_SCOPE)
+
+
+def encrypt_pigeon_message_payload(payload: str | None) -> str:
+    raw = str(payload or "").strip()
+    if not raw:
+        return ""
+    encrypted = pigeon_secret_fernet.encrypt(raw.encode("utf-8")).decode("utf-8")
+    return f"{PIGEON_MESSAGE_ENCRYPTED_PREFIX}{encrypted}"
+
+
+def decrypt_pigeon_message_payload(payload: str | None) -> str:
+    raw = str(payload or "").strip()
+    if not raw:
+        return ""
+    if not raw.startswith(PIGEON_MESSAGE_ENCRYPTED_PREFIX):
+        return raw
+    encrypted = raw[len(PIGEON_MESSAGE_ENCRYPTED_PREFIX):].strip()
+    if not encrypted:
+        return ""
+    try:
+        return pigeon_secret_fernet.decrypt(encrypted.encode("utf-8")).decode("utf-8").strip()
+    except (InvalidToken, ValueError):
+        return ""
+
+
 def parse_pigeon_message(message: str | None) -> tuple[str, str] | None:
-    text_value = (message or "").strip()
+    text_value = decrypt_pigeon_message_payload(message)
     if not text_value:
         return None
     match = re.match(r"^Курлык!\s*\(@([^)]+)\)\s*(.*)$", text_value, flags=re.IGNORECASE | re.DOTALL)
@@ -7879,7 +7940,8 @@ def send_pigeon_notification(
     reply_to_notification_id: int | None = None,
 ) -> bool:
     sender_alias = preferred_user_alias(sender)
-    payload = f"Курлык! (@{sender_alias}) {message_body.strip()}"
+    raw_payload = f"Курлык! (@{sender_alias}) {message_body.strip()}"
+    payload = encrypt_pigeon_message_payload(raw_payload)
     db.add(
         FestivalNotification(
             user_id=recipient.id,
@@ -7901,7 +7963,8 @@ def send_system_pigeon_notification(
     sender_alias: str = BIRTHDAY_PIGEON_SYSTEM_ALIAS,
 ) -> None:
     normalized_alias = normalize_username(sender_alias) or BIRTHDAY_PIGEON_SYSTEM_ALIAS
-    payload = f"Курлык! (@{normalized_alias}) {message_body.strip()}"
+    raw_payload = f"Курлык! (@{normalized_alias}) {message_body.strip()}"
+    payload = encrypt_pigeon_message_payload(raw_payload)
     db.add(
         FestivalNotification(
             user_id=recipient.id,
@@ -8125,12 +8188,18 @@ def get_latest_unread_pigeon(db: Session, user_id: int) -> dict[str, Any] | None
         if not parsed:
             continue
         sender_alias, body = parsed
+        sender_user_id = parse_positive_int(str(note.from_user_id or "").strip())
+        can_open_chat = bool(sender_user_id)
+        chat_url = f"/pigeons?chat={sender_user_id}" if sender_user_id else "/pigeons"
         return {
             "id": note.id,
             "sender_alias": sender_alias,
+            "sender_user_id": sender_user_id or 0,
             "body": body or "Без текста",
             "body_html": str(render_text_content(body or "Без текста")),
             "created_at": (note.created_at.isoformat() if note.created_at else ""),
+            "can_open_chat": can_open_chat,
+            "chat_url": chat_url,
         }
     return None
 

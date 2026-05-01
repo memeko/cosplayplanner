@@ -129,6 +129,8 @@
       <h3 id="pigeon-popup-title">🕊 Курлык!</h3>
       <div id="pigeon-popup-body" class="notes-block"></div>
       <div class="actions-inline top-offset">
+        <a id="pigeon-popup-open-chat" href="/pigeons" class="btn btn-accent btn-small">Открыть чат</a>
+        <a id="pigeon-popup-reply" href="/pigeons" class="btn btn-small">Ответить</a>
         <button type="button" id="pigeon-popup-delete" class="btn btn-danger btn-small">Удалить</button>
       </div>
     </div>
@@ -138,14 +140,17 @@
       const popup = document.getElementById("pigeon-popup");
       const closeBtn = document.getElementById("pigeon-popup-close");
       const deleteBtn = document.getElementById("pigeon-popup-delete");
+      const openChatBtn = document.getElementById("pigeon-popup-open-chat");
+      const replyBtn = document.getElementById("pigeon-popup-reply");
       const titleNode = document.getElementById("pigeon-popup-title");
       const bodyNode = document.getElementById("pigeon-popup-body");
-      if (!popup || !closeBtn || !deleteBtn || !titleNode || !bodyNode) {
+      if (!popup || !closeBtn || !deleteBtn || !openChatBtn || !replyBtn || !titleNode || !bodyNode) {
         return;
       }
 
       let currentId = null;
       let pollBusy = false;
+      let currentChatUrl = "/pigeons";
 
       function rememberShown(notificationId) {
         if (!notificationId) return;
@@ -167,6 +172,18 @@
 
       function hidePopup() {
         popup.hidden = true;
+      }
+
+      function updatePopupActions(note) {
+        const chatUrl = String(note && note.chat_url ? note.chat_url : "/pigeons");
+        const canOpenChat = Boolean(note && note.can_open_chat);
+        currentChatUrl = canOpenChat ? chatUrl : "/pigeons";
+
+        openChatBtn.href = currentChatUrl;
+        openChatBtn.hidden = !canOpenChat;
+
+        replyBtn.href = canOpenChat ? `${currentChatUrl}#pigeon-chat-message-input` : "/pigeons";
+        replyBtn.hidden = !canOpenChat;
       }
 
       async function markSeen(notificationId) {
@@ -226,6 +243,7 @@
           rememberShown(note.id);
           titleNode.textContent = `🕊 Курлык! (@${note.sender_alias || "unknown"})`;
           bodyNode.innerHTML = note.body_html || "";
+          updatePopupActions(note);
           popup.hidden = false;
           await markSeen(note.id);
         } catch (_) {
@@ -237,6 +255,14 @@
 
       closeBtn.addEventListener("click", closePopup);
       deleteBtn.addEventListener("click", deleteCurrentPopupPigeon);
+      openChatBtn.addEventListener("click", function () {
+        currentId = null;
+        hidePopup();
+      });
+      replyBtn.addEventListener("click", function () {
+        currentId = null;
+        hidePopup();
+      });
       popup.addEventListener("click", function (event) {
         if (event.target === popup) {
           closePopup();

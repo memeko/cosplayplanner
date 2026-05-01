@@ -112,9 +112,21 @@
             </div>
           {% endif %}
 
-          <form method="post" action="/notifications/pigeon" class="pigeon-phone-compose top-offset">
+          <form method="post" action="/notifications/pigeon" id="pigeon-chat-compose" class="pigeon-phone-compose top-offset">
             <input type="hidden" name="next" value="/pigeons?chat={{ selected_chat.user_id }}" />
             <input type="hidden" name="recipient_user_id" value="{{ selected_chat.user_id }}" />
+            {% if pixel_emoji_catalog %}
+              <details class="pigeon-chat-emoji-picker">
+                <summary>Эмодзи</summary>
+                <div class="emoji-picker-grid top-offset" data-emoji-target="pigeon-chat-message-input">
+                  {% for emoji in pixel_emoji_catalog %}
+                    <button type="button" class="emoji-picker-btn" data-emoji-code="{{ emoji.code }}" title="{{ emoji.label }}">
+                      <img src="{{ emoji.url }}" alt="{{ emoji.label }}" loading="lazy" />
+                    </button>
+                  {% endfor %}
+                </div>
+              </details>
+            {% endif %}
             <textarea
               name="message"
               id="pigeon-chat-message-input"
