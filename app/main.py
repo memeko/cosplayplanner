@@ -4401,6 +4401,29 @@ def get_telegram_custom_bot_identity(token: str) -> tuple[int | None, str]:
     return bot_id, bot_username
 
 
+def build_telegram_channel_url(channel_target: str | None, *, fallback: str = "https://t.me/brfox_cosplay") -> str:
+    normalized_target = normalize_telegram_target(channel_target)
+    if looks_like_telegram_username(normalized_target):
+        return f"https://t.me/{normalized_target[1:]}"
+    external_url = build_external_url(channel_target)
+    if external_url and external_url != SITE_URL:
+        return external_url
+    return fallback
+
+
+def describe_linked_telegram_account(user: User) -> str:
+    parts: list[str] = []
+    telegram_user_id = parse_positive_int(user.telegram_chat_id)
+    if telegram_user_id:
+        parts.append(f"id={telegram_user_id}")
+    telegram_username = normalize_username(user.telegram_username)
+    if telegram_username:
+        parts.append(f"@{telegram_username}")
+    if not parts:
+        return "неизвестный аккаунт"
+    return ", ".join(parts)
+
+
 def check_brfox_content_subscription(user: User) -> tuple[bool, str]:
     telegram_user_id = parse_positive_int(user.telegram_chat_id)
     if not telegram_user_id:
@@ -4449,15 +4472,22 @@ def check_brfox_content_subscription(user: User) -> tuple[bool, str]:
     status = str(member.get("status") or "").strip().lower()
     if telegram_membership_is_active(status):
         return True, ""
-    return False, f"Telegram не подтвердил подписку на канал {channel_target} (status: {status or 'unknown'})."
+    linked_account = describe_linked_telegram_account(user)
+    return False, (
+        f"Telegram не подтвердил подписку на канал {channel_target} "
+        f"для привязанного аккаунта ({linked_account}) "
+        f"(status: {status or 'unknown'}). "
+        "Если вы подписаны с другого аккаунта, перепривяжите Telegram через бота оповещений (/logout, затем /login)."
+    )
 
 
 def build_content_plan_access_state(user: User, db: Session) -> dict[str, Any]:
     has_access = user_has_content_plan_access(db, user)
+    channel_handle = normalize_telegram_target(BRFOX_CONTENT_CHANNEL) or "@brfox_cosplay"
     return {
         "has_access": has_access,
-        "channel_url": "https://t.me/brfox_cosplay",
-        "channel_handle": normalize_telegram_target(BRFOX_CONTENT_CHANNEL) or "@brfox_cosplay",
+        "channel_url": build_telegram_channel_url(channel_handle),
+        "channel_handle": channel_handle,
         "notifications_bot_url": f"https://t.me/{TELEGRAM_NOTIFICATIONS_BOT_USERNAME}",
         "notifications_bot_handle": f"@{TELEGRAM_NOTIFICATIONS_BOT_USERNAME}",
         "requires_telegram_link": not bool(parse_positive_int(user.telegram_chat_id)),
