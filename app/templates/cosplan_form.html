@@ -40,6 +40,15 @@
   .coproplayer-row { display: grid; grid-template-columns: 1fr auto; gap: 0.5rem; align-items: end; margin-bottom: 0.5rem; }
   .festival-spoiler { margin-top: 0.35rem; }
   .festival-spoiler summary { cursor: pointer; font-weight: 600; margin-bottom: 0.5rem; }
+  .self-sew-table-wrap { overflow-x: auto; margin: 0.4rem 0 0.7rem; }
+  .self-sew-table { width: 100%; border-collapse: collapse; min-width: 880px; }
+  .self-sew-table th,
+  .self-sew-table td { border-bottom: 1px solid #e4edf4; padding: 0.45rem; text-align: left; vertical-align: middle; }
+  .self-sew-table input[type="text"],
+  .self-sew-table input[type="url"] { width: 100%; min-width: 120px; }
+  .self-sew-table td.self-sew-buy-cell { text-align: center; }
+  .self-sew-table td.self-sew-remove-cell { white-space: nowrap; width: 1%; }
+  .self-sew-subtotal { margin: 0.4rem 0 0.8rem; font-weight: 600; }
 </style>
 
 <form method="post" action="{{ '/cosplan/' ~ card_id ~ '/edit' if editing else '/cosplan/new' }}" class="grid one-col big-form" id="cosplan-form">
@@ -144,15 +153,89 @@
         </label>
       </div>
 
-      <div id="self_sew_costs_wrap" class="grid two-col">
-        <label>
-          Стоимость ткани
-          <input type="text" name="costume_fabric_price" value="{{ form.costume_fabric_price }}" class="price-field" />
-        </label>
-        <label>
-          Стоимость фурнитуры
-          <input type="text" name="costume_hardware_price" value="{{ form.costume_hardware_price }}" class="price-field" />
-        </label>
+      <div id="self_sew_costs_wrap">
+        <h3>Ткань</h3>
+        <div class="self-sew-table-wrap">
+          <table class="self-sew-table">
+            <thead>
+              <tr>
+                <th>Название ткани</th>
+                <th>Назначение (часть костюма)</th>
+                <th>Метраж</th>
+                <th>Цена за метр</th>
+                <th>Ссылка / Где купить</th>
+                <th>Куплено</th>
+                <th>Действие</th>
+              </tr>
+            </thead>
+            <tbody id="costume_fabric_rows">
+              {% for item in form.costume_fabric_rows %}
+              <tr class="self-sew-fabric-row">
+                <td>
+                  <input type="hidden" name="costume_fabric_row_id" value="{{ item.row_id }}" />
+                  <input type="text" name="costume_fabric_name" value="{{ item.name }}" placeholder="Например, габардин" />
+                </td>
+                <td><input type="text" name="costume_fabric_purpose" value="{{ item.purpose }}" placeholder="Юбка, плащ, подклад" /></td>
+                <td><input type="text" name="costume_fabric_meterage" value="{{ item.meterage }}" placeholder="2.5" /></td>
+                <td><input type="text" name="costume_fabric_price_per_meter" value="{{ item.price_per_meter }}" placeholder="1500" /></td>
+                <td><input type="url" name="costume_fabric_link" value="{{ item.link }}" placeholder="https://..." /></td>
+                <td class="self-sew-buy-cell">
+                  <input type="checkbox" name="costume_fabric_bought" value="{{ item.row_id }}" {% if item.bought == '__YES__' %}checked{% endif %} />
+                </td>
+                <td class="self-sew-remove-cell">
+                  <button type="button" class="btn btn-danger self-sew-remove-btn">Удалить</button>
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        <button type="button" class="btn btn-small" id="add_costume_fabric_btn">Добавить ткань</button>
+        <p class="self-sew-subtotal">
+          Подитог по ткани:
+          <span id="costume_fabric_subtotal_value">0.00</span>
+          <span id="costume_fabric_subtotal_currency">{{ form.costume_currency }}</span>
+        </p>
+
+        <h3>Фурнитура</h3>
+        <div class="self-sew-table-wrap">
+          <table class="self-sew-table">
+            <thead>
+              <tr>
+                <th>Название</th>
+                <th>Назначение</th>
+                <th>Количество</th>
+                <th>Цена за штуку</th>
+                <th>Действие</th>
+              </tr>
+            </thead>
+            <tbody id="costume_hardware_rows">
+              {% for item in form.costume_hardware_rows %}
+              <tr class="self-sew-hardware-row">
+                <td>
+                  <input type="hidden" name="costume_hardware_row_id" value="{{ item.row_id }}" />
+                  <input type="text" name="costume_hardware_name" value="{{ item.name }}" placeholder="Например, молния" />
+                </td>
+                <td><input type="text" name="costume_hardware_purpose" value="{{ item.purpose }}" placeholder="Лиф, рукав, ботинки" /></td>
+                <td><input type="text" name="costume_hardware_quantity" value="{{ item.quantity }}" placeholder="4" /></td>
+                <td><input type="text" name="costume_hardware_price_per_unit" value="{{ item.price_per_unit }}" placeholder="120" /></td>
+                <td class="self-sew-remove-cell">
+                  <button type="button" class="btn btn-danger self-sew-remove-btn">Удалить</button>
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        <button type="button" class="btn btn-small" id="add_costume_hardware_btn">Добавить фурнитуру</button>
+        <p class="self-sew-subtotal">
+          Подитог по фурнитуре:
+          <span id="costume_hardware_subtotal_value">0.00</span>
+          <span id="costume_hardware_subtotal_currency">{{ form.costume_currency }}</span>
+        </p>
+
+        <input type="hidden" name="costume_fabric_price" id="costume_fabric_price_hidden" value="{{ form.costume_fabric_price }}" />
+        <input type="hidden" name="costume_hardware_price" id="costume_hardware_price_hidden" value="{{ form.costume_hardware_price }}" />
       </div>
     </div>
 
@@ -977,16 +1060,105 @@
     return !!(checkbox && checkbox.checked);
   };
 
+  const parseDecimalInput = (rawValue) => {
+    const normalized = String(rawValue || "").replace(/\s+/g, "").replace(",", ".");
+    if (!normalized) return null;
+    const parsed = Number(normalized);
+    return Number.isFinite(parsed) ? parsed : null;
+  };
+
+  const computeSelfSewSubtotals = () => {
+    let fabricSubtotal = 0;
+    let hardwareSubtotal = 0;
+    let hasFabricRowsWithPrice = false;
+    let hasHardwareRowsWithPrice = false;
+    let hasFabricRowContent = false;
+    let hasHardwareRowContent = false;
+
+    document.querySelectorAll("#costume_fabric_rows tr").forEach((row) => {
+      const name = (row.querySelector('[name="costume_fabric_name"]')?.value || "").trim();
+      const purpose = (row.querySelector('[name="costume_fabric_purpose"]')?.value || "").trim();
+      const meterageRaw = (row.querySelector('[name="costume_fabric_meterage"]')?.value || "").trim();
+      const pricePerMeterRaw = (row.querySelector('[name="costume_fabric_price_per_meter"]')?.value || "").trim();
+      const link = (row.querySelector('[name="costume_fabric_link"]')?.value || "").trim();
+      const bought = !!row.querySelector('[name="costume_fabric_bought"]')?.checked;
+      if (name || purpose || meterageRaw || pricePerMeterRaw || link || bought) {
+        hasFabricRowContent = true;
+      }
+      const meterage = parseDecimalInput(meterageRaw);
+      const pricePerMeter = parseDecimalInput(pricePerMeterRaw);
+      if (meterage === null || pricePerMeter === null) return;
+      hasFabricRowsWithPrice = true;
+      fabricSubtotal += meterage * pricePerMeter;
+    });
+
+    document.querySelectorAll("#costume_hardware_rows tr").forEach((row) => {
+      const name = (row.querySelector('[name="costume_hardware_name"]')?.value || "").trim();
+      const purpose = (row.querySelector('[name="costume_hardware_purpose"]')?.value || "").trim();
+      const quantityRaw = (row.querySelector('[name="costume_hardware_quantity"]')?.value || "").trim();
+      const pricePerUnitRaw = (row.querySelector('[name="costume_hardware_price_per_unit"]')?.value || "").trim();
+      if (name || purpose || quantityRaw || pricePerUnitRaw) {
+        hasHardwareRowContent = true;
+      }
+      const quantity = parseDecimalInput(quantityRaw);
+      const pricePerUnit = parseDecimalInput(pricePerUnitRaw);
+      if (quantity === null || pricePerUnit === null) return;
+      hasHardwareRowsWithPrice = true;
+      hardwareSubtotal += quantity * pricePerUnit;
+    });
+
+    const currencyValue = (document.querySelector('[name="costume_currency"]')?.value || "").trim().toUpperCase();
+    const fabricSubtotalNode = document.getElementById("costume_fabric_subtotal_value");
+    const hardwareSubtotalNode = document.getElementById("costume_hardware_subtotal_value");
+    const fabricCurrencyNode = document.getElementById("costume_fabric_subtotal_currency");
+    const hardwareCurrencyNode = document.getElementById("costume_hardware_subtotal_currency");
+    const fabricHiddenInput = document.getElementById("costume_fabric_price_hidden");
+    const hardwareHiddenInput = document.getElementById("costume_hardware_price_hidden");
+    if (fabricHiddenInput) {
+      if (hasFabricRowsWithPrice) {
+        fabricHiddenInput.value = fabricSubtotal.toFixed(2);
+      } else if (hasFabricRowContent) {
+        fabricHiddenInput.value = "";
+      }
+    }
+    if (hardwareHiddenInput) {
+      if (hasHardwareRowsWithPrice) {
+        hardwareHiddenInput.value = hardwareSubtotal.toFixed(2);
+      } else if (hasHardwareRowContent) {
+        hardwareHiddenInput.value = "";
+      }
+    }
+    const fabricLegacyValue = parseDecimalInput(fabricHiddenInput?.value);
+    const hardwareLegacyValue = parseDecimalInput(hardwareHiddenInput?.value);
+    const shownFabricSubtotal = hasFabricRowsWithPrice ? fabricSubtotal : (fabricLegacyValue || 0);
+    const shownHardwareSubtotal = hasHardwareRowsWithPrice ? hardwareSubtotal : (hardwareLegacyValue || 0);
+
+    if (fabricSubtotalNode) fabricSubtotalNode.textContent = shownFabricSubtotal.toFixed(2);
+    if (hardwareSubtotalNode) hardwareSubtotalNode.textContent = shownHardwareSubtotal.toFixed(2);
+    if (fabricCurrencyNode) fabricCurrencyNode.textContent = currencyValue;
+    if (hardwareCurrencyNode) hardwareCurrencyNode.textContent = currencyValue;
+
+    return {
+      fabricSubtotal,
+      hardwareSubtotal,
+      hasFabricRowsWithPrice,
+      hasHardwareRowsWithPrice,
+      hasFabricRowContent,
+      hasHardwareRowContent,
+      legacyFabricValue: fabricLegacyValue,
+      legacyHardwareValue: hardwareLegacyValue,
+    };
+  };
+
   const updateEstimatedTotal = () => {
     let total = 0;
     let hasUnknown = false;
     const currencies = new Set();
+    const selfSewSubtotals = computeSelfSewSubtotals();
     const currencyByPriceField = {
       "costume_prepayment": "costume_currency",
       "costume_postpayment": "costume_currency",
       "costume_buy_price": "costume_currency",
-      "costume_fabric_price": "costume_currency",
-      "costume_hardware_price": "costume_currency",
       "shoes_buy_price": "shoes_currency",
       "shoes_price": "shoes_currency",
       "lenses_price": "lenses_currency",
@@ -1037,6 +1209,32 @@
         }
       }
     });
+
+    const costumeType = document.getElementById("costume_type")?.value;
+    const sewingType = document.getElementById("sewing_type")?.value;
+    if (costumeType === "sew" && sewingType === "self") {
+      let hasCostumeSubtotalForCurrency = false;
+      if (selfSewSubtotals.hasFabricRowsWithPrice) {
+        total += selfSewSubtotals.fabricSubtotal;
+        hasCostumeSubtotalForCurrency = true;
+      } else if (!selfSewSubtotals.hasFabricRowContent && selfSewSubtotals.legacyFabricValue !== null) {
+        total += selfSewSubtotals.legacyFabricValue;
+        hasCostumeSubtotalForCurrency = true;
+      }
+      if (selfSewSubtotals.hasHardwareRowsWithPrice) {
+        total += selfSewSubtotals.hardwareSubtotal;
+        hasCostumeSubtotalForCurrency = true;
+      } else if (!selfSewSubtotals.hasHardwareRowContent && selfSewSubtotals.legacyHardwareValue !== null) {
+        total += selfSewSubtotals.legacyHardwareValue;
+        hasCostumeSubtotalForCurrency = true;
+      }
+      if (hasCostumeSubtotalForCurrency) {
+        const currencyValue = (document.querySelector('[name="costume_currency"]')?.value || "").trim().toUpperCase();
+        if (currencyValue) {
+          currencies.add(currencyValue);
+        }
+      }
+    }
 
     const target = document.getElementById("estimated_total_value");
     if (target) target.textContent = total.toFixed(2);
@@ -1158,6 +1356,88 @@
       input.addEventListener("input", updateEstimatedTotal);
       input.addEventListener("change", updateEstimatedTotal);
     });
+  };
+
+  const setupSelfSewCostTables = () => {
+    const fabricWrap = document.getElementById("costume_fabric_rows");
+    const hardwareWrap = document.getElementById("costume_hardware_rows");
+    const addFabricButton = document.getElementById("add_costume_fabric_btn");
+    const addHardwareButton = document.getElementById("add_costume_hardware_btn");
+
+    const bindRow = (row) => {
+      if (!row || row.dataset.bound === "1") return;
+      row.dataset.bound = "1";
+      const removeButton = row.querySelector(".self-sew-remove-btn");
+      if (removeButton) {
+        removeButton.addEventListener("click", () => {
+          row.remove();
+          updateEstimatedTotal();
+        });
+      }
+      row.querySelectorAll("input").forEach((input) => {
+        input.addEventListener("input", updateEstimatedTotal);
+        input.addEventListener("change", updateEstimatedTotal);
+      });
+    };
+
+    const makeFabricRow = () => {
+      const rowId = `fabric-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
+      const row = document.createElement("tr");
+      row.className = "self-sew-fabric-row";
+      row.innerHTML = `
+        <td>
+          <input type="hidden" name="costume_fabric_row_id" value="${rowId}" />
+          <input type="text" name="costume_fabric_name" placeholder="Например, габардин" />
+        </td>
+        <td><input type="text" name="costume_fabric_purpose" placeholder="Юбка, плащ, подклад" /></td>
+        <td><input type="text" name="costume_fabric_meterage" placeholder="2.5" /></td>
+        <td><input type="text" name="costume_fabric_price_per_meter" placeholder="1500" /></td>
+        <td><input type="url" name="costume_fabric_link" placeholder="https://..." /></td>
+        <td class="self-sew-buy-cell"><input type="checkbox" name="costume_fabric_bought" value="${rowId}" /></td>
+        <td class="self-sew-remove-cell"><button type="button" class="btn btn-danger self-sew-remove-btn">Удалить</button></td>
+      `;
+      return row;
+    };
+
+    const makeHardwareRow = () => {
+      const rowId = `hardware-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
+      const row = document.createElement("tr");
+      row.className = "self-sew-hardware-row";
+      row.innerHTML = `
+        <td>
+          <input type="hidden" name="costume_hardware_row_id" value="${rowId}" />
+          <input type="text" name="costume_hardware_name" placeholder="Например, молния" />
+        </td>
+        <td><input type="text" name="costume_hardware_purpose" placeholder="Лиф, рукав, ботинки" /></td>
+        <td><input type="text" name="costume_hardware_quantity" placeholder="4" /></td>
+        <td><input type="text" name="costume_hardware_price_per_unit" placeholder="120" /></td>
+        <td class="self-sew-remove-cell"><button type="button" class="btn btn-danger self-sew-remove-btn">Удалить</button></td>
+      `;
+      return row;
+    };
+
+    fabricWrap?.querySelectorAll("tr").forEach(bindRow);
+    hardwareWrap?.querySelectorAll("tr").forEach(bindRow);
+
+    if (addFabricButton && fabricWrap) {
+      addFabricButton.addEventListener("click", () => {
+        const row = makeFabricRow();
+        fabricWrap.appendChild(row);
+        bindRow(row);
+        row.querySelector('input[name="costume_fabric_name"]')?.focus();
+        updateEstimatedTotal();
+      });
+    }
+
+    if (addHardwareButton && hardwareWrap) {
+      addHardwareButton.addEventListener("click", () => {
+        const row = makeHardwareRow();
+        hardwareWrap.appendChild(row);
+        bindRow(row);
+        row.querySelector('input[name="costume_hardware_name"]')?.focus();
+        updateEstimatedTotal();
+      });
+    }
   };
 
   const makeChecklistRow = () => {
@@ -1401,6 +1681,7 @@
   setupCoproplayerRows();
   attachUnknownPriceCheckboxes();
   setupPartsControls();
+  setupSelfSewCostTables();
   setupChecklistControls();
   applyFormRules();
   applyFestivalCityFilter();

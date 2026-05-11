@@ -945,6 +945,8 @@ def apply_schema_migrations() -> None:
             ("costume_buy_price", "FLOAT"),
             ("costume_fabric_price", "FLOAT"),
             ("costume_hardware_price", "FLOAT"),
+            ("costume_fabric_rows_json", "JSON NOT NULL DEFAULT '[]'"),
+            ("costume_hardware_rows_json", "JSON NOT NULL DEFAULT '[]'"),
             ("costume_notes", "TEXT"),
             ("shoes_buy_price", "FLOAT"),
             ("lenses_price", "FLOAT"),
@@ -1568,8 +1570,16 @@ def estimate_card_total_and_currency(card: CosplanCard) -> tuple[float, str]:
     add(card.costume_prepayment, card.costume_currency)
     add(card.costume_postpayment, card.costume_currency)
     add(card.costume_buy_price, card.costume_currency)
-    add(card.costume_fabric_price, card.costume_currency)
-    add(card.costume_hardware_price, card.costume_currency)
+    fabric_subtotal, has_fabric_subtotal = costume_fabric_rows_subtotal(as_list(card.costume_fabric_rows_json))
+    if has_fabric_subtotal:
+        add(fabric_subtotal, card.costume_currency)
+    else:
+        add(card.costume_fabric_price, card.costume_currency)
+    hardware_subtotal, has_hardware_subtotal = costume_hardware_rows_subtotal(as_list(card.costume_hardware_rows_json))
+    if has_hardware_subtotal:
+        add(hardware_subtotal, card.costume_currency)
+    else:
+        add(card.costume_hardware_price, card.costume_currency)
     add(card.shoes_buy_price, card.shoes_currency)
     add(card.shoes_price, card.shoes_currency)
     add(card.lenses_price, card.lenses_currency)
@@ -2713,9 +2723,12 @@ def normalize_in_progress_scope(raw: str | None) -> str:
 def get_in_progress_active_project_counters(db: Session, user: User) -> dict[str, int]:
     cosplayer_active = int(
         db.execute(
-            select(func.count(InProgressCard.id)).where(
+            select(func.count(InProgressCard.id))
+            .join(CosplanCard, InProgressCard.cosplan_card_id == CosplanCard.id)
+            .where(
                 InProgressCard.user_id == user.id,
                 InProgressCard.is_frozen.is_(False),
+                CosplanCard.is_completed.is_(False),
             )
         ).scalar()
         or 0
@@ -7440,6 +7453,113 @@ def pinterest_embed_src(url: str) -> str | None:
     return None
 
 
+def parse_costume_fabric_rows_from_form(form: Any) -> list[dict[str, Any]]:
+    row_ids = [str(value).strip() for value in form.getlist("costume_fabric_row_id")]
+    names = [str(value).strip() for value in form.getlist("costume_fabric_name")]
+    purposes = [str(value).strip() for value in form.getlist("costume_fabric_purpose")]
+    meterages = [str(value).strip() for value in form.getlist("costume_fabric_meterage")]
+    prices_per_meter = [str(value).strip() for value in form.getlist("costume_fabric_price_per_meter")]
+    links = [str(value).strip() for value in form.getlist("costume_fabric_link")]
+    bought_ids = {str(value).strip() for value in form.getlist("costume_fabric_bought") if str(value).strip()}
+
+    size = max(len(row_ids), len(names), len(purposes), len(meterages), len(prices_per_meter), len(links))
+    if size == 0:
+        return []
+
+    rows: list[dict[str, Any]] = []
+    for index in range(size):
+        row_id = row_ids[index] if index < len(row_ids) and row_ids[index] else f"fabric-{index}"
+        name = names[index] if index < len(names) else ""
+        purpose = purposes[index] if index < len(purposes) else ""
+        raw_meterage = meterages[index] if index < len(meterages) else ""
+        raw_price = prices_per_meter[index] if index < len(prices_per_meter) else ""
+        link = links[index] if index < len(links) else ""
+        bought = row_id in bought_ids
+
+        parsed_meterage = parse_float(raw_meterage)
+        parsed_price = parse_float(raw_price)
+        if not (name or purpose or raw_meterage or raw_price or link or bought):
+            continue
+
+        rows.append(
+            {
+                "row_id": row_id,
+                "name": name,
+                "purpose": purpose,
+                "meterage": parsed_meterage,
+                "price_per_meter": parsed_price,
+                "link": link,
+                "bought": bought,
+            }
+        )
+    return rows
+
+
+def parse_costume_hardware_rows_from_form(form: Any) -> list[dict[str, Any]]:
+    row_ids = [str(value).strip() for value in form.getlist("costume_hardware_row_id")]
+    names = [str(value).strip() for value in form.getlist("costume_hardware_name")]
+    purposes = [str(value).strip() for value in form.getlist("costume_hardware_purpose")]
+    quantities = [str(value).strip() for value in form.getlist("costume_hardware_quantity")]
+    prices_per_unit = [str(value).strip() for value in form.getlist("costume_hardware_price_per_unit")]
+
+    size = max(len(row_ids), len(names), len(purposes), len(quantities), len(prices_per_unit))
+    if size == 0:
+        return []
+
+    rows: list[dict[str, Any]] = []
+    for index in range(size):
+        row_id = row_ids[index] if index < len(row_ids) and row_ids[index] else f"hardware-{index}"
+        name = names[index] if index < len(names) else ""
+        purpose = purposes[index] if index < len(purposes) else ""
+        raw_quantity = quantities[index] if index < len(quantities) else ""
+        raw_price = prices_per_unit[index] if index < len(prices_per_unit) else ""
+        parsed_quantity = parse_float(raw_quantity)
+        parsed_price = parse_float(raw_price)
+        if not (name or purpose or raw_quantity or raw_price):
+            continue
+        rows.append(
+            {
+                "row_id": row_id,
+                "name": name,
+                "purpose": purpose,
+                "quantity": parsed_quantity,
+                "price_per_unit": parsed_price,
+            }
+        )
+    return rows
+
+
+def subtotal_product_rows(rows: list[Any], *, amount_key: str, unit_price_key: str) -> tuple[float, bool]:
+    subtotal = 0.0
+    has_rows_with_price = False
+    for item in rows:
+        if not isinstance(item, dict):
+            continue
+        raw_amount = item.get(amount_key)
+        raw_unit_price = item.get(unit_price_key)
+        if isinstance(raw_amount, (int, float)):
+            amount = float(raw_amount)
+        else:
+            amount = parse_float(str(raw_amount or ""))
+        if isinstance(raw_unit_price, (int, float)):
+            unit_price = float(raw_unit_price)
+        else:
+            unit_price = parse_float(str(raw_unit_price or ""))
+        if amount is None or unit_price is None:
+            continue
+        has_rows_with_price = True
+        subtotal += amount * unit_price
+    return subtotal, has_rows_with_price
+
+
+def costume_fabric_rows_subtotal(rows: list[Any]) -> tuple[float, bool]:
+    return subtotal_product_rows(rows, amount_key="meterage", unit_price_key="price_per_meter")
+
+
+def costume_hardware_rows_subtotal(rows: list[Any]) -> tuple[float, bool]:
+    return subtotal_product_rows(rows, amount_key="quantity", unit_price_key="price_per_unit")
+
+
 def parse_parts_from_form(form: Any, prefix: str, default_currency: str | None) -> list[dict[str, Any]]:
     row_ids = [str(value).strip() for value in form.getlist(f"{prefix}_part_row_id")]
     links = [str(value).strip() for value in form.getlist(f"{prefix}_part_link")]
@@ -7486,6 +7606,58 @@ def format_parts_for_form(parts: list[Any]) -> list[dict[str, str]]:
                 "price": "" if price is None else f"{price:g}",
                 "comment": str(raw_item.get("comment", "") or ""),
                 "unknown": "__YES__" if to_bool(raw_item.get("unknown")) else "__NO__",
+            }
+        )
+    return formatted
+
+
+def format_costume_fabric_rows_for_form(rows: list[Any]) -> list[dict[str, str]]:
+    formatted: list[dict[str, str]] = []
+    for index, raw_row in enumerate(rows):
+        if not isinstance(raw_row, dict):
+            continue
+        meterage_raw = raw_row.get("meterage")
+        price_per_meter_raw = raw_row.get("price_per_meter")
+        meterage = float(meterage_raw) if isinstance(meterage_raw, (int, float)) else parse_float(str(meterage_raw or ""))
+        price_per_meter = (
+            float(price_per_meter_raw)
+            if isinstance(price_per_meter_raw, (int, float))
+            else parse_float(str(price_per_meter_raw or ""))
+        )
+        formatted.append(
+            {
+                "row_id": str(raw_row.get("row_id") or f"fabric-{index}"),
+                "name": str(raw_row.get("name", "") or ""),
+                "purpose": str(raw_row.get("purpose", "") or ""),
+                "meterage": "" if meterage is None else f"{meterage:g}",
+                "price_per_meter": "" if price_per_meter is None else f"{price_per_meter:g}",
+                "link": str(raw_row.get("link", "") or ""),
+                "bought": "__YES__" if to_bool(raw_row.get("bought")) else "__NO__",
+            }
+        )
+    return formatted
+
+
+def format_costume_hardware_rows_for_form(rows: list[Any]) -> list[dict[str, str]]:
+    formatted: list[dict[str, str]] = []
+    for index, raw_row in enumerate(rows):
+        if not isinstance(raw_row, dict):
+            continue
+        quantity_raw = raw_row.get("quantity")
+        price_per_unit_raw = raw_row.get("price_per_unit")
+        quantity = float(quantity_raw) if isinstance(quantity_raw, (int, float)) else parse_float(str(quantity_raw or ""))
+        price_per_unit = (
+            float(price_per_unit_raw)
+            if isinstance(price_per_unit_raw, (int, float))
+            else parse_float(str(price_per_unit_raw or ""))
+        )
+        formatted.append(
+            {
+                "row_id": str(raw_row.get("row_id") or f"hardware-{index}"),
+                "name": str(raw_row.get("name", "") or ""),
+                "purpose": str(raw_row.get("purpose", "") or ""),
+                "quantity": "" if quantity is None else f"{quantity:g}",
+                "price_per_unit": "" if price_per_unit is None else f"{price_per_unit:g}",
             }
         )
     return formatted
@@ -8611,6 +8783,8 @@ def card_fields_for_sync() -> list[str]:
         "costume_postpayment",
         "costume_fabric_price",
         "costume_hardware_price",
+        "costume_fabric_rows_json",
+        "costume_hardware_rows_json",
         "costume_bought",
         "costume_link",
         "costume_buy_price",
@@ -10022,6 +10196,26 @@ def get_card_form_values(card: CosplanCard | None = None, *, actor_user_id: int 
             "costume_postpayment": "",
             "costume_fabric_price": "",
             "costume_hardware_price": "",
+            "costume_fabric_rows": [
+                {
+                    "row_id": "fabric-0",
+                    "name": "",
+                    "purpose": "",
+                    "meterage": "",
+                    "price_per_meter": "",
+                    "link": "",
+                    "bought": "__NO__",
+                }
+            ],
+            "costume_hardware_rows": [
+                {
+                    "row_id": "hardware-0",
+                    "name": "",
+                    "purpose": "",
+                    "quantity": "",
+                    "price_per_unit": "",
+                }
+            ],
             "costume_bought": False,
             "costume_link": "",
             "costume_buy_price": "",
@@ -10105,6 +10299,30 @@ def get_card_form_values(card: CosplanCard | None = None, *, actor_user_id: int 
     coproplayer_alias_rows = as_list(card.coproplayers_json) or as_list(card.coproplayer_nicks_json)
     if not coproplayer_alias_rows:
         coproplayer_alias_rows = [""]
+    costume_fabric_rows = format_costume_fabric_rows_for_form(as_list(card.costume_fabric_rows_json))
+    if not costume_fabric_rows:
+        costume_fabric_rows = [
+            {
+                "row_id": "fabric-0",
+                "name": "",
+                "purpose": "",
+                "meterage": "",
+                "price_per_meter": "",
+                "link": "",
+                "bought": "__NO__",
+            }
+        ]
+    costume_hardware_rows = format_costume_hardware_rows_for_form(as_list(card.costume_hardware_rows_json))
+    if not costume_hardware_rows:
+        costume_hardware_rows = [
+            {
+                "row_id": "hardware-0",
+                "name": "",
+                "purpose": "",
+                "quantity": "",
+                "price_per_unit": "",
+            }
+        ]
     related_links_user_id = actor_user_id if actor_user_id and actor_user_id > 0 else card.user_id
     related_ids_for_editor = related_card_ids_for_user(
         as_list(card.related_cards_json),
@@ -10127,6 +10345,8 @@ def get_card_form_values(card: CosplanCard | None = None, *, actor_user_id: int 
         "costume_postpayment": "" if card.costume_postpayment is None else f"{card.costume_postpayment:g}",
         "costume_fabric_price": "" if card.costume_fabric_price is None else f"{card.costume_fabric_price:g}",
         "costume_hardware_price": "" if card.costume_hardware_price is None else f"{card.costume_hardware_price:g}",
+        "costume_fabric_rows": costume_fabric_rows,
+        "costume_hardware_rows": costume_hardware_rows,
         "costume_bought": bool(card.costume_bought),
         "costume_link": card.costume_link or "",
         "costume_buy_price": "" if card.costume_buy_price is None else f"{card.costume_buy_price:g}",
@@ -13044,6 +13264,8 @@ def cosplan_detail(card_id: int, request: Request, db: Session = Depends(get_db)
         reference_urls=as_list(card.references_json),
         pose_reference_urls=as_list(card.pose_references_json),
         costume_parts=as_list(card.costume_parts_json),
+        costume_fabric_rows=as_list(card.costume_fabric_rows_json),
+        costume_hardware_rows=as_list(card.costume_hardware_rows_json),
         craft_parts=as_list(card.craft_parts_json),
         photoset_props_checklist=format_checklist_for_form(as_list(card.photoset_props_checklist_json)),
         pinterest_embed_src=pinterest_embed_src,
@@ -13217,6 +13439,11 @@ def save_card_from_form(form: Any, card: CosplanCard, user: User, db: Session) -
             return None
         return parse_float(str(form.get(field_name, "")))
 
+    costume_fabric_rows = parse_costume_fabric_rows_from_form(form)
+    costume_hardware_rows = parse_costume_hardware_rows_from_form(form)
+    costume_fabric_subtotal, has_costume_fabric_subtotal = costume_fabric_rows_subtotal(costume_fabric_rows)
+    costume_hardware_subtotal, has_costume_hardware_subtotal = costume_hardware_rows_subtotal(costume_hardware_rows)
+
     card.character_name = str(form.get("character_name", "")).strip()
     card.fandom = str(form.get("fandom", "")).strip() or None
     card.is_au = to_bool(form.get("is_au"))
@@ -13234,6 +13461,8 @@ def save_card_from_form(form: Any, card: CosplanCard, user: User, db: Session) -
         card.costume_postpayment = None
         card.costume_fabric_price = None
         card.costume_hardware_price = None
+        card.costume_fabric_rows_json = []
+        card.costume_hardware_rows_json = []
         card.costume_bought = to_bool(form.get("costume_bought"))
         card.costume_link = str(form.get("costume_link", "")).strip() or None
         card.costume_buy_price = parse_price_field("costume_buy_price")
@@ -13247,14 +13476,26 @@ def save_card_from_form(form: Any, card: CosplanCard, user: User, db: Session) -
             card.costume_executor = None
             card.costume_prepayment = None
             card.costume_postpayment = None
-            card.costume_fabric_price = parse_price_field("costume_fabric_price")
-            card.costume_hardware_price = parse_price_field("costume_hardware_price")
+            card.costume_fabric_rows_json = costume_fabric_rows
+            card.costume_hardware_rows_json = costume_hardware_rows
+            legacy_fabric_price = parse_price_field("costume_fabric_price")
+            legacy_hardware_price = parse_price_field("costume_hardware_price")
+            if has_costume_fabric_subtotal:
+                card.costume_fabric_price = costume_fabric_subtotal
+            else:
+                card.costume_fabric_price = legacy_fabric_price
+            if has_costume_hardware_subtotal:
+                card.costume_hardware_price = costume_hardware_subtotal
+            else:
+                card.costume_hardware_price = legacy_hardware_price
         else:
             card.costume_executor = str(form.get("costume_executor", "")).strip() or None
             card.costume_prepayment = parse_price_field("costume_prepayment")
             card.costume_postpayment = parse_price_field("costume_postpayment")
             card.costume_fabric_price = None
             card.costume_hardware_price = None
+            card.costume_fabric_rows_json = []
+            card.costume_hardware_rows_json = []
         card.costume_bought = False
         card.costume_link = None
         card.costume_buy_price = None
@@ -13434,7 +13675,10 @@ def save_card_from_form(form: Any, card: CosplanCard, user: User, db: Session) -
     if card.costume_type == "buy":
         active_unknown_fields.add("costume_buy_price")
     elif card.sewing_type == "self":
-        active_unknown_fields.update({"costume_fabric_price", "costume_hardware_price"})
+        if not has_costume_fabric_subtotal:
+            active_unknown_fields.add("costume_fabric_price")
+        if not has_costume_hardware_subtotal:
+            active_unknown_fields.add("costume_hardware_price")
     else:
         active_unknown_fields.update({"costume_prepayment", "costume_postpayment"})
 
@@ -14198,7 +14442,9 @@ def in_progress_list(request: Request, db: Session = Depends(get_db)):
     try:
         progress_items = db.execute(
             select(InProgressCard)
+            .join(CosplanCard, InProgressCard.cosplan_card_id == CosplanCard.id)
             .where(InProgressCard.user_id == user.id)
+            .where(CosplanCard.is_completed.is_(False))
             .order_by(InProgressCard.is_frozen.asc(), InProgressCard.updated_at.desc())
         ).scalars().all()
     except OperationalError as exc:
@@ -14208,7 +14454,9 @@ def in_progress_list(request: Request, db: Session = Depends(get_db)):
         try:
             progress_items = db.execute(
                 select(InProgressCard)
+                .join(CosplanCard, InProgressCard.cosplan_card_id == CosplanCard.id)
                 .where(InProgressCard.user_id == user.id)
+                .where(CosplanCard.is_completed.is_(False))
                 .order_by(InProgressCard.is_frozen.asc(), InProgressCard.updated_at.desc())
             ).scalars().all()
         except OperationalError as retry_exc:

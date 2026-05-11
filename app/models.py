@@ -263,6 +263,8 @@ class CosplanCard(Base):
     costume_postpayment = Column(Float, nullable=True)
     costume_fabric_price = Column(Float, nullable=True)
     costume_hardware_price = Column(Float, nullable=True)
+    costume_fabric_rows_json = Column(JSON, nullable=False, default=list)
+    costume_hardware_rows_json = Column(JSON, nullable=False, default=list)
     costume_bought = Column(Boolean, nullable=False, default=False)
     costume_link = Column(Text, nullable=True)
     costume_buy_price = Column(Float, nullable=True)

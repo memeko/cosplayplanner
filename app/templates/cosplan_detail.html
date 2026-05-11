@@ -94,7 +94,7 @@
 </section>
 {% endif %}
 
-{% set has_costume = card.costume_type or card.sewing_type or card.sewing_fabric or card.sewing_hardware or card.sewing_pattern or card.costume_executor or card.costume_deadline or card.costume_prepayment is not none or card.costume_postpayment is not none or card.costume_fabric_price is not none or card.costume_hardware_price is not none or card.costume_bought or card.costume_link or card.costume_buy_price is not none or card.costume_currency or card.costume_notes or costume_parts or 'costume_prepayment' in unknown_fields or 'costume_postpayment' in unknown_fields or 'costume_buy_price' in unknown_fields or 'costume_fabric_price' in unknown_fields or 'costume_hardware_price' in unknown_fields %}
+{% set has_costume = card.costume_type or card.sewing_type or card.sewing_fabric or card.sewing_hardware or card.sewing_pattern or card.costume_executor or card.costume_deadline or card.costume_prepayment is not none or card.costume_postpayment is not none or card.costume_fabric_price is not none or card.costume_hardware_price is not none or card.costume_bought or card.costume_link or card.costume_buy_price is not none or card.costume_currency or card.costume_notes or costume_parts or costume_fabric_rows or costume_hardware_rows or 'costume_prepayment' in unknown_fields or 'costume_postpayment' in unknown_fields or 'costume_buy_price' in unknown_fields or 'costume_fabric_price' in unknown_fields or 'costume_hardware_price' in unknown_fields %}
 {% if has_costume %}
 <section class="box">
   <h2>Костюм</h2>
@@ -116,6 +116,60 @@
           {% if card.sewing_pattern %}{% set _ = marks.append("Выкройка") %}{% endif %}
           {{ marks | join(", ") }}
         </p>
+      {% endif %}
+      {% if costume_fabric_rows %}
+        <h3>Ткань</h3>
+        <ul class="notes-list">
+          {% set fabric_ns = namespace(total=0.0) %}
+          {% for item in costume_fabric_rows if item is mapping %}
+            {% set meterage = item.get("meterage") %}
+            {% set price_per_meter = item.get("price_per_meter") %}
+            {% if meterage is number and price_per_meter is number %}
+              {% set line_total = meterage * price_per_meter %}
+              {% set fabric_ns.total = fabric_ns.total + line_total %}
+            {% else %}
+              {% set line_total = none %}
+            {% endif %}
+            <li>
+              {{ item.get("name") or "Без названия" }}
+              {% if item.get("purpose") %}<span class="muted">({{ item.get("purpose") }})</span>{% endif %}
+              {% if meterage is number and price_per_meter is number %}
+                <span class="chip">{{ '%.2f'|format(meterage) }} × {{ '%.2f'|format(price_per_meter) }} = {{ '%.2f'|format(line_total) }} {{ card.costume_currency or "" }}</span>
+              {% endif %}
+              {% if item.get("bought") in [True, 1, '1', 'true', 'True', '__YES__'] %}
+                <span class="chip">Куплено</span>
+              {% endif %}
+              {% if item.get("link") %}
+                <a href="{{ item.get('link') }}" target="_blank" rel="noreferrer">{{ item.get("link") }}</a>
+              {% endif %}
+            </li>
+          {% endfor %}
+        </ul>
+        <p class="meta"><strong>Подитог по ткани: {{ '%.2f'|format(fabric_ns.total) }}{% if card.costume_currency %} {{ card.costume_currency }}{% endif %}</strong></p>
+      {% endif %}
+      {% if costume_hardware_rows %}
+        <h3>Фурнитура</h3>
+        <ul class="notes-list">
+          {% set hardware_ns = namespace(total=0.0) %}
+          {% for item in costume_hardware_rows if item is mapping %}
+            {% set quantity = item.get("quantity") %}
+            {% set price_per_unit = item.get("price_per_unit") %}
+            {% if quantity is number and price_per_unit is number %}
+              {% set line_total = quantity * price_per_unit %}
+              {% set hardware_ns.total = hardware_ns.total + line_total %}
+            {% else %}
+              {% set line_total = none %}
+            {% endif %}
+            <li>
+              {{ item.get("name") or "Без названия" }}
+              {% if item.get("purpose") %}<span class="muted">({{ item.get("purpose") }})</span>{% endif %}
+              {% if quantity is number and price_per_unit is number %}
+                <span class="chip">{{ '%.2f'|format(quantity) }} × {{ '%.2f'|format(price_per_unit) }} = {{ '%.2f'|format(line_total) }} {{ card.costume_currency or "" }}</span>
+              {% endif %}
+            </li>
+          {% endfor %}
+        </ul>
+        <p class="meta"><strong>Подитог по фурнитуре: {{ '%.2f'|format(hardware_ns.total) }}{% if card.costume_currency %} {{ card.costume_currency }}{% endif %}</strong></p>
       {% endif %}
       {{ money_line("Стоимость ткани", card.costume_fabric_price, card.costume_currency, "costume_fabric_price", unknown_fields) }}
       {{ money_line("Стоимость фурнитуры", card.costume_hardware_price, card.costume_currency, "costume_hardware_price", unknown_fields) }}
