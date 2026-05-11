@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+{% block content %}
+{% include "community_tabs.html" %}
+
+<section class="section-head">
+  <h1>{{ "Редактирование места материалов" if editing else "Новое место материалов" }}</h1>
+  <a href="{{ '/community/material-places/' ~ place_id if editing else '/community/material-places' }}" class="btn">Назад</a>
+</section>
+
+<form method="post" action="{{ '/community/material-places/' ~ place_id ~ '/edit' if editing else '/community/material-places/new' }}" class="grid one-col big-form">
+  <section class="box">
+    <div class="grid two-col">
+      <label>
+        Название *
+        <input type="text" name="name" value="{{ form.name }}" maxlength="255" required />
+      </label>
+      <label>
+        Город
+        <input type="text" name="city" value="{{ form.city }}" maxlength="255" />
+      </label>
+      <label>
+        Адрес
+        <input type="text" name="address" value="{{ form.address }}" maxlength="255" />
+      </label>
+      <label>
+        Ссылка
+        <input type="url" name="link" value="{{ form.link }}" placeholder="https://..." />
+      </label>
+      <label>
+        Цены *
+        <select name="price_level" required>
+          <option value="">Выбрать</option>
+          {% for level in [1, 2, 3, 4, 5] %}
+            <option value="{{ level }}" {% if form.price_level == (level ~ '') %}selected{% endif %}>{{ "💸" * level }}</option>
+          {% endfor %}
+        </select>
+      </label>
+    </div>
+
+    <label>
+      Тип *
+      <div class="chips-wrap top-offset">
+        {% for place_type in material_place_type_options %}
+          <label class="chip-check">
+            <input type="checkbox" name="types" value="{{ place_type }}" {% if place_type in (form.types_json or []) %}checked{% endif %} />
+            {{ place_type }}
+          </label>
+        {% endfor %}
+      </div>
+    </label>
+
+    <label>
+      Комментарий
+      <textarea name="description" rows="6" placeholder="Описание места, опыт покупок, что важно знать...">{{ form.description }}</textarea>
+    </label>
+  </section>
+
+  <section class="box">
+    <h3>Часы работы</h3>
+    <table class="table top-offset">
+      <thead>
+        <tr>
+          <th>День</th>
+          <th>Работает</th>
+          <th>Начало</th>
+          <th>Конец</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for day_key, day_label in material_place_weekday_options %}
+          {% set day_state = form.hours_by_day.get(day_key, {"enabled": False, "start": "", "end": ""}) %}
+          <tr>
+            <td>{{ day_label }}</td>
+            <td>
+              <input type="checkbox" name="hours_enabled_{{ day_key }}" value="1" {% if day_state.enabled %}checked{% endif %} />
+            </td>
+            <td>
+              <input type="time" name="hours_start_{{ day_key }}" value="{{ day_state.start }}" />
+            </td>
+            <td>
+              <input type="time" name="hours_end_{{ day_key }}" value="{{ day_state.end }}" />
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+
+  <div class="actions-inline">
+    <button type="submit" class="btn btn-accent">{{ "Сохранить" if editing else "Опубликовать" }}</button>
+    <a href="{{ '/community/material-places/' ~ place_id if editing else '/community/material-places' }}" class="btn">Отмена</a>
+  </div>
+</form>
+{% endblock %}

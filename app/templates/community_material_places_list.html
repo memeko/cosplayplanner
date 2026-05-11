@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% block content %}
+{% include "community_tabs.html" %}
+
+<section class="section-head">
+  <h1>Места материалов</h1>
+  <div class="actions-inline">
+    <a href="/community/material-places/new" class="btn btn-accent">Добавить место</a>
+  </div>
+</section>
+
+<section class="box">
+  <form method="get" action="/community/material-places" class="grid one-col">
+    <div class="search-inline">
+      <input type="text" name="q" value="{{ q }}" placeholder="Поиск по названию, адресу, описанию" />
+      <input type="text" name="city" value="{{ city_filter }}" placeholder="Город" list="material-place-city-options" />
+      <datalist id="material-place-city-options">
+        {% for city in city_options %}
+          <option value="{{ city }}"></option>
+        {% endfor %}
+      </datalist>
+      <button type="submit" class="btn">Найти</button>
+      <a href="/community/material-places" class="btn">Сброс</a>
+    </div>
+
+    <label>Тип</label>
+    <div class="chips-wrap">
+      {% for place_type in material_place_type_options %}
+        <label class="chip-check">
+          <input type="checkbox" name="type" value="{{ place_type }}" {% if place_type in selected_types %}checked{% endif %} />
+          {{ place_type }}
+        </label>
+      {% endfor %}
+    </div>
+  </form>
+</section>
+
+{% if places %}
+<div class="cards-grid top-offset">
+  {% for place in places %}
+    {% set owner = owners_by_id.get(place.user_id) %}
+    {% set hours_rows = format_material_place_work_hours_for_display(place.work_hours_json or []) %}
+    <article class="card">
+      <div class="row-between">
+        <h3><a href="/community/material-places/{{ place.id }}" class="card-title-link">{{ place.name }}</a></h3>
+        <span class="chip">{{ material_place_price_label(place.price_level) }}</span>
+      </div>
+      <p class="meta">Город: {{ place.city or "—" }}</p>
+      {% if place.address %}
+        <p class="meta">Адрес: {{ place.address }}</p>
+      {% endif %}
+      {% if place.types_json %}
+        <div class="chips-wrap">
+          {% for place_type in place.types_json %}
+            <span class="chip">{{ place_type }}</span>
+          {% endfor %}
+        </div>
+      {% endif %}
+      {% if hours_rows %}
+        <p class="meta">Часы: {{ hours_rows|length }} дн.</p>
+      {% endif %}
+      <p class="meta">Комментариев: {{ comment_counts.get(place.id, 0) }}</p>
+      {% if place.description %}
+        <p class="notes-block">{{ place.description|preview_text(220)|render_text }}</p>
+      {% endif %}
+      <div class="actions-inline top-offset">
+        <a href="/community/material-places/{{ place.id }}" class="btn">Подробнее</a>
+        {% if place.link %}
+          <a href="{{ place.link }}" target="_blank" rel="noreferrer" class="btn btn-small btn-platform">Ссылка</a>
+        {% endif %}
+        {% if user and (user.id == place.user_id or user_is_special(user)) %}
+          <a href="/community/material-places/{{ place.id }}/edit" class="btn">Редактировать</a>
+          <form method="post" action="/community/material-places/{{ place.id }}/delete" onsubmit="return confirm('Удалить карточку места материалов?');">
+            <button type="submit" class="btn btn-danger">Удалить</button>
+          </form>
+        {% endif %}
+      </div>
+      {% if owner %}
+        <p class="meta top-offset">Добавил(а): <span class="{% if user_is_special(owner) %}nick-special{% endif %}">@{{ owner.cosplay_nick or owner.username }}</span></p>
+      {% endif %}
+    </article>
+  {% endfor %}
+</div>
+{% else %}
+<section class="box top-offset">
+  <p class="muted">Пока нет карточек мест материалов. Добавьте первую карточку.</p>
+</section>
+{% endif %}
+{% endblock %}

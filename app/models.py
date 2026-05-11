@@ -108,6 +108,16 @@ class User(Base):
         back_populates="user",
         cascade="all, delete-orphan",
     )
+    community_material_places = relationship(
+        "CommunityMaterialPlace",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+    community_material_place_comments = relationship(
+        "CommunityMaterialPlaceComment",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
     community_studios = relationship("CommunityStudio", back_populates="user", cascade="all, delete-orphan")
     community_studio_comments = relationship(
         "CommunityStudioComment",
@@ -969,3 +979,38 @@ class CommunityCosplayerComment(Base):
 
     cosplayer = relationship("CommunityCosplayer", back_populates="comments")
     user = relationship("User", back_populates="community_cosplayer_comments")
+
+
+class CommunityMaterialPlace(Base):
+    __tablename__ = "community_material_places"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+
+    name = Column(String(255), nullable=False, index=True)
+    types_json = Column(JSON, nullable=False, default=list)
+    city = Column(String(255), nullable=True, index=True)
+    price_level = Column(Integer, nullable=True, index=True)
+    address = Column(String(255), nullable=True)
+    link = Column(Text, nullable=True)
+    work_hours_json = Column(JSON, nullable=False, default=list)
+    description = Column(Text, nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    user = relationship("User", back_populates="community_material_places")
+    comments = relationship("CommunityMaterialPlaceComment", back_populates="place", cascade="all, delete-orphan")
+
+
+class CommunityMaterialPlaceComment(Base):
+    __tablename__ = "community_material_place_comments"
+
+    id = Column(Integer, primary_key=True)
+    place_id = Column(Integer, ForeignKey("community_material_places.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    body = Column(Text, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    place = relationship("CommunityMaterialPlace", back_populates="comments")
+    user = relationship("User", back_populates="community_material_place_comments")

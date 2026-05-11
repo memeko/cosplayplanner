@@ -58,6 +58,8 @@ from .models import (
     CommunityArticleFavorite,
     CommunityCosplayer,
     CommunityCosplayerComment,
+    CommunityMaterialPlace,
+    CommunityMaterialPlaceComment,
     CommunityMaster,
     CommunityMasterComment,
     CommunityMasterOrder,
@@ -674,6 +676,29 @@ STUDIO_TAG_OPTIONS = [
     "частная",
 ]
 
+MATERIAL_PLACE_TYPE_OPTIONS = [
+    "ткани",
+    "фурнитура",
+    "пиротехника",
+    "электроника",
+    "декор",
+    "строительные материалы",
+    "парики",
+    "сэконд",
+    "рынок",
+    "другое",
+]
+MATERIAL_PLACE_WEEKDAY_OPTIONS: list[tuple[str, str]] = [
+    ("mon", "Пн"),
+    ("tue", "Вт"),
+    ("wed", "Ср"),
+    ("thu", "Чт"),
+    ("fri", "Пт"),
+    ("sat", "Сб"),
+    ("sun", "Вс"),
+]
+MATERIAL_PLACE_WEEKDAY_LABELS = dict(MATERIAL_PLACE_WEEKDAY_OPTIONS)
+
 ARTICLE_MAX_TAGS = 15
 ARTICLE_MAX_BODY_LENGTH = 15000
 STUDIO_ARTICLE_AUTHOR_NAME = "Cosplay Studio"
@@ -1147,6 +1172,10 @@ def apply_schema_migrations() -> None:
             CommunityCosplayer.__table__.create(bind=conn, checkfirst=True)
         if "community_cosplayer_comments" not in existing_tables:
             CommunityCosplayerComment.__table__.create(bind=conn, checkfirst=True)
+        if "community_material_places" not in existing_tables:
+            CommunityMaterialPlace.__table__.create(bind=conn, checkfirst=True)
+        if "community_material_place_comments" not in existing_tables:
+            CommunityMaterialPlaceComment.__table__.create(bind=conn, checkfirst=True)
         if "community_articles" not in existing_tables:
             CommunityArticle.__table__.create(bind=conn, checkfirst=True)
         if "community_article_comments" not in existing_tables:
@@ -1697,6 +1726,14 @@ def can_manage_studio(user: User | None, studio: CommunityStudio | None) -> bool
     if not user or not studio:
         return False
     if studio.user_id == user.id:
+        return True
+    return user_is_special(user)
+
+
+def can_manage_material_place(user: User | None, place: CommunityMaterialPlace | None) -> bool:
+    if not user or not place:
+        return False
+    if place.user_id == user.id:
         return True
     return user_is_special(user)
 
@@ -17926,25 +17963,17 @@ def project_board_list(request: Request, db: Session = Depends(get_db)):
     city_options = project_board_city_options(db, user)
 
     owner_ids = {post.user_id for post in posts}
-    post_ids = [post.id for post in posts]
-    comments_by_post: dict[int, list[ProjectSearchComment]] = defaultdict(list)
-
-    if post_ids:
-        comments = db.execute(
-            select(ProjectSearchComment)
-            .where(ProjectSearchComment.post_id.in_(post_ids))
-            .order_by(ProjectSearchComment.created_at.desc(), ProjectSearchComment.id.desc())
-        ).scalars().all()
-        for item in comments:
-            if len(comments_by_post[item.post_id]) >= 5:
-                continue
-            comments_by_post[item.post_id].append(item)
-            owner_ids.add(item.user_id)
 
     owners_by_id: dict[int, User] = {}
     if owner_ids:
         owners = db.execute(select(User).where(User.id.in_(owner_ids))).scalars().all()
         owners_by_id = {owner.id: owner for owner in owners}
+
+    comment_rows = db.execute(
+        select(ProjectSearchComment.post_id, func.count(ProjectSearchComment.id))
+        .group_by(ProjectSearchComment.post_id)
+    ).all()
+    comment_counts = {int(row[0]): int(row[1]) for row in comment_rows}
 
     return template_response(
         request,
@@ -17954,7 +17983,7 @@ def project_board_list(request: Request, db: Session = Depends(get_db)):
         community_tab="project-board",
         posts=posts,
         owners_by_id=owners_by_id,
-        comments_by_post=comments_by_post,
+        comment_counts=comment_counts,
         board_view=board_view,
         q=q,
         selected_city=selected_city,
@@ -18009,6 +18038,46 @@ async def project_board_create(request: Request, db: Session = Depends(get_db)):
     return redirect("/project-board")
 
 
+@app.get("/project-board/{post_id}", response_class=HTMLResponse)
+def project_board_detail(post_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    post = db.get(ProjectSearchPost, post_id)
+    if not post:
+        add_flash(request, "Объявление не найдено.", "error")
+        return redirect("/project-board")
+
+    comments = db.execute(
+        select(ProjectSearchComment)
+        .where(ProjectSearchComment.post_id == post.id)
+        .order_by(ProjectSearchComment.created_at, ProjectSearchComment.id)
+    ).scalars().all()
+    author_ids = {post.user_id, *(item.user_id for item in comments)}
+    owners_by_id: dict[int, User] = {}
+    if author_ids:
+        owners = db.execute(select(User).where(User.id.in_(author_ids))).scalars().all()
+        owners_by_id = {owner.id: owner for owner in owners}
+
+    return template_response(
+        request,
+        "project_board_detail.html",
+        user=user,
+        active_tab="community",
+        community_tab="project-board",
+        post=post,
+        owners_by_id=owners_by_id,
+        comments=comments,
+        board_status_labels={
+            PROJECT_BOARD_STATUS_ACTIVE: project_board_status_label(PROJECT_BOARD_STATUS_ACTIVE),
+            PROJECT_BOARD_STATUS_FOUND: project_board_status_label(PROJECT_BOARD_STATUS_FOUND),
+            PROJECT_BOARD_STATUS_INACTIVE: project_board_status_label(PROJECT_BOARD_STATUS_INACTIVE),
+        },
+        can_manage=can_manage_project_board_post(user, post),
+    )
+
+
 @app.get("/project-board/{post_id}/edit", response_class=HTMLResponse)
 def project_board_edit(post_id: int, request: Request, db: Session = Depends(get_db)):
     user = current_user(request, db)
@@ -18061,7 +18130,7 @@ async def project_board_update(post_id: int, request: Request, db: Session = Dep
     remember_options(db, user.id, "project_board_city", [post.city or ""])
     db.commit()
     add_flash(request, "Объявление обновлено.", "success")
-    return redirect("/project-board")
+    return redirect(f"/project-board/{post_id}")
 
 
 @app.post("/project-board/{post_id}/status")
@@ -18080,18 +18149,19 @@ async def project_board_update_status(post_id: int, request: Request, db: Sessio
 
     form = await request.form()
     status = str(form.get("status", "")).strip()
+    next_url = safe_redirect_target(str(form.get("next", "")).strip(), f"/project-board/{post_id}")
     if status not in {
         PROJECT_BOARD_STATUS_ACTIVE,
         PROJECT_BOARD_STATUS_FOUND,
         PROJECT_BOARD_STATUS_INACTIVE,
     }:
         add_flash(request, "Некорректный статус.", "error")
-        return redirect("/project-board")
+        return redirect(next_url)
 
     post.status = status
     db.commit()
     add_flash(request, "Статус объявления обновлен.", "success")
-    return redirect("/project-board")
+    return redirect(next_url)
 
 
 @app.post("/project-board/{post_id}/delete")
@@ -18127,9 +18197,10 @@ async def project_board_add_comment(post_id: int, request: Request, db: Session 
 
     form = await request.form()
     body = str(form.get("comment_body", "")).strip()
+    next_url = safe_redirect_target(str(form.get("next", "")).strip(), f"/project-board/{post_id}")
     if not body:
         add_flash(request, "Введите комментарий.", "error")
-        return redirect("/project-board")
+        return redirect(next_url)
 
     db.add(
         ProjectSearchComment(
@@ -18154,7 +18225,7 @@ async def project_board_add_comment(post_id: int, request: Request, db: Session 
         )
     db.commit()
     add_flash(request, "Комментарий добавлен.", "success")
-    return redirect("/project-board")
+    return redirect(next_url)
 
 
 @app.post("/project-board/{post_id}/comments/{comment_id}/delete")
@@ -18176,15 +18247,15 @@ def project_board_delete_comment(post_id: int, comment_id: int, request: Request
     ).scalar_one_or_none()
     if not comment:
         add_flash(request, "Комментарий не найден.", "error")
-        return redirect("/project-board")
+        return redirect(f"/project-board/{post.id}")
     if comment.user_id != user.id:
         add_flash(request, "Удалить комментарий может только его автор.", "error")
-        return redirect("/project-board")
+        return redirect(f"/project-board/{post.id}")
 
     db.delete(comment)
     db.commit()
     add_flash(request, "Комментарий удалён.", "info")
-    return redirect("/project-board")
+    return redirect(f"/project-board/{post.id}")
 
 
 @app.get("/community")
@@ -19436,6 +19507,480 @@ def community_cosplayers_delete_comment(
     db.commit()
     add_flash(request, "Комментарий удалён.", "info")
     return redirect(f"/community/cosplayers/{cosplayer.id}")
+
+
+def normalize_material_place_types(raw_values: list[str] | tuple[str, ...] | None) -> list[str]:
+    normalized_map = {value.casefold(): value for value in MATERIAL_PLACE_TYPE_OPTIONS}
+    result: list[str] = []
+    for raw_value in raw_values or []:
+        key = str(raw_value or "").strip().casefold()
+        if not key:
+            continue
+        mapped = normalized_map.get(key)
+        if mapped and mapped not in result:
+            result.append(mapped)
+    return result
+
+
+def normalize_material_place_price_level(raw_value: Any) -> int | None:
+    cleaned = str(raw_value or "").strip()
+    if not cleaned:
+        return None
+    if cleaned.isdigit():
+        level = int(cleaned)
+    else:
+        level = cleaned.count("💸") + cleaned.count("💰")
+    if not (1 <= level <= 5):
+        return None
+    return level
+
+
+def material_place_price_label(level: int | None) -> str:
+    if not isinstance(level, int) or level < 1:
+        return "—"
+    return "💸" * min(level, 5)
+
+
+def normalize_material_place_work_hours(raw_hours: list[Any]) -> list[dict[str, str]]:
+    order = {key: idx for idx, (key, _label) in enumerate(MATERIAL_PLACE_WEEKDAY_OPTIONS)}
+    normalized: list[dict[str, str]] = []
+    for raw_item in raw_hours:
+        if not isinstance(raw_item, dict):
+            continue
+        day = str(raw_item.get("day", "")).strip().lower()
+        if day not in MATERIAL_PLACE_WEEKDAY_LABELS:
+            continue
+        start = parse_time_hhmm(str(raw_item.get("start", "")).strip())
+        end = parse_time_hhmm(str(raw_item.get("end", "")).strip())
+        if not start or not end:
+            continue
+        normalized.append({"day": day, "start": start, "end": end})
+    normalized.sort(key=lambda item: order.get(item["day"], 99))
+    return normalized
+
+
+def parse_material_place_hours_from_form(form: Any) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    for day_key, _label in MATERIAL_PLACE_WEEKDAY_OPTIONS:
+        enabled = to_bool(form.get(f"hours_enabled_{day_key}"))
+        start = str(form.get(f"hours_start_{day_key}", "")).strip()
+        end = str(form.get(f"hours_end_{day_key}", "")).strip()
+        if not (enabled or start or end):
+            continue
+        rows.append({"day": day_key, "start": start, "end": end})
+    return rows
+
+
+def format_material_place_hours_for_form(raw_hours: list[Any]) -> dict[str, dict[str, Any]]:
+    result: dict[str, dict[str, Any]] = {
+        day_key: {"enabled": False, "start": "", "end": ""}
+        for day_key, _label in MATERIAL_PLACE_WEEKDAY_OPTIONS
+    }
+    for item in normalize_material_place_work_hours(raw_hours):
+        day_key = item.get("day")
+        if day_key not in result:
+            continue
+        result[day_key] = {
+            "enabled": True,
+            "start": item.get("start", ""),
+            "end": item.get("end", ""),
+        }
+    return result
+
+
+def get_material_place_form_values(place: CommunityMaterialPlace | None = None) -> dict[str, Any]:
+    if not place:
+        return {
+            "name": "",
+            "types_json": [],
+            "city": "",
+            "price_level": "",
+            "address": "",
+            "link": "",
+            "description": "",
+            "hours_by_day": format_material_place_hours_for_form([]),
+        }
+    return {
+        "name": place.name or "",
+        "types_json": normalize_material_place_types(as_list(place.types_json)),
+        "city": place.city or "",
+        "price_level": "" if place.price_level is None else str(place.price_level),
+        "address": place.address or "",
+        "link": place.link or "",
+        "description": place.description or "",
+        "hours_by_day": format_material_place_hours_for_form(as_list(place.work_hours_json)),
+    }
+
+
+def save_material_place_from_form(form: Any, place: CommunityMaterialPlace) -> tuple[bool, str]:
+    name = str(form.get("name", "")).strip()
+    city = str(form.get("city", "")).strip()
+    address = str(form.get("address", "")).strip()
+    link = str(form.get("link", "")).strip()
+    description = str(form.get("description", "")).strip()
+    types = normalize_material_place_types([str(item) for item in form.getlist("types")])
+    price_level = normalize_material_place_price_level(form.get("price_level"))
+    raw_hours = parse_material_place_hours_from_form(form)
+    normalized_hours = normalize_material_place_work_hours(raw_hours)
+
+    if not name:
+        return False, "Укажите название места."
+    if len(name) > 255:
+        return False, "Название должно быть до 255 символов."
+    if not types:
+        return False, "Выберите хотя бы один тип."
+    if len(city) > 255:
+        return False, "Поле «Город» слишком длинное (до 255 символов)."
+    if len(address) > 255:
+        return False, "Поле «Адрес» слишком длинное (до 255 символов)."
+    if link and not re.match(r"^https?://", link, flags=re.IGNORECASE):
+        return False, "Ссылка должна начинаться с http:// или https://."
+    if len(description) > 6000:
+        return False, "Комментарий должен быть до 6000 символов."
+    if not price_level:
+        return False, "Укажите уровень цен от 1 до 5."
+
+    for item in raw_hours:
+        day = str(item.get("day", "")).strip().lower()
+        start = parse_time_hhmm(str(item.get("start", "")).strip())
+        end = parse_time_hhmm(str(item.get("end", "")).strip())
+        if day not in MATERIAL_PLACE_WEEKDAY_LABELS:
+            continue
+        if not start or not end:
+            return False, f"Для дня «{MATERIAL_PLACE_WEEKDAY_LABELS[day]}» укажите время начала и конца."
+
+    place.name = name
+    place.types_json = types
+    place.city = city or None
+    place.price_level = price_level
+    place.address = address or None
+    place.link = link or None
+    place.work_hours_json = normalized_hours
+    place.description = description or None
+    return True, ""
+
+
+def build_google_maps_embed_url(address_value: str | None) -> str | None:
+    cleaned = str(address_value or "").strip()
+    if not cleaned:
+        return None
+    return f"https://maps.google.com/maps?q={quote(cleaned)}&output=embed"
+
+
+def format_material_place_work_hours_for_display(raw_hours: list[Any]) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    for item in normalize_material_place_work_hours(raw_hours):
+        day_key = item.get("day")
+        if day_key not in MATERIAL_PLACE_WEEKDAY_LABELS:
+            continue
+        rows.append(
+            {
+                "day_label": MATERIAL_PLACE_WEEKDAY_LABELS[day_key],
+                "start": item.get("start", ""),
+                "end": item.get("end", ""),
+            }
+        )
+    return rows
+
+
+@app.get("/community/material-places", response_class=HTMLResponse)
+def community_material_places_list(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    q = request.query_params.get("q", "").strip()
+    city_filter = request.query_params.get("city", "").strip()
+    selected_types = normalize_material_place_types([str(item) for item in request.query_params.getlist("type")])
+
+    all_places = db.execute(
+        select(CommunityMaterialPlace).order_by(CommunityMaterialPlace.updated_at.desc(), CommunityMaterialPlace.id.desc())
+    ).scalars().all()
+    places = list(all_places)
+
+    if q:
+        needle = q.casefold()
+        places = [
+            item
+            for item in places
+            if needle in (item.name or "").casefold()
+            or needle in (item.city or "").casefold()
+            or needle in (item.address or "").casefold()
+            or needle in (item.description or "").casefold()
+        ]
+    if city_filter:
+        city_values = split_city_values(city_filter)
+        places = [item for item in places if city_matches_any(city_values, item.city)]
+    if selected_types:
+        selected_keys = {value.casefold() for value in selected_types}
+        filtered: list[CommunityMaterialPlace] = []
+        for item in places:
+            item_keys = {str(value).strip().casefold() for value in as_list(item.types_json) if str(value).strip()}
+            if selected_keys & item_keys:
+                filtered.append(item)
+        places = filtered
+
+    owner_ids = {item.user_id for item in places}
+    owners_by_id: dict[int, User] = {}
+    if owner_ids:
+        owners = db.execute(select(User).where(User.id.in_(owner_ids))).scalars().all()
+        owners_by_id = {item.id: item for item in owners}
+
+    comment_rows = db.execute(
+        select(CommunityMaterialPlaceComment.place_id, func.count(CommunityMaterialPlaceComment.id))
+        .group_by(CommunityMaterialPlaceComment.place_id)
+    ).all()
+    comment_counts = {int(row[0]): int(row[1]) for row in comment_rows}
+
+    city_options = sorted(
+        merge_unique([item.city for item in all_places if item.city]),
+        key=lambda value: value.casefold(),
+    )
+
+    return template_response(
+        request,
+        "community_material_places_list.html",
+        user=user,
+        active_tab="community",
+        community_tab="material-places",
+        places=places,
+        owners_by_id=owners_by_id,
+        comment_counts=comment_counts,
+        q=q,
+        city_filter=city_filter,
+        selected_types=selected_types,
+        material_place_type_options=MATERIAL_PLACE_TYPE_OPTIONS,
+        city_options=city_options,
+        material_place_price_label=material_place_price_label,
+        format_material_place_work_hours_for_display=format_material_place_work_hours_for_display,
+    )
+
+
+@app.get("/community/material-places/new", response_class=HTMLResponse)
+def community_material_places_new(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    return template_response(
+        request,
+        "community_material_place_form.html",
+        user=user,
+        active_tab="community",
+        community_tab="material-places",
+        editing=False,
+        place_id=None,
+        form=get_material_place_form_values(),
+        material_place_type_options=MATERIAL_PLACE_TYPE_OPTIONS,
+        material_place_weekday_options=MATERIAL_PLACE_WEEKDAY_OPTIONS,
+    )
+
+
+@app.post("/community/material-places/new")
+async def community_material_places_create(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    form = await request.form()
+    place = CommunityMaterialPlace(user_id=user.id, name="")
+    ok, error_text = save_material_place_from_form(form, place)
+    if not ok:
+        add_flash(request, error_text, "error")
+        return redirect("/community/material-places/new")
+
+    db.add(place)
+    db.commit()
+    add_flash(request, "Карточка места материалов опубликована.", "success")
+    return redirect(f"/community/material-places/{place.id}")
+
+
+@app.get("/community/material-places/{place_id}", response_class=HTMLResponse)
+def community_material_places_detail(place_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    place = db.get(CommunityMaterialPlace, place_id)
+    if not place:
+        add_flash(request, "Карточка места материалов не найдена.", "error")
+        return redirect("/community/material-places")
+
+    owner = db.get(User, place.user_id)
+    comments = db.execute(
+        select(CommunityMaterialPlaceComment)
+        .where(CommunityMaterialPlaceComment.place_id == place.id)
+        .order_by(CommunityMaterialPlaceComment.created_at, CommunityMaterialPlaceComment.id)
+    ).scalars().all()
+    author_ids = {place.user_id, *(item.user_id for item in comments)}
+    authors_by_id: dict[int, User] = {}
+    if author_ids:
+        author_rows = db.execute(select(User).where(User.id.in_(author_ids))).scalars().all()
+        authors_by_id = {item.id: item for item in author_rows}
+
+    return template_response(
+        request,
+        "community_material_place_detail.html",
+        user=user,
+        active_tab="community",
+        community_tab="material-places",
+        place=place,
+        owner=owner,
+        place_types=normalize_material_place_types(as_list(place.types_json)),
+        place_work_hours=format_material_place_work_hours_for_display(as_list(place.work_hours_json)),
+        place_price_label=material_place_price_label(place.price_level),
+        comments=comments,
+        authors_by_id=authors_by_id,
+        can_manage_place=can_manage_material_place(user, place),
+        map_embed_url=build_google_maps_embed_url(place.address),
+    )
+
+
+@app.get("/community/material-places/{place_id}/edit", response_class=HTMLResponse)
+def community_material_places_edit(place_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    place = db.get(CommunityMaterialPlace, place_id)
+    if not place:
+        add_flash(request, "Карточка места материалов не найдена.", "error")
+        return redirect("/community/material-places")
+    if not can_manage_material_place(user, place):
+        add_flash(request, "Редактировать можно только свою карточку.", "error")
+        return redirect(f"/community/material-places/{place_id}")
+
+    return template_response(
+        request,
+        "community_material_place_form.html",
+        user=user,
+        active_tab="community",
+        community_tab="material-places",
+        editing=True,
+        place_id=place.id,
+        form=get_material_place_form_values(place),
+        material_place_type_options=MATERIAL_PLACE_TYPE_OPTIONS,
+        material_place_weekday_options=MATERIAL_PLACE_WEEKDAY_OPTIONS,
+    )
+
+
+@app.post("/community/material-places/{place_id}/edit")
+async def community_material_places_update(place_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    place = db.get(CommunityMaterialPlace, place_id)
+    if not place:
+        add_flash(request, "Карточка места материалов не найдена.", "error")
+        return redirect("/community/material-places")
+    if not can_manage_material_place(user, place):
+        add_flash(request, "Редактировать можно только свою карточку.", "error")
+        return redirect(f"/community/material-places/{place_id}")
+
+    form = await request.form()
+    ok, error_text = save_material_place_from_form(form, place)
+    if not ok:
+        add_flash(request, error_text, "error")
+        return redirect(f"/community/material-places/{place_id}/edit")
+
+    db.commit()
+    add_flash(request, "Карточка места материалов обновлена.", "success")
+    return redirect(f"/community/material-places/{place_id}")
+
+
+@app.post("/community/material-places/{place_id}/delete")
+def community_material_places_delete(place_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    place = db.get(CommunityMaterialPlace, place_id)
+    if not place:
+        add_flash(request, "Карточка места материалов не найдена.", "error")
+        return redirect("/community/material-places")
+    if not can_manage_material_place(user, place):
+        add_flash(request, "Удалять можно только свою карточку.", "error")
+        return redirect(f"/community/material-places/{place_id}")
+
+    db.delete(place)
+    db.commit()
+    add_flash(request, "Карточка места материалов удалена.", "info")
+    return redirect("/community/material-places")
+
+
+@app.post("/community/material-places/{place_id}/comments")
+async def community_material_places_add_comment(place_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    place = db.get(CommunityMaterialPlace, place_id)
+    if not place:
+        add_flash(request, "Карточка места материалов не найдена.", "error")
+        return redirect("/community/material-places")
+
+    form = await request.form()
+    body = str(form.get("body", "")).strip()
+    if not body:
+        add_flash(request, "Введите текст комментария.", "error")
+        return redirect(f"/community/material-places/{place_id}")
+
+    db.add(
+        CommunityMaterialPlaceComment(
+            place_id=place.id,
+            user_id=user.id,
+            body=body,
+        )
+    )
+    if place.user_id != user.id:
+        preview = body if len(body) <= 120 else body[:117].rstrip() + "..."
+        db.add(
+            FestivalNotification(
+                user_id=place.user_id,
+                from_user_id=user.id,
+                source_card_id=None,
+                message=f"Новый комментарий в карточке места материалов «{place.name}»: {preview}",
+                is_read=False,
+            )
+        )
+    db.commit()
+    add_flash(request, "Комментарий добавлен.", "success")
+    return redirect(f"/community/material-places/{place_id}")
+
+
+@app.post("/community/material-places/{place_id}/comments/{comment_id}/delete")
+def community_material_places_delete_comment(
+    place_id: int,
+    comment_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    place = db.get(CommunityMaterialPlace, place_id)
+    if not place:
+        add_flash(request, "Карточка места материалов не найдена.", "error")
+        return redirect("/community/material-places")
+
+    comment = db.execute(
+        select(CommunityMaterialPlaceComment).where(
+            CommunityMaterialPlaceComment.id == comment_id,
+            CommunityMaterialPlaceComment.place_id == place.id,
+        )
+    ).scalar_one_or_none()
+    if not comment:
+        add_flash(request, "Комментарий не найден.", "error")
+        return redirect(f"/community/material-places/{place.id}")
+    if comment.user_id != user.id:
+        add_flash(request, "Удалить комментарий может только его автор.", "error")
+        return redirect(f"/community/material-places/{place.id}")
+
+    db.delete(comment)
+    db.commit()
+    add_flash(request, "Комментарий удалён.", "info")
+    return redirect(f"/community/material-places/{place.id}")
 
 
 def normalize_studio_tags(raw_tags: list[str]) -> list[str]:

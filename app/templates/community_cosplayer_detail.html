@@ -56,12 +56,22 @@
   <h3>Промо-фото</h3>
   <div class="reference-grid top-offset">
     {% for url in photos %}
-      <a class="reference-tile" href="{{ url }}" target="_blank" rel="noreferrer">
+      <button type="button" class="reference-tile promo-photo-trigger" data-promo-url="{{ url }}" data-promo-index="{{ loop.index0 }}">
         <img src="{{ url }}" alt="Промо-фото косплеера" loading="lazy" />
-      </a>
+      </button>
     {% endfor %}
   </div>
 </section>
+
+<div class="fullscreen-gallery" id="cosplayer_promo_gallery" hidden>
+  <button type="button" class="fullscreen-gallery-close" id="cosplayer_promo_close" aria-label="Закрыть">×</button>
+  <button type="button" class="fullscreen-gallery-nav fullscreen-gallery-prev" id="cosplayer_promo_prev" aria-label="Предыдущее фото">‹</button>
+  <div class="fullscreen-gallery-content">
+    <img src="" alt="Промо-фото" id="cosplayer_promo_image" />
+    <p class="meta" id="cosplayer_promo_counter"></p>
+  </div>
+  <button type="button" class="fullscreen-gallery-nav fullscreen-gallery-next" id="cosplayer_promo_next" aria-label="Следующее фото">›</button>
+</div>
 {% endif %}
 
 {% if about_html %}
@@ -123,4 +133,71 @@
     </div>
   </form>
 </section>
+{% if photos %}
+<script>
+(function () {
+  const gallery = document.getElementById('cosplayer_promo_gallery');
+  if (!gallery) return;
+
+  const triggers = Array.from(document.querySelectorAll('.promo-photo-trigger'));
+  const image = document.getElementById('cosplayer_promo_image');
+  const counter = document.getElementById('cosplayer_promo_counter');
+  const closeButton = document.getElementById('cosplayer_promo_close');
+  const prevButton = document.getElementById('cosplayer_promo_prev');
+  const nextButton = document.getElementById('cosplayer_promo_next');
+  const urls = triggers.map((item) => item.dataset.promoUrl).filter(Boolean);
+  let currentIndex = 0;
+
+  function render() {
+    if (!urls.length || !image) return;
+    const safeIndex = ((currentIndex % urls.length) + urls.length) % urls.length;
+    currentIndex = safeIndex;
+    image.src = urls[safeIndex];
+    if (counter) counter.textContent = `${safeIndex + 1} / ${urls.length}`;
+  }
+
+  function openAt(index) {
+    currentIndex = index;
+    render();
+    gallery.hidden = false;
+    document.body.classList.add('fullscreen-gallery-open');
+  }
+
+  function closeGallery() {
+    gallery.hidden = true;
+    document.body.classList.remove('fullscreen-gallery-open');
+  }
+
+  function showPrev() {
+    currentIndex -= 1;
+    render();
+  }
+
+  function showNext() {
+    currentIndex += 1;
+    render();
+  }
+
+  triggers.forEach((button, index) => {
+    button.addEventListener('click', () => openAt(index));
+  });
+
+  closeButton?.addEventListener('click', closeGallery);
+  prevButton?.addEventListener('click', showPrev);
+  nextButton?.addEventListener('click', showNext);
+  gallery.addEventListener('click', (event) => {
+    if (event.target === gallery) {
+      closeGallery();
+    }
+  });
+
+  document.addEventListener('keydown', (event) => {
+    if (gallery.hidden) return;
+    if (event.key === 'Escape') closeGallery();
+    if (event.key === 'ArrowLeft') showPrev();
+    if (event.key === 'ArrowRight') showNext();
+  });
+})();
+</script>
+{% endif %}
 {% endblock %}
