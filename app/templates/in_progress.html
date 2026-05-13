@@ -9,6 +9,24 @@
   <a href="/in-progress?scope=master" class="tab {% if (in_progress_scope or 'cosplayer') == 'master' %}active{% endif %}">Мастер ({{ master_active_projects_count or 0 }})</a>
 </nav>
 
+<section class="box compact-box">
+  <form method="get" action="/in-progress" class="grid two-col">
+    <input type="hidden" name="scope" value="cosplayer" />
+    <label>
+      Персонаж
+      <input type="text" name="character" value="{{ character_filter or '' }}" placeholder="Имя персонажа" />
+    </label>
+    <label>
+      Фэндом
+      <input type="text" name="fandom" value="{{ fandom_filter or '' }}" placeholder="Название фэндома" />
+    </label>
+    <div class="actions-inline wrap">
+      <button type="submit" class="btn">Применить</button>
+      <a href="/in-progress?scope=cosplayer" class="btn">Сбросить</a>
+    </div>
+  </form>
+</section>
+
 <style>
   .tasks-table {
     width: 100%;

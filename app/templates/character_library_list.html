@@ -1,0 +1,106 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="section-head">
+  <div>
+    <h1>Библиотека персонажей</h1>
+    <p class="meta">Показано карточек на странице: <strong>{{ filtered_count or 0 }}</strong> из <strong>{{ total_filtered_count or 0 }}</strong></p>
+  </div>
+  <div class="actions-inline wrap">
+    <form method="get" action="/cosplan/characters" class="search-inline">
+      <input type="text" name="q" value="{{ q or '' }}" placeholder="Поиск по имени и описанию" />
+      <input type="text" name="fandom" value="{{ fandom or '' }}" placeholder="Фэндом" list="character-fandom-options" />
+      <select name="sort_by">
+        {% for key, label in sort_options.items() %}
+          <option value="{{ key }}" {% if sort_by == key %}selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+      <button type="submit" class="btn">Найти</button>
+    </form>
+    <a href="/cosplan/characters/new" class="btn btn-accent">Новая карточка</a>
+  </div>
+</section>
+
+<datalist id="character-fandom-options">
+  {% for value in character_fandom_options %}
+    <option value="{{ value }}"></option>
+  {% endfor %}
+</datalist>
+
+<nav class="calendar-tabs">
+  <a href="/cosplan" class="tab">
+    Карточки косплана
+    <span class="chip">{{ cosplan_cards_total }}</span>
+  </a>
+  <a href="/cosplan/titles" class="tab">
+    Тайтлы
+    <span class="chip">{{ title_entries_total }}</span>
+  </a>
+  <a href="/cosplan/characters" class="tab active">
+    Библиотека персонажей
+    <span class="chip">{{ character_library_total }}</span>
+  </a>
+</nav>
+
+{% if rows %}
+  <div class="cards-grid top-offset">
+    {% for row in rows %}
+      {% set entry = row.entry %}
+      {% set refs = entry.references_json or [] %}
+      <article class="card">
+        <h3><a href="/cosplan/characters/{{ entry.id }}" class="card-title-link">{{ row.display_name }}</a></h3>
+        <p class="meta">Фандом: {{ entry.fandom or "—" }}{% if entry.fandom_en %} · {{ entry.fandom_en }}{% endif %}</p>
+        <p class="meta">Пол: {{ character_gender_options.get(entry.gender, character_gender_options.get('unspecified')) }}</p>
+        <p class="meta">Рост: {{ entry.height_cm if entry.height_cm else "—" }}{% if entry.height_cm %} см{% endif %}</p>
+        <p class="meta">Цвет глаз: {{ entry.eye_color or "—" }}</p>
+        <p class="meta">Возраст (на вид): {{ entry.apparent_age if entry.apparent_age else "—" }} · Возраст: {{ entry.age if entry.age else "—" }}</p>
+        {% if entry.full_name_en %}<p class="meta">Имя на английском: {{ entry.full_name_en }}</p>{% endif %}
+        {% if entry.full_name_original %}<p class="meta">Имя на языке оригинала: {{ entry.full_name_original }}</p>{% endif %}
+        {% if entry.biography %}<p class="notes-block">{{ entry.biography|render_text }}</p>{% endif %}
+        {% if entry.extra_info %}<p class="notes-block">{{ entry.extra_info|render_text }}</p>{% endif %}
+        {% if refs %}
+          <div class="reference-grid top-offset">
+            {% for url in refs %}
+              <a class="reference-tile" href="{{ url }}" target="_blank" rel="noreferrer">
+                <img src="{{ url }}" alt="Референс персонажа" loading="lazy" />
+              </a>
+            {% endfor %}
+          </div>
+        {% endif %}
+        <div class="actions-inline wrap top-offset">
+          <a href="/cosplan/characters/{{ entry.id }}" class="btn">Открыть</a>
+          <a href="/cosplan/characters/{{ entry.id }}/edit" class="btn">Редактировать</a>
+          <form method="post" action="/cosplan/characters/{{ entry.id }}/delete" onsubmit="return confirm('Удалить карточку персонажа?');">
+            <button type="submit" class="btn btn-danger">Удалить</button>
+          </form>
+        </div>
+        <p class="meta top-offset">Добавил {{ row.creator_label }}</p>
+      </article>
+    {% endfor %}
+  </div>
+{% else %}
+  <section class="box">
+    <p class="muted">Карточек персонажей пока нет. Добавьте первую карточку в библиотеку.</p>
+    <div class="actions-inline top-offset">
+      <a href="/cosplan/characters/new" class="btn btn-accent">Добавить персонажа</a>
+    </div>
+  </section>
+{% endif %}
+{% if total_pages and total_pages > 1 %}
+  <section class="box compact-box top-offset">
+    <div class="actions-inline wrap">
+      {% if has_prev_page %}
+        <a class="btn" href="/cosplan/characters?{% if pagination_query %}{{ pagination_query }}&{% endif %}page={{ current_page - 1 }}">← Назад</a>
+      {% endif %}
+      {% for page_number in page_numbers %}
+        <a class="btn {% if page_number == current_page %}btn-accent{% endif %}" href="/cosplan/characters?{% if pagination_query %}{{ pagination_query }}&{% endif %}page={{ page_number }}">
+          {{ page_number }}
+        </a>
+      {% endfor %}
+      {% if has_next_page %}
+        <a class="btn" href="/cosplan/characters?{% if pagination_query %}{{ pagination_query }}&{% endif %}page={{ current_page + 1 }}">Вперёд →</a>
+      {% endif %}
+    </div>
+    <p class="meta top-offset">Страница {{ current_page }} из {{ total_pages }}</p>
+  </section>
+{% endif %}
+{% endblock %}

@@ -7,7 +7,7 @@
     <h1>В работе</h1>
     <p class="meta">Показано карточек: <strong>{{ master_cards_filtered_count or 0 }}</strong></p>
   </div>
-  <a href="/in-progress/master/new" class="btn btn-accent">Новая карточка мастера</a>
+  <a href="/in-progress/master/new" class="btn btn-accent">Новая работа</a>
 </section>
 
 <nav class="calendar-tabs">
@@ -21,6 +21,14 @@
     <label>
       Поиск
       <input type="text" name="q" value="{{ master_search_query or '' }}" placeholder="Название, тайтл, заказчик, исполнитель" />
+    </label>
+    <label>
+      Персонаж
+      <input type="text" name="character" value="{{ character_filter or '' }}" placeholder="Имя персонажа / работы" />
+    </label>
+    <label>
+      Фэндом
+      <input type="text" name="fandom" value="{{ fandom_filter or '' }}" placeholder="Фэндом (по тайтлу/описанию)" />
     </label>
     <label>
       Сортировка

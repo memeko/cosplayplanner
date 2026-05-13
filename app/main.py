@@ -53,6 +53,7 @@ from .cosplay2_parser import guess_name_from_url, normalize_url, parse_events_fr
 from .database import Base, SessionLocal, engine, get_db
 from .models import (
     CardComment,
+    CharacterLibraryEntry,
     CommunityArticle,
     CommunityArticleComment,
     CommunityArticleFavorite,
@@ -752,6 +753,54 @@ ANNOUNCEMENT_STATUS_PENDING = "pending"
 ANNOUNCEMENT_STATUS_APPROVED = "approved"
 ANNOUNCEMENT_STATUS_REJECTED = "rejected"
 
+MASTER_ORDER_STATUS_PENDING = "pending"
+MASTER_ORDER_STATUS_ACCEPTED = "accepted"
+MASTER_ORDER_STATUS_REJECTED = "rejected"
+MASTER_ORDER_STATUS_LABELS = {
+    MASTER_ORDER_STATUS_PENDING: "Рассматривается",
+    MASTER_ORDER_STATUS_ACCEPTED: "Принято",
+    MASTER_ORDER_STATUS_REJECTED: "Отклонено",
+}
+
+CHARACTER_LIBRARY_GENDER_MALE = "male"
+CHARACTER_LIBRARY_GENDER_FEMALE = "female"
+CHARACTER_LIBRARY_GENDER_UNSPECIFIED = "unspecified"
+CHARACTER_LIBRARY_GENDER_OPTIONS = {
+    CHARACTER_LIBRARY_GENDER_MALE: "Мужской",
+    CHARACTER_LIBRARY_GENDER_FEMALE: "Женский",
+    CHARACTER_LIBRARY_GENDER_UNSPECIFIED: "Иное / не обозначено",
+}
+CHARACTER_LIBRARY_EYE_COLOR_OPTIONS = [
+    "голубые",
+    "черные",
+    "карие",
+    "синие",
+    "красные",
+    "оранжевые",
+    "зеленые",
+    "жёлтые",
+    "фиолетовые",
+    "розовые",
+    "золотые",
+    "белые",
+    "полностью черные",
+    "другие",
+]
+CHARACTER_LIBRARY_MAX_REFERENCES = 10
+CHARACTER_LIBRARY_PAGE_SIZE = 12
+CHARACTER_LIBRARY_SORT_UPDATED_DESC = "updated_desc"
+CHARACTER_LIBRARY_SORT_NAME_ASC = "name_asc"
+CHARACTER_LIBRARY_SORT_NAME_DESC = "name_desc"
+CHARACTER_LIBRARY_SORT_FANDOM_ASC = "fandom_asc"
+CHARACTER_LIBRARY_SORT_FANDOM_DESC = "fandom_desc"
+CHARACTER_LIBRARY_SORT_OPTIONS = {
+    CHARACTER_LIBRARY_SORT_UPDATED_DESC: "По обновлению (новые сверху)",
+    CHARACTER_LIBRARY_SORT_NAME_ASC: "По имени (А-Я)",
+    CHARACTER_LIBRARY_SORT_NAME_DESC: "По имени (Я-А)",
+    CHARACTER_LIBRARY_SORT_FANDOM_ASC: "По фэндому (А-Я)",
+    CHARACTER_LIBRARY_SORT_FANDOM_DESC: "По фэндому (Я-А)",
+}
+
 SPECIAL_HIGHLIGHT_USERNAME = "brfox_cosplay"
 SPECIAL_HIGHLIGHT_EMAIL = "angenzel@gmail.com"
 FESTIVAL_GLOBAL_EDITOR_USERNAMES = {
@@ -774,6 +823,8 @@ NETWORK_CACHE: dict[str, tuple[datetime, Any]] = {}
 MAX_UPLOAD_INPUT_BYTES = 20 * 1024 * 1024
 MAX_GALLERY_IMAGE_BYTES = 30 * 1024
 MAX_GALLERY_IMAGE_WIDTH = 512
+MAX_CHARACTER_REFERENCE_IMAGE_BYTES = 450 * 1024
+MAX_CHARACTER_REFERENCE_IMAGE_WIDTH = 900
 MAX_AVATAR_IMAGE_BYTES = 24 * 1024
 MAX_AVATAR_IMAGE_WIDTH = 256
 DEFAULT_AVATAR_PATH = "/static/avatar-placeholder.svg"
@@ -1091,9 +1142,36 @@ def apply_schema_migrations() -> None:
         "community_masters": [
             ("city", "VARCHAR(255)"),
             ("allow_site_orders", "BOOLEAN NOT NULL DEFAULT 0"),
+            ("queue_card_ids_json", "JSON NOT NULL DEFAULT '[]'"),
+            ("queue_show_deadline", "BOOLEAN NOT NULL DEFAULT 1"),
+            ("queue_show_progress", "BOOLEAN NOT NULL DEFAULT 1"),
             ("import_source", "VARCHAR(64)"),
             ("import_external_id", "VARCHAR(128)"),
             ("import_url", "TEXT"),
+        ],
+        "community_master_orders": [
+            ("status", "VARCHAR(32) NOT NULL DEFAULT 'pending'"),
+        ],
+        "character_library_entries": [
+            ("id", "INTEGER PRIMARY KEY"),
+            ("created_by_user_id", "INTEGER"),
+            ("first_name", "VARCHAR(255)"),
+            ("last_name", "VARCHAR(255)"),
+            ("full_name_en", "VARCHAR(255)"),
+            ("full_name_original", "VARCHAR(255)"),
+            ("fandom", "VARCHAR(255)"),
+            ("fandom_en", "VARCHAR(255)"),
+            ("gender", "VARCHAR(32) NOT NULL DEFAULT 'unspecified'"),
+            ("height_cm", "INTEGER"),
+            ("skin_color", "VARCHAR(120)"),
+            ("eye_color", "VARCHAR(64)"),
+            ("apparent_age", "INTEGER"),
+            ("age", "INTEGER"),
+            ("references_json", "JSON NOT NULL DEFAULT '[]'"),
+            ("biography", "TEXT"),
+            ("extra_info", "TEXT"),
+            ("created_at", "DATETIME DEFAULT CURRENT_TIMESTAMP"),
+            ("updated_at", "DATETIME DEFAULT CURRENT_TIMESTAMP"),
         ],
         "community_studios": [
             ("note", "TEXT"),
@@ -1160,6 +1238,10 @@ def apply_schema_migrations() -> None:
             CommunityMasterComment.__table__.create(bind=conn, checkfirst=True)
         if "community_master_ratings" not in existing_tables:
             CommunityMasterRating.__table__.create(bind=conn, checkfirst=True)
+        if "community_master_orders" not in existing_tables:
+            CommunityMasterOrder.__table__.create(bind=conn, checkfirst=True)
+        if "character_library_entries" not in existing_tables:
+            CharacterLibraryEntry.__table__.create(bind=conn, checkfirst=True)
         if "community_studios" not in existing_tables:
             CommunityStudio.__table__.create(bind=conn, checkfirst=True)
         if "community_studio_comments" not in existing_tables:
@@ -1208,14 +1290,14 @@ def apply_schema_migrations() -> None:
         community_masters_added_allow_site_orders = False
 
         for table_name, columns in required_columns.items():
-            if table_name not in existing_tables and table_name != "festival_notifications":
+            if table_name not in existing_tables and table_name not in {"festival_notifications", "character_library_entries"}:
                 continue
 
             current_cols = {col["name"] for col in inspect(conn).get_columns(table_name)}
             for column_name, definition in columns:
                 if column_name in current_cols:
                     continue
-                if table_name == "festival_notifications" and column_name == "id":
+                if table_name in {"festival_notifications", "character_library_entries"} and column_name == "id":
                     # Table create handles PK.
                     continue
                 conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}"))
@@ -1224,6 +1306,22 @@ def apply_schema_migrations() -> None:
 
         if community_masters_added_allow_site_orders:
             conn.execute(text("UPDATE community_masters SET allow_site_orders = 1"))
+        if "community_master_orders" in existing_tables:
+            conn.execute(
+                text(
+                    "UPDATE community_master_orders "
+                    "SET status = 'pending' "
+                    "WHERE status IS NULL OR trim(status) = ''"
+                )
+            )
+        if "community_masters" in existing_tables:
+            conn.execute(
+                text(
+                    "UPDATE community_masters "
+                    "SET queue_card_ids_json = '[]' "
+                    "WHERE queue_card_ids_json IS NULL OR trim(queue_card_ids_json) = ''"
+                )
+            )
         if "festivals" in existing_tables:
             conn.execute(
                 text(
@@ -1280,6 +1378,24 @@ def apply_schema_migrations() -> None:
             text(
                 "CREATE INDEX IF NOT EXISTS ix_community_articles_import_external_id "
                 "ON community_articles (import_external_id)"
+            )
+        )
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_character_library_entries_fandom "
+                "ON character_library_entries (fandom)"
+            )
+        )
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_character_library_entries_fandom_en "
+                "ON character_library_entries (fandom_en)"
+            )
+        )
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_character_library_entries_eye_color "
+                "ON character_library_entries (eye_color)"
             )
         )
 
@@ -1417,6 +1533,52 @@ async def media_upload_image(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     file_name = f"{datetime.utcnow().strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:14]}.webp"
+    destination = media_storage_path() / file_name
+    destination.write_bytes(webp_bytes)
+
+    public_path = f"/media/{file_name}"
+    base_url = str(request.base_url).rstrip("/")
+    return {
+        "ok": True,
+        "url": f"{base_url}{public_path}",
+        "path": public_path,
+        "size_bytes": len(webp_bytes),
+        "width": width,
+        "height": height,
+        "format": "webp",
+    }
+
+
+@app.post("/media/upload-character-reference")
+async def media_upload_character_reference(
+    request: Request,
+    image: UploadFile = File(...),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    user = current_user(request, db)
+    if not user:
+        raise HTTPException(status_code=401, detail="Требуется авторизация.")
+
+    if not image.filename:
+        raise HTTPException(status_code=400, detail="Файл не передан.")
+    content_type = (image.content_type or "").lower()
+    if not content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="Нужен файл изображения.")
+
+    raw_bytes = await image.read(MAX_UPLOAD_INPUT_BYTES + 1)
+    if len(raw_bytes) > MAX_UPLOAD_INPUT_BYTES:
+        raise HTTPException(status_code=400, detail="Изображение слишком большое (до 20 МБ).")
+
+    try:
+        webp_bytes, width, height = compress_image_to_webp(
+            raw_bytes,
+            max_output_bytes=MAX_CHARACTER_REFERENCE_IMAGE_BYTES,
+            max_width=MAX_CHARACTER_REFERENCE_IMAGE_WIDTH,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    file_name = f"character-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:14]}.webp"
     destination = media_storage_path() / file_name
     destination.write_bytes(webp_bytes)
 
@@ -7804,6 +7966,7 @@ def save_master_order_from_form(form: Any, order: CommunityMasterOrder) -> tuple
     order.details = details or None
     order.deadline = deadline
     order.references_json = references
+    order.status = MASTER_ORDER_STATUS_PENDING
     return True, ""
 
 
@@ -10721,10 +10884,189 @@ def get_cosplan_section_totals(db: Session, user_id: int) -> dict[str, int]:
     titles_total = int(
         db.execute(select(func.count(TitleEntry.id)).where(TitleEntry.user_id == user_id)).scalar() or 0
     )
+    characters_total = int(
+        db.execute(select(func.count(CharacterLibraryEntry.id))).scalar() or 0
+    )
     return {
         "cosplan_cards_total": cards_total,
         "title_entries_total": titles_total,
+        "character_library_total": characters_total,
     }
+
+
+def character_library_display_name(entry: CharacterLibraryEntry) -> str:
+    first_name = str(entry.first_name or "").strip()
+    last_name = str(entry.last_name or "").strip()
+    full_name = " ".join(value for value in [first_name, last_name] if value).strip()
+    return full_name or "Без имени"
+
+
+def get_character_library_form_values(entry: CharacterLibraryEntry | None = None) -> dict[str, Any]:
+    if not entry:
+        return {
+            "first_name": "",
+            "last_name": "",
+            "full_name_en": "",
+            "full_name_original": "",
+            "fandom": "",
+            "fandom_en": "",
+            "gender": CHARACTER_LIBRARY_GENDER_UNSPECIFIED,
+            "height_cm": "",
+            "skin_color": "",
+            "eye_color": "",
+            "apparent_age": "",
+            "age": "",
+            "references_json": [],
+            "references_input": "",
+            "biography": "",
+            "extra_info": "",
+        }
+
+    return {
+        "first_name": entry.first_name or "",
+        "last_name": entry.last_name or "",
+        "full_name_en": entry.full_name_en or "",
+        "full_name_original": entry.full_name_original or "",
+        "fandom": entry.fandom or "",
+        "fandom_en": entry.fandom_en or "",
+        "gender": entry.gender or CHARACTER_LIBRARY_GENDER_UNSPECIFIED,
+        "height_cm": "" if entry.height_cm is None else str(entry.height_cm),
+        "skin_color": entry.skin_color or "",
+        "eye_color": entry.eye_color or "",
+        "apparent_age": "" if entry.apparent_age is None else str(entry.apparent_age),
+        "age": "" if entry.age is None else str(entry.age),
+        "references_json": as_list(entry.references_json),
+        "references_input": "\n".join(as_list(entry.references_json)),
+        "biography": entry.biography or "",
+        "extra_info": entry.extra_info or "",
+    }
+
+
+def normalize_character_library_sort(raw: str | None) -> str:
+    value = str(raw or "").strip()
+    if value in CHARACTER_LIBRARY_SORT_OPTIONS:
+        return value
+    return CHARACTER_LIBRARY_SORT_UPDATED_DESC
+
+
+def character_library_options(db: Session, user: User) -> dict[str, Any]:
+    fandom_rows = db.execute(
+        select(CharacterLibraryEntry.fandom, CharacterLibraryEntry.fandom_en)
+        .order_by(CharacterLibraryEntry.fandom, CharacterLibraryEntry.fandom_en, CharacterLibraryEntry.id)
+    ).all()
+    card_fandom_rows = db.execute(
+        select(CosplanCard.fandom)
+        .where(CosplanCard.fandom.is_not(None))
+        .order_by(CosplanCard.fandom, CosplanCard.id)
+    ).all()
+
+    fandom_values = merge_unique(
+        [row[0] for row in fandom_rows if row and row[0]],
+        [row[0] for row in card_fandom_rows if row and row[0]],
+        get_options(db, user.id, "fandom"),
+    )
+    fandom_en_values = merge_unique(
+        [row[1] for row in fandom_rows if row and row[1]],
+        get_options(db, user.id, "character_fandom_en"),
+    )
+    return {
+        "character_fandom_options": fandom_values,
+        "character_fandom_en_options": fandom_en_values,
+        "character_gender_options": CHARACTER_LIBRARY_GENDER_OPTIONS,
+        "character_eye_color_options": CHARACTER_LIBRARY_EYE_COLOR_OPTIONS,
+    }
+
+
+def save_character_library_entry_from_form(
+    form: Any,
+    entry: CharacterLibraryEntry,
+    *,
+    creator_user_id: int | None = None,
+    remember_for_user_id: int | None = None,
+    db: Session,
+) -> tuple[bool, str]:
+    first_name = str(form.get("first_name", "")).strip()
+    last_name = str(form.get("last_name", "")).strip()
+    full_name_en = str(form.get("full_name_en", "")).strip()
+    full_name_original = str(form.get("full_name_original", "")).strip()
+    fandom = str(form.get("fandom", "")).strip()
+    fandom_en = str(form.get("fandom_en", "")).strip()
+    gender = str(form.get("gender", "")).strip().casefold()
+    skin_color = str(form.get("skin_color", "")).strip()
+    eye_color = str(form.get("eye_color", "")).strip().casefold()
+    biography = str(form.get("biography", "")).strip()
+    extra_info = str(form.get("extra_info", "")).strip()
+    references = parse_reference_values(str(form.get("references_input", "")))
+
+    raw_height = str(form.get("height_cm", "")).strip()
+    raw_apparent_age = str(form.get("apparent_age", "")).strip()
+    raw_age = str(form.get("age", "")).strip()
+    height_cm = parse_positive_int(raw_height)
+    apparent_age = parse_positive_int(raw_apparent_age)
+    age = parse_positive_int(raw_age)
+
+    if not first_name:
+        return False, "Поле «Имя» обязательно."
+    if len(first_name) > 255:
+        return False, "Поле «Имя» должно быть до 255 символов."
+    if len(last_name) > 255:
+        return False, "Поле «Фамилия» должно быть до 255 символов."
+    if len(full_name_en) > 255:
+        return False, "Поле имени на английском должно быть до 255 символов."
+    if len(full_name_original) > 255:
+        return False, "Поле имени на языке оригинала должно быть до 255 символов."
+    if len(fandom) > 255:
+        return False, "Поле «Фандом» должно быть до 255 символов."
+    if len(fandom_en) > 255:
+        return False, "Поле «Фандом на английском» должно быть до 255 символов."
+    if len(skin_color) > 120:
+        return False, "Поле «Цвет кожи» должно быть до 120 символов."
+    if len(biography) > 12000:
+        return False, "Поле «Биография» должно быть до 12000 символов."
+    if len(extra_info) > 12000:
+        return False, "Поле «Дополнительные сведения» должно быть до 12000 символов."
+    if raw_height and height_cm is None:
+        return False, "Рост должен быть положительным числом."
+    if raw_apparent_age and apparent_age is None:
+        return False, "Возраст (на вид) должен быть положительным числом."
+    if raw_age and age is None:
+        return False, "Возраст должен быть положительным числом."
+    if len(references) > CHARACTER_LIBRARY_MAX_REFERENCES:
+        return False, f"Можно добавить не более {CHARACTER_LIBRARY_MAX_REFERENCES} референсов."
+
+    gender_values = set(CHARACTER_LIBRARY_GENDER_OPTIONS.keys())
+    if gender not in gender_values:
+        gender = CHARACTER_LIBRARY_GENDER_UNSPECIFIED
+
+    allowed_eye_colors = {value.casefold(): value for value in CHARACTER_LIBRARY_EYE_COLOR_OPTIONS}
+    normalized_eye_color = allowed_eye_colors.get(eye_color, "")
+    if eye_color and not normalized_eye_color:
+        return False, "Выберите цвет глаз из списка."
+
+    if entry.created_by_user_id is None and creator_user_id:
+        entry.created_by_user_id = creator_user_id
+
+    entry.first_name = first_name
+    entry.last_name = last_name or None
+    entry.full_name_en = full_name_en or None
+    entry.full_name_original = full_name_original or None
+    entry.fandom = fandom or None
+    entry.fandom_en = fandom_en or None
+    entry.gender = gender
+    entry.height_cm = height_cm
+    entry.skin_color = skin_color or None
+    entry.eye_color = normalized_eye_color or None
+    entry.apparent_age = apparent_age
+    entry.age = age
+    entry.references_json = references
+    entry.biography = biography or None
+    entry.extra_info = extra_info or None
+
+    if remember_for_user_id:
+        remember_options(db, remember_for_user_id, "fandom", [fandom] if fandom else [])
+        remember_options(db, remember_for_user_id, "character_fandom_en", [fandom_en] if fandom_en else [])
+
+    return True, ""
 
 
 def card_options(
@@ -10772,8 +11114,13 @@ def card_options(
         for card in own_cards
         if card.character_name and (not current_card_id or card.id != current_card_id)
     ]
+    character_options = merge_unique(
+        get_options(db, user.id, "character"),
+        [card.character_name for card in own_cards if card.character_name],
+    )
 
     return {
+        "character_options": character_options,
         "fandom_options": get_options(db, user.id, "fandom"),
         "cosband_options": get_options(db, user.id, "cosband"),
         "festival_options": all_festival_options,
@@ -12634,6 +12981,8 @@ def profile_vk_bot_unlink(request: Request, db: Session = Depends(get_db)):
 def cosplan_list(
     request: Request,
     q: str = "",
+    character: str = "",
+    fandom: str = "",
     view: str = "cards",
     tab: str = "current",
     plan_filter: str = "all",
@@ -12674,6 +13023,13 @@ def cosplan_list(
             cards = [card for card in cards if (card.plan_type or "") != "project"]
         elif current_filter == "frozen":
             cards = [card for card in cards if card.id in frozen_card_ids]
+
+    character_filter = character.strip().casefold()
+    fandom_filter = fandom.strip().casefold()
+    if character_filter:
+        cards = [card for card in cards if character_filter in str(card.character_name or "").casefold()]
+    if fandom_filter:
+        cards = [card for card in cards if fandom_filter in str(card.fandom or "").casefold()]
 
     if q.strip():
         alias_to_username, users_by_username, _ = build_user_alias_lookup(db)
@@ -12764,6 +13120,8 @@ def cosplan_list(
         card_total_currencies=card_total_currencies,
         card_date_conflicts=card_date_conflicts,
         q=q,
+        character_filter=character,
+        fandom_filter=fandom,
         current_view=current_view,
         cards_total=len(cards),
         current_tab=current_tab,
@@ -13028,6 +13386,311 @@ def title_entry_delete(entry_id: int, request: Request, db: Session = Depends(ge
     db.commit()
     add_flash(request, "Карточка тайтла удалена.", "info")
     return redirect("/cosplan/titles")
+
+
+@app.get("/cosplan/characters", response_class=HTMLResponse)
+def character_library_list(
+    request: Request,
+    q: str = "",
+    fandom: str = "",
+    sort_by: str = CHARACTER_LIBRARY_SORT_UPDATED_DESC,
+    page: int = 1,
+    db: Session = Depends(get_db),
+):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    entries = db.execute(
+        select(CharacterLibraryEntry).order_by(
+            CharacterLibraryEntry.updated_at.desc(),
+            CharacterLibraryEntry.id.desc(),
+        )
+    ).scalars().all()
+
+    search_query = q.strip().casefold()
+    fandom_query = fandom.strip().casefold()
+    if search_query or fandom_query:
+        filtered_entries: list[CharacterLibraryEntry] = []
+        for entry in entries:
+            name_value = character_library_display_name(entry)
+            if search_query:
+                search_blob = " ".join(
+                    [
+                        name_value,
+                        str(entry.full_name_en or ""),
+                        str(entry.full_name_original or ""),
+                        str(entry.fandom or ""),
+                        str(entry.fandom_en or ""),
+                        str(entry.biography or ""),
+                        str(entry.extra_info or ""),
+                    ]
+                ).casefold()
+                if search_query not in search_blob:
+                    continue
+            if fandom_query:
+                fandom_blob = " ".join(
+                    [
+                        str(entry.fandom or ""),
+                        str(entry.fandom_en or ""),
+                    ]
+                ).casefold()
+                if fandom_query not in fandom_blob:
+                    continue
+            filtered_entries.append(entry)
+        entries = filtered_entries
+
+    current_sort = normalize_character_library_sort(sort_by)
+    if current_sort == CHARACTER_LIBRARY_SORT_UPDATED_DESC:
+        entries.sort(
+            key=lambda item: (
+                item.updated_at or item.created_at or datetime.min,
+                item.id,
+            ),
+            reverse=True,
+        )
+    elif current_sort == CHARACTER_LIBRARY_SORT_NAME_ASC:
+        entries.sort(
+            key=lambda item: (
+                character_library_display_name(item).casefold(),
+                item.id,
+            )
+        )
+    elif current_sort == CHARACTER_LIBRARY_SORT_NAME_DESC:
+        entries.sort(
+            key=lambda item: (
+                character_library_display_name(item).casefold(),
+                item.id,
+            ),
+            reverse=True,
+        )
+    elif current_sort == CHARACTER_LIBRARY_SORT_FANDOM_ASC:
+        entries.sort(
+            key=lambda item: (
+                str(item.fandom or "").strip() == "",
+                str(item.fandom or "").casefold(),
+                character_library_display_name(item).casefold(),
+                item.id,
+            )
+        )
+    elif current_sort == CHARACTER_LIBRARY_SORT_FANDOM_DESC:
+        with_fandom = [item for item in entries if str(item.fandom or "").strip()]
+        without_fandom = [item for item in entries if not str(item.fandom or "").strip()]
+        with_fandom.sort(
+            key=lambda item: (
+                str(item.fandom or "").casefold(),
+                character_library_display_name(item).casefold(),
+                item.id,
+            ),
+            reverse=True,
+        )
+        without_fandom.sort(
+            key=lambda item: (
+                character_library_display_name(item).casefold(),
+                item.id,
+            )
+        )
+        entries = with_fandom + without_fandom
+
+    total_filtered_count = len(entries)
+    page_size = CHARACTER_LIBRARY_PAGE_SIZE
+    total_pages = max(1, (total_filtered_count + page_size - 1) // page_size) if total_filtered_count else 1
+    current_page = max(1, page)
+    if current_page > total_pages:
+        current_page = total_pages
+    page_start = (current_page - 1) * page_size
+    page_end = page_start + page_size
+    page_entries = entries[page_start:page_end]
+
+    creator_ids = {entry.created_by_user_id for entry in page_entries if entry.created_by_user_id}
+    creators_by_id: dict[int, User] = {}
+    if creator_ids:
+        creators = db.execute(select(User).where(User.id.in_(creator_ids))).scalars().all()
+        creators_by_id = {creator.id: creator for creator in creators}
+
+    rows: list[dict[str, Any]] = []
+    for entry in page_entries:
+        creator = creators_by_id.get(int(entry.created_by_user_id)) if entry.created_by_user_id else None
+        rows.append(
+            {
+                "entry": entry,
+                "display_name": character_library_display_name(entry),
+                "creator_label": f"@{preferred_user_alias(creator)}" if creator else "@unknown",
+            }
+        )
+
+    pagination_params: dict[str, Any] = {}
+    if q.strip():
+        pagination_params["q"] = q
+    if fandom.strip():
+        pagination_params["fandom"] = fandom
+    if current_sort != CHARACTER_LIBRARY_SORT_UPDATED_DESC:
+        pagination_params["sort_by"] = current_sort
+    pagination_query = urlencode(pagination_params)
+    page_numbers = list(range(max(1, current_page - 2), min(total_pages, current_page + 2) + 1))
+
+    return template_response(
+        request,
+        "character_library_list.html",
+        user=user,
+        active_tab="cosplan",
+        rows=rows,
+        q=q,
+        fandom=fandom,
+        sort_by=current_sort,
+        sort_options=CHARACTER_LIBRARY_SORT_OPTIONS,
+        filtered_count=len(rows),
+        total_filtered_count=total_filtered_count,
+        pagination_query=pagination_query,
+        current_page=current_page,
+        total_pages=total_pages,
+        page_numbers=page_numbers,
+        has_prev_page=current_page > 1,
+        has_next_page=current_page < total_pages,
+        **character_library_options(db, user),
+        **get_cosplan_section_totals(db, user.id),
+    )
+
+
+@app.get("/cosplan/characters/new", response_class=HTMLResponse)
+def character_library_new(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    return template_response(
+        request,
+        "character_library_form.html",
+        user=user,
+        active_tab="cosplan",
+        editing=False,
+        entry_id=None,
+        form=get_character_library_form_values(),
+        **character_library_options(db, user),
+        **get_cosplan_section_totals(db, user.id),
+    )
+
+
+@app.post("/cosplan/characters/new")
+async def character_library_create(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    form = await request.form()
+    entry = CharacterLibraryEntry(first_name="", gender=CHARACTER_LIBRARY_GENDER_UNSPECIFIED, references_json=[])
+    ok, error_text = save_character_library_entry_from_form(
+        form,
+        entry,
+        creator_user_id=user.id,
+        remember_for_user_id=user.id,
+        db=db,
+    )
+    if not ok:
+        add_flash(request, error_text, "error")
+        return redirect("/cosplan/characters/new")
+
+    db.add(entry)
+    db.commit()
+    add_flash(request, "Карточка персонажа добавлена в библиотеку.", "success")
+    return redirect("/cosplan/characters")
+
+
+@app.get("/cosplan/characters/{entry_id}", response_class=HTMLResponse)
+def character_library_detail(entry_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    entry = db.get(CharacterLibraryEntry, entry_id)
+    if not entry:
+        add_flash(request, "Карточка персонажа не найдена.", "error")
+        return redirect("/cosplan/characters")
+
+    creator_user = db.get(User, entry.created_by_user_id) if entry.created_by_user_id else None
+    creator_label = f"@{preferred_user_alias(creator_user)}" if creator_user else "@unknown"
+
+    return template_response(
+        request,
+        "character_library_detail.html",
+        user=user,
+        active_tab="cosplan",
+        entry=entry,
+        display_name=character_library_display_name(entry),
+        creator_user=creator_user,
+        creator_label=creator_label,
+        character_gender_options=CHARACTER_LIBRARY_GENDER_OPTIONS,
+        **get_cosplan_section_totals(db, user.id),
+    )
+
+
+@app.get("/cosplan/characters/{entry_id}/edit", response_class=HTMLResponse)
+def character_library_edit(entry_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    entry = db.get(CharacterLibraryEntry, entry_id)
+    if not entry:
+        add_flash(request, "Карточка персонажа не найдена.", "error")
+        return redirect("/cosplan/characters")
+
+    return template_response(
+        request,
+        "character_library_form.html",
+        user=user,
+        active_tab="cosplan",
+        editing=True,
+        entry_id=entry.id,
+        form=get_character_library_form_values(entry),
+        **character_library_options(db, user),
+        **get_cosplan_section_totals(db, user.id),
+    )
+
+
+@app.post("/cosplan/characters/{entry_id}/edit")
+async def character_library_update(entry_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    entry = db.get(CharacterLibraryEntry, entry_id)
+    if not entry:
+        add_flash(request, "Карточка персонажа не найдена.", "error")
+        return redirect("/cosplan/characters")
+
+    form = await request.form()
+    ok, error_text = save_character_library_entry_from_form(
+        form,
+        entry,
+        creator_user_id=user.id,
+        remember_for_user_id=user.id,
+        db=db,
+    )
+    if not ok:
+        add_flash(request, error_text, "error")
+        return redirect(f"/cosplan/characters/{entry_id}/edit")
+
+    db.commit()
+    add_flash(request, "Карточка персонажа обновлена.", "success")
+    return redirect("/cosplan/characters")
+
+
+@app.post("/cosplan/characters/{entry_id}/delete")
+def character_library_delete(entry_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    entry = db.get(CharacterLibraryEntry, entry_id)
+    if not entry:
+        add_flash(request, "Карточка персонажа не найдена.", "error")
+        return redirect("/cosplan/characters")
+
+    db.delete(entry)
+    db.commit()
+    add_flash(request, "Карточка персонажа удалена.", "info")
+    return redirect("/cosplan/characters")
 
 
 @app.get("/cosplan/export.csv")
@@ -13753,6 +14416,7 @@ def save_card_from_form(form: Any, card: CosplanCard, user: User, db: Session) -
     card.coproplayer_nicks_json = coproplayer_nicks
     card.notes = str(form.get("notes", "")).strip() or None
 
+    remember_options(db, user.id, "character", [card.character_name] if card.character_name else [])
     remember_options(db, user.id, "fandom", [card.fandom] if card.fandom else [])
     remember_options(db, user.id, "cosband", cosbands)
     remember_options(db, user.id, "festival", festivals)
@@ -14320,6 +14984,10 @@ def in_progress_list(request: Request, db: Session = Depends(get_db)):
     if not user:
         return redirect("/login")
     scope = normalize_in_progress_scope(request.query_params.get("scope"))
+    character_filter = str(request.query_params.get("character", "")).strip()
+    fandom_filter = str(request.query_params.get("fandom", "")).strip()
+    character_filter_query = character_filter.casefold()
+    fandom_filter_query = fandom_filter.casefold()
     active_project_counters = get_in_progress_active_project_counters(db, user)
 
     if scope == IN_PROGRESS_SCOPE_MASTER:
@@ -14382,6 +15050,18 @@ def in_progress_list(request: Request, db: Session = Depends(get_db)):
                 continue
             if master_archive_scope == MASTER_ARCHIVE_SCOPE_ARCHIVED and not card_is_archived:
                 continue
+            if character_filter_query:
+                character_blob = " ".join(
+                    [str(card.name or ""), str(card.title_text or "")]
+                ).casefold()
+                if character_filter_query not in character_blob:
+                    continue
+            if fandom_filter_query:
+                fandom_blob = " ".join(
+                    [str(card.title_text or ""), str(card.note or "")]
+                ).casefold()
+                if fandom_filter_query not in fandom_blob:
+                    continue
 
             if search_query:
                 search_blob = " ".join(
@@ -14468,6 +15148,8 @@ def in_progress_list(request: Request, db: Session = Depends(get_db)):
             master_sort_by=master_sort_by,
             master_sort_labels=MASTER_CARD_SORT_LABELS,
             master_sort_options=MASTER_CARD_SORT_SELECT_OPTIONS,
+            character_filter=character_filter,
+            fandom_filter=fandom_filter,
             master_cards_total=total_cards_count,
             master_cards_total_active=total_active_count,
             master_cards_total_archived=total_archived_count,
@@ -14510,6 +15192,18 @@ def in_progress_list(request: Request, db: Session = Depends(get_db)):
             print(f"[in-progress] skip broken progress row {row.id} for user {user.id}: {exc}")
             continue
         safe_progress_items.append(row)
+    if character_filter_query or fandom_filter_query:
+        filtered_progress_items: list[InProgressCard] = []
+        for row in safe_progress_items:
+            card = row.cosplan_card
+            if not card:
+                continue
+            if character_filter_query and character_filter_query not in str(card.character_name or "").casefold():
+                continue
+            if fandom_filter_query and fandom_filter_query not in str(card.fandom or "").casefold():
+                continue
+            filtered_progress_items.append(row)
+        safe_progress_items = filtered_progress_items
 
     today = date.today()
     urgent_deadline = today + timedelta(days=14)
@@ -14578,6 +15272,8 @@ def in_progress_list(request: Request, db: Session = Depends(get_db)):
         leader_rehearsals_by_card=leader_rehearsals_by_card,
         task_assignees_by_progress=task_assignees_by_progress,
         task_rows_by_progress=task_rows_by_progress,
+        character_filter=character_filter,
+        fandom_filter=fandom_filter,
         rehearsal_status_labels={
             REHEARSAL_STATUS_PROPOSED: rehearsal_status_label(REHEARSAL_STATUS_PROPOSED),
             REHEARSAL_STATUS_ACCEPTED: rehearsal_status_label(REHEARSAL_STATUS_ACCEPTED),
@@ -18832,14 +19528,29 @@ def community_masters_detail(master_id: int, request: Request, db: Session = Dep
         .order_by(CommunityMasterComment.created_at, CommunityMasterComment.id)
     ).scalars().all()
     orders: list[CommunityMasterOrder] = []
+    my_orders: list[CommunityMasterOrder] = []
     if can_manage_master(user, master):
         orders = db.execute(
             select(CommunityMasterOrder)
             .where(CommunityMasterOrder.master_id == master.id)
             .order_by(CommunityMasterOrder.created_at.desc(), CommunityMasterOrder.id.desc())
         ).scalars().all()
+    else:
+        my_orders = db.execute(
+            select(CommunityMasterOrder)
+            .where(
+                CommunityMasterOrder.master_id == master.id,
+                CommunityMasterOrder.user_id == user.id,
+            )
+            .order_by(CommunityMasterOrder.created_at.desc(), CommunityMasterOrder.id.desc())
+        ).scalars().all()
 
-    author_ids = {master.user_id, *(item.user_id for item in comments), *(item.user_id for item in orders)}
+    author_ids = {
+        master.user_id,
+        *(item.user_id for item in comments),
+        *(item.user_id for item in orders),
+        *(item.user_id for item in my_orders),
+    }
     authors_by_id: dict[int, User] = {}
     if author_ids:
         authors = db.execute(select(User).where(User.id.in_(author_ids))).scalars().all()
@@ -18849,6 +19560,24 @@ def community_masters_detail(master_id: int, request: Request, db: Session = Dep
         [master.id],
         current_user_id=user.id,
     )
+    queue_source_cards = db.execute(
+        select(InProgressMasterCard)
+        .where(InProgressMasterCard.user_id == master.user_id)
+        .order_by(
+            InProgressMasterCard.is_archived.asc(),
+            InProgressMasterCard.deadline_date.is_(None),
+            InProgressMasterCard.deadline_date,
+            InProgressMasterCard.updated_at.desc(),
+            InProgressMasterCard.id.desc(),
+        )
+    ).scalars().all()
+    queue_source_cards_by_id = {item.id: item for item in queue_source_cards}
+    selected_queue_card_ids = parse_id_list([str(value) for value in as_list(master.queue_card_ids_json)])
+    queue_rows: list[InProgressMasterCard] = []
+    for queue_card_id in selected_queue_card_ids:
+        card = queue_source_cards_by_id.get(queue_card_id)
+        if card:
+            queue_rows.append(card)
 
     return template_response(
         request,
@@ -18859,6 +19588,7 @@ def community_masters_detail(master_id: int, request: Request, db: Session = Dep
         master=master,
         comments=comments,
         orders=orders,
+        my_orders=my_orders,
         authors_by_id=authors_by_id,
         price_rows=format_master_price_rows_for_form(as_list(master.price_list_json)),
         rating_avg=rating_avg_by_master.get(master.id, 0.0),
@@ -18867,6 +19597,12 @@ def community_masters_detail(master_id: int, request: Request, db: Session = Dep
         import_source_labels=IMPORT_SOURCE_LABELS,
         can_edit_master_card=can_edit_master_card(user, master),
         can_manage_master=can_manage_master(user, master),
+        master_order_status_labels=MASTER_ORDER_STATUS_LABELS,
+        queue_source_cards=queue_source_cards,
+        queue_rows=queue_rows,
+        selected_queue_card_ids=selected_queue_card_ids,
+        queue_show_deadline=bool(master.queue_show_deadline),
+        queue_show_progress=bool(master.queue_show_progress),
     )
 
 
@@ -19042,6 +19778,94 @@ async def community_masters_create_order(master_id: int, request: Request, db: S
     )
     db.commit()
     add_flash(request, "Заявка отправлена мастеру.", "success")
+    return redirect(f"/community/masters/{master_id}")
+
+
+@app.post("/community/masters/{master_id}/orders/{order_id}/status")
+async def community_masters_update_order_status(
+    master_id: int,
+    order_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    master = db.get(CommunityMaster, master_id)
+    if not master:
+        add_flash(request, "Карточка мастера не найдена.", "error")
+        return redirect("/community/masters")
+    if not can_manage_master(user, master):
+        add_flash(request, "Изменять статус заявки может только владелец карточки мастера.", "error")
+        return redirect(f"/community/masters/{master_id}")
+
+    order = db.execute(
+        select(CommunityMasterOrder).where(
+            CommunityMasterOrder.id == order_id,
+            CommunityMasterOrder.master_id == master.id,
+        )
+    ).scalar_one_or_none()
+    if not order:
+        add_flash(request, "Заявка не найдена.", "error")
+        return redirect(f"/community/masters/{master_id}")
+
+    form = await request.form()
+    status_value = str(form.get("status", "")).strip()
+    if status_value not in {MASTER_ORDER_STATUS_ACCEPTED, MASTER_ORDER_STATUS_REJECTED}:
+        add_flash(request, "Некорректный статус заявки.", "error")
+        return redirect(f"/community/masters/{master_id}")
+
+    status_changed = order.status != status_value
+    order.status = status_value
+    if status_changed and order.user_id and order.user_id != user.id:
+        status_label = MASTER_ORDER_STATUS_LABELS.get(status_value, status_value)
+        enqueue_notification_if_missing(
+            db,
+            user_id=order.user_id,
+            from_user_id=user.id,
+            source_card_id=None,
+            message=(
+                f"Заявка «{order.subject}» у мастера @{normalize_username(master.nick)}: {status_label}."
+            ),
+        )
+
+    db.commit()
+    add_flash(
+        request,
+        f"Статус заявки обновлён: {MASTER_ORDER_STATUS_LABELS.get(order.status, order.status)}.",
+        "success",
+    )
+    return redirect(f"/community/masters/{master_id}")
+
+
+@app.post("/community/masters/{master_id}/queue")
+async def community_masters_update_queue(master_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    master = db.get(CommunityMaster, master_id)
+    if not master:
+        add_flash(request, "Карточка мастера не найдена.", "error")
+        return redirect("/community/masters")
+    if not can_edit_master_card(user, master):
+        add_flash(request, "Изменять очередь может только автор карточки мастера.", "error")
+        return redirect(f"/community/masters/{master_id}")
+
+    form = await request.form()
+    selected_ids = parse_id_list([str(value) for value in form.getlist("queue_card_ids")])
+    available_ids = set(
+        db.execute(
+            select(InProgressMasterCard.id).where(InProgressMasterCard.user_id == master.user_id)
+        ).scalars().all()
+    )
+    master.queue_card_ids_json = [card_id for card_id in selected_ids if card_id in available_ids]
+    master.queue_show_deadline = to_bool(form.get("queue_show_deadline"))
+    master.queue_show_progress = to_bool(form.get("queue_show_progress"))
+
+    db.commit()
+    add_flash(request, "Очередь мастера обновлена.", "success")
     return redirect(f"/community/masters/{master_id}")
 
 

@@ -50,9 +50,75 @@
   {% endif %}
 </section>
 
+{% if queue_rows %}
+<section class="box">
+  <h3>Очередь мастера</h3>
+  <div class="top-offset">
+    <table class="table">
+      <thead>
+        <tr>
+          <th>Работа</th>
+          {% if queue_show_deadline %}<th>Дедлайн</th>{% endif %}
+          {% if queue_show_progress %}<th>Готовность</th>{% endif %}
+          <th>Статус</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for queue_card in queue_rows %}
+          <tr>
+            <td>{{ queue_card.name }}</td>
+            {% if queue_show_deadline %}
+              <td>{{ queue_card.deadline_date.strftime('%d-%m-%Y') if queue_card.deadline_date else '—' }}</td>
+            {% endif %}
+            {% if queue_show_progress %}
+              <td>{{ queue_card.status_percent or 0 }}%</td>
+            {% endif %}
+            <td>{{ "Архив" if queue_card.is_archived else "В работе" }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endif %}
+
+{% if can_edit_master_card %}
+<section class="box">
+  <h3>Настройка очереди</h3>
+  <form method="post" action="/community/masters/{{ master.id }}/queue" class="grid one-col top-offset">
+    <label>Показывать в очереди проекты из вкладки «В работе → Мастер»</label>
+    <div class="chips-wrap">
+      {% for source_card in queue_source_cards %}
+        <label class="chip-check">
+          <input type="checkbox" name="queue_card_ids" value="{{ source_card.id }}" {% if source_card.id in (selected_queue_card_ids or []) %}checked{% endif %} />
+          {{ source_card.name }}
+          {% if source_card.deadline_date %}· {{ source_card.deadline_date.strftime('%d-%m-%Y') }}{% endif %}
+        </label>
+      {% endfor %}
+    </div>
+    {% if not queue_source_cards %}
+      <p class="muted">Сначала добавьте карточки во вкладке «В работе → Мастер».</p>
+    {% endif %}
+    <div class="actions-inline wrap">
+      <label class="inline-check">
+        <input type="checkbox" name="queue_show_deadline" value="1" {% if queue_show_deadline %}checked{% endif %} />
+        Показывать дедлайны
+      </label>
+      <label class="inline-check">
+        <input type="checkbox" name="queue_show_progress" value="1" {% if queue_show_progress %}checked{% endif %} />
+        Показывать процент готовности
+      </label>
+    </div>
+    <div class="actions-inline">
+      <button type="submit" class="btn btn-accent">Сохранить очередь</button>
+    </div>
+  </form>
+</section>
+{% endif %}
+
 {% if can_manage_master %}
 <section class="box">
-  <h3>Новые заказы</h3>
+  <h3>Заявки</h3>
   {% if orders %}
     <div class="comments-list top-offset">
       {% for order in orders %}
@@ -68,6 +134,7 @@
                 {% else %}
                   @unknown
                 {% endif %}
+                <span class="chip">{{ master_order_status_labels.get(order.status, order.status) }}</span>
                 • {{ order.created_at.strftime('%d-%m-%Y %H:%M') if order.created_at else '—' }}
               </p>
               <p class="meta"><strong>Тема:</strong> {{ order.subject }}</p>
@@ -94,6 +161,14 @@
             </div>
           {% endif %}
           <div class="actions-inline top-offset">
+            <form method="post" action="/community/masters/{{ master.id }}/orders/{{ order.id }}/status">
+              <input type="hidden" name="status" value="accepted" />
+              <button type="submit" class="btn {% if order.status == 'accepted' %}btn-accent{% endif %}">Принять</button>
+            </form>
+            <form method="post" action="/community/masters/{{ master.id }}/orders/{{ order.id }}/status">
+              <input type="hidden" name="status" value="rejected" />
+              <button type="submit" class="btn {% if order.status == 'rejected' %}btn-accent{% endif %}">Отклонить</button>
+            </form>
             <form method="post" action="/community/masters/{{ master.id }}/orders/{{ order.id }}/delete" onsubmit="return confirm('Удалить заявку?');">
               <button type="submit" class="btn btn-danger">Удалить заявку</button>
             </form>
@@ -102,7 +177,7 @@
       {% endfor %}
     </div>
   {% else %}
-    <p class="muted top-offset">Новых заказов пока нет.</p>
+    <p class="muted top-offset">Заявок пока нет.</p>
   {% endif %}
 </section>
 {% endif %}
@@ -148,6 +223,36 @@
     <p class="muted top-offset">Прайс-лист пока не заполнен.</p>
   {% endif %}
 </section>
+
+{% if user and not can_edit_master_card and my_orders %}
+<section class="box">
+  <h3>Ваши заявки</h3>
+  <div class="comments-list top-offset">
+    {% for order in my_orders %}
+      {% set refs = order.references_json or [] %}
+      <article class="comment-card">
+        <p class="comment-meta">
+          <span class="chip">{{ master_order_status_labels.get(order.status, order.status) }}</span>
+          • {{ order.created_at.strftime('%d-%m-%Y %H:%M') if order.created_at else '—' }}
+        </p>
+        <p class="meta"><strong>Тема:</strong> {{ order.subject }}</p>
+        {% if order.character_fandom %}<p class="meta"><strong>Персонаж и фандом:</strong> {{ order.character_fandom }}</p>{% endif %}
+        {% if order.deadline %}<p class="meta"><strong>Дедлайн:</strong> {{ order.deadline.strftime('%d-%m-%Y') }}</p>{% endif %}
+        {% if order.details %}<p class="notes-block">{{ order.details|render_text }}</p>{% endif %}
+        {% if refs %}
+          <div class="reference-grid top-offset">
+            {% for url in refs %}
+              <a class="reference-tile" href="{{ url }}" target="_blank" rel="noreferrer">
+                <img src="{{ url }}" alt="Референс заявки" loading="lazy" />
+              </a>
+            {% endfor %}
+          </div>
+        {% endif %}
+      </article>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
 
 {% if user and not can_edit_master_card and master.allow_site_orders %}
 <section class="box" id="master-order-form">

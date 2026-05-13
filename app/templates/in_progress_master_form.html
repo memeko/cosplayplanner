@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block content %}
 <section class="section-head">
-  <h1>{{ "Редактирование карточки мастера" if editing else "Новая карточка мастера" }}</h1>
+  <h1>{{ "Редактирование карточки мастера" if editing else "Новая работа" }}</h1>
   <a href="{{ '/in-progress/master/' ~ card_id if editing else '/in-progress?scope=master' }}" class="btn">Назад</a>
 </section>
 

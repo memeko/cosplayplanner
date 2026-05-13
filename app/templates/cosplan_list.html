@@ -14,7 +14,9 @@
         <input type="hidden" name="plan_filter" value="{{ current_filter }}" />
       {% endif %}
       <input type="hidden" name="view" value="{{ current_view }}" />
-      <input type="text" name="q" value="{{ q }}" placeholder="Поиск по карточкам" />
+      <input type="text" name="character" value="{{ character_filter or '' }}" placeholder="Персонаж" />
+      <input type="text" name="fandom" value="{{ fandom_filter or '' }}" placeholder="Фэндом" />
+      <input type="text" name="q" value="{{ q }}" placeholder="Расширенный поиск" />
       <button type="submit" class="btn">Найти</button>
     </form>
     <div class="actions-inline">
@@ -25,6 +27,8 @@
         {% endif %}
         <input type="hidden" name="view" value="cards" />
         <input type="hidden" name="q" value="{{ q }}" />
+        <input type="hidden" name="character" value="{{ character_filter or '' }}" />
+        <input type="hidden" name="fandom" value="{{ fandom_filter or '' }}" />
         <button type="submit" class="btn {% if current_view == 'cards' %}btn-accent{% endif %}">Карточки</button>
       </form>
       <form method="get" action="/cosplan">
@@ -34,6 +38,8 @@
         {% endif %}
         <input type="hidden" name="view" value="list" />
         <input type="hidden" name="q" value="{{ q }}" />
+        <input type="hidden" name="character" value="{{ character_filter or '' }}" />
+        <input type="hidden" name="fandom" value="{{ fandom_filter or '' }}" />
         <button type="submit" class="btn {% if current_view == 'list' %}btn-accent{% endif %}">Список</button>
       </form>
     </div>
@@ -51,14 +57,18 @@
     Тайтлы
     <span class="chip">{{ title_entries_total }}</span>
   </a>
+  <a href="/cosplan/characters" class="tab">
+    Библиотека персонажей
+    <span class="chip">{{ character_library_total }}</span>
+  </a>
 </nav>
 
 <nav class="calendar-tabs">
-  <a href="/cosplan?tab=current&view={{ current_view }}{% if q %}&q={{ q|urlencode }}{% endif %}" class="tab {% if current_tab == 'current' %}active{% endif %}">
+  <a href="/cosplan?tab=current&view={{ current_view }}{% if q %}&q={{ q|urlencode }}{% endif %}{% if character_filter %}&character={{ character_filter|urlencode }}{% endif %}{% if fandom_filter %}&fandom={{ fandom_filter|urlencode }}{% endif %}" class="tab {% if current_tab == 'current' %}active{% endif %}">
     Текущие планы
     <span class="chip">{{ current_count }}</span>
   </a>
-  <a href="/cosplan?tab=completed&view={{ current_view }}{% if q %}&q={{ q|urlencode }}{% endif %}" class="tab {% if current_tab == 'completed' %}active{% endif %}">
+  <a href="/cosplan?tab=completed&view={{ current_view }}{% if q %}&q={{ q|urlencode }}{% endif %}{% if character_filter %}&character={{ character_filter|urlencode }}{% endif %}{% if fandom_filter %}&fandom={{ fandom_filter|urlencode }}{% endif %}" class="tab {% if current_tab == 'completed' %}active{% endif %}">
     Завершенные
     <span class="chip">{{ completed_count }}</span>
   </a>
@@ -66,10 +76,10 @@
 
 {% if current_tab == "current" %}
   <div class="actions-inline wrap top-offset">
-    <a href="/cosplan?tab=current&view={{ current_view }}{% if q %}&q={{ q|urlencode }}{% endif %}" class="btn {% if current_filter == 'all' %}btn-accent{% endif %}">Все</a>
-    <a href="/cosplan?tab=current&plan_filter=project&view={{ current_view }}{% if q %}&q={{ q|urlencode }}{% endif %}" class="btn {% if current_filter == 'project' %}btn-accent{% endif %}">Общий</a>
-    <a href="/cosplan?tab=current&plan_filter=personal&view={{ current_view }}{% if q %}&q={{ q|urlencode }}{% endif %}" class="btn {% if current_filter == 'personal' %}btn-accent{% endif %}">Личный</a>
-    <a href="/cosplan?tab=current&plan_filter=frozen&view={{ current_view }}{% if q %}&q={{ q|urlencode }}{% endif %}" class="btn {% if current_filter == 'frozen' %}btn-accent{% endif %}">Заморожено</a>
+    <a href="/cosplan?tab=current&view={{ current_view }}{% if q %}&q={{ q|urlencode }}{% endif %}{% if character_filter %}&character={{ character_filter|urlencode }}{% endif %}{% if fandom_filter %}&fandom={{ fandom_filter|urlencode }}{% endif %}" class="btn {% if current_filter == 'all' %}btn-accent{% endif %}">Все</a>
+    <a href="/cosplan?tab=current&plan_filter=project&view={{ current_view }}{% if q %}&q={{ q|urlencode }}{% endif %}{% if character_filter %}&character={{ character_filter|urlencode }}{% endif %}{% if fandom_filter %}&fandom={{ fandom_filter|urlencode }}{% endif %}" class="btn {% if current_filter == 'project' %}btn-accent{% endif %}">Общий</a>
+    <a href="/cosplan?tab=current&plan_filter=personal&view={{ current_view }}{% if q %}&q={{ q|urlencode }}{% endif %}{% if character_filter %}&character={{ character_filter|urlencode }}{% endif %}{% if fandom_filter %}&fandom={{ fandom_filter|urlencode }}{% endif %}" class="btn {% if current_filter == 'personal' %}btn-accent{% endif %}">Личный</a>
+    <a href="/cosplan?tab=current&plan_filter=frozen&view={{ current_view }}{% if q %}&q={{ q|urlencode }}{% endif %}{% if character_filter %}&character={{ character_filter|urlencode }}{% endif %}{% if fandom_filter %}&fandom={{ fandom_filter|urlencode }}{% endif %}" class="btn {% if current_filter == 'frozen' %}btn-accent{% endif %}">Заморожено</a>
   </div>
 {% endif %}
 

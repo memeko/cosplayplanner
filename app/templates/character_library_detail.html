@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="section-head">
+  <div>
+    <h1>{{ display_name }}</h1>
+    <p class="meta">Добавил {{ creator_label }}</p>
+  </div>
+  <div class="actions-inline">
+    <a href="/cosplan/characters" class="btn">Назад к библиотеке</a>
+    <a href="/cosplan/characters/{{ entry.id }}/edit" class="btn">Редактировать</a>
+    <form method="post" action="/cosplan/characters/{{ entry.id }}/delete" onsubmit="return confirm('Удалить карточку персонажа?');">
+      <button type="submit" class="btn btn-danger">Удалить</button>
+    </form>
+  </div>
+</section>
+
+<nav class="calendar-tabs">
+  <a href="/cosplan" class="tab">
+    Карточки косплана
+    <span class="chip">{{ cosplan_cards_total }}</span>
+  </a>
+  <a href="/cosplan/titles" class="tab">
+    Тайтлы
+    <span class="chip">{{ title_entries_total }}</span>
+  </a>
+  <a href="/cosplan/characters" class="tab active">
+    Библиотека персонажей
+    <span class="chip">{{ character_library_total }}</span>
+  </a>
+</nav>
+
+<section class="box top-offset">
+  <div class="grid two-col">
+    <p class="meta"><strong>Имя:</strong> {{ entry.first_name }}</p>
+    <p class="meta"><strong>Фамилия:</strong> {{ entry.last_name or "—" }}</p>
+    <p class="meta"><strong>Имя и фамилия на английском:</strong> {{ entry.full_name_en or "—" }}</p>
+    <p class="meta"><strong>Имя и фамилия на языке оригинала:</strong> {{ entry.full_name_original or "—" }}</p>
+    <p class="meta"><strong>Фэндом:</strong> {{ entry.fandom or "—" }}</p>
+    <p class="meta"><strong>Фэндом на английском:</strong> {{ entry.fandom_en or "—" }}</p>
+    <p class="meta"><strong>Пол:</strong> {{ character_gender_options.get(entry.gender, character_gender_options.get('unspecified')) }}</p>
+    <p class="meta"><strong>Рост:</strong> {{ entry.height_cm if entry.height_cm else "—" }}{% if entry.height_cm %} см{% endif %}</p>
+    <p class="meta"><strong>Цвет кожи:</strong> {{ entry.skin_color or "—" }}</p>
+    <p class="meta"><strong>Цвет глаз:</strong> {{ entry.eye_color or "—" }}</p>
+    <p class="meta"><strong>Возраст (на вид):</strong> {{ entry.apparent_age if entry.apparent_age else "—" }}</p>
+    <p class="meta"><strong>Возраст:</strong> {{ entry.age if entry.age else "—" }}</p>
+  </div>
+</section>
+
+{% set refs = entry.references_json or [] %}
+{% if refs %}
+<section class="box">
+  <h3>Референсы</h3>
+  <div class="reference-grid top-offset">
+    {% for url in refs %}
+      <a class="reference-tile" href="{{ url }}" target="_blank" rel="noreferrer">
+        <img src="{{ url }}" alt="Референс персонажа" loading="lazy" />
+      </a>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
+{% if entry.biography %}
+<section class="box">
+  <h3>Биография</h3>
+  <p class="notes-block top-offset">{{ entry.biography|render_text }}</p>
+</section>
+{% endif %}
+
+{% if entry.extra_info %}
+<section class="box">
+  <h3>Дополнительные сведения</h3>
+  <p class="notes-block top-offset">{{ entry.extra_info|render_text }}</p>
+</section>
+{% endif %}
+{% endblock %}

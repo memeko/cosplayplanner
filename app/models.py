@@ -93,6 +93,11 @@ class User(Base):
         back_populates="customer",
         cascade="all, delete-orphan",
     )
+    character_library_entries = relationship(
+        "CharacterLibraryEntry",
+        back_populates="created_by",
+        foreign_keys="CharacterLibraryEntry.created_by_user_id",
+    )
     community_master_ratings = relationship(
         "CommunityMasterRating",
         back_populates="user",
@@ -377,6 +382,34 @@ class CosplanCard(Base):
     rehearsal_cards = relationship("RehearsalCard", back_populates="cosplan_card", cascade="all, delete-orphan")
     rehearsal_entries = relationship("RehearsalEntry", back_populates="cosplan_card", cascade="all, delete-orphan")
     linked_title_entries = relationship("TitleEntry", back_populates="linked_card")
+
+
+class CharacterLibraryEntry(Base):
+    __tablename__ = "character_library_entries"
+
+    id = Column(Integer, primary_key=True)
+    created_by_user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+
+    first_name = Column(String(255), nullable=False, index=True)
+    last_name = Column(String(255), nullable=True)
+    full_name_en = Column(String(255), nullable=True)
+    full_name_original = Column(String(255), nullable=True)
+    fandom = Column(String(255), nullable=True, index=True)
+    fandom_en = Column(String(255), nullable=True, index=True)
+    gender = Column(String(32), nullable=False, default="unspecified", index=True)
+    height_cm = Column(Integer, nullable=True)
+    skin_color = Column(String(120), nullable=True)
+    eye_color = Column(String(64), nullable=True, index=True)
+    apparent_age = Column(Integer, nullable=True)
+    age = Column(Integer, nullable=True)
+    references_json = Column(JSON, nullable=False, default=list)
+    biography = Column(Text, nullable=True)
+    extra_info = Column(Text, nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    created_by = relationship("User", back_populates="character_library_entries")
 
 
 class TitleEntry(Base):
@@ -807,6 +840,9 @@ class CommunityMaster(Base):
     gallery_json = Column(JSON, nullable=False, default=list)
     price_list_json = Column(JSON, nullable=False, default=list)
     allow_site_orders = Column(Boolean, nullable=False, default=False, server_default="0")
+    queue_card_ids_json = Column(JSON, nullable=False, default=list)
+    queue_show_deadline = Column(Boolean, nullable=False, default=True, server_default="1")
+    queue_show_progress = Column(Boolean, nullable=False, default=True, server_default="1")
     import_source = Column(String(64), nullable=True, index=True)
     import_external_id = Column(String(128), nullable=True, index=True)
     import_url = Column(Text, nullable=True)
@@ -865,6 +901,7 @@ class CommunityMasterOrder(Base):
     details = Column(Text, nullable=True)
     deadline = Column(Date, nullable=True, index=True)
     references_json = Column(JSON, nullable=False, default=list)
+    status = Column(String(32), nullable=False, default="pending", index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     master = relationship("CommunityMaster", back_populates="orders")
