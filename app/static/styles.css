@@ -749,6 +749,18 @@ textarea {
   border-color: rgba(245, 158, 11, 0.9);
 }
 
+.shared-project-card {
+  background: linear-gradient(155deg, rgba(238, 242, 247, 0.92), rgba(226, 232, 240, 0.72));
+  border-color: rgba(148, 163, 184, 0.9);
+}
+
+.chip-shared-project {
+  background: rgba(71, 85, 105, 0.14);
+  color: #334155;
+  border: 1px solid rgba(71, 85, 105, 0.22);
+  font-weight: 600;
+}
+
 .card-title-link {
   color: inherit;
   text-decoration: none;
@@ -3013,6 +3025,76 @@ textarea {
   background: linear-gradient(90deg, rgba(29, 78, 216, 0.88), rgba(96, 165, 250, 0.8));
 }
 
+.master-board-toolbar {
+  display: grid;
+  gap: 10px;
+}
+
+.master-board-inline-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.9rem;
+}
+
+.master-board-inline-label input[type="range"] {
+  width: 132px;
+}
+
+.master-board-inline-label input[type="color"] {
+  width: 44px;
+  height: 34px;
+  padding: 2px;
+}
+
+#master-board-status[data-state="dirty"] {
+  color: #9a6700;
+}
+
+#master-board-status[data-state="saving"] {
+  color: #1d4ed8;
+}
+
+#master-board-status[data-state="error"] {
+  color: #b42318;
+}
+
+.master-board-shell {
+  position: relative;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  overflow: hidden;
+  background:
+    linear-gradient(90deg, rgba(15, 23, 42, 0.05) 1px, transparent 1px),
+    linear-gradient(rgba(15, 23, 42, 0.05) 1px, transparent 1px),
+    linear-gradient(145deg, rgba(255, 255, 255, 0.7), rgba(241, 247, 255, 0.72));
+  background-size: 24px 24px, 24px 24px, cover;
+  min-height: 500px;
+}
+
+.master-board-canvas-wrap {
+  width: 100%;
+  min-height: 500px;
+}
+
+.master-board-drop-hint {
+  position: absolute;
+  z-index: 3;
+  top: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 8px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--line-strong);
+  background: rgba(255, 255, 255, 0.9);
+  font-size: 0.9rem;
+}
+
+.master-board-canvas-wrap canvas {
+  display: block;
+  width: 100%;
+}
+
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
   .topbar {
     background: rgba(8, 51, 68, 0.9);
@@ -3227,5 +3309,20 @@ textarea {
   .admin-section-head {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .master-board-inline-label {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .master-board-inline-label input[type="range"] {
+    flex: 1 1 auto;
+    max-width: 170px;
+  }
+
+  .master-board-shell,
+  .master-board-canvas-wrap {
+    min-height: 420px;
   }
 }

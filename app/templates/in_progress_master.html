@@ -86,14 +86,21 @@
         {% if card.title_text %}
           <p class="meta">Тайтл: {{ card.title_text }}</p>
         {% endif %}
-        <p class="meta">Исполнитель: {{ executor_labels_by_card.get(card.id, "—") }}</p>
-        <p class="meta">Заказчик: {{ customer_labels_by_card.get(card.id, "—") }}</p>
-        <p class="meta">Дедлайн: {{ card.deadline_date.strftime('%d-%m-%Y') if card.deadline_date else '—' }}</p>
-        <p class="meta">Промежуточный дедлайн / Примерка: {{ (card.intermediate_deadlines_json or [])|length }}</p>
-        <p class="meta">Задач: {{ (card.task_rows_json or [])|length }} • Комментариев: {{ comment_counts.get(card.id, 0) }}</p>
-        <p class="meta">Материалы: {{ '%.2f'|format(material_totals_by_card.get(card.id, 0.0)) }} ₽</p>
+        {% set executor_label = executor_labels_by_card.get(card.id) %}
+        {% if executor_label %}<p class="meta">Исполнитель: {{ executor_label }}</p>{% endif %}
+        {% set customer_label = customer_labels_by_card.get(card.id) %}
+        {% if customer_label %}<p class="meta">Заказчик: {{ customer_label }}</p>{% endif %}
+        {% if card.deadline_date %}<p class="meta">Дедлайн: {{ card.deadline_date.strftime('%d-%m-%Y') }}</p>{% endif %}
+        {% set intermediate_count = (card.intermediate_deadlines_json or [])|length %}
+        {% if intermediate_count %}<p class="meta">Промежуточный дедлайн / Примерка: {{ intermediate_count }}</p>{% endif %}
+        {% set task_count = (card.task_rows_json or [])|length %}
+        {% set comment_count = comment_counts.get(card.id, 0) %}
+        {% if task_count or comment_count %}<p class="meta">Задач: {{ task_count }} • Комментариев: {{ comment_count }}</p>{% endif %}
+        {% set material_total = material_totals_by_card.get(card.id, 0.0) %}
+        {% if material_total > 0 %}<p class="meta">Материалы: {{ '%.2f'|format(material_total) }} ₽</p>{% endif %}
         <div class="actions-inline wrap">
           <a href="/in-progress/master/{{ card.id }}" class="btn">Открыть</a>
+          <a href="/in-progress/master/{{ card.id }}/board" class="btn" target="_blank" rel="noopener noreferrer">Доска</a>
           {% if card.id in can_edit_master_card_ids %}
             <a href="/in-progress/master/{{ card.id }}/edit" class="btn">Редактировать</a>
             <form method="post" action="/in-progress/master/{{ card.id }}/archive-toggle" onsubmit="return confirm('{{ 'Вернуть карточку из архива?' if card.is_archived else 'Убрать карточку в архив?' }}');">

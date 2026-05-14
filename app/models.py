@@ -272,6 +272,9 @@ class CosplanCard(Base):
     sewing_fabric = Column(Boolean, nullable=False, default=False)
     sewing_hardware = Column(Boolean, nullable=False, default=False)
     sewing_pattern = Column(Boolean, nullable=False, default=False)
+    sewing_mockup = Column(Boolean, nullable=False, default=False)
+    sewing_fitting = Column(Boolean, nullable=False, default=False)
+    sewing_details = Column(Boolean, nullable=False, default=False)
     costume_executor = Column(String(255), nullable=True)
     costume_deadline = Column(Date, nullable=True)
     costume_prepayment = Column(Float, nullable=True)
@@ -503,6 +506,13 @@ class InProgressMasterCard(Base):
     user = relationship("User", back_populates="in_progress_master_cards", foreign_keys=[user_id])
     customer_user = relationship("User", back_populates="in_progress_master_customer_cards", foreign_keys=[customer_user_id])
     comments = relationship("InProgressMasterComment", back_populates="card", cascade="all, delete-orphan")
+    board = relationship(
+        "InProgressMasterBoard",
+        back_populates="card",
+        uselist=False,
+        cascade="all, delete-orphan",
+        single_parent=True,
+    )
 
 
 class InProgressMasterComment(Base):
@@ -516,6 +526,26 @@ class InProgressMasterComment(Base):
 
     card = relationship("InProgressMasterCard", back_populates="comments")
     user = relationship("User", back_populates="in_progress_master_comments")
+
+
+class InProgressMasterBoard(Base):
+    __tablename__ = "in_progress_master_boards"
+
+    id = Column(Integer, primary_key=True)
+    card_id = Column(
+        Integer,
+        ForeignKey("in_progress_master_cards.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+    state_json = Column(JSON, nullable=False, default=dict)
+    updated_by_user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    card = relationship("InProgressMasterCard", back_populates="board")
+    updated_by = relationship("User", foreign_keys=[updated_by_user_id])
 
 
 class RehearsalCard(Base):

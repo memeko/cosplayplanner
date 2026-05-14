@@ -5,6 +5,7 @@
   <h1>{{ card.name }}</h1>
   <div class="actions-inline">
     <a href="{{ master_list_url }}" class="btn">Назад</a>
+    <a href="/in-progress/master/{{ card.id }}/board" class="btn" target="_blank" rel="noopener noreferrer">Доска</a>
     {% if can_edit_master_card %}
       <a href="/in-progress/master/{{ card.id }}/edit" class="btn">Редактировать</a>
       <form method="post" action="/in-progress/master/{{ card.id }}/archive-toggle" onsubmit="return confirm('{{ 'Вернуть карточку из архива?' if card.is_archived else 'Убрать карточку в архив?' }}');">
@@ -64,47 +65,37 @@
         <span class="chip">{{ item }}</span>
       {% endfor %}
     </div>
-  {% else %}
-    <p class="meta">Промежуточный дедлайн / Примерка: —</p>
   {% endif %}
-  <p class="meta">
-    Ссылка на облако:
-    {% if card.cloud_url %}
-      <a href="{{ card.cloud_url }}" target="_blank" rel="noreferrer">Открыть</a>
-    {% else %}
-      —
-    {% endif %}
-  </p>
+  {% if card.cloud_url %}
+    <p class="meta">Ссылка на облако: <a href="{{ card.cloud_url }}" target="_blank" rel="noreferrer">Открыть</a></p>
+  {% endif %}
   {% if card.note %}
     <p class="notes-block">{{ card.note|render_markdown }}</p>
   {% endif %}
 </section>
 
+{% if task_rows %}
 <section class="box">
   <h3>Список задач</h3>
-  {% if task_rows %}
-    <ul class="checklist top-offset">
-      {% for row in task_rows %}
-        <li>
-          {% if can_edit_master_card %}
-            <form method="post" action="/in-progress/master/{{ card.id }}/tasks/toggle/{{ loop.index0 }}" class="inline-form">
-              <button type="submit" class="btn btn-small">{{ "☑" if row.done == '__YES__' else "☐" }}</button>
-            </form>
-          {% endif %}
-          <span class="{% if row.done == '__YES__' %}done{% endif %}">{{ row.text }}</span>
-          {% if can_edit_master_card %}
-            <form method="post" action="/in-progress/master/{{ card.id }}/tasks/delete/{{ loop.index0 }}" class="inline-form">
-              <button type="submit" class="btn btn-small btn-danger">✕</button>
-            </form>
-          {% elif row.done == '__YES__' %}
-            <span class="chip">Готово</span>
-          {% endif %}
-        </li>
-      {% endfor %}
-    </ul>
-  {% else %}
-    <p class="muted top-offset">Список задач пуст.</p>
-  {% endif %}
+  <ul class="checklist top-offset">
+    {% for row in task_rows %}
+      <li>
+        {% if can_edit_master_card %}
+          <form method="post" action="/in-progress/master/{{ card.id }}/tasks/toggle/{{ loop.index0 }}" class="inline-form">
+            <button type="submit" class="btn btn-small">{{ "☑" if row.done == '__YES__' else "☐" }}</button>
+          </form>
+        {% endif %}
+        <span class="{% if row.done == '__YES__' %}done{% endif %}">{{ row.text }}</span>
+        {% if can_edit_master_card %}
+          <form method="post" action="/in-progress/master/{{ card.id }}/tasks/delete/{{ loop.index0 }}" class="inline-form">
+            <button type="submit" class="btn btn-small btn-danger">✕</button>
+          </form>
+        {% elif row.done == '__YES__' %}
+          <span class="chip">Готово</span>
+        {% endif %}
+      </li>
+    {% endfor %}
+  </ul>
   {% if can_edit_master_card %}
     <form method="post" action="/in-progress/master/{{ card.id }}/tasks/add" class="actions-inline top-offset">
       <input type="text" name="item_text" placeholder="Новая задача" required />
@@ -112,84 +103,79 @@
     </form>
   {% endif %}
 </section>
+{% endif %}
 
+{% if material_rows %}
 <section class="box">
   <h3>Материалы к покупке</h3>
-  {% if material_rows %}
-    <div class="top-offset">
-      <table class="table">
-        <thead>
+  <div class="top-offset">
+    <table class="table">
+      <thead>
+        <tr>
+          <th>Материал</th>
+          <th>Ссылка</th>
+          <th>Цена</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in material_rows %}
           <tr>
-            <th>Материал</th>
-            <th>Ссылка</th>
-            <th>Цена</th>
+            <td>{{ row.name or '—' }}</td>
+            <td>
+              {% if row.url %}
+                <a href="{{ row.url }}" target="_blank" rel="noreferrer">Открыть</a>
+              {% else %}
+                —
+              {% endif %}
+            </td>
+            <td>{% if row.price %}{{ row.price }} ₽{% else %}—{% endif %}</td>
           </tr>
-        </thead>
-        <tbody>
-          {% for row in material_rows %}
-            <tr>
-              <td>{{ row.name or '—' }}</td>
-              <td>
-                {% if row.url %}
-                  <a href="{{ row.url }}" target="_blank" rel="noreferrer">Открыть</a>
-                {% else %}
-                  —
-                {% endif %}
-              </td>
-              <td>{% if row.price %}{{ row.price }} ₽{% else %}—{% endif %}</td>
-            </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-      <p class="meta top-offset">Общая сумма: <strong>{{ '%.2f'|format(material_total or 0) }} ₽</strong></p>
-    </div>
-  {% else %}
-    <p class="muted top-offset">Материалы не добавлены.</p>
-  {% endif %}
+        {% endfor %}
+      </tbody>
+    </table>
+    <p class="meta top-offset">Общая сумма: <strong>{{ '%.2f'|format(material_total or 0) }} ₽</strong></p>
+  </div>
 </section>
+{% endif %}
 
+{% if measurement_rows %}
 <section class="box">
   <h3>Мерки</h3>
-  {% if measurement_rows %}
-    <div class="top-offset">
-      <table class="table">
-        <thead>
+  <div class="top-offset">
+    <table class="table">
+      <thead>
+        <tr>
+          <th>Название</th>
+          <th>Значение</th>
+          <th>Ед. изм.</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in measurement_rows %}
           <tr>
-            <th>Название</th>
-            <th>Значение</th>
-            <th>Ед. изм.</th>
+            <td>{{ row.name or '—' }}</td>
+            <td>{{ row.value or '—' }}</td>
+            <td>{{ row.unit or '—' }}</td>
           </tr>
-        </thead>
-        <tbody>
-          {% for row in measurement_rows %}
-            <tr>
-              <td>{{ row.name or '—' }}</td>
-              <td>{{ row.value or '—' }}</td>
-              <td>{{ row.unit or '—' }}</td>
-            </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </div>
-  {% else %}
-    <p class="muted top-offset">Мерки не заполнены.</p>
-  {% endif %}
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
 </section>
+{% endif %}
 
+{% if references %}
 <section class="box">
   <h3>Референсы</h3>
-  {% if references %}
-    <div class="reference-grid top-offset">
-      {% for url in references %}
-        <a class="reference-tile" href="{{ url }}" target="_blank" rel="noreferrer">
-          <img src="{{ url }}" alt="Референс" loading="lazy" />
-        </a>
-      {% endfor %}
-    </div>
-  {% else %}
-    <p class="muted top-offset">Референсы не добавлены.</p>
-  {% endif %}
+  <div class="reference-grid top-offset">
+    {% for url in references %}
+      <a class="reference-tile" href="{{ url }}" target="_blank" rel="noreferrer">
+        <img src="{{ url }}" alt="Референс" loading="lazy" />
+      </a>
+    {% endfor %}
+  </div>
 </section>
+{% endif %}
 
 <section class="box">
   <h3>Комментарии</h3>

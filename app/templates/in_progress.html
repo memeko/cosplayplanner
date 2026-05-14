@@ -126,16 +126,28 @@
 {% if progress_items %}
 <div class="cards-grid">
   {% for row in progress_items %}
-  <article class="card {% if row.is_frozen %}frozen-progress{% endif %} {% if row.id in urgent_progress_ids %}urgent-progress{% endif %}">
+  {% set card = row.cosplan_card %}
+  {% set editable_id = editable_card_links.get(row.id) %}
+  {% set shared_count = shared_coproplayer_counts_by_progress.get(row.id, 0) %}
+  {% set shared_emoji = shared_coproplayer_emojis_by_progress.get(row.id, "") %}
+  <article class="card {% if row.is_frozen %}frozen-progress{% endif %} {% if row.id in urgent_progress_ids %}urgent-progress{% endif %} {% if card and (card.plan_type or '') == 'project' %}shared-project-card{% endif %}">
     <div class="row-between">
       <h3>
-        {% if row.cosplan_card %}
-          <a href="/cosplan/{{ row.cosplan_card.id }}" class="card-title-link">{{ row.cosplan_card.character_name }}</a>
+        {% if card %}
+          <a href="/cosplan/{{ card.id }}" class="card-title-link">{{ card.character_name }}</a>
         {% else %}
           Без карточки
         {% endif %}
+        {% if card and (card.plan_type or '') == 'project' %}
+          <span class="chip chip-shared-project">
+            Общая карточка проекта{% if shared_emoji %} · {{ shared_emoji }}{% if shared_count > 0 %} ({{ shared_count }}){% endif %}{% endif %}
+          </span>
+        {% endif %}
       </h3>
       <div class="actions-inline">
+        {% if editable_id %}
+          <a href="/cosplan/{{ editable_id }}/edit" class="btn">Редактировать карточку</a>
+        {% endif %}
         <form method="post" action="/in-progress/{{ row.id }}/freeze-toggle">
           <button type="submit" class="btn {% if row.is_frozen %}btn-accent{% endif %}">
             {{ "Разморозить" if row.is_frozen else "Заморозить" }}
@@ -146,10 +158,10 @@
         </form>
       </div>
     </div>
-    {% if row.cosplan_card %}
-      <p class="meta">Фандом: {{ row.cosplan_card.fandom or "—" }}</p>
-      <p class="meta">План: {{ "Проект" if row.cosplan_card.plan_type == "project" else "Личное" }}</p>
-      <p class="meta">Дедлайн проекта: {{ row.cosplan_card.project_deadline.strftime('%d-%m-%Y') if row.cosplan_card.project_deadline else "—" }}</p>
+    {% if card %}
+      {% if card.fandom %}<p class="meta">Фандом: {{ card.fandom }}</p>{% endif %}
+      <p class="meta">План: {{ "Проект" if card.plan_type == "project" else "Личное" }}</p>
+      {% if card.project_deadline %}<p class="meta">Дедлайн проекта: {{ card.project_deadline.strftime('%d-%m-%Y') }}</p>{% endif %}
     {% endif %}
     {% if row.is_frozen %}
       <p class="meta"><strong>Статус: Заморожено</strong></p>
@@ -202,9 +214,9 @@
       </ul>
     {% endif %}
 
-    <h4>Чеклист</h4>
     {% set items = row.checklist_json or [] %}
     {% if items %}
+      <h4>Чеклист</h4>
       <ul class="checklist">
       {% for item in items %}
         <li>
@@ -218,8 +230,6 @@
         </li>
       {% endfor %}
       </ul>
-    {% else %}
-      <p class="muted">Чеклист пуст.</p>
     {% endif %}
 
     <form method="post" action="/in-progress/{{ row.id }}/checklist/add" class="actions-inline">
@@ -227,63 +237,61 @@
       <button type="submit" class="btn">Добавить</button>
     </form>
 
-    {% if row.cosplan_card and row.cosplan_card.plan_type == "project" %}
-      <h4>Задания</h4>
+    {% if card and card.plan_type == "project" %}
       {% set task_items = task_rows_by_progress.get(row.id, []) %}
-      {% if task_items %}
-        <table class="tasks-table">
-          <thead>
-            <tr>
-              <th>Ответственный</th>
-              <th>Задание</th>
-              <th>Выполнил(а)</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for item in task_items %}
-            <tr>
-              <td data-label="Ответственный">{{ item.assignee_label }}</td>
-              <td data-label="Задание" class="{% if item.done %}done{% endif %}">{{ item.task }}</td>
-              <td data-label="Действия" class="task-cell-actions">
-                <div class="task-done-actions">
-                  <form method="post" action="/in-progress/{{ row.id }}/tasks/toggle/{{ loop.index0 }}" class="inline-form">
-                    <button type="submit" class="btn btn-small">{{ "☑" if item.done else "☐" }}</button>
-                  </form>
-                  <form method="post" action="/in-progress/{{ row.id }}/tasks/delete/{{ loop.index0 }}" class="inline-form">
-                    <button type="submit" class="btn btn-small btn-danger">✕</button>
-                  </form>
-                </div>
-              </td>
-            </tr>
-            {% endfor %}
-          </tbody>
-        </table>
-      {% else %}
-        <p class="muted">Пока нет назначенных заданий.</p>
-      {% endif %}
-
       {% set assignee_options = task_assignees_by_progress.get(row.id, []) %}
-      {% if assignee_options %}
-        <form method="post" action="/in-progress/{{ row.id }}/tasks/add" class="task-add-form">
-          <label>
-            Ответственный
-            <select name="task_assignee" required>
-              <option value="">Выберите участника</option>
-              {% for option in assignee_options %}
-                <option value="{{ option.value }}">{{ option.label }}</option>
+      {% if task_items or assignee_options %}
+        <h4>Задания</h4>
+        {% if task_items %}
+          <table class="tasks-table">
+            <thead>
+              <tr>
+                <th>Ответственный</th>
+                <th>Задание</th>
+                <th>Выполнил(а)</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for item in task_items %}
+              <tr>
+                <td data-label="Ответственный">{{ item.assignee_label }}</td>
+                <td data-label="Задание" class="{% if item.done %}done{% endif %}">{{ item.task }}</td>
+                <td data-label="Действия" class="task-cell-actions">
+                  <div class="task-done-actions">
+                    <form method="post" action="/in-progress/{{ row.id }}/tasks/toggle/{{ loop.index0 }}" class="inline-form">
+                      <button type="submit" class="btn btn-small">{{ "☑" if item.done else "☐" }}</button>
+                    </form>
+                    <form method="post" action="/in-progress/{{ row.id }}/tasks/delete/{{ loop.index0 }}" class="inline-form">
+                      <button type="submit" class="btn btn-small btn-danger">✕</button>
+                    </form>
+                  </div>
+                </td>
+              </tr>
               {% endfor %}
-            </select>
-          </label>
-          <label>
-            Задание
-            <input type="text" name="task_text" placeholder="Что нужно сделать" required />
-          </label>
-          <div class="task-add-actions">
-            <button type="submit" class="btn">Добавить задание</button>
-          </div>
-        </form>
-      {% else %}
-        <p class="muted">В карточке не указаны сокосплееры или руководитель для назначения заданий.</p>
+            </tbody>
+          </table>
+        {% endif %}
+
+        {% if assignee_options %}
+          <form method="post" action="/in-progress/{{ row.id }}/tasks/add" class="task-add-form">
+            <label>
+              Ответственный
+              <select name="task_assignee" required>
+                <option value="">Выберите участника</option>
+                {% for option in assignee_options %}
+                  <option value="{{ option.value }}">{{ option.label }}</option>
+                {% endfor %}
+              </select>
+            </label>
+            <label>
+              Задание
+              <input type="text" name="task_text" placeholder="Что нужно сделать" required />
+            </label>
+            <div class="task-add-actions">
+              <button type="submit" class="btn">Добавить задание</button>
+            </div>
+          </form>
+        {% endif %}
       {% endif %}
     {% endif %}
   </article>

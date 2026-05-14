@@ -78,6 +78,7 @@ from .models import (
     FestivalNotification,
     HomeNews,
     InProgressCard,
+    InProgressMasterBoard,
     InProgressMasterCard,
     InProgressMasterComment,
     ProjectSearchPost,
@@ -157,6 +158,7 @@ def load_secret_key() -> str:
 
 PROJECT_NAME = load_project_name()
 SITE_URL = os.getenv("BASE_SITE_URL", "https://cosplay-planner.ru").rstrip("/")
+PROJECT_ROOT_PATH = Path(__file__).resolve().parent.parent
 SEO_DESCRIPTION = (
     "Cosplay Planner — онлайн-органайзер для косплееров: косплей органайзер, "
     "планирование косплей проектов, косплей фестивали, бюджетный косплей, "
@@ -827,6 +829,16 @@ MAX_CHARACTER_REFERENCE_IMAGE_BYTES = 450 * 1024
 MAX_CHARACTER_REFERENCE_IMAGE_WIDTH = 900
 MAX_AVATAR_IMAGE_BYTES = 24 * 1024
 MAX_AVATAR_IMAGE_WIDTH = 256
+MAX_MASTER_BOARD_STATE_BYTES = 3 * 1024 * 1024
+MAX_MASTER_BOARD_OBJECTS = 3000
+MASTER_BOARD_DEFAULT_IMAGE_LAYOUT = [
+    {"name": "female", "left": -620.0, "top": -210.0, "scale": 0.42, "width": 953, "height": 1651},
+    {"name": "male", "left": 140.0, "top": -210.0, "scale": 0.42, "width": 952, "height": 1652},
+]
+MASTER_BOARD_DEFAULT_IMAGE_PATHS = {
+    "female": PROJECT_ROOT_PATH / "female.png",
+    "male": PROJECT_ROOT_PATH / "male.png",
+}
 DEFAULT_AVATAR_PATH = "/static/avatar-placeholder.svg"
 
 RU_MONTH_WORDS_TO_NUM = {
@@ -1023,6 +1035,9 @@ def apply_schema_migrations() -> None:
             ("costume_hardware_price", "FLOAT"),
             ("costume_fabric_rows_json", "JSON NOT NULL DEFAULT '[]'"),
             ("costume_hardware_rows_json", "JSON NOT NULL DEFAULT '[]'"),
+            ("sewing_mockup", "BOOLEAN NOT NULL DEFAULT 0"),
+            ("sewing_fitting", "BOOLEAN NOT NULL DEFAULT 0"),
+            ("sewing_details", "BOOLEAN NOT NULL DEFAULT 0"),
             ("costume_notes", "TEXT"),
             ("shoes_buy_price", "FLOAT"),
             ("lenses_price", "FLOAT"),
@@ -1104,6 +1119,14 @@ def apply_schema_migrations() -> None:
         ],
         "in_progress_master_comments": [
             ("body", "TEXT"),
+        ],
+        "in_progress_master_boards": [
+            ("id", "INTEGER PRIMARY KEY"),
+            ("card_id", "INTEGER"),
+            ("state_json", "JSON NOT NULL DEFAULT '{}'"),
+            ("updated_by_user_id", "INTEGER"),
+            ("created_at", "DATETIME DEFAULT CURRENT_TIMESTAMP"),
+            ("updated_at", "DATETIME DEFAULT CURRENT_TIMESTAMP"),
         ],
         "rehearsal_cards": [
             ("deadline_date", "DATE"),
@@ -1286,18 +1309,28 @@ def apply_schema_migrations() -> None:
             InProgressMasterCard.__table__.create(bind=conn, checkfirst=True)
         if "in_progress_master_comments" not in existing_tables:
             InProgressMasterComment.__table__.create(bind=conn, checkfirst=True)
+        if "in_progress_master_boards" not in existing_tables:
+            InProgressMasterBoard.__table__.create(bind=conn, checkfirst=True)
 
         community_masters_added_allow_site_orders = False
 
         for table_name, columns in required_columns.items():
-            if table_name not in existing_tables and table_name not in {"festival_notifications", "character_library_entries"}:
+            if table_name not in existing_tables and table_name not in {
+                "festival_notifications",
+                "character_library_entries",
+                "in_progress_master_boards",
+            }:
                 continue
 
             current_cols = {col["name"] for col in inspect(conn).get_columns(table_name)}
             for column_name, definition in columns:
                 if column_name in current_cols:
                     continue
-                if table_name in {"festival_notifications", "character_library_entries"} and column_name == "id":
+                if table_name in {
+                    "festival_notifications",
+                    "character_library_entries",
+                    "in_progress_master_boards",
+                } and column_name == "id":
                     # Table create handles PK.
                     continue
                 conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}"))
@@ -1396,6 +1429,12 @@ def apply_schema_migrations() -> None:
             text(
                 "CREATE INDEX IF NOT EXISTS ix_character_library_entries_eye_color "
                 "ON character_library_entries (eye_color)"
+            )
+        )
+        conn.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ix_in_progress_master_boards_card_id "
+                "ON in_progress_master_boards (card_id)"
             )
         )
 
@@ -1501,6 +1540,23 @@ def media_file(filename: str):
         raise HTTPException(status_code=404, detail="Файл не найден.")
     media_type = mimetypes.guess_type(str(file_path))[0] or "application/octet-stream"
     return FileResponse(str(file_path), media_type=media_type)
+
+
+@app.get("/in-progress/master/board-assets/{asset_name}", include_in_schema=False)
+def in_progress_master_board_asset(
+    asset_name: str,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    user = current_user(request, db)
+    if not user:
+        raise HTTPException(status_code=401, detail="Требуется авторизация.")
+
+    normalized = str(asset_name or "").strip().lower()
+    asset_path = MASTER_BOARD_DEFAULT_IMAGE_PATHS.get(normalized)
+    if not asset_path or not asset_path.exists() or not asset_path.is_file():
+        raise HTTPException(status_code=404, detail="Файл не найден.")
+    return FileResponse(str(asset_path), media_type="image/png")
 
 
 @app.post("/media/upload-image")
@@ -2077,6 +2133,24 @@ def can_comment_on_card(card: CosplanCard, user: User) -> bool:
 
 def card_coproplayer_aliases(card: CosplanCard) -> list[str]:
     return merge_unique(as_list(card.coproplayer_nicks_json), as_list(card.coproplayers_json))
+
+
+def shared_coproplayer_count(card: CosplanCard | None) -> int:
+    if not card:
+        return 0
+    aliases = [str(value).strip() for value in card_coproplayer_aliases(card) if str(value).strip()]
+    return len(aliases)
+
+
+def shared_coproplayer_emoji(count: int) -> str:
+    if count <= 0:
+        return ""
+    visible = min(8, int(count))
+    extra = max(0, int(count) - visible)
+    icons = "👤" * visible
+    if extra > 0:
+        return f"{icons}+{extra}"
+    return icons
 
 
 def card_task_assignee_options(
@@ -8977,6 +9051,9 @@ def card_fields_for_sync() -> list[str]:
         "sewing_fabric",
         "sewing_hardware",
         "sewing_pattern",
+        "sewing_mockup",
+        "sewing_fitting",
+        "sewing_details",
         "costume_executor",
         "costume_deadline",
         "costume_prepayment",
@@ -10390,6 +10467,9 @@ def get_card_form_values(card: CosplanCard | None = None, *, actor_user_id: int 
             "sewing_fabric": False,
             "sewing_hardware": False,
             "sewing_pattern": False,
+            "sewing_mockup": False,
+            "sewing_fitting": False,
+            "sewing_details": False,
             "costume_executor": "",
             "costume_deadline": "",
             "costume_prepayment": "",
@@ -10539,6 +10619,9 @@ def get_card_form_values(card: CosplanCard | None = None, *, actor_user_id: int 
         "sewing_fabric": bool(card.sewing_fabric),
         "sewing_hardware": bool(card.sewing_hardware),
         "sewing_pattern": bool(card.sewing_pattern),
+        "sewing_mockup": bool(card.sewing_mockup),
+        "sewing_fitting": bool(card.sewing_fitting),
+        "sewing_details": bool(card.sewing_details),
         "costume_executor": card.costume_executor or "",
         "costume_deadline": card.costume_deadline.isoformat() if card.costume_deadline else "",
         "costume_prepayment": "" if card.costume_prepayment is None else f"{card.costume_prepayment:g}",
@@ -13103,10 +13186,15 @@ def cosplan_list(
                     stat["upcoming_date"] = entry.entry_date
 
     editable_card_links: dict[int, int] = {}
+    shared_coproplayer_counts: dict[int, int] = {}
+    shared_coproplayer_emojis: dict[int, str] = {}
     for visible_card in cards:
         source_card = resolve_source_card(db, visible_card)
         if source_card and can_edit_card(user, source_card):
             editable_card_links[visible_card.id] = source_card.id
+        coproplayer_count = shared_coproplayer_count(visible_card)
+        shared_coproplayer_counts[visible_card.id] = coproplayer_count
+        shared_coproplayer_emojis[visible_card.id] = shared_coproplayer_emoji(coproplayer_count)
 
     current_view = view if view in {"cards", "list"} else "cards"
 
@@ -13132,6 +13220,8 @@ def cosplan_list(
         frozen_card_ids=frozen_card_ids,
         rehearsal_stats_by_card=rehearsal_stats_by_card,
         editable_card_links=editable_card_links,
+        shared_coproplayer_counts=shared_coproplayer_counts,
+        shared_coproplayer_emojis=shared_coproplayer_emojis,
         current_query=request.url.query or "",
         **section_totals,
     )
@@ -14155,6 +14245,9 @@ def save_card_from_form(form: Any, card: CosplanCard, user: User, db: Session) -
         card.sewing_fabric = False
         card.sewing_hardware = False
         card.sewing_pattern = False
+        card.sewing_mockup = False
+        card.sewing_fitting = False
+        card.sewing_details = False
         card.costume_executor = None
         card.costume_deadline = None
         card.costume_prepayment = None
@@ -14171,6 +14264,9 @@ def save_card_from_form(form: Any, card: CosplanCard, user: User, db: Session) -
         card.sewing_fabric = to_bool(form.get("sewing_fabric"))
         card.sewing_hardware = to_bool(form.get("sewing_hardware"))
         card.sewing_pattern = to_bool(form.get("sewing_pattern"))
+        card.sewing_mockup = to_bool(form.get("sewing_mockup"))
+        card.sewing_fitting = to_bool(form.get("sewing_fitting"))
+        card.sewing_details = to_bool(form.get("sewing_details"))
         card.costume_deadline = parse_date(str(form.get("costume_deadline", "")))
         if card.sewing_type == "self":
             card.costume_executor = None
@@ -14671,6 +14767,127 @@ def can_edit_in_progress_master_card(user: User | None, card: InProgressMasterCa
     if is_moderator_user(user):
         return True
     return int(card.user_id) == int(user.id)
+
+
+def master_board_default_asset_url(asset_name: str) -> str:
+    normalized = str(asset_name or "").strip().lower()
+    if normalized not in MASTER_BOARD_DEFAULT_IMAGE_PATHS:
+        normalized = "female"
+    return f"/in-progress/master/board-assets/{normalized}"
+
+
+def build_master_board_default_objects() -> list[dict[str, Any]]:
+    objects: list[dict[str, Any]] = []
+    for item in MASTER_BOARD_DEFAULT_IMAGE_LAYOUT:
+        asset_name = str(item.get("name", "")).strip().lower()
+        image_url = master_board_default_asset_url(asset_name)
+        width = max(1, int(item.get("width", 900)))
+        height = max(1, int(item.get("height", 1600)))
+        scale = float(item.get("scale", 0.4))
+        objects.append(
+            {
+                "type": "image",
+                "version": "5.4.2",
+                "originX": "left",
+                "originY": "top",
+                "left": float(item.get("left", 0)),
+                "top": float(item.get("top", 0)),
+                "width": width,
+                "height": height,
+                "scaleX": scale,
+                "scaleY": scale,
+                "angle": 0,
+                "flipX": False,
+                "flipY": False,
+                "opacity": 1,
+                "src": image_url,
+                "crossOrigin": "anonymous",
+                "boardItemType": "template-image",
+                "imageSrc": image_url,
+            }
+        )
+    return objects
+
+
+def default_master_board_state() -> dict[str, Any]:
+    return {
+        "version": 1,
+        "canvas": {"objects": build_master_board_default_objects()},
+        "viewportTransform": [1, 0, 0, 1, 0, 0],
+        "zoom": 1,
+        "default_assets_seeded": True,
+    }
+
+
+def normalize_master_board_state(raw_state: Any) -> dict[str, Any]:
+    if not isinstance(raw_state, dict):
+        return default_master_board_state()
+
+    canvas_raw = raw_state.get("canvas")
+    canvas = dict(canvas_raw) if isinstance(canvas_raw, dict) else {}
+    objects_raw = canvas.get("objects")
+    objects: list[Any] = objects_raw if isinstance(objects_raw, list) else []
+    if len(objects) > MAX_MASTER_BOARD_OBJECTS:
+        objects = objects[:MAX_MASTER_BOARD_OBJECTS]
+    default_assets_seeded = to_bool(raw_state.get("default_assets_seeded"))
+    if objects and not default_assets_seeded:
+        default_assets_seeded = True
+    if not default_assets_seeded and not objects:
+        objects = build_master_board_default_objects()
+        default_assets_seeded = True
+    canvas["objects"] = objects
+
+    zoom_value: float = 1.0
+    try:
+        zoom_value = float(raw_state.get("zoom", 1))
+    except (TypeError, ValueError):
+        zoom_value = 1.0
+    if zoom_value <= 0 or zoom_value > 8:
+        zoom_value = 1.0
+
+    viewport_raw = raw_state.get("viewportTransform")
+    viewport: list[float] = [1, 0, 0, 1, 0, 0]
+    if isinstance(viewport_raw, list) and len(viewport_raw) == 6:
+        parsed_viewport: list[float] = []
+        valid = True
+        for value in viewport_raw:
+            try:
+                parsed_viewport.append(float(value))
+            except (TypeError, ValueError):
+                valid = False
+                break
+        if valid:
+            viewport = parsed_viewport
+
+    return {
+        "version": 1,
+        "canvas": canvas,
+        "viewportTransform": viewport,
+        "zoom": zoom_value,
+        "default_assets_seeded": default_assets_seeded,
+    }
+
+
+def get_or_create_master_board(
+    db: Session,
+    *,
+    card_id: int,
+    updated_by_user_id: int | None = None,
+) -> InProgressMasterBoard:
+    board = db.execute(
+        select(InProgressMasterBoard).where(InProgressMasterBoard.card_id == card_id)
+    ).scalar_one_or_none()
+    if board:
+        return board
+
+    board = InProgressMasterBoard(
+        card_id=card_id,
+        state_json=default_master_board_state(),
+        updated_by_user_id=updated_by_user_id,
+    )
+    db.add(board)
+    db.flush()
+    return board
 
 
 def normalize_master_task_rows(rows: list[Any]) -> list[dict[str, Any]]:
@@ -15219,11 +15436,19 @@ def in_progress_list(request: Request, db: Session = Depends(get_db)):
     leader_rehearsals_by_card: dict[int, list[RehearsalEntry]] = defaultdict(list)
     task_assignees_by_progress: dict[int, list[dict[str, Any]]] = {}
     task_rows_by_progress: dict[int, list[dict[str, Any]]] = {}
+    editable_card_links: dict[int, int] = {}
+    shared_coproplayer_counts_by_progress: dict[int, int] = {}
+    shared_coproplayer_emojis_by_progress: dict[int, str] = {}
     alias_to_username, users_by_username, _ = build_user_alias_lookup(db)
 
     for row in safe_progress_items:
         card = row.cosplan_card
         source_card = resolve_source_card(db, card)
+        if source_card and can_edit_card(user, source_card):
+            editable_card_links[row.id] = source_card.id
+        coproplayer_count = shared_coproplayer_count(card)
+        shared_coproplayer_counts_by_progress[row.id] = coproplayer_count
+        shared_coproplayer_emojis_by_progress[row.id] = shared_coproplayer_emoji(coproplayer_count)
         if not source_card or source_card.plan_type != "project":
             continue
         try:
@@ -15272,6 +15497,9 @@ def in_progress_list(request: Request, db: Session = Depends(get_db)):
         leader_rehearsals_by_card=leader_rehearsals_by_card,
         task_assignees_by_progress=task_assignees_by_progress,
         task_rows_by_progress=task_rows_by_progress,
+        editable_card_links=editable_card_links,
+        shared_coproplayer_counts_by_progress=shared_coproplayer_counts_by_progress,
+        shared_coproplayer_emojis_by_progress=shared_coproplayer_emojis_by_progress,
         character_filter=character_filter,
         fandom_filter=fandom_filter,
         rehearsal_status_labels={
@@ -15592,14 +15820,19 @@ async def in_progress_master_create(request: Request, db: Session = Depends(get_
         references_json=[],
         status_percent=0,
     )
+    open_board_requested = str(form.get("open_board", "")).strip() == "1"
     ok, error_text = save_in_progress_master_card_from_form(form, card, db=db)
     if not ok:
         add_flash(request, error_text, "error")
         return redirect("/in-progress/master/new")
 
     db.add(card)
+    db.flush()
+    get_or_create_master_board(db, card_id=card.id, updated_by_user_id=user.id)
     db.commit()
     add_flash(request, "Карточка мастера создана.", "success")
+    if open_board_requested:
+        return redirect(f"/in-progress/master/{card.id}/board")
     return redirect(f"/in-progress/master/{card.id}")
 
 
@@ -15661,6 +15894,107 @@ def in_progress_master_detail(card_id: int, request: Request, db: Session = Depe
         cosplayer_active_projects_count=active_project_counters.get("cosplayer_active", 0),
         master_active_projects_count=active_project_counters.get("master_active", 0),
     )
+
+
+@app.get("/in-progress/master/{card_id}/board", response_class=HTMLResponse)
+def in_progress_master_board_page(card_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    active_project_counters = get_in_progress_active_project_counters(db, user)
+    card = get_accessible_in_progress_master_card(db, user=user, card_id=card_id)
+    if not card:
+        add_flash(request, "Карточка мастера не найдена или недоступна.", "error")
+        return redirect("/in-progress?scope=master")
+
+    board = get_or_create_master_board(
+        db,
+        card_id=card.id,
+        updated_by_user_id=user.id if can_edit_in_progress_master_card(user, card) else None,
+    )
+    normalized_state = normalize_master_board_state(board.state_json)
+    if board.state_json != normalized_state:
+        board.state_json = normalized_state
+    db.commit()
+
+    return template_response(
+        request,
+        "in_progress_master_board.html",
+        user=user,
+        active_tab="in-progress",
+        in_progress_scope=IN_PROGRESS_SCOPE_MASTER,
+        card=card,
+        can_edit_master_board=can_edit_in_progress_master_card(user, card),
+        initial_board_state=normalized_state,
+        cosplayer_active_projects_count=active_project_counters.get("cosplayer_active", 0),
+        master_active_projects_count=active_project_counters.get("master_active", 0),
+    )
+
+
+@app.get("/api/in-progress/master/{card_id}/board")
+def in_progress_master_board_state_api(card_id: int, request: Request, db: Session = Depends(get_db)) -> dict[str, Any]:
+    user = current_user(request, db)
+    if not user:
+        raise HTTPException(status_code=401, detail="Требуется авторизация.")
+
+    card = get_accessible_in_progress_master_card(db, user=user, card_id=card_id)
+    if not card:
+        raise HTTPException(status_code=404, detail="Карточка мастера не найдена.")
+
+    board = get_or_create_master_board(db, card_id=card.id)
+    normalized_state = normalize_master_board_state(board.state_json)
+    if board.state_json != normalized_state:
+        board.state_json = normalized_state
+        db.commit()
+
+    return {
+        "ok": True,
+        "can_edit": can_edit_in_progress_master_card(user, card),
+        "state": normalized_state,
+        "updated_at": board.updated_at.isoformat() if board.updated_at else "",
+    }
+
+
+@app.post("/api/in-progress/master/{card_id}/board")
+async def in_progress_master_board_save_api(card_id: int, request: Request, db: Session = Depends(get_db)) -> dict[str, Any]:
+    user = current_user(request, db)
+    if not user:
+        raise HTTPException(status_code=401, detail="Требуется авторизация.")
+
+    card = get_accessible_in_progress_master_card(db, user=user, card_id=card_id)
+    if not card:
+        raise HTTPException(status_code=404, detail="Карточка мастера не найдена.")
+    if not can_edit_in_progress_master_card(user, card):
+        raise HTTPException(status_code=403, detail="Недостаточно прав для редактирования доски.")
+
+    raw_body = await request.body()
+    if not raw_body:
+        raise HTTPException(status_code=400, detail="Тело запроса пустое.")
+    if len(raw_body) > MAX_MASTER_BOARD_STATE_BYTES:
+        raise HTTPException(status_code=413, detail="Состояние доски слишком большое.")
+
+    try:
+        payload = json.loads(raw_body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=400, detail="Некорректный JSON в состоянии доски.") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Ожидается JSON-объект.")
+
+    state_payload = normalize_master_board_state(payload.get("state"))
+    encoded_state = json.dumps(state_payload, ensure_ascii=False, separators=(",", ":"))
+    if len(encoded_state.encode("utf-8")) > MAX_MASTER_BOARD_STATE_BYTES:
+        raise HTTPException(status_code=413, detail="Состояние доски превышает допустимый размер.")
+
+    board = get_or_create_master_board(db, card_id=card.id, updated_by_user_id=user.id)
+    board.state_json = state_payload
+    board.updated_by_user_id = user.id
+    db.commit()
+
+    return {
+        "ok": True,
+        "updated_at": board.updated_at.isoformat() if board.updated_at else "",
+    }
 
 
 @app.post("/in-progress/master/{card_id}/tasks/add")
@@ -15839,13 +16173,18 @@ async def in_progress_master_update(card_id: int, request: Request, db: Session 
         return redirect(f"/in-progress/master/{card_id}")
 
     form = await request.form()
+    open_board_requested = str(form.get("open_board", "")).strip() == "1"
     ok, error_text = save_in_progress_master_card_from_form(form, card, db=db)
     if not ok:
         add_flash(request, error_text, "error")
         return redirect(f"/in-progress/master/{card_id}/edit")
 
+    if open_board_requested:
+        get_or_create_master_board(db, card_id=card.id, updated_by_user_id=user.id)
     db.commit()
     add_flash(request, "Карточка мастера обновлена.", "success")
+    if open_board_requested:
+        return redirect(f"/in-progress/master/{card.id}/board")
     return redirect(f"/in-progress/master/{card.id}")
 
 
@@ -19413,6 +19752,11 @@ def community_masters_list(request: Request, db: Session = Depends(get_db)):
     masters = db.execute(
         select(CommunityMaster).order_by(CommunityMaster.updated_at.desc(), CommunityMaster.id.desc())
     ).scalars().all()
+    my_master_cards = db.execute(
+        select(CommunityMaster)
+        .where(CommunityMaster.user_id == user.id)
+        .order_by(CommunityMaster.updated_at.desc(), CommunityMaster.id.desc())
+    ).scalars().all()
     city_options = community_master_city_options(db)
 
     if master_type and master_type in MASTER_TYPE_OPTIONS:
@@ -19466,6 +19810,7 @@ def community_masters_list(request: Request, db: Session = Depends(get_db)):
         selected_city=selected_city,
         city_options=city_options,
         master_type_options=MASTER_TYPE_OPTIONS,
+        my_master_cards=my_master_cards,
     )
 
 

@@ -134,10 +134,21 @@
         </label>
       </div>
 
-      <div id="sewing_materials_wrap" class="inline-group">
-        <label class="inline-check"><input type="checkbox" name="sewing_fabric" {% if form.sewing_fabric %}checked{% endif %} /> Ткань</label>
-        <label class="inline-check"><input type="checkbox" name="sewing_hardware" {% if form.sewing_hardware %}checked{% endif %} /> Фурнитура</label>
-        <label class="inline-check"><input type="checkbox" name="sewing_pattern" {% if form.sewing_pattern %}checked{% endif %} /> Выкройка</label>
+      <div id="sewing_materials_wrap">
+        <h4>Куплено/сделано:</h4>
+        <div class="inline-group">
+          <label class="inline-check"><input type="checkbox" name="sewing_fabric" {% if form.sewing_fabric %}checked{% endif %} /> Ткань куплена</label>
+          <label class="inline-check"><input type="checkbox" name="sewing_hardware" {% if form.sewing_hardware %}checked{% endif %} /> Фурнитура выбрана</label>
+          <label class="inline-check"><input type="checkbox" name="sewing_pattern" {% if form.sewing_pattern %}checked{% endif %} /> Выкройка</label>
+          <label class="inline-check"><input type="checkbox" name="sewing_mockup" {% if form.sewing_mockup %}checked{% endif %} /> Макет</label>
+          <label class="inline-check"><input type="checkbox" name="sewing_fitting" {% if form.sewing_fitting %}checked{% endif %} /> Подгонка</label>
+          <label class="inline-check"><input type="checkbox" name="sewing_details" {% if form.sewing_details %}checked{% endif %} /> Детали</label>
+        </div>
+        <p class="muted top-offset">
+          Если хотите вести отдельную очередь задач по пошиву: создайте
+          <a href="/in-progress/master/new">новую карточку работы</a>
+          в «В работе → Мастер».
+        </p>
       </div>
 
       <div id="costume_executor_wrap">
@@ -477,20 +488,16 @@
       <a href="/community/cosplayers" class="btn btn-small">Каталог косплееров</a>
       <a href="/my-projects" class="btn btn-small">Мои проекты</a>
     </div>
-    <div class="grid two-col">
-      <label>
-        Тип
-        <select name="plan_type" id="plan_type">
-          <option value="personal" {% if form.plan_type == 'personal' %}selected{% endif %}>Личное</option>
-          <option value="project" {% if form.plan_type == 'project' %}selected{% endif %}>Проект</option>
-        </select>
-      </label>
-      <label id="project_leader_wrap" class="alias-suggest">
-        Руководитель
-        <input type="text" name="project_leader" id="project_leader" list="project-leader-options" value="{{ form.project_leader }}" autocomplete="off" />
-        <div class="alias-suggest-list" id="project-leader-suggest"></div>
-      </label>
-    </div>
+    <input type="hidden" name="plan_type" id="plan_type" value="{{ 'project' if form.plan_type == 'project' else 'personal' }}" />
+    <label class="inline-check">
+      <input type="checkbox" id="plan_type_project" {% if form.plan_type == 'project' %}checked{% endif %} />
+      Это общая карточка проекта
+    </label>
+    <label id="project_leader_wrap" class="alias-suggest">
+      Руководитель
+      <input type="text" name="project_leader" id="project_leader" list="project-leader-options" value="{{ form.project_leader }}" autocomplete="off" />
+      <div class="alias-suggest-list" id="project-leader-suggest"></div>
+    </label>
     <datalist id="project-leader-options">
       {% for value in project_leader_options %}
         <option value="{{ value }}"></option>
@@ -562,8 +569,10 @@
       {% endfor %}
     </div>
     <button type="button" class="btn" id="add_coproplayer_btn">Добавить ещё</button>
+  </section>
 
-    <h3>Фестивали</h3>
+  <section class="box">
+    <h2>Фестивали</h2>
     <div class="actions-inline wrap top-offset">
       <a href="/festivals" class="btn btn-small">Открыть фестивали</a>
       <a href="/festivals/announcements/new" class="btn btn-small">Добавить анонс</a>
@@ -675,8 +684,10 @@
         <input type="number" min="1" step="1" name="performance_rehearsal_count" value="{{ form.performance_rehearsal_count }}" />
       </label>
     </details>
+  </section>
 
-    <h3>Фотосет</h3>
+  <section class="box">
+    <h2>Фотосет</h2>
     <details class="festival-spoiler" {% if form.photographers_json or form.studios_json or form.photoset_date or form.photoset_comment or form.photoset_props_checklist_json %}open{% endif %}>
       <summary>Показать/скрыть блок фотосета</summary>
       <div class="actions-inline wrap top-offset">
@@ -1039,6 +1050,13 @@
     const planType = document.getElementById("plan_type")?.value;
     toggleVisibility("project_leader_wrap", planType === "project");
     toggleVisibility("related_cards_wrap", planType === "project");
+  };
+
+  const syncPlanTypeFromProjectCheckbox = () => {
+    const planTypeInput = document.getElementById("plan_type");
+    const projectCheckbox = document.getElementById("plan_type_project");
+    if (!planTypeInput || !projectCheckbox) return;
+    planTypeInput.value = projectCheckbox.checked ? "project" : "personal";
   };
 
   const applyFestivalCityFilter = () => {
@@ -1622,10 +1640,13 @@
     });
   };
 
-  ["is_au", "costume_type", "sewing_type", "shoes_type", "wig_type", "craft_type", "lenses_enabled", "plan_type"].forEach((id) => {
+  ["is_au", "costume_type", "sewing_type", "shoes_type", "wig_type", "craft_type", "lenses_enabled", "plan_type_project"].forEach((id) => {
     const el = document.getElementById(id);
     if (el) {
-      el.addEventListener("change", applyFormRules);
+      el.addEventListener("change", () => {
+        syncPlanTypeFromProjectCheckbox();
+        applyFormRules();
+      });
     }
   });
 
@@ -1689,6 +1710,7 @@
   setupPartsControls();
   setupSelfSewCostTables();
   setupChecklistControls();
+  syncPlanTypeFromProjectCheckbox();
   applyFormRules();
   applyFestivalCityFilter();
   updateEstimatedTotal();

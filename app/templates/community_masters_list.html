@@ -28,8 +28,41 @@
       </form>
     {% endif %}
     <a href="/community/masters/new" class="btn btn-accent">Добавить мастера</a>
+    {% if my_master_cards %}
+      <a href="/community/masters/{{ my_master_cards[0].id }}" class="btn">Моя карточка</a>
+    {% endif %}
   </div>
 </section>
+
+{% if my_master_cards and (my_master_cards|length) > 1 %}
+<section class="box compact-box">
+  <div class="row-between">
+    <h3>Мои карточки ({{ my_master_cards|length }})</h3>
+    <a href="/community/masters/{{ my_master_cards[0].id }}" class="btn btn-small">Открыть последнюю</a>
+  </div>
+  <div class="cards-grid top-offset">
+    {% for my_card in my_master_cards %}
+      {% set gallery = my_card.gallery_json or [] %}
+      <article class="card">
+        <div class="row-between">
+          <h3><a href="/community/masters/{{ my_card.id }}" class="card-title-link"><span class="{% if nick_is_special(my_card.nick) %}nick-special{% endif %}">@{{ my_card.nick }}</span></a></h3>
+          <span class="chip">{{ my_card.master_type|capitalize }}</span>
+        </div>
+        <p class="meta">Город: {{ my_card.city or "—" }}</p>
+        <p class="meta">Комментариев: {{ comment_counts.get(my_card.id, 0) }}</p>
+        {% if gallery %}
+          <p class="meta">Галерея: {{ gallery|length }} изображ.</p>
+        {% endif %}
+        <p class="notes-block">{{ my_card.details|preview_text(180)|render_text }}</p>
+        <div class="actions-inline">
+          <a href="/community/masters/{{ my_card.id }}" class="btn">Подробнее</a>
+          <a href="/community/masters/{{ my_card.id }}/edit" class="btn">Редактировать</a>
+        </div>
+      </article>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
 
 {% if masters %}
 <div class="cards-grid">

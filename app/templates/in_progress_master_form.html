@@ -66,6 +66,18 @@
   </section>
 
   <section class="box">
+    <h3>Whiteboard проекта</h3>
+    {% if editing %}
+      <p class="muted">Для этой карточки доступна отдельная доска с бесконечным холстом, заметками и изображениями.</p>
+      <div class="actions-inline top-offset">
+        <a href="/in-progress/master/{{ card_id }}/board" class="btn" target="_blank" rel="noopener noreferrer">Открыть доску</a>
+      </div>
+    {% else %}
+      <p class="muted">После создания карточки можно открыть персональную доску проекта в новой вкладке.</p>
+    {% endif %}
+  </section>
+
+  <section class="box">
     <div class="grid two-col">
       <label>
         Дедлайн
@@ -183,6 +195,7 @@
 
   <div class="actions-inline">
     <button type="submit" class="btn btn-accent">{{ "Сохранить" if editing else "Создать" }}</button>
+    <button type="submit" class="btn" name="open_board" value="1">{{ "Сохранить и открыть доску" if editing else "Создать и открыть доску" }}</button>
     <a href="{{ '/in-progress/master/' ~ card_id if editing else '/in-progress?scope=master' }}" class="btn">Отмена</a>
   </div>
 </form>

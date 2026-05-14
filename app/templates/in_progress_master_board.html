@@ -1,0 +1,686 @@
+{% extends "base.html" %}
+{% block content %}
+{% set master_list_url = "/in-progress?scope=master" ~ ("&archive_scope=archived" if card.is_archived else "") %}
+<section class="section-head">
+  <h1>Whiteboard: {{ card.name }}</h1>
+  <div class="actions-inline">
+    <a href="/in-progress/master/{{ card.id }}" class="btn">К карточке</a>
+    <a href="{{ master_list_url }}" class="btn">К списку</a>
+  </div>
+</section>
+
+<nav class="calendar-tabs">
+  <a href="/in-progress?scope=cosplayer" class="tab {% if (in_progress_scope or 'cosplayer') == 'cosplayer' %}active{% endif %}">Косплеер</a>
+  <a href="/in-progress?scope=master" class="tab {% if (in_progress_scope or 'cosplayer') == 'master' %}active{% endif %}">Мастер</a>
+</nav>
+
+<section class="box">
+  <div class="master-board-toolbar" id="master-board-toolbar">
+    <div class="actions-inline wrap">
+      <button type="button" class="btn" data-board-tool="select">Выделение</button>
+      <button type="button" class="btn" data-board-tool="draw" {% if not can_edit_master_board %}disabled{% endif %}>Рисование</button>
+      <button type="button" class="btn" data-board-tool="pan">Панорама</button>
+      <button type="button" class="btn" id="master-board-add-text" {% if not can_edit_master_board %}disabled{% endif %}>Текст</button>
+      <button type="button" class="btn" id="master-board-add-note" {% if not can_edit_master_board %}disabled{% endif %}>Заметка</button>
+      <button type="button" class="btn" id="master-board-upload-trigger" {% if not can_edit_master_board %}disabled{% endif %}>Добавить изображение</button>
+      <input type="file" id="master-board-upload-input" accept="image/*" multiple hidden {% if not can_edit_master_board %}disabled{% endif %} />
+      <button type="button" class="btn btn-danger" id="master-board-delete-selected" {% if not can_edit_master_board %}disabled{% endif %}>Удалить выбранное</button>
+    </div>
+    <div class="actions-inline wrap">
+      <label class="master-board-inline-label">
+        Цвет кисти
+        <input type="color" id="master-board-brush-color" value="#1f2937" {% if not can_edit_master_board %}disabled{% endif %} />
+      </label>
+      <label class="master-board-inline-label">
+        Толщина
+        <input type="range" id="master-board-brush-size" min="1" max="30" value="4" {% if not can_edit_master_board %}disabled{% endif %} />
+      </label>
+      <button type="button" class="btn btn-accent" id="master-board-save" {% if not can_edit_master_board %}disabled{% endif %}>Сохранить</button>
+      <button type="button" class="btn" id="master-board-export-png">Экспорт PNG</button>
+      <button type="button" class="btn" id="master-board-export-pdf">Экспорт PDF</button>
+    </div>
+  </div>
+  <p class="meta top-offset" id="master-board-status">
+    {% if can_edit_master_board %}
+      Доска готова. Изменения сохраняются автоматически.
+    {% else %}
+      Режим просмотра: у вас нет прав на редактирование этой доски.
+    {% endif %}
+  </p>
+  <p class="muted">Подсказки: колесо мыши = зум, пробел + перетаскивание = панорама, drag-and-drop файла на холст = добавление изображения.</p>
+</section>
+
+<section class="master-board-shell" id="master-board-shell">
+  <div class="master-board-drop-hint" id="master-board-drop-hint" hidden>Отпустите файл, чтобы добавить на доску</div>
+  <div class="master-board-canvas-wrap" id="master-board-canvas-wrap">
+    <canvas id="master-board-canvas"></canvas>
+  </div>
+</section>
+
+<script id="master-board-initial-state" type="application/json">{{ initial_board_state|tojson }}</script>
+<script src="https://cdn.jsdelivr.net/npm/fabric@5.4.2/dist/fabric.min.js" defer></script>
+<script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js" defer></script>
+<script>
+(function () {
+  const cardId = {{ card.id }};
+  const canEdit = {{ "true" if can_edit_master_board else "false" }};
+  const apiUrl = `/api/in-progress/master/${cardId}/board`;
+  const statusNode = document.getElementById("master-board-status");
+  const wrap = document.getElementById("master-board-canvas-wrap");
+  const shell = document.getElementById("master-board-shell");
+  const dropHint = document.getElementById("master-board-drop-hint");
+
+  const toolButtons = Array.from(document.querySelectorAll("[data-board-tool]"));
+  const saveButton = document.getElementById("master-board-save");
+  const exportPngButton = document.getElementById("master-board-export-png");
+  const exportPdfButton = document.getElementById("master-board-export-pdf");
+  const addTextButton = document.getElementById("master-board-add-text");
+  const addNoteButton = document.getElementById("master-board-add-note");
+  const deleteSelectedButton = document.getElementById("master-board-delete-selected");
+  const uploadTrigger = document.getElementById("master-board-upload-trigger");
+  const uploadInput = document.getElementById("master-board-upload-input");
+  const brushColorInput = document.getElementById("master-board-brush-color");
+  const brushSizeInput = document.getElementById("master-board-brush-size");
+
+  function setStatus(text, kind) {
+    if (!statusNode) return;
+    statusNode.textContent = text;
+    statusNode.dataset.state = kind || "";
+  }
+
+  function setStatusTimePrefix(prefix) {
+    const now = new Date();
+    const hh = String(now.getHours()).padStart(2, "0");
+    const mm = String(now.getMinutes()).padStart(2, "0");
+    setStatus(`${prefix} (${hh}:${mm})`, "ok");
+  }
+
+  function waitForLibrary(checker, timeoutMs) {
+    const startedAt = Date.now();
+    return new Promise((resolve, reject) => {
+      (function tick() {
+        if (checker()) {
+          resolve();
+          return;
+        }
+        if (Date.now() - startedAt > timeoutMs) {
+          reject(new Error("Не удалось загрузить библиотеку."));
+          return;
+        }
+        window.setTimeout(tick, 40);
+      })();
+    });
+  }
+
+  function getDefaultState() {
+    return {
+      version: 1,
+      canvas: { objects: [] },
+      viewportTransform: [1, 0, 0, 1, 0, 0],
+      zoom: 1,
+      default_assets_seeded: true,
+    };
+  }
+
+  function getInitialStateFromDom() {
+    const source = document.getElementById("master-board-initial-state");
+    if (!source) return getDefaultState();
+    try {
+      const parsed = JSON.parse(source.textContent || "{}");
+      if (!parsed || typeof parsed !== "object") return getDefaultState();
+      return parsed;
+    } catch (_error) {
+      return getDefaultState();
+    }
+  }
+
+  function parseBoardState(payload) {
+    if (!payload || typeof payload !== "object") return getDefaultState();
+    const canvasState = payload.canvas && typeof payload.canvas === "object"
+      ? payload.canvas
+      : { objects: [] };
+    const objectCount = Array.isArray(canvasState.objects) ? canvasState.objects.length : 0;
+
+    const viewportTransform = Array.isArray(payload.viewportTransform) && payload.viewportTransform.length === 6
+      ? payload.viewportTransform.map((value) => Number(value) || 0)
+      : [1, 0, 0, 1, 0, 0];
+
+    let zoomValue = Number(payload.zoom);
+    if (!Number.isFinite(zoomValue) || zoomValue <= 0) {
+      zoomValue = Number(viewportTransform[0]) || 1;
+    }
+    if (!Number.isFinite(zoomValue) || zoomValue <= 0) {
+      zoomValue = 1;
+    }
+
+    let defaultAssetsSeeded = Boolean(payload.default_assets_seeded);
+    if (!defaultAssetsSeeded && objectCount > 0) {
+      defaultAssetsSeeded = true;
+    }
+
+    return {
+      version: 1,
+      canvas: canvasState,
+      viewportTransform,
+      zoom: zoomValue,
+      default_assets_seeded: defaultAssetsSeeded,
+    };
+  }
+
+  function markButtonStates(activeToolName) {
+    toolButtons.forEach((button) => {
+      const isActive = button.dataset.boardTool === activeToolName;
+      button.classList.toggle("btn-accent", isActive);
+    });
+  }
+
+  function toScenePoint(canvas, x, y) {
+    if (window.fabric && window.fabric.util) {
+      const point = new window.fabric.Point(x, y);
+      return window.fabric.util.transformPoint(point, window.fabric.util.invertTransform(canvas.viewportTransform));
+    }
+    return { x, y };
+  }
+
+  function downloadDataUrl(url, fileName) {
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = fileName;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+  }
+
+  function fitImageToReasonableSize(img, maxSide) {
+    const width = Number(img.width) || 0;
+    const height = Number(img.height) || 0;
+    if (width <= 0 || height <= 0) return;
+    const maxDimension = Math.max(width, height);
+    if (maxDimension <= maxSide) return;
+    const scale = maxSide / maxDimension;
+    img.scaleX = (img.scaleX || 1) * scale;
+    img.scaleY = (img.scaleY || 1) * scale;
+  }
+
+  async function initBoard() {
+    await waitForLibrary(() => Boolean(window.fabric && window.fabric.Canvas), 7000);
+
+    const canvas = new window.fabric.Canvas("master-board-canvas", {
+      preserveObjectStacking: true,
+      selection: true,
+      fireRightClick: true,
+      stopContextMenu: true,
+    });
+
+    let isLoaded = false;
+    let activeTool = "select";
+    let isPanning = false;
+    let isSpacePressed = false;
+    let saveInProgress = false;
+    let saveQueued = false;
+    let saveTimerId = null;
+    let dragCounter = 0;
+
+    const applyBrushSettings = () => {
+      canvas.freeDrawingBrush.color = (brushColorInput && brushColorInput.value) || "#1f2937";
+      const width = Number(brushSizeInput && brushSizeInput.value);
+      canvas.freeDrawingBrush.width = Number.isFinite(width) ? Math.max(1, width) : 4;
+    };
+
+    const resizeCanvas = () => {
+      if (!wrap) return;
+      const width = Math.max(320, wrap.clientWidth || 320);
+      const height = Math.max(460, window.innerHeight - 260);
+      canvas.setDimensions({ width, height });
+      canvas.requestRenderAll();
+    };
+
+    resizeCanvas();
+    window.addEventListener("resize", resizeCanvas);
+
+    const setTool = (toolName) => {
+      activeTool = toolName;
+      markButtonStates(toolName);
+      canvas.isDrawingMode = canEdit && toolName === "draw";
+      canvas.selection = toolName !== "pan";
+      canvas.defaultCursor = toolName === "pan" ? "grab" : "default";
+      if (canvas.isDrawingMode) {
+        applyBrushSettings();
+      }
+    };
+
+    const centerViewportPoint = () => {
+      const point = canvas.getCenter();
+      return toScenePoint(canvas, point.left, point.top);
+    };
+
+    const serializeState = () => {
+      const canvasState = canvas.toDatalessJSON(["boardItemType", "imageSrc"]);
+      return {
+        version: 1,
+        canvas: canvasState,
+        viewportTransform: Array.isArray(canvas.viewportTransform)
+          ? canvas.viewportTransform.slice(0, 6)
+          : [1, 0, 0, 1, 0, 0],
+        zoom: canvas.getZoom(),
+        default_assets_seeded: true,
+      };
+    };
+
+    const doSave = async (manual) => {
+      if (!canEdit) return;
+      if (!isLoaded) return;
+      if (saveInProgress) {
+        saveQueued = true;
+        return;
+      }
+
+      saveInProgress = true;
+      saveQueued = false;
+      if (manual) {
+        setStatus("Сохранение...", "saving");
+      }
+
+      const state = serializeState();
+      try {
+        const response = await fetch(apiUrl, {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ state }),
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok || !payload || payload.ok !== true) {
+          throw new Error(payload && payload.detail ? String(payload.detail) : "Не удалось сохранить доску.");
+        }
+        setStatusTimePrefix("Сохранено");
+      } catch (error) {
+        setStatus(`Ошибка сохранения: ${error && error.message ? error.message : "неизвестная ошибка"}`, "error");
+      } finally {
+        saveInProgress = false;
+        if (saveQueued) {
+          window.setTimeout(() => {
+            doSave(false);
+          }, 250);
+        }
+      }
+    };
+
+    const scheduleSave = () => {
+      if (!canEdit || !isLoaded) return;
+      setStatus("Есть несохраненные изменения...", "dirty");
+      if (saveTimerId) {
+        window.clearTimeout(saveTimerId);
+      }
+      saveTimerId = window.setTimeout(() => {
+        doSave(false);
+      }, 900);
+    };
+
+    const addText = (textValue, backgroundColor) => {
+      if (!canEdit) return;
+      const center = centerViewportPoint();
+      const text = new window.fabric.Textbox(textValue, {
+        left: center.x,
+        top: center.y,
+        width: 260,
+        fontSize: 22,
+        fill: "#111827",
+        backgroundColor,
+        padding: 12,
+        editable: true,
+      });
+      text.set("boardItemType", "text");
+      canvas.add(text);
+      canvas.setActiveObject(text);
+      canvas.requestRenderAll();
+      scheduleSave();
+      window.setTimeout(() => {
+        if (text.enterEditing) {
+          text.enterEditing();
+          text.selectAll();
+        }
+      }, 30);
+    };
+
+    const addImageFromUrl = (url, x, y) => {
+      if (!canEdit || !url) return;
+      window.fabric.Image.fromURL(
+        url,
+        (img) => {
+          if (!img) return;
+          const targetX = Number.isFinite(x) ? x : centerViewportPoint().x;
+          const targetY = Number.isFinite(y) ? y : centerViewportPoint().y;
+          img.set({
+            left: targetX,
+            top: targetY,
+            originX: "center",
+            originY: "center",
+          });
+          img.set("boardItemType", "image");
+          img.set("imageSrc", url);
+          fitImageToReasonableSize(img, 700);
+          canvas.add(img);
+          canvas.setActiveObject(img);
+          canvas.requestRenderAll();
+          scheduleSave();
+        },
+        { crossOrigin: "anonymous" }
+      );
+    };
+
+    const uploadFilesToBoard = async (files, point) => {
+      if (!canEdit || !files || !files.length) return;
+      setStatus("Загрузка изображений...", "saving");
+
+      let added = 0;
+      for (const file of files) {
+        const formData = new FormData();
+        formData.append("image", file);
+        try {
+          const response = await fetch("/media/upload-image", {
+            method: "POST",
+            credentials: "same-origin",
+            body: formData,
+          });
+          const payload = await response.json();
+          if (!response.ok || !payload || payload.ok !== true) {
+            throw new Error(payload && payload.detail ? String(payload.detail) : "загрузка не удалась");
+          }
+          addImageFromUrl(payload.url, point ? point.x : undefined, point ? point.y : undefined);
+          added += 1;
+        } catch (error) {
+          setStatus(`Ошибка загрузки: ${error && error.message ? error.message : "неизвестная ошибка"}`, "error");
+          return;
+        }
+      }
+
+      if (added > 0) {
+        setStatus(`Добавлено изображений: ${added}`, "ok");
+      }
+    };
+
+    const getExportBounds = () => {
+      const objects = canvas.getObjects();
+      if (!objects.length) {
+        return { left: 0, top: 0, width: canvas.getWidth(), height: canvas.getHeight() };
+      }
+      let minX = Number.POSITIVE_INFINITY;
+      let minY = Number.POSITIVE_INFINITY;
+      let maxX = Number.NEGATIVE_INFINITY;
+      let maxY = Number.NEGATIVE_INFINITY;
+      objects.forEach((obj) => {
+        const box = obj.getBoundingRect();
+        minX = Math.min(minX, box.left);
+        minY = Math.min(minY, box.top);
+        maxX = Math.max(maxX, box.left + box.width);
+        maxY = Math.max(maxY, box.top + box.height);
+      });
+      const padding = 40;
+      return {
+        left: minX - padding,
+        top: minY - padding,
+        width: Math.max(100, maxX - minX + padding * 2),
+        height: Math.max(100, maxY - minY + padding * 2),
+      };
+    };
+
+    const exportPng = () => {
+      const bounds = getExportBounds();
+      const dataUrl = canvas.toDataURL({
+        format: "png",
+        multiplier: 2,
+        left: bounds.left,
+        top: bounds.top,
+        width: bounds.width,
+        height: bounds.height,
+      });
+      downloadDataUrl(dataUrl, `master-board-${cardId}.png`);
+    };
+
+    const exportPdf = () => {
+      if (!window.jspdf || !window.jspdf.jsPDF) {
+        setStatus("Экспорт PDF недоступен: библиотека не загрузилась.", "error");
+        return;
+      }
+
+      const bounds = getExportBounds();
+      const dataUrl = canvas.toDataURL({
+        format: "png",
+        multiplier: 2,
+        left: bounds.left,
+        top: bounds.top,
+        width: bounds.width,
+        height: bounds.height,
+      });
+
+      const width = Math.max(100, bounds.width);
+      const height = Math.max(100, bounds.height);
+      const orientation = width >= height ? "landscape" : "portrait";
+      const doc = new window.jspdf.jsPDF({
+        orientation,
+        unit: "px",
+        format: [width, height],
+      });
+      doc.addImage(dataUrl, "PNG", 0, 0, width, height, undefined, "FAST");
+      doc.save(`master-board-${cardId}.pdf`);
+    };
+
+    const deleteSelected = () => {
+      if (!canEdit) return;
+      const active = canvas.getActiveObjects();
+      if (!active.length) return;
+      active.forEach((obj) => canvas.remove(obj));
+      canvas.discardActiveObject();
+      canvas.requestRenderAll();
+      scheduleSave();
+    };
+
+    const beginPanning = (e) => {
+      isPanning = true;
+      canvas.selection = false;
+      canvas.defaultCursor = "grabbing";
+      canvas.lastPosX = e.clientX;
+      canvas.lastPosY = e.clientY;
+    };
+
+    const endPanning = () => {
+      isPanning = false;
+      canvas.selection = activeTool !== "pan";
+      canvas.defaultCursor = activeTool === "pan" ? "grab" : "default";
+    };
+
+    canvas.on("mouse:down", (opt) => {
+      const event = opt.e;
+      const panRequested = activeTool === "pan" || isSpacePressed || event.button === 1;
+      if (panRequested) {
+        beginPanning(event);
+      }
+    });
+
+    canvas.on("mouse:move", (opt) => {
+      if (!isPanning) return;
+      const event = opt.e;
+      const vpt = canvas.viewportTransform;
+      vpt[4] += event.clientX - canvas.lastPosX;
+      vpt[5] += event.clientY - canvas.lastPosY;
+      canvas.requestRenderAll();
+      canvas.lastPosX = event.clientX;
+      canvas.lastPosY = event.clientY;
+    });
+
+    canvas.on("mouse:up", () => {
+      if (isPanning) {
+        endPanning();
+        scheduleSave();
+      }
+    });
+
+    canvas.on("mouse:wheel", (opt) => {
+      const event = opt.e;
+      const delta = event.deltaY;
+      let zoom = canvas.getZoom();
+      zoom *= 0.999 ** delta;
+      zoom = Math.min(4, Math.max(0.15, zoom));
+      canvas.zoomToPoint({ x: event.offsetX, y: event.offsetY }, zoom);
+      event.preventDefault();
+      event.stopPropagation();
+      scheduleSave();
+    });
+
+    canvas.on("object:added", () => scheduleSave());
+    canvas.on("object:modified", () => scheduleSave());
+    canvas.on("object:removed", () => scheduleSave());
+    canvas.on("path:created", () => scheduleSave());
+
+    document.addEventListener("keydown", (event) => {
+      if (event.code === "Space") {
+        isSpacePressed = true;
+      }
+      if ((event.key === "Delete" || event.key === "Backspace") && canEdit) {
+        const activeTag = String(document.activeElement && document.activeElement.tagName || "").toLowerCase();
+        if (!["input", "textarea"].includes(activeTag)) {
+          event.preventDefault();
+          deleteSelected();
+        }
+      }
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s" && canEdit) {
+        event.preventDefault();
+        doSave(true);
+      }
+    });
+
+    document.addEventListener("keyup", (event) => {
+      if (event.code === "Space") {
+        isSpacePressed = false;
+      }
+    });
+
+    toolButtons.forEach((button) => {
+      button.addEventListener("click", () => {
+        const toolName = String(button.dataset.boardTool || "select");
+        setTool(toolName);
+      });
+    });
+
+    if (addTextButton) {
+      addTextButton.addEventListener("click", () => addText("Новый текст", "rgba(255,255,255,0.86)"));
+    }
+
+    if (addNoteButton) {
+      addNoteButton.addEventListener("click", () => addText("Новая заметка", "rgba(252, 244, 181, 0.92)"));
+    }
+
+    if (deleteSelectedButton) {
+      deleteSelectedButton.addEventListener("click", deleteSelected);
+    }
+
+    if (saveButton) {
+      saveButton.addEventListener("click", () => doSave(true));
+    }
+
+    if (exportPngButton) {
+      exportPngButton.addEventListener("click", exportPng);
+    }
+
+    if (exportPdfButton) {
+      exportPdfButton.addEventListener("click", exportPdf);
+    }
+
+    if (uploadTrigger && uploadInput) {
+      uploadTrigger.addEventListener("click", () => {
+        uploadInput.click();
+      });
+      uploadInput.addEventListener("change", async () => {
+        const files = Array.from(uploadInput.files || []);
+        if (files.length) {
+          await uploadFilesToBoard(files, centerViewportPoint());
+        }
+        uploadInput.value = "";
+      });
+    }
+
+    if (shell && canEdit) {
+      const dragEvents = ["dragenter", "dragover", "dragleave", "drop"];
+      dragEvents.forEach((eventName) => {
+        shell.addEventListener(eventName, (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+        });
+      });
+
+      shell.addEventListener("dragenter", () => {
+        dragCounter += 1;
+        if (dropHint) dropHint.hidden = false;
+      });
+      shell.addEventListener("dragleave", () => {
+        dragCounter = Math.max(0, dragCounter - 1);
+        if (dragCounter === 0 && dropHint) dropHint.hidden = true;
+      });
+      shell.addEventListener("drop", async (event) => {
+        dragCounter = 0;
+        if (dropHint) dropHint.hidden = true;
+        const files = Array.from(event.dataTransfer && event.dataTransfer.files ? event.dataTransfer.files : []);
+        const imageFiles = files.filter((file) => String(file.type || "").startsWith("image/"));
+        if (!imageFiles.length) return;
+        const scenePoint = toScenePoint(canvas, event.offsetX, event.offsetY);
+        await uploadFilesToBoard(imageFiles, scenePoint);
+      });
+    }
+
+    setTool("select");
+
+    let stateToLoad = getInitialStateFromDom();
+    try {
+      const response = await fetch(apiUrl, {
+        method: "GET",
+        credentials: "same-origin",
+        cache: "no-store",
+      });
+      if (response.ok) {
+        const payload = await response.json();
+        if (payload && payload.ok && payload.state) {
+          stateToLoad = payload.state;
+        }
+      }
+    } catch (_error) {
+      // Keep embedded state as fallback.
+    }
+
+    const normalizedState = parseBoardState(stateToLoad);
+    await new Promise((resolve) => {
+      canvas.loadFromJSON(normalizedState.canvas || { objects: [] }, () => {
+        resolve(true);
+      });
+    });
+
+    if (Array.isArray(normalizedState.viewportTransform) && normalizedState.viewportTransform.length === 6) {
+      canvas.setViewportTransform(normalizedState.viewportTransform.map((value) => Number(value) || 0));
+    }
+
+    if (canEdit) {
+      canvas.forEachObject((obj) => {
+        obj.selectable = true;
+        obj.evented = true;
+      });
+    } else {
+      canvas.isDrawingMode = false;
+      canvas.selection = false;
+      canvas.forEachObject((obj) => {
+        obj.selectable = false;
+        obj.evented = false;
+      });
+      markButtonStates("select");
+    }
+
+    canvas.requestRenderAll();
+    isLoaded = true;
+    setStatus(canEdit ? "Доска загружена. Автосохранение активно." : "Доска загружена в режиме просмотра.", "ok");
+  }
+
+  initBoard().catch((error) => {
+    setStatus(`Whiteboard не удалось инициализировать: ${error && error.message ? error.message : "неизвестная ошибка"}`, "error");
+  });
+})();
+</script>
+{% endblock %}
