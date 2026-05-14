@@ -42,6 +42,9 @@
   .project-character-row button { height: 38px; }
   .festival-spoiler { margin-top: 0.35rem; }
   .festival-spoiler summary { cursor: pointer; font-weight: 600; margin-bottom: 0.5rem; }
+  .heading-spoiler { margin: 0.35rem 0 0.6rem; }
+  .heading-spoiler summary { cursor: pointer; font-weight: 600; margin-bottom: 0.5rem; }
+  .heading-spoiler-h3 { margin-left: 0.1rem; }
   .self-sew-table-wrap { overflow-x: auto; margin: 0.4rem 0 0.7rem; }
   .self-sew-table { width: 100%; border-collapse: collapse; min-width: 880px; }
   .self-sew-table th,
@@ -905,6 +908,64 @@
 </form>
 
 <script>
+  const wrapContentAfterHeading = ({ heading, summaryText, stopTags }) => {
+    if (!heading || heading.dataset.spoilerWrapped === "1") return;
+    const parent = heading.parentElement;
+    if (!parent) return;
+
+    const details = document.createElement("details");
+    details.className = `heading-spoiler heading-spoiler-${heading.tagName.toLowerCase()}`;
+
+    const summary = document.createElement("summary");
+    summary.textContent = summaryText;
+    details.appendChild(summary);
+
+    const nodesToMove = [];
+    let cursor = heading.nextSibling;
+    while (cursor) {
+      const next = cursor.nextSibling;
+      if (cursor.nodeType === Node.ELEMENT_NODE) {
+        const tag = cursor.tagName.toUpperCase();
+        if (stopTags.has(tag)) break;
+      }
+      nodesToMove.push(cursor);
+      cursor = next;
+    }
+
+    const hasContent = nodesToMove.some((node) => node.nodeType !== Node.TEXT_NODE || (node.textContent || "").trim());
+    if (!hasContent) return;
+
+    nodesToMove.forEach((node) => details.appendChild(node));
+    heading.insertAdjacentElement("afterend", details);
+    heading.dataset.spoilerWrapped = "1";
+  };
+
+  const setupHeadingSpoilers = () => {
+    document.querySelectorAll("#cosplan-form section.box").forEach((section) => {
+      const h2 = section.querySelector(":scope > h2");
+      if (h2) {
+        const title = (h2.textContent || "").trim();
+        wrapContentAfterHeading({
+          heading: h2,
+          summaryText: title ? `Показать/скрыть блок «${title}»` : "Показать/скрыть блок",
+          stopTags: new Set(["H2"]),
+        });
+      }
+    });
+
+    document.querySelectorAll("#cosplan-form section.box h3").forEach((h3) => {
+      if (h3.closest("summary")) return;
+      const title = (h3.textContent || "").trim();
+      wrapContentAfterHeading({
+        heading: h3,
+        summaryText: title ? `Показать/скрыть содержимое «${title}»` : "Показать/скрыть содержимое",
+        stopTags: new Set(["H2", "H3"]),
+      });
+    });
+  };
+
+  setupHeadingSpoilers();
+
   const toggleVisibility = (id, visible) => {
     const el = document.getElementById(id);
     if (!el) return;
