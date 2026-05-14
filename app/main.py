@@ -2039,6 +2039,174 @@ def resolve_aliases_to_usernames(raw_aliases: list[str], alias_to_username: dict
     return merge_unique(resolved)
 
 
+def alias_matches_value(value: str | None, alias_keys: set[str]) -> bool:
+    normalized = normalize_username(value).casefold()
+    return bool(normalized and normalized in alias_keys)
+
+
+def replace_aliases_in_list(values: list[Any], *, alias_keys: set[str], replacement: str) -> list[str]:
+    updated: list[str] = []
+    for raw_value in as_list(values):
+        normalized = normalize_username(str(raw_value))
+        if not normalized:
+            continue
+        if normalized.casefold() in alias_keys:
+            updated.append(replacement)
+        else:
+            updated.append(normalized)
+    return merge_unique(updated)
+
+
+def sync_user_alias_references(
+    db: Session,
+    *,
+    user: User,
+    old_username: str | None,
+    old_cosplay_nick: str | None,
+) -> None:
+    old_aliases = {
+        normalize_username(old_username).casefold(),
+        normalize_username(old_cosplay_nick).casefold(),
+    }
+    old_alias_keys = {value for value in old_aliases if value}
+    if not old_alias_keys:
+        return
+
+    new_username = normalize_username(user.username)
+    if not new_username:
+        return
+    new_cosplay_nick = normalize_username(user.cosplay_nick)
+    new_preferred_alias = new_cosplay_nick or new_username
+
+    new_alias_keys = {new_username.casefold()}
+    if new_cosplay_nick:
+        new_alias_keys.add(new_cosplay_nick.casefold())
+    if old_alias_keys == new_alias_keys:
+        return
+
+    cards = db.execute(select(CosplanCard)).scalars().all()
+    for card in cards:
+        if alias_matches_value(card.project_leader, old_alias_keys):
+            card.project_leader = new_username
+
+        next_coproplayer_nicks = replace_aliases_in_list(
+            as_list(card.coproplayer_nicks_json),
+            alias_keys=old_alias_keys,
+            replacement=new_username,
+        )
+        if next_coproplayer_nicks != as_list(card.coproplayer_nicks_json):
+            card.coproplayer_nicks_json = next_coproplayer_nicks
+
+        next_coproplayer_aliases = replace_aliases_in_list(
+            as_list(card.coproplayers_json),
+            alias_keys=old_alias_keys,
+            replacement=new_preferred_alias,
+        )
+        if next_coproplayer_aliases != as_list(card.coproplayers_json):
+            card.coproplayers_json = next_coproplayer_aliases
+
+        next_project_characters: list[Any] = []
+        project_characters_changed = False
+        for raw_item in as_list(card.project_characters_json):
+            if not isinstance(raw_item, dict):
+                next_project_characters.append(raw_item)
+                continue
+            item = dict(raw_item)
+            raw_cosplayer = str(item.get("cosplayer_username") or item.get("cosplayer") or "").strip()
+            if alias_matches_value(raw_cosplayer, old_alias_keys):
+                item["cosplayer_username"] = new_username
+                if "cosplayer" in item:
+                    item["cosplayer"] = new_username
+                project_characters_changed = True
+            next_project_characters.append(item)
+        if project_characters_changed:
+            card.project_characters_json = next_project_characters
+
+    progress_rows = db.execute(select(InProgressCard)).scalars().all()
+    for progress in progress_rows:
+        next_task_rows: list[Any] = []
+        task_rows_changed = False
+        for raw_item in as_list(progress.task_rows_json):
+            if not isinstance(raw_item, dict):
+                next_task_rows.append(raw_item)
+                continue
+            item = dict(raw_item)
+            assignee_raw = str(item.get("assignee") or item.get("responsible") or "").strip()
+            if alias_matches_value(assignee_raw, old_alias_keys):
+                item["assignee"] = new_username
+                if "responsible" in item:
+                    item["responsible"] = new_username
+                task_rows_changed = True
+            next_task_rows.append(item)
+        if task_rows_changed:
+            progress.task_rows_json = next_task_rows
+
+    festivals = db.execute(select(Festival)).scalars().all()
+    for festival in festivals:
+        next_coproplayers = replace_aliases_in_list(
+            as_list(festival.going_coproplayers_json),
+            alias_keys=old_alias_keys,
+            replacement=new_username,
+        )
+        if next_coproplayers != as_list(festival.going_coproplayers_json):
+            festival.going_coproplayers_json = next_coproplayers
+
+    project_posts = db.execute(
+        select(ProjectSearchPost).where(ProjectSearchPost.user_id == user.id)
+    ).scalars().all()
+    for post in project_posts:
+        if alias_matches_value(post.contact_nick, old_alias_keys):
+            post.contact_nick = new_preferred_alias
+
+    master_cards = db.execute(
+        select(CommunityMaster).where(CommunityMaster.user_id == user.id)
+    ).scalars().all()
+    for master_card in master_cards:
+        if alias_matches_value(master_card.nick, old_alias_keys):
+            master_card.nick = new_preferred_alias
+
+    cosplayer_cards = db.execute(
+        select(CommunityCosplayer).where(CommunityCosplayer.user_id == user.id)
+    ).scalars().all()
+    for cosplayer_card in cosplayer_cards:
+        if alias_matches_value(cosplayer_card.nick, old_alias_keys):
+            cosplayer_card.nick = new_preferred_alias
+
+    master_customer_rows = db.execute(
+        select(InProgressMasterCard).where(InProgressMasterCard.customer_user_id == user.id)
+    ).scalars().all()
+    for master_row in master_customer_rows:
+        if alias_matches_value(master_row.customer_name, old_alias_keys):
+            master_row.customer_name = f"@{new_preferred_alias}"
+
+    option_groups = {"project_leader", "coproplayer_nick", "coproplayer"}
+    options = db.execute(
+        select(UserOption).where(UserOption.group.in_(option_groups))
+    ).scalars().all()
+    for option in options:
+        if not alias_matches_value(option.value, old_alias_keys):
+            continue
+        replacement = new_preferred_alias if option.group == "coproplayer" else new_username
+        option.value = replacement
+
+    dedupe_rows = db.execute(
+        select(UserOption)
+        .where(UserOption.group.in_(option_groups))
+        .order_by(UserOption.user_id, UserOption.group, UserOption.id)
+    ).scalars().all()
+    seen_option_keys: set[tuple[int, str, str]] = set()
+    for option in dedupe_rows:
+        normalized_value = normalize_username(option.value).casefold()
+        dedupe_key = (int(option.user_id), str(option.group), normalized_value)
+        if not normalized_value:
+            db.delete(option)
+            continue
+        if dedupe_key in seen_option_keys:
+            db.delete(option)
+            continue
+        seen_option_keys.add(dedupe_key)
+
+
 def user_matches_alias(user: User, alias: str | None) -> bool:
     cleaned = normalize_username(alias).casefold()
     if not cleaned:
@@ -6116,6 +6284,8 @@ def rehearsal_status_label(status: str) -> str:
 def can_manage_project_card(user: User, card: CosplanCard) -> bool:
     if card.plan_type != "project":
         return False
+    if int(card.user_id) == int(user.id):
+        return True
     return user_matches_alias(user, card.project_leader)
 
 
@@ -13091,6 +13261,9 @@ async def profile_update(request: Request, db: Session = Depends(get_db)):
     if not user:
         return redirect("/login")
 
+    old_username = normalize_username(user.username)
+    old_cosplay_nick = normalize_username(user.cosplay_nick)
+
     form = await request.form()
     username = str(form.get("username", "")).strip()
     cosplay_nick = normalize_username(str(form.get("cosplay_nick", "")).strip())
@@ -13149,6 +13322,16 @@ async def profile_update(request: Request, db: Session = Depends(get_db)):
             add_flash(request, "Новые пароли не совпадают.", "error")
             return redirect("/profile")
         user.password_hash = password_context.hash(new_password)
+
+    current_username = normalize_username(user.username)
+    current_cosplay_nick = normalize_username(user.cosplay_nick)
+    if old_username != current_username or old_cosplay_nick != current_cosplay_nick:
+        sync_user_alias_references(
+            db,
+            user=user,
+            old_username=old_username,
+            old_cosplay_nick=old_cosplay_nick,
+        )
 
     db.commit()
     add_flash(request, "Профиль обновлён.", "success")
@@ -16794,10 +16977,9 @@ def my_projects_list(request: Request, db: Session = Depends(get_db)):
         select(CosplanCard).where(
             CosplanCard.plan_type == "project",
             CosplanCard.is_shared_copy.is_(False),
-            CosplanCard.project_leader.is_not(None),
         )
     ).scalars().all()
-    cards = [card for card in project_cards if user_matches_alias(user, card.project_leader)]
+    cards = [card for card in project_cards if can_manage_project_card(user, card)]
     cards.sort(key=lambda item: item.updated_at or item.created_at or datetime.min, reverse=True)
 
     owner_ids = {card.user_id for card in cards}
@@ -16895,7 +17077,7 @@ async def my_projects_comment(card_id: int, request: Request, db: Session = Depe
         add_flash(request, "Карточка проекта не найдена.", "error")
         return redirect("/my-projects")
 
-    if not can_comment_on_card(card, user) or not user_matches_alias(user, card.project_leader):
+    if not can_comment_on_card(card, user) or not can_manage_project_card(user, card):
         add_flash(request, "Нет прав на комментарий для этой карточки.", "error")
         return redirect("/my-projects")
 
