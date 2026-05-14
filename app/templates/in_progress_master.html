@@ -7,7 +7,9 @@
     <h1>В работе</h1>
     <p class="meta">Показано карточек: <strong>{{ master_cards_filtered_count or 0 }}</strong></p>
   </div>
-  <a href="/in-progress/master/new" class="btn btn-accent">Новая работа</a>
+  {% if master_is_executor_view %}
+    <a href="/in-progress/master/new?master_role={{ master_role or 'executor' }}" class="btn btn-accent">Новая работа</a>
+  {% endif %}
 </section>
 
 <nav class="calendar-tabs">
@@ -15,9 +17,15 @@
   <a href="/in-progress?scope=master" class="tab {% if (in_progress_scope or 'cosplayer') == 'master' %}active{% endif %}">Мастер</a>
 </nav>
 
+<nav class="calendar-tabs">
+  <a href="{{ master_executor_url }}" class="tab {% if (master_role or 'executor') == 'executor' %}active{% endif %}">{{ master_role_labels.get('executor', 'Мастер') }}</a>
+  <a href="{{ master_customer_url }}" class="tab {% if (master_role or 'executor') == 'customer' %}active{% endif %}">{{ master_role_labels.get('customer', 'Заказчик') }}</a>
+</nav>
+
 <section class="box compact-box">
   <form method="get" action="/in-progress" class="grid two-col">
     <input type="hidden" name="scope" value="master" />
+    <input type="hidden" name="master_role" value="{{ master_role or 'executor' }}" />
     <label>
       Поиск
       <input type="text" name="q" value="{{ master_search_query or '' }}" placeholder="Название, тайтл, заказчик, исполнитель" />
@@ -48,7 +56,7 @@
     </label>
     <div class="actions-inline wrap">
       <button type="submit" class="btn">Применить</button>
-      <a href="/in-progress?scope=master" class="btn">Сбросить</a>
+      <a href="{{ master_reset_url }}" class="btn">Сбросить</a>
     </div>
   </form>
   <p class="meta top-offset">
@@ -69,7 +77,7 @@
       {% endif %}
       <article class="card">
         <div class="row-between">
-          <h3><a href="/in-progress/master/{{ card.id }}" class="card-title-link">{{ card.name }}</a></h3>
+          <h3><a href="/in-progress/master/{{ card.id }}?{{ master_card_query }}" class="card-title-link">{{ card.name }}</a></h3>
           <div class="master-card-meta">
             <span class="chip">{{ master_work_type_labels.get(card.work_type, "Другое") }}</span>
             {% if card.is_archived %}
@@ -99,10 +107,10 @@
         {% set material_total = material_totals_by_card.get(card.id, 0.0) %}
         {% if material_total > 0 %}<p class="meta">Материалы: {{ '%.2f'|format(material_total) }} ₽</p>{% endif %}
         <div class="actions-inline wrap">
-          <a href="/in-progress/master/{{ card.id }}" class="btn">Открыть</a>
-          <a href="/in-progress/master/{{ card.id }}/board" class="btn" target="_blank" rel="noopener noreferrer">Доска</a>
+          <a href="/in-progress/master/{{ card.id }}?{{ master_card_query }}" class="btn">Открыть</a>
+          <a href="/in-progress/master/{{ card.id }}/board?{{ master_card_query }}" class="btn" target="_blank" rel="noopener noreferrer">Доска</a>
           {% if card.id in can_edit_master_card_ids %}
-            <a href="/in-progress/master/{{ card.id }}/edit" class="btn">Редактировать</a>
+            <a href="/in-progress/master/{{ card.id }}/edit?{{ master_card_query }}" class="btn">Редактировать</a>
             <form method="post" action="/in-progress/master/{{ card.id }}/archive-toggle" onsubmit="return confirm('{{ 'Вернуть карточку из архива?' if card.is_archived else 'Убрать карточку в архив?' }}');">
               <input type="hidden" name="archive" value="{{ 0 if card.is_archived else 1 }}" />
               <input type="hidden" name="next" value="{{ current_url }}" />

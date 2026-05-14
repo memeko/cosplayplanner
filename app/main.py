@@ -308,6 +308,16 @@ MASTER_ARCHIVE_SCOPE_LABELS = {
     MASTER_ARCHIVE_SCOPE_ARCHIVED: "Архив",
     MASTER_ARCHIVE_SCOPE_ALL: "Все",
 }
+MASTER_VIEW_ROLE_EXECUTOR = "executor"
+MASTER_VIEW_ROLE_CUSTOMER = "customer"
+MASTER_VIEW_ROLE_OPTIONS = {
+    MASTER_VIEW_ROLE_EXECUTOR,
+    MASTER_VIEW_ROLE_CUSTOMER,
+}
+MASTER_VIEW_ROLE_LABELS = {
+    MASTER_VIEW_ROLE_EXECUTOR: "Мастер",
+    MASTER_VIEW_ROLE_CUSTOMER: "Заказчик",
+}
 MASTER_CARD_SORT_UPDATED_DESC = "updated_desc"
 MASTER_CARD_SORT_TYPE_ASC = "type_asc"
 MASTER_CARD_SORT_TYPE_DESC = "type_desc"
@@ -1058,6 +1068,7 @@ def apply_schema_migrations() -> None:
             ("craft_deadline", "DATE"),
             ("craft_currency", "VARCHAR(16)"),
             ("related_cards_json", "JSON NOT NULL DEFAULT '[]'"),
+            ("project_characters_json", "JSON NOT NULL DEFAULT '[]'"),
             ("references_json", "JSON NOT NULL DEFAULT '[]'"),
             ("pose_references_json", "JSON NOT NULL DEFAULT '[]'"),
             ("unknown_prices_json", "JSON NOT NULL DEFAULT '[]'"),
@@ -2135,11 +2146,15 @@ def card_coproplayer_aliases(card: CosplanCard) -> list[str]:
     return merge_unique(as_list(card.coproplayer_nicks_json), as_list(card.coproplayers_json))
 
 
-def shared_coproplayer_count(card: CosplanCard | None) -> int:
+def shared_coproplayer_count(db: Session, card: CosplanCard | None) -> int:
     if not card:
         return 0
+    scope_cards = project_scope_cards(db, card)
+    if scope_cards:
+        participant_ids = {item.user_id for item in scope_cards if item and item.user_id}
+        return len(participant_ids)
     aliases = [str(value).strip() for value in card_coproplayer_aliases(card) if str(value).strip()]
-    return len(aliases)
+    return len(aliases) + 1
 
 
 def shared_coproplayer_emoji(count: int) -> str:
@@ -2213,22 +2228,29 @@ def format_in_progress_tasks(
     return tasks
 
 
-def task_scope_card_ids(db: Session, card: CosplanCard | None) -> list[int]:
+def project_scope_cards(db: Session, card: CosplanCard | None) -> list[CosplanCard]:
     source_card = resolve_source_card(db, card)
     if not source_card:
         return []
 
-    ids: list[int] = [source_card.id]
-    shared_ids = db.execute(
-        select(CosplanCard.id).where(
+    scope_cards: list[CosplanCard] = [source_card]
+    shared_cards = db.execute(
+        select(CosplanCard).where(
             CosplanCard.source_card_id == source_card.id,
             CosplanCard.is_shared_copy.is_(True),
         )
     ).scalars().all()
-    for item_id in shared_ids:
-        if item_id not in ids:
-            ids.append(item_id)
-    return ids
+    seen_ids = {source_card.id}
+    for shared_card in shared_cards:
+        if not shared_card or shared_card.id in seen_ids:
+            continue
+        seen_ids.add(shared_card.id)
+        scope_cards.append(shared_card)
+    return scope_cards
+
+
+def task_scope_card_ids(db: Session, card: CosplanCard | None) -> list[int]:
+    return [item.id for item in project_scope_cards(db, card)]
 
 
 def task_scope_progress_rows(db: Session, card: CosplanCard | None) -> list[InProgressCard]:
@@ -3029,6 +3051,38 @@ def normalize_master_archive_scope(raw: str | None) -> str:
     if value in MASTER_ARCHIVE_SCOPE_OPTIONS:
         return value
     return MASTER_ARCHIVE_SCOPE_ACTIVE
+
+
+def normalize_master_role(raw: str | None) -> str:
+    value = str(raw or "").strip().lower()
+    if value in MASTER_VIEW_ROLE_OPTIONS:
+        return value
+    return MASTER_VIEW_ROLE_EXECUTOR
+
+
+def master_list_url(*, role: str, archive_scope: str | None = None) -> str:
+    params: dict[str, str] = {
+        "scope": IN_PROGRESS_SCOPE_MASTER,
+        "master_role": normalize_master_role(role),
+    }
+    if archive_scope:
+        params["archive_scope"] = normalize_master_archive_scope(archive_scope)
+    return f"/in-progress?{urlencode(params)}"
+
+
+def resolve_master_role_for_card(user: User, card: InProgressMasterCard, raw_role: str | None) -> str:
+    requested = str(raw_role or "").strip().lower()
+    if requested in MASTER_VIEW_ROLE_OPTIONS:
+        return requested
+    if bool(card.customer_user_id and int(card.customer_user_id) == int(user.id) and int(card.user_id) != int(user.id)):
+        return MASTER_VIEW_ROLE_CUSTOMER
+    return MASTER_VIEW_ROLE_EXECUTOR
+
+
+def resolve_master_archive_scope_for_card(card: InProgressMasterCard, raw_scope: str | None) -> str:
+    if str(raw_scope or "").strip():
+        return normalize_master_archive_scope(raw_scope)
+    return MASTER_ARCHIVE_SCOPE_ARCHIVED if bool(card.is_archived) else MASTER_ARCHIVE_SCOPE_ACTIVE
 
 
 def normalize_master_card_sort(raw: str | None) -> str:
@@ -7936,6 +7990,55 @@ def format_costume_hardware_rows_for_form(rows: list[Any]) -> list[dict[str, str
     return formatted
 
 
+def parse_project_character_rows_from_form(
+    form: Any,
+    *,
+    alias_to_username: dict[str, str],
+) -> list[dict[str, str]]:
+    row_ids = [str(value).strip() for value in form.getlist("project_character_row_id")]
+    names = [str(value).strip() for value in form.getlist("project_character_name")]
+    cosplayers = [str(value).strip() for value in form.getlist("project_character_cosplayer")]
+    size = max(len(row_ids), len(names), len(cosplayers))
+    if size == 0:
+        return []
+
+    rows: list[dict[str, str]] = []
+    for index in range(size):
+        row_id = row_ids[index] if index < len(row_ids) and row_ids[index] else f"project-char-{index}"
+        character_name = names[index][:255] if index < len(names) else ""
+        raw_cosplayer = cosplayers[index] if index < len(cosplayers) else ""
+        cosplayer_username = resolve_alias_to_username(raw_cosplayer, alias_to_username)[:255]
+        if not (character_name or cosplayer_username):
+            continue
+        rows.append(
+            {
+                "row_id": row_id,
+                "character_name": character_name,
+                "cosplayer_username": cosplayer_username,
+            }
+        )
+    return rows
+
+
+def format_project_character_rows_for_form(rows: list[Any]) -> list[dict[str, str]]:
+    formatted: list[dict[str, str]] = []
+    for index, raw_row in enumerate(rows):
+        if not isinstance(raw_row, dict):
+            continue
+        character_name = str(raw_row.get("character_name") or raw_row.get("name") or "").strip()
+        cosplayer_alias = str(raw_row.get("cosplayer_username") or raw_row.get("cosplayer") or "").strip()
+        if not (character_name or cosplayer_alias):
+            continue
+        formatted.append(
+            {
+                "row_id": str(raw_row.get("row_id") or f"project-char-{index}"),
+                "character_name": character_name,
+                "cosplayer_alias": cosplayer_alias,
+            }
+        )
+    return formatted
+
+
 def parse_checklist_rows_from_form(form: Any, prefix: str) -> list[dict[str, Any]]:
     row_ids = [str(value).strip() for value in form.getlist(f"{prefix}_row_id")]
     texts = [str(value).strip() for value in form.getlist(f"{prefix}_text")]
@@ -9100,6 +9203,7 @@ def card_fields_for_sync() -> list[str]:
         "cosbands_json",
         "project_deadline",
         "related_cards_json",
+        "project_characters_json",
         "planned_festivals_json",
         "submission_date",
         "nominations_json",
@@ -10534,6 +10638,7 @@ def get_card_form_values(card: CosplanCard | None = None, *, actor_user_id: int 
             "cosbands_json": [],
             "project_deadline": "",
             "related_card_ids": [],
+            "project_character_rows": [{"row_id": "project-char-0", "character_name": "", "cosplayer_alias": ""}],
             "planned_festivals_json": [],
             "submission_date": "",
             "nominations_json": [],
@@ -10609,6 +10714,9 @@ def get_card_form_values(card: CosplanCard | None = None, *, actor_user_id: int 
         target_user_id=related_links_user_id,
         legacy_user_id=card.user_id,
     )
+    project_character_rows = format_project_character_rows_for_form(as_list(card.project_characters_json))
+    if not project_character_rows:
+        project_character_rows = [{"row_id": "project-char-0", "character_name": "", "cosplayer_alias": ""}]
     return {
         "character_name": card.character_name or "",
         "fandom": card.fandom or "",
@@ -10668,6 +10776,7 @@ def get_card_form_values(card: CosplanCard | None = None, *, actor_user_id: int 
         "cosbands_json": as_list(card.cosbands_json),
         "project_deadline": card.project_deadline.isoformat() if card.project_deadline else "",
         "related_card_ids": related_ids_for_editor,
+        "project_character_rows": project_character_rows,
         "planned_festivals_json": as_list(card.planned_festivals_json),
         "submission_date": card.submission_date.isoformat() if card.submission_date else "",
         "nominations_json": as_list(card.nominations_json),
@@ -13107,10 +13216,27 @@ def cosplan_list(
         elif current_filter == "frozen":
             cards = [card for card in cards if card.id in frozen_card_ids]
 
+    def project_character_names(card: CosplanCard) -> list[str]:
+        names: list[str] = []
+        for item in as_list(card.project_characters_json):
+            if not isinstance(item, dict):
+                continue
+            character_value = str(item.get("character_name") or item.get("name") or "").strip()
+            if character_value:
+                names.append(character_value)
+        return names
+
     character_filter = character.strip().casefold()
     fandom_filter = fandom.strip().casefold()
     if character_filter:
-        cards = [card for card in cards if character_filter in str(card.character_name or "").casefold()]
+        cards = [
+            card
+            for card in cards
+            if (
+                character_filter in str(card.character_name or "").casefold()
+                or any(character_filter in value.casefold() for value in project_character_names(card))
+            )
+        ]
     if fandom_filter:
         cards = [card for card in cards if fandom_filter in str(card.fandom or "").casefold()]
 
@@ -13143,6 +13269,17 @@ def cosplan_list(
             searchable.extend(coproplayers)
             searchable.extend(
                 [value.lstrip("@") for value in format_coproplayer_names(coproplayers, alias_to_username, users_by_username)]
+            )
+            project_characters = project_character_names(card)
+            searchable.extend(project_characters)
+            project_cosplayers = [
+                str(item.get("cosplayer_username") or item.get("cosplayer") or "").strip()
+                for item in as_list(card.project_characters_json)
+                if isinstance(item, dict)
+            ]
+            searchable.extend(project_cosplayers)
+            searchable.extend(
+                [value.lstrip("@") for value in format_coproplayer_names(project_cosplayers, alias_to_username, users_by_username)]
             )
             return any(needle in value.casefold() for value in searchable if value)
 
@@ -13192,7 +13329,7 @@ def cosplan_list(
         source_card = resolve_source_card(db, visible_card)
         if source_card and can_edit_card(user, source_card):
             editable_card_links[visible_card.id] = source_card.id
-        coproplayer_count = shared_coproplayer_count(visible_card)
+        coproplayer_count = shared_coproplayer_count(db, visible_card)
         shared_coproplayer_counts[visible_card.id] = coproplayer_count
         shared_coproplayer_emojis[visible_card.id] = shared_coproplayer_emoji(coproplayer_count)
 
@@ -13931,6 +14068,29 @@ def cosplan_detail(card_id: int, request: Request, db: Session = Depends(get_db)
         seen_coproplayer_labels.add(dedupe_key)
         coproplayer_people.append({"label": label, "user": matched_user})
 
+    project_character_rows: list[dict[str, Any]] = []
+    for item in as_list(card.project_characters_json):
+        if not isinstance(item, dict):
+            continue
+        character_value = str(item.get("character_name") or item.get("name") or "").strip()
+        raw_cosplayer = str(item.get("cosplayer_username") or item.get("cosplayer") or "").strip()
+        canonical_cosplayer = resolve_alias_to_username(raw_cosplayer, alias_to_username) if raw_cosplayer else ""
+        matched_cosplayer = users_by_username.get(canonical_cosplayer.casefold()) if canonical_cosplayer else None
+        cosplayer_label = (
+            f"@{preferred_user_alias(matched_cosplayer)}"
+            if matched_cosplayer
+            else (f"@{canonical_cosplayer}" if canonical_cosplayer else "")
+        )
+        if not (character_value or cosplayer_label):
+            continue
+        project_character_rows.append(
+            {
+                "character_name": character_value,
+                "cosplayer_label": cosplayer_label or "—",
+                "cosplayer_user": matched_cosplayer,
+            }
+        )
+
     owner_id = card_owner.id if card_owner else user.id
     all_cards = db.execute(
         select(CosplanCard).where(CosplanCard.user_id == owner_id).order_by(CosplanCard.updated_at.desc())
@@ -14042,6 +14202,7 @@ def cosplan_detail(card_id: int, request: Request, db: Session = Depends(get_db)
         project_leader_display=project_leader_display,
         coproplayers_display=coproplayers_display,
         coproplayer_people=coproplayer_people,
+        project_character_rows=project_character_rows,
         cosbands=as_list(card.cosbands_json),
         planned_festivals=as_list(card.planned_festivals_json),
         nominations=as_list(card.nominations_json),
@@ -14394,8 +14555,13 @@ def save_card_from_form(form: Any, card: CosplanCard, user: User, db: Session) -
         preserved_links = [item for item in existing_related_links if item["user_id"] != user.id]
         editor_links = [{"card_id": card_id, "user_id": user.id} for card_id in valid_related_ids]
         card.related_cards_json = preserved_links + editor_links
+        card.project_characters_json = parse_project_character_rows_from_form(
+            form,
+            alias_to_username=alias_to_username,
+        )
     else:
         card.related_cards_json = []
+        card.project_characters_json = []
 
     cosbands = merge_unique(form.getlist("cosbands"), split_csv(str(form.get("cosbands_new", ""))))
     festivals = merge_unique(
@@ -14417,6 +14583,13 @@ def save_card_from_form(form: Any, card: CosplanCard, user: User, db: Session) -
         split_csv(str(form.get("coproplayer_nicks_input", ""))),  # backward compatibility
     )
     coproplayer_nicks = resolve_aliases_to_usernames(coproplayer_aliases, alias_to_username)
+    project_character_cosplayers = merge_unique(
+        [
+            str(item.get("cosplayer_username", "")).strip()
+            for item in as_list(card.project_characters_json)
+            if isinstance(item, dict)
+        ]
+    )
 
     card.cosbands_json = cosbands
     card.planned_festivals_json = festivals
@@ -14519,7 +14692,12 @@ def save_card_from_form(form: Any, card: CosplanCard, user: User, db: Session) -
     remember_options(db, user.id, "nomination", nominations)
     remember_options(db, user.id, "photographer", photographers)
     remember_options(db, user.id, "studio", studios)
-    remember_options(db, user.id, "coproplayer", merge_unique(coproplayer_aliases, coproplayer_nicks))
+    remember_options(
+        db,
+        user.id,
+        "coproplayer",
+        merge_unique(coproplayer_aliases, coproplayer_nicks, project_character_cosplayers),
+    )
     remember_options(db, user.id, "coproplayer_nick", coproplayer_nicks)
     remember_options(db, user.id, "project_leader", [card.project_leader or ""])
     remember_options(
@@ -15211,15 +15389,17 @@ def in_progress_list(request: Request, db: Session = Depends(get_db)):
         master_search_query = str(request.query_params.get("q", "")).strip()
         master_archive_scope = normalize_master_archive_scope(request.query_params.get("archive_scope"))
         master_sort_by = normalize_master_card_sort(request.query_params.get("sort_by"))
+        master_role = normalize_master_role(request.query_params.get("master_role"))
+        master_is_executor_view = master_role == MASTER_VIEW_ROLE_EXECUTOR
+
+        if master_is_executor_view:
+            role_filter = InProgressMasterCard.user_id == user.id
+        else:
+            role_filter = InProgressMasterCard.customer_user_id == user.id
 
         accessible_master_cards = db.execute(
             select(InProgressMasterCard)
-            .where(
-                or_(
-                    InProgressMasterCard.user_id == user.id,
-                    InProgressMasterCard.customer_user_id == user.id,
-                )
-            )
+            .where(role_filter)
         ).scalars().all()
 
         owner_and_customer_ids = {
@@ -15252,7 +15432,7 @@ def in_progress_list(request: Request, db: Session = Depends(get_db)):
             customer_labels_by_card[card.id] = customer_label or "—"
 
             material_totals_by_card[card.id] = sum_master_material_rows(as_list(card.materials_json))
-            if can_edit_in_progress_master_card(user, card):
+            if master_is_executor_view and can_edit_in_progress_master_card(user, card):
                 can_edit_ids.add(card.id)
 
         total_cards_count = len(accessible_master_cards)
@@ -15346,6 +15526,31 @@ def in_progress_list(request: Request, db: Session = Depends(get_db)):
             ).all()
         comment_counts = {int(row[0]): int(row[1]) for row in comment_rows}
 
+        def build_master_role_url(target_role: str) -> str:
+            params: dict[str, str] = {
+                "scope": IN_PROGRESS_SCOPE_MASTER,
+                "master_role": normalize_master_role(target_role),
+                "archive_scope": master_archive_scope,
+                "sort_by": master_sort_by,
+            }
+            if master_search_query:
+                params["q"] = master_search_query
+            if character_filter:
+                params["character"] = character_filter
+            if fandom_filter:
+                params["fandom"] = fandom_filter
+            return f"/in-progress?{urlencode(params)}"
+
+        master_executor_url = build_master_role_url(MASTER_VIEW_ROLE_EXECUTOR)
+        master_customer_url = build_master_role_url(MASTER_VIEW_ROLE_CUSTOMER)
+        master_reset_url = f"/in-progress?{urlencode({'scope': IN_PROGRESS_SCOPE_MASTER, 'master_role': master_role})}"
+        master_card_query = urlencode(
+            {
+                "master_role": master_role,
+                "archive_scope": master_archive_scope,
+            }
+        )
+
         return template_response(
             request,
             "in_progress_master.html",
@@ -15365,6 +15570,13 @@ def in_progress_list(request: Request, db: Session = Depends(get_db)):
             master_sort_by=master_sort_by,
             master_sort_labels=MASTER_CARD_SORT_LABELS,
             master_sort_options=MASTER_CARD_SORT_SELECT_OPTIONS,
+            master_role=master_role,
+            master_role_labels=MASTER_VIEW_ROLE_LABELS,
+            master_is_executor_view=master_is_executor_view,
+            master_executor_url=master_executor_url,
+            master_customer_url=master_customer_url,
+            master_reset_url=master_reset_url,
+            master_card_query=master_card_query,
             character_filter=character_filter,
             fandom_filter=fandom_filter,
             master_cards_total=total_cards_count,
@@ -15446,7 +15658,7 @@ def in_progress_list(request: Request, db: Session = Depends(get_db)):
         source_card = resolve_source_card(db, card)
         if source_card and can_edit_card(user, source_card):
             editable_card_links[row.id] = source_card.id
-        coproplayer_count = shared_coproplayer_count(card)
+        coproplayer_count = shared_coproplayer_count(db, card)
         shared_coproplayer_counts_by_progress[row.id] = coproplayer_count
         shared_coproplayer_emojis_by_progress[row.id] = shared_coproplayer_emoji(coproplayer_count)
         if not source_card or source_card.plan_type != "project":
@@ -15784,12 +15996,17 @@ def in_progress_master_new(request: Request, db: Session = Depends(get_db)):
 
     active_project_counters = get_in_progress_active_project_counters(db, user)
     _, _, alias_options = build_user_alias_lookup(db)
+    master_role = MASTER_VIEW_ROLE_EXECUTOR
+    master_archive_scope = MASTER_ARCHIVE_SCOPE_ACTIVE
     return template_response(
         request,
         "in_progress_master_form.html",
         user=user,
         active_tab="in-progress",
         in_progress_scope=IN_PROGRESS_SCOPE_MASTER,
+        master_role=master_role,
+        master_archive_scope=master_archive_scope,
+        master_list_url=master_list_url(role=master_role, archive_scope=master_archive_scope),
         editing=False,
         card_id=None,
         form=get_in_progress_master_form_values(),
@@ -15821,10 +16038,14 @@ async def in_progress_master_create(request: Request, db: Session = Depends(get_
         status_percent=0,
     )
     open_board_requested = str(form.get("open_board", "")).strip() == "1"
+    master_role = MASTER_VIEW_ROLE_EXECUTOR
+    master_archive_scope = MASTER_ARCHIVE_SCOPE_ACTIVE
     ok, error_text = save_in_progress_master_card_from_form(form, card, db=db)
     if not ok:
         add_flash(request, error_text, "error")
-        return redirect("/in-progress/master/new")
+        return redirect(
+            f"/in-progress/master/new?{urlencode({'master_role': master_role, 'archive_scope': master_archive_scope})}"
+        )
 
     db.add(card)
     db.flush()
@@ -15832,8 +16053,12 @@ async def in_progress_master_create(request: Request, db: Session = Depends(get_
     db.commit()
     add_flash(request, "Карточка мастера создана.", "success")
     if open_board_requested:
-        return redirect(f"/in-progress/master/{card.id}/board")
-    return redirect(f"/in-progress/master/{card.id}")
+        return redirect(
+            f"/in-progress/master/{card.id}/board?{urlencode({'master_role': master_role, 'archive_scope': master_archive_scope})}"
+        )
+    return redirect(
+        f"/in-progress/master/{card.id}?{urlencode({'master_role': master_role, 'archive_scope': master_archive_scope})}"
+    )
 
 
 @app.get("/in-progress/master/{card_id}", response_class=HTMLResponse)
@@ -15843,10 +16068,20 @@ def in_progress_master_detail(card_id: int, request: Request, db: Session = Depe
         return redirect("/login")
 
     active_project_counters = get_in_progress_active_project_counters(db, user)
+    requested_master_role = normalize_master_role(request.query_params.get("master_role"))
+    requested_archive_scope = request.query_params.get("archive_scope")
     card = get_accessible_in_progress_master_card(db, user=user, card_id=card_id)
     if not card:
         add_flash(request, "Карточка мастера не найдена или недоступна.", "error")
-        return redirect("/in-progress?scope=master")
+        return redirect(master_list_url(role=requested_master_role, archive_scope=requested_archive_scope))
+
+    master_role = resolve_master_role_for_card(user, card, request.query_params.get("master_role"))
+    master_archive_scope = resolve_master_archive_scope_for_card(card, request.query_params.get("archive_scope"))
+    master_list_link = master_list_url(role=master_role, archive_scope=master_archive_scope)
+    master_card_query = urlencode({"master_role": master_role, "archive_scope": master_archive_scope})
+    can_edit_master_card = bool(
+        master_role == MASTER_VIEW_ROLE_EXECUTOR and can_edit_in_progress_master_card(user, card)
+    )
 
     comments = db.execute(
         select(InProgressMasterComment)
@@ -15876,6 +16111,10 @@ def in_progress_master_detail(card_id: int, request: Request, db: Session = Depe
         user=user,
         active_tab="in-progress",
         in_progress_scope=IN_PROGRESS_SCOPE_MASTER,
+        master_role=master_role,
+        master_archive_scope=master_archive_scope,
+        master_list_url=master_list_link,
+        master_card_query=master_card_query,
         card=card,
         owner=owner,
         customer_user=customer_user,
@@ -15889,7 +16128,7 @@ def in_progress_master_detail(card_id: int, request: Request, db: Session = Depe
         references=as_list(card.references_json),
         comments=comments,
         authors_by_id=authors_by_id,
-        can_edit_master_card=can_edit_in_progress_master_card(user, card),
+        can_edit_master_card=can_edit_master_card,
         master_work_type_labels=MASTER_WORK_TYPE_LABELS,
         cosplayer_active_projects_count=active_project_counters.get("cosplayer_active", 0),
         master_active_projects_count=active_project_counters.get("master_active", 0),
@@ -15903,15 +16142,25 @@ def in_progress_master_board_page(card_id: int, request: Request, db: Session = 
         return redirect("/login")
 
     active_project_counters = get_in_progress_active_project_counters(db, user)
+    requested_master_role = normalize_master_role(request.query_params.get("master_role"))
+    requested_archive_scope = request.query_params.get("archive_scope")
     card = get_accessible_in_progress_master_card(db, user=user, card_id=card_id)
     if not card:
         add_flash(request, "Карточка мастера не найдена или недоступна.", "error")
-        return redirect("/in-progress?scope=master")
+        return redirect(master_list_url(role=requested_master_role, archive_scope=requested_archive_scope))
+
+    master_role = resolve_master_role_for_card(user, card, request.query_params.get("master_role"))
+    master_archive_scope = resolve_master_archive_scope_for_card(card, request.query_params.get("archive_scope"))
+    master_list_link = master_list_url(role=master_role, archive_scope=master_archive_scope)
+    master_card_query = urlencode({"master_role": master_role, "archive_scope": master_archive_scope})
+    can_edit_master_board = bool(
+        master_role == MASTER_VIEW_ROLE_EXECUTOR and can_edit_in_progress_master_card(user, card)
+    )
 
     board = get_or_create_master_board(
         db,
         card_id=card.id,
-        updated_by_user_id=user.id if can_edit_in_progress_master_card(user, card) else None,
+        updated_by_user_id=user.id if can_edit_master_board else None,
     )
     normalized_state = normalize_master_board_state(board.state_json)
     if board.state_json != normalized_state:
@@ -15924,8 +16173,12 @@ def in_progress_master_board_page(card_id: int, request: Request, db: Session = 
         user=user,
         active_tab="in-progress",
         in_progress_scope=IN_PROGRESS_SCOPE_MASTER,
+        master_role=master_role,
+        master_archive_scope=master_archive_scope,
+        master_list_url=master_list_link,
+        master_card_query=master_card_query,
         card=card,
-        can_edit_master_board=can_edit_in_progress_master_card(user, card),
+        can_edit_master_board=can_edit_master_board,
         initial_board_state=normalized_state,
         cosplayer_active_projects_count=active_project_counters.get("cosplayer_active", 0),
         master_active_projects_count=active_project_counters.get("master_active", 0),
@@ -16140,6 +16393,9 @@ def in_progress_master_edit(card_id: int, request: Request, db: Session = Depend
         customer_user = db.get(User, card.customer_user_id)
         if customer_user:
             customer_alias = preferred_user_alias(customer_user)
+    master_role = MASTER_VIEW_ROLE_EXECUTOR
+    master_archive_scope = resolve_master_archive_scope_for_card(card, request.query_params.get("archive_scope"))
+    master_list_link = master_list_url(role=master_role, archive_scope=master_archive_scope)
 
     return template_response(
         request,
@@ -16147,6 +16403,9 @@ def in_progress_master_edit(card_id: int, request: Request, db: Session = Depend
         user=user,
         active_tab="in-progress",
         in_progress_scope=IN_PROGRESS_SCOPE_MASTER,
+        master_role=master_role,
+        master_archive_scope=master_archive_scope,
+        master_list_url=master_list_link,
         editing=True,
         card_id=card.id,
         form=get_in_progress_master_form_values(card, customer_alias=customer_alias),
@@ -16174,18 +16433,26 @@ async def in_progress_master_update(card_id: int, request: Request, db: Session 
 
     form = await request.form()
     open_board_requested = str(form.get("open_board", "")).strip() == "1"
+    master_role = MASTER_VIEW_ROLE_EXECUTOR
+    master_archive_scope = resolve_master_archive_scope_for_card(card, form.get("master_archive_scope"))
     ok, error_text = save_in_progress_master_card_from_form(form, card, db=db)
     if not ok:
         add_flash(request, error_text, "error")
-        return redirect(f"/in-progress/master/{card_id}/edit")
+        return redirect(
+            f"/in-progress/master/{card_id}/edit?{urlencode({'master_role': master_role, 'archive_scope': master_archive_scope})}"
+        )
 
     if open_board_requested:
         get_or_create_master_board(db, card_id=card.id, updated_by_user_id=user.id)
     db.commit()
     add_flash(request, "Карточка мастера обновлена.", "success")
     if open_board_requested:
-        return redirect(f"/in-progress/master/{card.id}/board")
-    return redirect(f"/in-progress/master/{card.id}")
+        return redirect(
+            f"/in-progress/master/{card.id}/board?{urlencode({'master_role': master_role, 'archive_scope': master_archive_scope})}"
+        )
+    return redirect(
+        f"/in-progress/master/{card.id}?{urlencode({'master_role': master_role, 'archive_scope': master_archive_scope})}"
+    )
 
 
 @app.post("/in-progress/master/{card_id}/delete")
@@ -16548,31 +16815,53 @@ def my_projects_list(request: Request, db: Session = Depends(get_db)):
 
     pending_rehearsals_by_card: dict[int, list[RehearsalEntry]] = defaultdict(list)
     leader_rehearsal_history_by_card: dict[int, list[RehearsalEntry]] = defaultdict(list)
-    card_ids = [card.id for card in cards]
-    if card_ids:
+    rehearsal_participant_ids: set[int] = set()
+    rehearsal_participants_by_id: dict[int, User] = {}
+    scope_card_to_source_id: dict[int, int] = {}
+    scoped_card_ids: list[int] = []
+    for source_card in cards:
+        for scoped_card in project_scope_cards(db, source_card):
+            scoped_id = int(scoped_card.id)
+            if scoped_id not in scope_card_to_source_id:
+                scoped_card_ids.append(scoped_id)
+            scope_card_to_source_id[scoped_id] = int(source_card.id)
+
+    if scoped_card_ids:
         pending_entries = db.execute(
             select(RehearsalEntry)
             .where(
-                RehearsalEntry.cosplan_card_id.in_(card_ids),
+                RehearsalEntry.cosplan_card_id.in_(scoped_card_ids),
                 RehearsalEntry.source_type == REHEARSAL_SOURCE_PARTICIPANT,
                 RehearsalEntry.status == REHEARSAL_STATUS_PROPOSED,
             )
             .order_by(RehearsalEntry.entry_date, RehearsalEntry.entry_time, RehearsalEntry.id)
         ).scalars().all()
         for entry in pending_entries:
-            pending_rehearsals_by_card[entry.cosplan_card_id].append(entry)
+            source_id = scope_card_to_source_id.get(entry.cosplan_card_id, entry.cosplan_card_id)
+            pending_rehearsals_by_card[source_id].append(entry)
+            if entry.user_id:
+                rehearsal_participant_ids.add(int(entry.user_id))
 
         history_entries = db.execute(
             select(RehearsalEntry)
             .where(
-                RehearsalEntry.cosplan_card_id.in_(card_ids),
+                RehearsalEntry.cosplan_card_id.in_(scoped_card_ids),
                 RehearsalEntry.source_type == REHEARSAL_SOURCE_LEADER,
                 RehearsalEntry.status.in_([REHEARSAL_STATUS_ACCEPTED, REHEARSAL_STATUS_DECLINED]),
             )
             .order_by(RehearsalEntry.updated_at.desc(), RehearsalEntry.id.desc())
         ).scalars().all()
         for entry in history_entries:
-            leader_rehearsal_history_by_card[entry.cosplan_card_id].append(entry)
+            source_id = scope_card_to_source_id.get(entry.cosplan_card_id, entry.cosplan_card_id)
+            leader_rehearsal_history_by_card[source_id].append(entry)
+            if entry.user_id:
+                rehearsal_participant_ids.add(int(entry.user_id))
+
+    if rehearsal_participant_ids:
+        rehearsal_participants = db.execute(
+            select(User).where(User.id.in_(rehearsal_participant_ids))
+        ).scalars().all()
+        rehearsal_participants_by_id = {item.id: item for item in rehearsal_participants}
 
     return template_response(
         request,
@@ -16585,6 +16874,7 @@ def my_projects_list(request: Request, db: Session = Depends(get_db)):
         card_total_currencies=card_total_currencies,
         pending_rehearsals_by_card=pending_rehearsals_by_card,
         leader_rehearsal_history_by_card=leader_rehearsal_history_by_card,
+        rehearsal_participants_by_id=rehearsal_participants_by_id,
         rehearsal_status_labels={
             REHEARSAL_STATUS_PROPOSED: rehearsal_status_label(REHEARSAL_STATUS_PROPOSED),
             REHEARSAL_STATUS_APPROVED: rehearsal_status_label(REHEARSAL_STATUS_APPROVED),
@@ -16658,9 +16948,33 @@ async def my_projects_propose_rehearsal(request: Request, db: Session = Depends(
 
     created = 0
     for card in target_cards:
-        rehearsal_card = get_or_create_rehearsal_card(db, user_id=card.user_id, cosplan_card=card)
-        participant_user = db.get(User, card.user_id)
-        if participant_user:
+        source_card = resolve_source_card(db, card)
+        if not source_card:
+            continue
+        participant_cards = project_scope_cards(db, source_card)
+        for participant_card in participant_cards:
+            participant_user = db.get(User, participant_card.user_id)
+            if not participant_user:
+                continue
+
+            existing_entry = db.execute(
+                select(RehearsalEntry).where(
+                    RehearsalEntry.user_id == participant_user.id,
+                    RehearsalEntry.cosplan_card_id == participant_card.id,
+                    RehearsalEntry.proposed_by_user_id == user.id,
+                    RehearsalEntry.source_type == REHEARSAL_SOURCE_LEADER,
+                    RehearsalEntry.entry_date == rehearsal_date,
+                    RehearsalEntry.entry_time == rehearsal_time,
+                )
+            ).scalar_one_or_none()
+            if existing_entry:
+                continue
+
+            rehearsal_card = get_or_create_rehearsal_card(
+                db,
+                user_id=participant_user.id,
+                cosplan_card=participant_card,
+            )
             readable_date = rehearsal_date.strftime("%d-%m-%Y")
             readable_time = f" {rehearsal_time}" if rehearsal_time else ""
             leader_alias = preferred_user_alias(user)
@@ -16668,9 +16982,9 @@ async def my_projects_propose_rehearsal(request: Request, db: Session = Depends(
                 db,
                 user_id=participant_user.id,
                 from_user_id=user.id,
-                source_card_id=card.id,
+                source_card_id=source_card.id,
                 message=(
-                    f"Руководитель @{leader_alias} предложил репетицию по «{card.character_name}» "
+                    f"Руководитель @{leader_alias} предложил репетицию по «{source_card.character_name}» "
                     f"на {readable_date}{readable_time}."
                 ),
             )
@@ -16686,53 +17000,56 @@ async def my_projects_propose_rehearsal(request: Request, db: Session = Depends(
                     db,
                     user_id=user.id,
                     from_user_id=participant_user.id,
-                    source_card_id=card.id,
+                    source_card_id=source_card.id,
                     message=(
                         f"У участника @{participant_alias} конфликт на {readable_date} для предложенной репетиции "
-                        f"по «{card.character_name}»: {conflicts_text}."
+                        f"по «{source_card.character_name}»: {conflicts_text}."
                     ),
                 )
                 enqueue_notification_if_missing(
                     db,
                     user_id=participant_user.id,
                     from_user_id=user.id,
-                    source_card_id=card.id,
+                    source_card_id=source_card.id,
                     message=(
-                        f"@{leader_alias} предложил(а) репетицию по «{card.character_name}» на {readable_date}, "
+                        f"@{leader_alias} предложил(а) репетицию по «{source_card.character_name}» на {readable_date}, "
                         f"но у вас конфликт: {conflicts_text}."
                     ),
                 )
-        existing_progress = db.execute(
-            select(InProgressCard).where(
-                InProgressCard.user_id == card.user_id,
-                InProgressCard.cosplan_card_id == card.id,
-            )
-        ).scalar_one_or_none()
-        if not existing_progress:
+            existing_progress = db.execute(
+                select(InProgressCard).where(
+                    InProgressCard.user_id == participant_user.id,
+                    InProgressCard.cosplan_card_id == participant_card.id,
+                )
+            ).scalar_one_or_none()
+            if not existing_progress:
+                db.add(
+                    InProgressCard(
+                        user_id=participant_user.id,
+                        cosplan_card_id=participant_card.id,
+                        checklist_json=[],
+                        task_rows_json=[],
+                    )
+                )
             db.add(
-                InProgressCard(
-                    user_id=card.user_id,
-                    cosplan_card_id=card.id,
-                    checklist_json=[],
-                    task_rows_json=[],
+                RehearsalEntry(
+                    rehearsal_card_id=rehearsal_card.id,
+                    user_id=participant_user.id,
+                    cosplan_card_id=participant_card.id,
+                    proposed_by_user_id=user.id,
+                    source_type=REHEARSAL_SOURCE_LEADER,
+                    status=REHEARSAL_STATUS_PROPOSED,
+                    entry_date=rehearsal_date,
+                    entry_time=rehearsal_time,
                 )
             )
-        db.add(
-            RehearsalEntry(
-                rehearsal_card_id=rehearsal_card.id,
-                user_id=card.user_id,
-                cosplan_card_id=card.id,
-                proposed_by_user_id=user.id,
-                source_type=REHEARSAL_SOURCE_LEADER,
-                status=REHEARSAL_STATUS_PROPOSED,
-                entry_date=rehearsal_date,
-                entry_time=rehearsal_time,
-            )
-        )
-        created += 1
+            created += 1
 
     db.commit()
-    add_flash(request, f"Предложение репетиции отправлено для карточек: {created}.", "success")
+    if created > 0:
+        add_flash(request, f"Предложение репетиции отправлено участникам: {created}.", "success")
+    else:
+        add_flash(request, "Новых предложений не создано (возможны дубли на эту дату и время).", "info")
     return redirect("/my-projects")
 
 

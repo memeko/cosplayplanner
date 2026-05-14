@@ -53,6 +53,27 @@
 
   {% if cosbands %}<p class="meta">Cosband: {{ cosbands | join(", ") }}</p>{% endif %}
   {% if planned_festivals %}<p class="meta">Планируемые фестивали: {{ planned_festivals | join(", ") }}</p>{% endif %}
+  {% if project_character_rows %}
+    <h3>Персонажи проекта</h3>
+    <div class="top-offset">
+      <table class="table">
+        <thead>
+          <tr>
+            <th>Имя персонажа</th>
+            <th>Косплеер</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in project_character_rows %}
+            <tr>
+              <td>{{ row.character_name or "—" }}</td>
+              <td>{{ row.cosplayer_label or "—" }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% endif %}
   {% if related_cards %}
     <p class="meta">Связанные карточки:</p>
     <ul class="notes-list">

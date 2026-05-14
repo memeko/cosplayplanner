@@ -1,17 +1,23 @@
 {% extends "base.html" %}
 {% block content %}
-{% set master_list_url = "/in-progress?scope=master" ~ ("&archive_scope=archived" if card.is_archived else "") %}
+{% set master_list_link = master_list_url or '/in-progress?scope=master&master_role=executor' %}
+{% set master_card_q = master_card_query or 'master_role=executor&archive_scope=active' %}
 <section class="section-head">
   <h1>Whiteboard: {{ card.name }}</h1>
   <div class="actions-inline">
-    <a href="/in-progress/master/{{ card.id }}" class="btn">К карточке</a>
-    <a href="{{ master_list_url }}" class="btn">К списку</a>
+    <a href="/in-progress/master/{{ card.id }}?{{ master_card_q }}" class="btn">К карточке</a>
+    <a href="{{ master_list_link }}" class="btn">К списку</a>
   </div>
 </section>
 
 <nav class="calendar-tabs">
   <a href="/in-progress?scope=cosplayer" class="tab {% if (in_progress_scope or 'cosplayer') == 'cosplayer' %}active{% endif %}">Косплеер</a>
   <a href="/in-progress?scope=master" class="tab {% if (in_progress_scope or 'cosplayer') == 'master' %}active{% endif %}">Мастер</a>
+</nav>
+
+<nav class="calendar-tabs">
+  <a href="/in-progress?scope=master&master_role=executor&archive_scope={{ master_archive_scope or 'active' }}" class="tab {% if (master_role or 'executor') == 'executor' %}active{% endif %}">Мастер</a>
+  <a href="/in-progress?scope=master&master_role=customer&archive_scope={{ master_archive_scope or 'active' }}" class="tab {% if (master_role or 'executor') == 'customer' %}active{% endif %}">Заказчик</a>
 </nav>
 
 <section class="box">

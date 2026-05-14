@@ -62,6 +62,7 @@
     {% if pending_rehearsals %}
       <ul class="rehearsal-list">
         {% for entry in pending_rehearsals %}
+          {% set entry_participant = rehearsal_participants_by_id.get(entry.user_id) %}
           <li class="rehearsal-item">
             <div>
               <strong>{{ entry.entry_date.strftime('%d-%m-%Y') if entry.entry_date else "—" }}</strong>
@@ -69,6 +70,16 @@
               <span class="chip rehearsal-status rehearsal-status-{{ entry.status }}">
                 {{ rehearsal_status_labels.get(entry.status, entry.status) }}
               </span>
+              <p class="meta">
+                Участник:
+                {% if entry_participant %}
+                  <span class="{% if user_is_special(entry_participant) %}nick-special{% endif %}">@{{ entry_participant.cosplay_nick or entry_participant.username }}</span>
+                {% elif owner %}
+                  <span class="{% if user_is_special(owner) %}nick-special{% endif %}">@{{ owner.cosplay_nick or owner.username }}</span>
+                {% else %}
+                  @unknown
+                {% endif %}
+              </p>
             </div>
             <div class="actions-inline">
               <form method="post" action="/my-projects/rehearsals/{{ entry.id }}/decision">
@@ -95,6 +106,7 @@
     {% if rehearsal_history %}
       <ul class="rehearsal-list">
         {% for entry in rehearsal_history %}
+          {% set entry_participant = rehearsal_participants_by_id.get(entry.user_id) %}
           <li class="rehearsal-item">
             <div>
               <strong>{{ entry.entry_date.strftime('%d-%m-%Y') if entry.entry_date else "—" }}</strong>
@@ -104,8 +116,10 @@
               </span>
               <p class="meta">
                 Участник:
-                {% if owner %}
-                  <span class="{% if user_is_special(owner) %}nick-special{% endif %}">@{{ owner.username }}</span>
+                {% if entry_participant %}
+                  <span class="{% if user_is_special(entry_participant) %}nick-special{% endif %}">@{{ entry_participant.cosplay_nick or entry_participant.username }}</span>
+                {% elif owner %}
+                  <span class="{% if user_is_special(owner) %}nick-special{% endif %}">@{{ owner.cosplay_nick or owner.username }}</span>
                 {% else %}
                   @unknown
                 {% endif %}

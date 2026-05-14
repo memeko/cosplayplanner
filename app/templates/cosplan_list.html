@@ -105,6 +105,16 @@
                 <span class="chip chip-shared-project">
                   Общая карточка проекта{% if shared_emoji %} · {{ shared_emoji }}{% if shared_count > 0 %} ({{ shared_count }}){% endif %}{% endif %}
                 </span>
+                {% set project_character_names = [] %}
+                {% for item in (card.project_characters_json or []) %}
+                  {% if item is mapping %}
+                    {% set project_name_value = (item.get("character_name") or item.get("name") or "")|trim %}
+                    {% if project_name_value %}{% set _ = project_character_names.append(project_name_value) %}{% endif %}
+                  {% endif %}
+                {% endfor %}
+                {% if project_character_names %}
+                  <p class="meta">Персонажи проекта: {{ project_character_names | join(", ") }}</p>
+                {% endif %}
               {% endif %}
               {% if card.id in frozen_card_ids %}
                 <span class="chip chip-alert">Заморожено</span>
@@ -172,6 +182,18 @@
           </h3>
           <p class="meta">Фандом: {{ card.fandom or "—" }}</p>
           <p class="meta">Тип: {{ "Проект" if card.plan_type == "project" else "Личное" }}</p>
+          {% if (card.plan_type or '') == 'project' %}
+            {% set project_character_names = [] %}
+            {% for item in (card.project_characters_json or []) %}
+              {% if item is mapping %}
+                {% set project_name_value = (item.get("character_name") or item.get("name") or "")|trim %}
+                {% if project_name_value %}{% set _ = project_character_names.append(project_name_value) %}{% endif %}
+              {% endif %}
+            {% endfor %}
+            {% if project_character_names %}
+              <p class="meta">Персонажи проекта: {{ project_character_names | join(", ") }}</p>
+            {% endif %}
+          {% endif %}
           <p class="meta">Дедлайн: {{ card.project_deadline.strftime('%d-%m-%Y') if card.project_deadline else "—" }}</p>
           <p class="meta">Ориентировочная цена: {{ '%.2f'|format(card_totals.get(card.id, 0.0)) }} {{ card_total_currencies.get(card.id, "") }}</p>
           {% if rehearsal_stat and rehearsal_stat.total %}

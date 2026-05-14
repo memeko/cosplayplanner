@@ -38,6 +38,8 @@
   .unknown-price-mark { display: inline-flex; align-items: center; gap: 0.3rem; margin-top: 0.25rem; font-size: 0.86rem; }
   .pinterest-frame { width: 200px; height: 270px; border: 0; border-radius: 10px; background: #fff; }
   .coproplayer-row { display: grid; grid-template-columns: 1fr auto; gap: 0.5rem; align-items: end; margin-bottom: 0.5rem; }
+  .project-character-row { display: grid; grid-template-columns: 1fr 1fr auto; gap: 0.5rem; align-items: end; margin-bottom: 0.5rem; }
+  .project-character-row button { height: 38px; }
   .festival-spoiler { margin-top: 0.35rem; }
   .festival-spoiler summary { cursor: pointer; font-weight: 600; margin-bottom: 0.5rem; }
   .self-sew-table-wrap { overflow-x: auto; margin: 0.4rem 0 0.7rem; }
@@ -49,6 +51,10 @@
   .self-sew-table td.self-sew-buy-cell { text-align: center; }
   .self-sew-table td.self-sew-remove-cell { white-space: nowrap; width: 1%; }
   .self-sew-subtotal { margin: 0.4rem 0 0.8rem; font-weight: 600; }
+  @media (max-width: 900px) {
+    .project-character-row { grid-template-columns: 1fr; }
+    .project-character-row button { width: 100%; }
+  }
 </style>
 
 <form method="post" action="{{ '/cosplan/' ~ card_id ~ '/edit' if editing else '/cosplan/new' }}" class="grid one-col big-form" id="cosplan-form">
@@ -525,6 +531,37 @@
       {% endif %}
     </div>
 
+    <div id="project_characters_wrap">
+      <h3>Персонажи проекта</h3>
+      <p class="muted">Добавьте персонажей и выберите косплеера для каждого из них.</p>
+      <div id="project_character_rows">
+        {% for item in form.project_character_rows %}
+        <div class="project-character-row">
+          <input type="hidden" name="project_character_row_id" value="{{ item.row_id }}" />
+          <label>
+            Имя персонажа
+            <input type="text" name="project_character_name" value="{{ item.character_name }}" maxlength="255" placeholder="Например, 2B" />
+          </label>
+          <label class="alias-suggest">
+            Косплеер
+            <input
+              type="text"
+              name="project_character_cosplayer"
+              value="{{ item.cosplayer_alias }}"
+              list="coproplayer-alias-options"
+              class="project-character-cosplayer-input"
+              placeholder="@nickname"
+              autocomplete="off"
+            />
+            <div class="alias-suggest-list"></div>
+          </label>
+          <button type="button" class="btn btn-danger project-character-remove-btn">Удалить</button>
+        </div>
+        {% endfor %}
+      </div>
+      <button type="button" class="btn" id="add_project_character_btn">Добавить персонажа</button>
+    </div>
+
     <label>Cosband</label>
     <div class="chips-wrap">
       {% for value in cosband_options %}
@@ -585,32 +622,35 @@
       </label>
 
       <label>Планируемый фестиваль</label>
-      <div class="grid two-col">
-        <label>
-          Фильтр по городу
-          <input type="text" id="festival_city_filter" placeholder="Например, Москва" list="festival-city-options" />
-          <datalist id="festival-city-options">
-            {% for item in festival_items %}
-              {% if item.city %}<option value="{{ item.city }}"></option>{% endif %}
-            {% endfor %}
-          </datalist>
-        </label>
-      </div>
+      <details class="festival-spoiler">
+        <summary>Выбрать фестиваль из списка</summary>
+        <div class="grid two-col">
+          <label>
+            Фильтр по городу
+            <input type="text" id="festival_city_filter" placeholder="Например, Москва" list="festival-city-options" />
+            <datalist id="festival-city-options">
+              {% for item in festival_items %}
+                {% if item.city %}<option value="{{ item.city }}"></option>{% endif %}
+              {% endfor %}
+            </datalist>
+          </label>
+        </div>
 
-      <div class="chips-wrap" id="festival-chips-db">
-        {% for item in festival_items %}
-        <label class="chip-check festival-chip" data-city="{{ item.city|lower }}" data-name="{{ item.name|lower }}">
-          <input type="checkbox" name="planned_festivals" value="{{ item.name }}" {% if item.name in form.planned_festivals_json %}checked{% endif %} />
-          {{ item.name }}{% if item.city %} ({{ item.city }}){% endif %}
-        </label>
-        {% endfor %}
-        {% for value in festival_custom_options %}
-        <label class="chip-check festival-chip" data-city="" data-name="{{ value|lower }}">
-          <input type="checkbox" name="planned_festivals" value="{{ value }}" {% if value in form.planned_festivals_json %}checked{% endif %} />
-          {{ value }}
-        </label>
-        {% endfor %}
-      </div>
+        <div class="chips-wrap" id="festival-chips-db">
+          {% for item in festival_items %}
+          <label class="chip-check festival-chip" data-city="{{ item.city|lower }}" data-name="{{ item.name|lower }}">
+            <input type="checkbox" name="planned_festivals" value="{{ item.name }}" {% if item.name in form.planned_festivals_json %}checked{% endif %} />
+            {{ item.name }}{% if item.city %} ({{ item.city }}){% endif %}
+          </label>
+          {% endfor %}
+          {% for value in festival_custom_options %}
+          <label class="chip-check festival-chip" data-city="" data-name="{{ value|lower }}">
+            <input type="checkbox" name="planned_festivals" value="{{ value }}" {% if value in form.planned_festivals_json %}checked{% endif %} />
+            {{ value }}
+          </label>
+          {% endfor %}
+        </div>
+      </details>
       <label>
         Добавить фестивали (через запятую)
         <input type="text" name="planned_festivals_new" placeholder="Название фестиваля" />
@@ -1050,6 +1090,7 @@
     const planType = document.getElementById("plan_type")?.value;
     toggleVisibility("project_leader_wrap", planType === "project");
     toggleVisibility("related_cards_wrap", planType === "project");
+    toggleVisibility("project_characters_wrap", planType === "project");
   };
 
   const syncPlanTypeFromProjectCheckbox = () => {
@@ -1640,6 +1681,76 @@
     });
   };
 
+  const setupProjectCharacterRows = () => {
+    const wrap = document.getElementById("project_character_rows");
+    const addButton = document.getElementById("add_project_character_btn");
+    if (!wrap || !addButton) return;
+
+    const updateRemoveButtons = () => {
+      const rows = wrap.querySelectorAll(".project-character-row");
+      rows.forEach((row) => {
+        const button = row.querySelector(".project-character-remove-btn");
+        if (!button) return;
+        button.style.visibility = rows.length > 1 ? "" : "hidden";
+      });
+    };
+
+    const bindRow = (row) => {
+      if (!row || row.dataset.bound === "1") return;
+      row.dataset.bound = "1";
+
+      const input = row.querySelector(".project-character-cosplayer-input");
+      const list = row.querySelector(".alias-suggest-list");
+      bindAliasSuggestForField({ input, list, multi: false });
+
+      const removeButton = row.querySelector(".project-character-remove-btn");
+      if (removeButton) {
+        removeButton.addEventListener("click", () => {
+          row.remove();
+          updateRemoveButtons();
+        });
+      }
+    };
+
+    const buildRow = () => {
+      const rowId = `project-char-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
+      const row = document.createElement("div");
+      row.className = "project-character-row";
+      row.innerHTML = `
+        <input type="hidden" name="project_character_row_id" value="${rowId}" />
+        <label>
+          Имя персонажа
+          <input type="text" name="project_character_name" maxlength="255" placeholder="Например, 2B" />
+        </label>
+        <label class="alias-suggest">
+          Косплеер
+          <input
+            type="text"
+            name="project_character_cosplayer"
+            list="coproplayer-alias-options"
+            class="project-character-cosplayer-input"
+            placeholder="@nickname"
+            autocomplete="off"
+          />
+          <div class="alias-suggest-list"></div>
+        </label>
+        <button type="button" class="btn btn-danger project-character-remove-btn">Удалить</button>
+      `;
+      return row;
+    };
+
+    wrap.querySelectorAll(".project-character-row").forEach(bindRow);
+    updateRemoveButtons();
+
+    addButton.addEventListener("click", () => {
+      const row = buildRow();
+      wrap.appendChild(row);
+      bindRow(row);
+      updateRemoveButtons();
+      row.querySelector('input[name="project_character_name"]')?.focus();
+    });
+  };
+
   ["is_au", "costume_type", "sewing_type", "shoes_type", "wig_type", "craft_type", "lenses_enabled", "plan_type_project"].forEach((id) => {
     const el = document.getElementById(id);
     if (el) {
@@ -1706,6 +1817,7 @@
 
   bindAliasSuggest({ inputId: "project_leader", listId: "project-leader-suggest", multi: false });
   setupCoproplayerRows();
+  setupProjectCharacterRows();
   attachUnknownPriceCheckboxes();
   setupPartsControls();
   setupSelfSewCostTables();

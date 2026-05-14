@@ -326,6 +326,7 @@ class CosplanCard(Base):
     cosbands_json = Column(JSON, nullable=False, default=list)
     project_deadline = Column(Date, nullable=True)
     related_cards_json = Column(JSON, nullable=False, default=list)
+    project_characters_json = Column(JSON, nullable=False, default=list)
 
     planned_festivals_json = Column(JSON, nullable=False, default=list)
     submission_date = Column(Date, nullable=True)

@@ -2,7 +2,7 @@
 {% block content %}
 <section class="section-head">
   <h1>{{ "Редактирование карточки мастера" if editing else "Новая работа" }}</h1>
-  <a href="{{ '/in-progress/master/' ~ card_id if editing else '/in-progress?scope=master' }}" class="btn">Назад</a>
+  <a href="{{ '/in-progress/master/' ~ card_id ~ '?master_role=' ~ (master_role or 'executor') ~ '&archive_scope=' ~ (master_archive_scope or 'active') if editing else (master_list_url or '/in-progress?scope=master&master_role=executor') }}" class="btn">Назад</a>
 </section>
 
 <nav class="calendar-tabs">
@@ -11,6 +11,7 @@
 </nav>
 
 <form method="post" action="{{ '/in-progress/master/' ~ card_id ~ '/edit' if editing else '/in-progress/master/new' }}" class="grid one-col big-form">
+  <input type="hidden" name="master_archive_scope" value="{{ master_archive_scope or 'active' }}" />
   <section class="box">
     <div class="grid two-col">
       <label>
@@ -70,7 +71,7 @@
     {% if editing %}
       <p class="muted">Для этой карточки доступна отдельная доска с бесконечным холстом, заметками и изображениями.</p>
       <div class="actions-inline top-offset">
-        <a href="/in-progress/master/{{ card_id }}/board" class="btn" target="_blank" rel="noopener noreferrer">Открыть доску</a>
+        <a href="/in-progress/master/{{ card_id }}/board?master_role={{ master_role or 'executor' }}&archive_scope={{ master_archive_scope or 'active' }}" class="btn" target="_blank" rel="noopener noreferrer">Открыть доску</a>
       </div>
     {% else %}
       <p class="muted">После создания карточки можно открыть персональную доску проекта в новой вкладке.</p>
@@ -196,7 +197,7 @@
   <div class="actions-inline">
     <button type="submit" class="btn btn-accent">{{ "Сохранить" if editing else "Создать" }}</button>
     <button type="submit" class="btn" name="open_board" value="1">{{ "Сохранить и открыть доску" if editing else "Создать и открыть доску" }}</button>
-    <a href="{{ '/in-progress/master/' ~ card_id if editing else '/in-progress?scope=master' }}" class="btn">Отмена</a>
+    <a href="{{ '/in-progress/master/' ~ card_id ~ '?master_role=' ~ (master_role or 'executor') ~ '&archive_scope=' ~ (master_archive_scope or 'active') if editing else (master_list_url or '/in-progress?scope=master&master_role=executor') }}" class="btn">Отмена</a>
   </div>
 </form>
 
