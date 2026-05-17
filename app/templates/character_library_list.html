@@ -47,25 +47,21 @@
       {% set entry = row.entry %}
       {% set refs = entry.references_json or [] %}
       <article class="card">
+        {% if refs %}
+          <div class="cosplayer-card-avatar-wrap">
+            <img src="{{ refs[0] }}" alt="Портрет персонажа {{ row.display_name }}" class="cosplayer-card-avatar" loading="lazy" />
+          </div>
+        {% endif %}
         <h3><a href="/cosplan/characters/{{ entry.id }}" class="card-title-link">{{ row.display_name }}</a></h3>
         <p class="meta">Фандом: {{ entry.fandom or "—" }}{% if entry.fandom_en %} · {{ entry.fandom_en }}{% endif %}</p>
         <p class="meta">Пол: {{ character_gender_options.get(entry.gender, character_gender_options.get('unspecified')) }}</p>
         <p class="meta">Рост: {{ entry.height_cm if entry.height_cm else "—" }}{% if entry.height_cm %} см{% endif %}</p>
         <p class="meta">Цвет глаз: {{ entry.eye_color or "—" }}</p>
+        <p class="meta">Цвет волос: {{ entry.hair_color or "—" }} · Длина волос: {{ entry.hair_length or "—" }}</p>
         <p class="meta">Возраст (на вид): {{ entry.apparent_age if entry.apparent_age else "—" }} · Возраст: {{ entry.age if entry.age else "—" }}</p>
         {% if entry.full_name_en %}<p class="meta">Имя на английском: {{ entry.full_name_en }}</p>{% endif %}
         {% if entry.full_name_original %}<p class="meta">Имя на языке оригинала: {{ entry.full_name_original }}</p>{% endif %}
-        {% if entry.biography %}<p class="notes-block">{{ entry.biography|render_text }}</p>{% endif %}
-        {% if entry.extra_info %}<p class="notes-block">{{ entry.extra_info|render_text }}</p>{% endif %}
-        {% if refs %}
-          <div class="reference-grid top-offset">
-            {% for url in refs %}
-              <a class="reference-tile" href="{{ url }}" target="_blank" rel="noreferrer">
-                <img src="{{ url }}" alt="Референс персонажа" loading="lazy" />
-              </a>
-            {% endfor %}
-          </div>
-        {% endif %}
+        <p class="meta">Референсов: {{ refs|length }}</p>
         <div class="actions-inline wrap top-offset">
           <a href="/cosplan/characters/{{ entry.id }}" class="btn">Открыть</a>
           <a href="/cosplan/characters/{{ entry.id }}/edit" class="btn">Редактировать</a>

@@ -54,6 +54,28 @@
   .self-sew-table td.self-sew-buy-cell { text-align: center; }
   .self-sew-table td.self-sew-remove-cell { white-space: nowrap; width: 1%; }
   .self-sew-subtotal { margin: 0.4rem 0 0.8rem; font-weight: 600; }
+  .status-auto-note { margin: 0.25rem 0 0; }
+  .status-auto-note strong { color: #0f5a89; }
+  .status-auto-locked {
+    opacity: 0.75;
+    pointer-events: none;
+  }
+  .photoset-calc-box {
+    margin-top: 0.8rem;
+    border: 1px solid #d5e3ee;
+    border-radius: 12px;
+    padding: 0.7rem;
+    background: rgba(255, 255, 255, 0.55);
+  }
+  .photoset-calc-result {
+    display: grid;
+    gap: 0.35rem;
+    margin-top: 0.5rem;
+  }
+  .photoset-calc-result ul {
+    margin: 0.2rem 0 0;
+    padding-left: 1.1rem;
+  }
   @media (max-width: 900px) {
     .project-character-row { grid-template-columns: 1fr; }
     .project-character-row button { width: 100%; }
@@ -83,6 +105,7 @@
       Готовность: <span id="status_percent_value">{{ form.status_percent or 0 }}</span>%
       <input type="range" name="status_percent" id="status_percent_input" min="0" max="100" value="{{ form.status_percent or 0 }}" />
     </label>
+    <p class="muted status-auto-note" id="status_percent_mode_note">Укажите готовность вручную.</p>
     <datalist id="character-options">
       {% for value in character_options %}
         <option value="{{ value }}"></option>
@@ -527,6 +550,7 @@
             type="checkbox"
             name="related_card_ids"
             value="{{ item.id }}"
+            data-related-status="{{ item.status_percent }}"
             {% if item.id in form.related_card_ids %}checked{% endif %}
           />
           <span>{{ item.label }}</span>
@@ -785,6 +809,26 @@
           Валюта
           <input type="text" list="currency-options" name="photoset_currency" value="{{ form.photoset_currency }}" />
         </label>
+      </div>
+
+      <div class="photoset-calc-box" id="photoset_frames_calculator">
+        <h4>Калькулятор кадров</h4>
+        <p class="muted">Укажите общее число кадров, и калькулятор распределит их по ролям: сольные, обязательный общий, затем парные и тройные.</p>
+        <div class="grid two-col">
+          <label>
+            Кадров от фотографа
+            <input type="number" id="photoset_calc_total_frames" min="1" step="1" placeholder="Например, 30" />
+          </label>
+          <label>
+            Список ролей (через запятую или с новой строки)
+            <textarea id="photoset_calc_roles" rows="3" placeholder="Ир Шэн, Муан Гай"></textarea>
+          </label>
+        </div>
+        <div class="actions-inline wrap">
+          <button type="button" class="btn btn-small" id="photoset_calc_fill_roles_btn">Подставить роли проекта</button>
+          <button type="button" class="btn btn-small btn-accent" id="photoset_calc_run_btn">Рассчитать</button>
+        </div>
+        <div class="photoset-calc-result muted" id="photoset_calc_result">Введите данные и нажмите «Рассчитать».</div>
       </div>
 
       <div class="grid two-col">
@@ -1828,6 +1872,7 @@
       el.addEventListener("change", () => {
         syncPlanTypeFromProjectCheckbox();
         applyFormRules();
+        updateStatusMode();
       });
     }
   });
@@ -1888,14 +1933,254 @@
 
   const statusInput = document.getElementById("status_percent_input");
   const statusValue = document.getElementById("status_percent_value");
+  const statusModeNote = document.getElementById("status_percent_mode_note");
+  const relatedStatusInputs = Array.from(document.querySelectorAll('input[name="related_card_ids"]'));
+
+  const selectedRelatedStatuses = () => {
+    return relatedStatusInputs
+      .filter((input) => input.checked)
+      .map((input) => Number(input.dataset.relatedStatus || "0"))
+      .filter((value) => Number.isFinite(value))
+      .map((value) => Math.max(0, Math.min(100, Math.round(value))));
+  };
+
+  const updateStatusMode = () => {
+    if (!statusInput || !statusValue) return;
+    const planType = document.getElementById("plan_type")?.value || "personal";
+    const relatedValues = selectedRelatedStatuses();
+    if (planType === "project" && relatedValues.length > 0) {
+      const avg = Math.round(relatedValues.reduce((sum, value) => sum + value, 0) / relatedValues.length);
+      statusInput.value = String(avg);
+      statusInput.classList.add("status-auto-locked");
+      statusInput.dataset.autoLocked = "1";
+      statusValue.textContent = String(avg);
+      if (statusModeNote) {
+        statusModeNote.innerHTML = `Готовность считается автоматически по связанным карточкам: <strong>${avg}%</strong>.`;
+      }
+      return;
+    }
+    statusInput.classList.remove("status-auto-locked");
+    statusInput.dataset.autoLocked = "0";
+    statusValue.textContent = statusInput.value || "0";
+    if (statusModeNote) {
+      statusModeNote.textContent = "Укажите готовность вручную.";
+    }
+  };
+
   const updateStatusValue = () => {
     if (!statusInput || !statusValue) return;
+    if (statusInput.dataset.autoLocked === "1") {
+      updateStatusMode();
+      return;
+    }
     statusValue.textContent = statusInput.value || "0";
   };
+
   if (statusInput) {
     statusInput.addEventListener("input", updateStatusValue);
     statusInput.addEventListener("change", updateStatusValue);
   }
+  relatedStatusInputs.forEach((input) => {
+    input.addEventListener("change", updateStatusMode);
+  });
+
+  const setupPhotosetFramesCalculator = () => {
+    const totalInput = document.getElementById("photoset_calc_total_frames");
+    const rolesInput = document.getElementById("photoset_calc_roles");
+    const fillRolesButton = document.getElementById("photoset_calc_fill_roles_btn");
+    const runButton = document.getElementById("photoset_calc_run_btn");
+    const resultNode = document.getElementById("photoset_calc_result");
+    if (!totalInput || !rolesInput || !fillRolesButton || !runButton || !resultNode) return;
+
+    const parseUniqueRoles = (rawValue) => {
+      const seen = new Set();
+      const values = String(rawValue || "")
+        .split(/[\n,;]+/)
+        .map((item) => item.trim())
+        .filter(Boolean);
+      const roles = [];
+      values.forEach((value) => {
+        const key = value.toLowerCase();
+        if (seen.has(key)) return;
+        seen.add(key);
+        roles.push(value);
+      });
+      return roles;
+    };
+
+    const collectRolesFromProjectForm = () => {
+      const rawRoles = [];
+      const mainCharacter = String(document.querySelector('input[name="character_name"]')?.value || "").trim();
+      if (mainCharacter) rawRoles.push(mainCharacter);
+      document.querySelectorAll('input[name="project_character_name"]').forEach((input) => {
+        const value = String(input.value || "").trim();
+        if (value) rawRoles.push(value);
+      });
+      return parseUniqueRoles(rawRoles.join("\n"));
+    };
+
+    const buildCombinations = (items, size) => {
+      const combos = [];
+      if (size < 2 || items.length < size) return combos;
+      const walk = (start, chunk) => {
+        if (chunk.length === size) {
+          combos.push(chunk.slice());
+          return;
+        }
+        for (let index = start; index < items.length; index += 1) {
+          chunk.push(items[index]);
+          walk(index + 1, chunk);
+          chunk.pop();
+        }
+      };
+      walk(0, []);
+      return combos;
+    };
+
+    const escapeHtml = (rawValue) => {
+      return String(rawValue || "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+    };
+
+    const renderList = (title, rows) => {
+      if (!rows.length) return "";
+      const items = rows.map((row) => `<li>${escapeHtml(row)}</li>`).join("");
+      return `<div><strong>${escapeHtml(title)}</strong><ul>${items}</ul></div>`;
+    };
+
+    const calculateDistribution = (totalFrames, roles) => {
+      const total = Math.max(0, Math.floor(totalFrames));
+      if (!total) {
+        return { error: "Укажите количество кадров больше нуля." };
+      }
+      if (!roles.length) {
+        return { error: "Добавьте хотя бы одну роль." };
+      }
+
+      const roleCount = roles.length;
+      const soloCounts = new Array(roleCount).fill(0);
+      const pairCombos = buildCombinations(roles, 2);
+      const tripleCombos = buildCombinations(roles, 3);
+      const pairCounts = new Array(pairCombos.length).fill(0);
+      const tripleCounts = new Array(tripleCombos.length).fill(0);
+      const warnings = [];
+      let remaining = total;
+      let allRolesCount = 0;
+
+      if (roleCount > 1 && remaining > 0) {
+        allRolesCount = 1;
+        remaining -= 1;
+      }
+
+      for (let index = 0; index < roleCount && remaining > 0; index += 1) {
+        soloCounts[index] += 1;
+        remaining -= 1;
+      }
+
+      if (roleCount > 1 && total < roleCount + 1) {
+        warnings.push("Кадров мало: невозможно дать всем ролям сольный кадр и сохранить отдельный общий кадр.");
+      } else if (total < roleCount) {
+        warnings.push("Кадров мало: не всем ролям хватит сольных кадров.");
+      }
+
+      let pairIndex = 0;
+      let tripleIndex = 0;
+      while (remaining > 0) {
+        if (pairCombos.length) {
+          pairCounts[pairIndex % pairCombos.length] += 1;
+          pairIndex += 1;
+          remaining -= 1;
+          if (remaining <= 0) break;
+        }
+        if (tripleCombos.length) {
+          tripleCounts[tripleIndex % tripleCombos.length] += 1;
+          tripleIndex += 1;
+          remaining -= 1;
+          if (remaining <= 0) break;
+        }
+        if (!pairCombos.length && !tripleCombos.length) {
+          const roleIndex = (total - remaining) % roleCount;
+          soloCounts[roleIndex] += 1;
+          remaining -= 1;
+        }
+      }
+
+      return {
+        total,
+        roles,
+        soloCounts,
+        pairCombos,
+        pairCounts,
+        tripleCombos,
+        tripleCounts,
+        allRolesCount,
+        warnings,
+      };
+    };
+
+    const renderDistribution = (distribution) => {
+      if (distribution.error) {
+        resultNode.textContent = distribution.error;
+        return;
+      }
+
+      const soloRows = distribution.roles.map((role, index) => `${role}: ${distribution.soloCounts[index]}`);
+      const pairRows = distribution.pairCombos
+        .map((combo, index) => ({ combo: combo.join(" + "), count: distribution.pairCounts[index] }))
+        .filter((item) => item.count > 0)
+        .map((item) => `${item.combo}: ${item.count}`);
+      const tripleRows = distribution.tripleCombos
+        .map((combo, index) => ({ combo: combo.join(" + "), count: distribution.tripleCounts[index] }))
+        .filter((item) => item.count > 0)
+        .map((item) => `${item.combo}: ${item.count}`);
+
+      const soloTotal = distribution.soloCounts.reduce((sum, value) => sum + value, 0);
+      const pairTotal = distribution.pairCounts.reduce((sum, value) => sum + value, 0);
+      const tripleTotal = distribution.tripleCounts.reduce((sum, value) => sum + value, 0);
+      const summaryRows = [
+        `Всего кадров: ${distribution.total}`,
+        `Сольные: ${soloTotal}`,
+      ];
+      if (distribution.roles.length > 1) {
+        summaryRows.push(`Общий кадр со всеми ролями: ${distribution.allRolesCount}`);
+      }
+      summaryRows.push(`Парные: ${pairTotal}`);
+      summaryRows.push(`Тройные: ${tripleTotal}`);
+
+      const warningsHtml = distribution.warnings.length
+        ? `<div><strong>Примечание:</strong><ul>${distribution.warnings.map((row) => `<li>${escapeHtml(row)}</li>`).join("")}</ul></div>`
+        : "";
+
+      resultNode.innerHTML = [
+        renderList("Сводка", summaryRows),
+        renderList("Сольные кадры по ролям", soloRows),
+        pairRows.length ? renderList("Парные кадры", pairRows) : "",
+        tripleRows.length ? renderList("Тройные кадры", tripleRows) : "",
+        warningsHtml,
+      ].join("");
+    };
+
+    fillRolesButton.addEventListener("click", () => {
+      const roles = collectRolesFromProjectForm();
+      rolesInput.value = roles.join("\n");
+    });
+
+    runButton.addEventListener("click", () => {
+      const totalFrames = Number(totalInput.value || "0");
+      const roles = parseUniqueRoles(rolesInput.value);
+      const distribution = calculateDistribution(totalFrames, roles);
+      renderDistribution(distribution);
+    });
+
+    if (!rolesInput.value.trim()) {
+      const autoRoles = collectRolesFromProjectForm();
+      rolesInput.value = autoRoles.join("\n");
+    }
+  };
 
   bindAliasSuggest({ inputId: "project_leader", listId: "project-leader-suggest", multi: false });
   setupCoproplayerRows();
@@ -1904,10 +2189,12 @@
   setupPartsControls();
   setupSelfSewCostTables();
   setupChecklistControls();
+  setupPhotosetFramesCalculator();
   syncPlanTypeFromProjectCheckbox();
   applyFormRules();
   applyFestivalCityFilter();
   updateEstimatedTotal();
+  updateStatusMode();
   updateStatusValue();
   updateReferencesPreview();
 </script>

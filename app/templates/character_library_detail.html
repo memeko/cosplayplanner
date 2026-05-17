@@ -41,6 +41,8 @@
     <p class="meta"><strong>Рост:</strong> {{ entry.height_cm if entry.height_cm else "—" }}{% if entry.height_cm %} см{% endif %}</p>
     <p class="meta"><strong>Цвет кожи:</strong> {{ entry.skin_color or "—" }}</p>
     <p class="meta"><strong>Цвет глаз:</strong> {{ entry.eye_color or "—" }}</p>
+    <p class="meta"><strong>Цвет волос:</strong> {{ entry.hair_color or "—" }}</p>
+    <p class="meta"><strong>Длина волос:</strong> {{ entry.hair_length or "—" }}</p>
     <p class="meta"><strong>Возраст (на вид):</strong> {{ entry.apparent_age if entry.apparent_age else "—" }}</p>
     <p class="meta"><strong>Возраст:</strong> {{ entry.age if entry.age else "—" }}</p>
   </div>
@@ -63,14 +65,21 @@
 {% if entry.biography %}
 <section class="box">
   <h3>Биография</h3>
-  <p class="notes-block top-offset">{{ entry.biography|render_text }}</p>
+  <p class="notes-block top-offset">{{ entry.biography|render_markdown }}</p>
+</section>
+{% endif %}
+
+{% if entry.appearance_features %}
+<section class="box">
+  <h3>Особенности внешности</h3>
+  <p class="notes-block top-offset">{{ entry.appearance_features|render_markdown }}</p>
 </section>
 {% endif %}
 
 {% if entry.extra_info %}
 <section class="box">
   <h3>Дополнительные сведения</h3>
-  <p class="notes-block top-offset">{{ entry.extra_info|render_text }}</p>
+  <p class="notes-block top-offset">{{ entry.extra_info|render_markdown }}</p>
 </section>
 {% endif %}
 {% endblock %}

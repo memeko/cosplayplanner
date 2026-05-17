@@ -1238,11 +1238,14 @@ def apply_schema_migrations() -> None:
             ("height_cm", "INTEGER"),
             ("skin_color", "VARCHAR(120)"),
             ("eye_color", "VARCHAR(64)"),
+            ("hair_color", "VARCHAR(120)"),
+            ("hair_length", "VARCHAR(120)"),
             ("apparent_age", "INTEGER"),
             ("age", "INTEGER"),
             ("references_json", "JSON NOT NULL DEFAULT '[]'"),
             ("biography", "TEXT"),
             ("extra_info", "TEXT"),
+            ("appearance_features", "TEXT"),
             ("created_at", "DATETIME DEFAULT CURRENT_TIMESTAMP"),
             ("updated_at", "DATETIME DEFAULT CURRENT_TIMESTAMP"),
         ],
@@ -2633,6 +2636,82 @@ def related_card_ids_for_user(
         return []
     related_links = parse_related_card_links(raw_values, legacy_user_id=legacy_user_id)
     return [item["card_id"] for item in related_links if item["user_id"] == target_user_id]
+
+
+def build_effective_card_status_percent_map(
+    db: Session,
+    cards: list[CosplanCard],
+) -> dict[int, int]:
+    if not cards:
+        return {}
+
+    card_by_id: dict[int, CosplanCard] = {}
+    effective: dict[int, int] = {}
+    related_links_by_card_id: dict[int, list[dict[str, int]]] = {}
+    related_ids_needed: set[int] = set()
+
+    for card in cards:
+        if not card or not card.id:
+            continue
+        card_id = int(card.id)
+        card_by_id[card_id] = card
+        effective[card_id] = normalize_status_percent(card.status_percent)
+        if (card.plan_type or "") != "project":
+            continue
+        related_links = [
+            item
+            for item in parse_related_card_links(as_list(card.related_cards_json), legacy_user_id=card.user_id)
+            if int(item.get("card_id") or 0) and int(item.get("card_id") or 0) != card_id
+        ]
+        if not related_links:
+            continue
+        related_links_by_card_id[card_id] = related_links
+        related_ids_needed.update(int(item["card_id"]) for item in related_links)
+
+    if not related_links_by_card_id:
+        return effective
+
+    missing_ids = sorted(related_ids_needed - set(card_by_id.keys()))
+    if missing_ids:
+        related_rows = db.execute(
+            select(CosplanCard).where(
+                CosplanCard.id.in_(missing_ids),
+                CosplanCard.is_shared_copy.is_(False),
+            )
+        ).scalars().all()
+        for row in related_rows:
+            if not row or not row.id:
+                continue
+            card_by_id[int(row.id)] = row
+
+    for card_id, related_links in related_links_by_card_id.items():
+        related_statuses: list[int] = []
+        seen_related_ids: set[int] = set()
+        for link in related_links:
+            related_id = int(link["card_id"])
+            if related_id in seen_related_ids:
+                continue
+            seen_related_ids.add(related_id)
+            related_card = card_by_id.get(related_id)
+            if not related_card or bool(related_card.is_shared_copy):
+                continue
+            related_statuses.append(normalize_status_percent(related_card.status_percent))
+        if related_statuses:
+            effective[card_id] = int(round(sum(related_statuses) / len(related_statuses)))
+
+    return effective
+
+
+def effective_card_status_percent(
+    db: Session,
+    card: CosplanCard | None,
+) -> int:
+    if not card or not card.id:
+        return 0
+    return build_effective_card_status_percent_map(db, [card]).get(
+        int(card.id),
+        normalize_status_percent(card.status_percent),
+    )
 
 
 def get_accessible_card(
@@ -8950,7 +9029,7 @@ def parse_pigeon_message_payload(message: str | None) -> dict[str, Any] | None:
     body_text, meta = split_pigeon_message_body_and_meta(body_raw)
     image_ref = str(meta.get("img") or "").strip()
     project_card_id = parse_positive_int(str(meta.get("pcid", "")).strip())
-    project_url = f"/cosplan/{int(project_card_id)}" if project_card_id else ""
+    project_url = f"/pigeons/project-link/{int(project_card_id)}" if project_card_id else ""
     project_label = sanitize_pigeon_project_label(meta.get("plbl"))
     if project_url and not project_label:
         project_label = "Проект «В работе»"
@@ -9009,7 +9088,7 @@ def render_pigeon_message_attachments(
         )
 
     normalized_project_url = str(project_url or "").strip()
-    if re.fullmatch(r"/cosplan/\d+", normalized_project_url):
+    if re.fullmatch(r"/pigeons/project-link/\d+", normalized_project_url):
         label = sanitize_pigeon_project_label(project_label) or "Проект «В работе»"
         parts.append(
             '<a class="pigeon-message-project-link" href="{href}">Проект «В работе»: {label}</a>'.format(
@@ -11757,12 +11836,15 @@ def get_character_library_form_values(entry: CharacterLibraryEntry | None = None
             "height_cm": "",
             "skin_color": "",
             "eye_color": "",
+            "hair_color": "",
+            "hair_length": "",
             "apparent_age": "",
             "age": "",
             "references_json": [],
             "references_input": "",
             "biography": "",
             "extra_info": "",
+            "appearance_features": "",
         }
 
     return {
@@ -11776,12 +11858,15 @@ def get_character_library_form_values(entry: CharacterLibraryEntry | None = None
         "height_cm": "" if entry.height_cm is None else str(entry.height_cm),
         "skin_color": entry.skin_color or "",
         "eye_color": entry.eye_color or "",
+        "hair_color": entry.hair_color or "",
+        "hair_length": entry.hair_length or "",
         "apparent_age": "" if entry.apparent_age is None else str(entry.apparent_age),
         "age": "" if entry.age is None else str(entry.age),
         "references_json": as_list(entry.references_json),
         "references_input": "\n".join(as_list(entry.references_json)),
         "biography": entry.biography or "",
         "extra_info": entry.extra_info or "",
+        "appearance_features": entry.appearance_features or "",
     }
 
 
@@ -11837,8 +11922,11 @@ def save_character_library_entry_from_form(
     gender = str(form.get("gender", "")).strip().casefold()
     skin_color = str(form.get("skin_color", "")).strip()
     eye_color = str(form.get("eye_color", "")).strip().casefold()
+    hair_color = str(form.get("hair_color", "")).strip()
+    hair_length = str(form.get("hair_length", "")).strip()
     biography = str(form.get("biography", "")).strip()
     extra_info = str(form.get("extra_info", "")).strip()
+    appearance_features = str(form.get("appearance_features", "")).strip()
     references = parse_reference_values(str(form.get("references_input", "")))
 
     raw_height = str(form.get("height_cm", "")).strip()
@@ -11864,10 +11952,16 @@ def save_character_library_entry_from_form(
         return False, "Поле «Фандом на английском» должно быть до 255 символов."
     if len(skin_color) > 120:
         return False, "Поле «Цвет кожи» должно быть до 120 символов."
+    if len(hair_color) > 120:
+        return False, "Поле «Цвет волос» должно быть до 120 символов."
+    if len(hair_length) > 120:
+        return False, "Поле «Длина волос» должно быть до 120 символов."
     if len(biography) > 12000:
         return False, "Поле «Биография» должно быть до 12000 символов."
     if len(extra_info) > 12000:
         return False, "Поле «Дополнительные сведения» должно быть до 12000 символов."
+    if len(appearance_features) > 12000:
+        return False, "Поле «Особенности внешности» должно быть до 12000 символов."
     if raw_height and height_cm is None:
         return False, "Рост должен быть положительным числом."
     if raw_apparent_age and apparent_age is None:
@@ -11899,11 +11993,14 @@ def save_character_library_entry_from_form(
     entry.height_cm = height_cm
     entry.skin_color = skin_color or None
     entry.eye_color = normalized_eye_color or None
+    entry.hair_color = hair_color or None
+    entry.hair_length = hair_length or None
     entry.apparent_age = apparent_age
     entry.age = age
     entry.references_json = references
     entry.biography = biography or None
     entry.extra_info = extra_info or None
+    entry.appearance_features = appearance_features or None
 
     if remember_for_user_id:
         remember_options(db, remember_for_user_id, "fandom", [fandom] if fandom else [])
@@ -11949,11 +12046,17 @@ def card_options(
         )
         .order_by(CosplanCard.updated_at.desc(), CosplanCard.id.desc())
     ).scalars().all()
+    effective_status_by_card = build_effective_card_status_percent_map(db, own_cards)
     related_card_options = [
         {
             "id": int(card.id),
             "label": f"{card.character_name}, @{author_alias}",
-            "status_percent": normalize_status_percent(card.status_percent),
+            "status_percent": int(
+                effective_status_by_card.get(
+                    int(card.id),
+                    normalize_status_percent(card.status_percent),
+                )
+            ),
         }
         for card in own_cards
         if card.character_name and (not current_card_id or card.id != current_card_id)
@@ -12602,6 +12705,84 @@ def pigeons_messenger(request: Request, db: Session = Depends(get_db)):
         pigeon_alias_options=build_pigeon_alias_options(db, user),
         pigeon_project_attachment_options=project_attachment_options,
     )
+
+
+@app.get("/pigeons/project-link/{card_id}")
+def pigeons_project_link_redirect(card_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    source_card = db.get(CosplanCard, card_id)
+    if not source_card:
+        add_flash(request, "Карточка проекта не найдена.", "error")
+        return redirect("/pigeons")
+
+    directly_accessible = get_accessible_card(
+        db,
+        int(source_card.id),
+        user,
+        allow_project_leader=True,
+        allow_coproplayer=True,
+    )
+    if directly_accessible:
+        return redirect(f"/cosplan/{int(directly_accessible.id)}")
+
+    root_card = resolve_source_card(db, source_card) or source_card
+    root_accessible = get_accessible_card(
+        db,
+        int(root_card.id),
+        user,
+        allow_project_leader=True,
+        allow_coproplayer=True,
+    )
+    if root_accessible:
+        return redirect(f"/cosplan/{int(root_accessible.id)}")
+    if root_card.user_id == user.id:
+        return redirect(f"/cosplan/{int(root_card.id)}")
+
+    shared_copy = db.execute(
+        select(CosplanCard).where(
+            CosplanCard.user_id == user.id,
+            CosplanCard.source_card_id == int(root_card.id),
+            CosplanCard.is_shared_copy.is_(True),
+        )
+    ).scalar_one_or_none()
+    if shared_copy:
+        return redirect(f"/cosplan/{int(shared_copy.id)}")
+
+    related_ids = related_card_ids_for_user(
+        as_list(root_card.related_cards_json),
+        target_user_id=user.id,
+        legacy_user_id=root_card.user_id,
+    )
+    if related_ids:
+        related_candidates = db.execute(
+            select(CosplanCard).where(CosplanCard.id.in_(related_ids))
+        ).scalars().all()
+        for candidate in related_candidates:
+            accessible_candidate = get_accessible_card(
+                db,
+                int(candidate.id),
+                user,
+                allow_project_leader=True,
+                allow_coproplayer=True,
+            )
+            if accessible_candidate:
+                return redirect(f"/cosplan/{int(accessible_candidate.id)}")
+            if not candidate.is_shared_copy:
+                candidate_shared_copy = db.execute(
+                    select(CosplanCard).where(
+                        CosplanCard.user_id == user.id,
+                        CosplanCard.source_card_id == int(candidate.id),
+                        CosplanCard.is_shared_copy.is_(True),
+                    )
+                ).scalar_one_or_none()
+                if candidate_shared_copy:
+                    return redirect(f"/cosplan/{int(candidate_shared_copy.id)}")
+
+    add_flash(request, "Эта карточка проекта недоступна для вашего профиля.", "error")
+    return redirect("/pigeons")
 
 
 @app.get("/notifications/pigeon/state")
@@ -13966,6 +14147,7 @@ def cosplan_list(
         total, currency = estimate_card_total_and_currency(card)
         card_totals[card.id] = total
         card_total_currencies[card.id] = currency
+    effective_status_by_card = build_effective_card_status_percent_map(db, cards)
     card_date_conflicts = build_card_date_conflicts(cards, all_cards, festivals)
     rehearsal_stats_by_card: dict[int, dict[str, Any]] = {}
     card_ids = [card.id for card in cards]
@@ -14027,6 +14209,7 @@ def cosplan_list(
         completed_count=len(completed_cards_pool),
         in_progress_ids=in_progress_ids,
         frozen_card_ids=frozen_card_ids,
+        effective_status_by_card=effective_status_by_card,
         rehearsal_stats_by_card=rehearsal_stats_by_card,
         editable_card_links=editable_card_links,
         shared_coproplayer_counts=shared_coproplayer_counts,
@@ -14321,7 +14504,10 @@ def character_library_list(
                         str(entry.full_name_original or ""),
                         str(entry.fandom or ""),
                         str(entry.fandom_en or ""),
+                        str(entry.hair_color or ""),
+                        str(entry.hair_length or ""),
                         str(entry.biography or ""),
+                        str(entry.appearance_features or ""),
                         str(entry.extra_info or ""),
                     ]
                 ).casefold()
@@ -14834,7 +15020,7 @@ def cosplan_detail(card_id: int, request: Request, db: Session = Depends(get_db)
     ).scalar_one_or_none()
     card_in_progress = bool(progress_row)
     card_is_frozen = bool(progress_row and progress_row.is_frozen)
-    card_status_percent = normalize_status_percent(card.status_percent)
+    card_status_percent = effective_card_status_percent(db, card)
     related_cards: list[dict[str, Any]] = []
     related_status_values: list[int] = []
     project_status_percent: int | None = None
@@ -14847,6 +15033,7 @@ def cosplan_detail(card_id: int, request: Request, db: Session = Depends(get_db)
                 CosplanCard.is_shared_copy.is_(False),
             )
         ).scalars().all()
+        linked_effective_status_map = build_effective_card_status_percent_map(db, linked_cards_rows)
         linked_cards_by_id = {item.id: item for item in linked_cards_rows}
         related_owner_ids = {item.user_id for item in linked_cards_rows}
         related_owner_ids.update(item["user_id"] for item in related_links)
@@ -14862,7 +15049,12 @@ def cosplan_detail(card_id: int, request: Request, db: Session = Depends(get_db)
             link_author = related_owners.get(related_link["user_id"]) or related_owners.get(linked.user_id)
             author_label = f"@{preferred_user_alias(link_author)}" if link_author else ""
             card_label = linked.character_name or f"Карточка #{linked.id}"
-            related_status = normalize_status_percent(linked.status_percent)
+            related_status = int(
+                linked_effective_status_map.get(
+                    int(linked.id),
+                    normalize_status_percent(linked.status_percent),
+                )
+            )
             related_status_values.append(related_status)
             related_cards.append(
                 {
@@ -14873,6 +15065,7 @@ def cosplan_detail(card_id: int, request: Request, db: Session = Depends(get_db)
             )
     if related_status_values:
         project_status_percent = int(round(sum(related_status_values) / len(related_status_values)))
+        card_status_percent = project_status_percent
     return template_response(
         request,
         "cosplan_detail.html",
@@ -16319,6 +16512,11 @@ def in_progress_list(request: Request, db: Session = Depends(get_db)):
             filtered_progress_items.append(row)
         safe_progress_items = filtered_progress_items
 
+    effective_status_by_card = build_effective_card_status_percent_map(
+        db,
+        [row.cosplan_card for row in safe_progress_items if row.cosplan_card],
+    )
+
     today = date.today()
     urgent_deadline = today + timedelta(days=14)
     urgent_progress_ids = {
@@ -16394,6 +16592,7 @@ def in_progress_list(request: Request, db: Session = Depends(get_db)):
         leader_rehearsals_by_card=leader_rehearsals_by_card,
         task_assignees_by_progress=task_assignees_by_progress,
         task_rows_by_progress=task_rows_by_progress,
+        effective_status_by_card=effective_status_by_card,
         editable_card_links=editable_card_links,
         shared_coproplayer_counts_by_progress=shared_coproplayer_counts_by_progress,
         shared_coproplayer_emojis_by_progress=shared_coproplayer_emojis_by_progress,

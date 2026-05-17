@@ -130,7 +130,7 @@
   {% set editable_id = editable_card_links.get(row.id) %}
   {% set shared_count = shared_coproplayer_counts_by_progress.get(row.id, 0) %}
   {% set shared_emoji = shared_coproplayer_emojis_by_progress.get(row.id, "") %}
-  {% set status_value = (card.status_percent if card else 0) or 0 %}
+  {% set status_value = (effective_status_by_card.get(card.id) if (card and effective_status_by_card) else (card.status_percent if card else 0)) or 0 %}
   {% if status_value < 0 %}
     {% set status_value = 0 %}
   {% elif status_value > 100 %}

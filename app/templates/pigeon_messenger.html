@@ -136,9 +136,6 @@
                   <button type="button" class="btn btn-small pigeon-attachment-clear-btn" hidden>Убрать фото</button>
                   <span class="muted small-note pigeon-attachment-status">Фото не прикреплено.</span>
                 </div>
-                <a class="pigeon-attachment-preview-link" href="#" target="_blank" rel="noreferrer" hidden>
-                  <img class="pigeon-attachment-preview-image" src="" alt="Превью вложения" loading="lazy" />
-                </a>
               </div>
               {% if pigeon_project_attachment_options %}
                 <label class="pigeon-project-link-field">
@@ -210,9 +207,6 @@
             <button type="button" class="btn btn-small pigeon-attachment-clear-btn" hidden>Убрать фото</button>
             <span class="muted small-note pigeon-attachment-status">Фото не прикреплено.</span>
           </div>
-          <a class="pigeon-attachment-preview-link" href="#" target="_blank" rel="noreferrer" hidden>
-            <img class="pigeon-attachment-preview-image" src="" alt="Превью вложения" loading="lazy" />
-          </a>
         </div>
         {% if pigeon_project_attachment_options %}
           <label class="pigeon-project-link-field">
@@ -276,24 +270,11 @@
     function setPigeonAttachmentState(container, imagePath, statusText) {
       if (!container) return;
       const hiddenInput = container.querySelector('.pigeon-attachment-image-path');
-      const previewLink = container.querySelector('.pigeon-attachment-preview-link');
-      const previewImage = container.querySelector('.pigeon-attachment-preview-image');
       const clearButton = container.querySelector('.pigeon-attachment-clear-btn');
       const statusNode = container.querySelector('.pigeon-attachment-status');
       const normalizedPath = String(imagePath || '').trim();
       if (hiddenInput) {
         hiddenInput.value = normalizedPath;
-      }
-      if (previewLink && previewImage) {
-        if (normalizedPath) {
-          previewImage.src = normalizedPath;
-          previewLink.href = normalizedPath;
-          previewLink.hidden = false;
-        } else {
-          previewImage.src = '';
-          previewLink.href = '#';
-          previewLink.hidden = true;
-        }
       }
       if (clearButton) {
         clearButton.hidden = !normalizedPath;

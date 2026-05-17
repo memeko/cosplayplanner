@@ -90,7 +90,7 @@
         {% set editable_id = editable_card_links.get(card.id) %}
         {% set shared_count = shared_coproplayer_counts.get(card.id, 0) %}
         {% set shared_emoji = shared_coproplayer_emojis.get(card.id, "") %}
-        {% set status_value = card.status_percent or 0 %}
+        {% set status_value = (effective_status_by_card.get(card.id) if effective_status_by_card else card.status_percent) or 0 %}
         {% if status_value < 0 %}
           {% set status_value = 0 %}
         {% elif status_value > 100 %}
@@ -171,7 +171,7 @@
         {% set editable_id = editable_card_links.get(card.id) %}
         {% set shared_count = shared_coproplayer_counts.get(card.id, 0) %}
         {% set shared_emoji = shared_coproplayer_emojis.get(card.id, "") %}
-        {% set status_value = card.status_percent or 0 %}
+        {% set status_value = (effective_status_by_card.get(card.id) if effective_status_by_card else card.status_percent) or 0 %}
         {% if status_value < 0 %}
           {% set status_value = 0 %}
         {% elif status_value > 100 %}

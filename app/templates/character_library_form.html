@@ -89,6 +89,14 @@
           {% endfor %}
         </select>
       </label>
+      <label>
+        Цвет волос
+        <input type="text" name="hair_color" value="{{ form.hair_color }}" maxlength="120" />
+      </label>
+      <label>
+        Длина волос
+        <input type="text" name="hair_length" value="{{ form.hair_length }}" maxlength="120" />
+      </label>
     </div>
   </section>
 
@@ -108,6 +116,11 @@
   </section>
 
   <section class="box">
+    <p class="muted">Для длинных текстовых полей поддерживается Markdown: **жирный**, *курсив*, `код`, [ссылка](https://...).</p>
+    <label>
+      Особенности внешности
+      <textarea name="appearance_features" rows="6">{{ form.appearance_features }}</textarea>
+    </label>
     <label>
       Биография
       <textarea name="biography" rows="8">{{ form.biography }}</textarea>
