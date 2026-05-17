@@ -61,9 +61,31 @@
       <input type="date" name="birth_date" value="{{ user.birth_date.isoformat() if user.birth_date else '' }}" />
     </label>
     <label>
-      Секретный код для ботов
-      <input type="password" name="telegram_secret_code" placeholder="Оставьте пустым, чтобы не менять" />
+      Текущий секретный код для ботов
+      <div class="profile-secret-wrap">
+        <input
+          type="password"
+          id="saved-telegram-secret-code"
+          value="{{ saved_bot_secret_code or '' }}"
+          readonly
+          placeholder="{{ 'Код не сохранен' if not saved_bot_secret_code else '' }}"
+        />
+        <button
+          type="button"
+          class="btn btn-small"
+          id="saved-telegram-secret-toggle"
+          aria-controls="saved-telegram-secret-code"
+          aria-label="Показать или скрыть секретный код"
+        >👁</button>
+      </div>
       <small class="muted">Используется для входа в Telegram-боте и VK-боте вместо пароля сайта.</small>
+      {% if has_legacy_bot_secret_without_reveal %}
+        <small class="muted">Для текущего старого кода просмотр недоступен. Задайте новый код, и его можно будет посмотреть позже.</small>
+      {% endif %}
+    </label>
+    <label>
+      Новый секретный код для ботов
+      <input type="password" name="telegram_secret_code" placeholder="Оставьте пустым, чтобы не менять" />
     </label>
     <label>
       Новый пароль
@@ -269,6 +291,20 @@
 
 {% block scripts %}
 {{ super() }}
+<script>
+(function () {
+  const savedCodeInput = document.getElementById("saved-telegram-secret-code");
+  const savedCodeToggle = document.getElementById("saved-telegram-secret-toggle");
+  if (!savedCodeInput || !savedCodeToggle) {
+    return;
+  }
+  savedCodeToggle.addEventListener("click", function () {
+    const isHidden = savedCodeInput.type === "password";
+    savedCodeInput.type = isHidden ? "text" : "password";
+    savedCodeToggle.textContent = isHidden ? "🙈" : "👁";
+  });
+})();
+</script>
 <script>
 (function () {
   const fileInput = document.getElementById("profile-avatar-file");

@@ -90,6 +90,12 @@
         {% set editable_id = editable_card_links.get(card.id) %}
         {% set shared_count = shared_coproplayer_counts.get(card.id, 0) %}
         {% set shared_emoji = shared_coproplayer_emojis.get(card.id, "") %}
+        {% set status_value = card.status_percent or 0 %}
+        {% if status_value < 0 %}
+          {% set status_value = 0 %}
+        {% elif status_value > 100 %}
+          {% set status_value = 100 %}
+        {% endif %}
         <article class="card cosplan-list-item {% if card.is_priority %}priority-card{% endif %} {% if (card.plan_type or '') == 'project' %}shared-project-card{% endif %}">
           <div class="cosplan-list-row">
             <div class="cosplan-list-number">{{ loop.index }}.</div>
@@ -97,6 +103,12 @@
               <a href="/cosplan/{{ card.id }}" class="card-title-link cosplan-list-title">
                 {{ '★ ' if card.is_priority else '' }}{{ card.character_name }}
               </a>
+              <div class="master-status-inline" role="img" aria-label="Готовность {{ status_value }}%">
+                <span class="master-status-inline-track">
+                  <span class="master-status-inline-fill" style="width: {{ status_value }}%;"></span>
+                </span>
+                <span class="master-status-inline-text">{{ status_value }}%</span>
+              </div>
               <div class="cosplan-list-meta">
                 <span>{{ card.fandom or "—" }}</span>
                 <span>{{ card.project_deadline.strftime('%d-%m-%Y') if card.project_deadline else "—" }}</span>
@@ -159,6 +171,12 @@
         {% set editable_id = editable_card_links.get(card.id) %}
         {% set shared_count = shared_coproplayer_counts.get(card.id, 0) %}
         {% set shared_emoji = shared_coproplayer_emojis.get(card.id, "") %}
+        {% set status_value = card.status_percent or 0 %}
+        {% if status_value < 0 %}
+          {% set status_value = 0 %}
+        {% elif status_value > 100 %}
+          {% set status_value = 100 %}
+        {% endif %}
         <article class="card {% if card.is_priority %}priority-card{% endif %} {% if (card.plan_type or '') == 'project' %}shared-project-card{% endif %}">
           <h3>
             <a href="/cosplan/{{ card.id }}" class="card-title-link">{{ card.character_name }}</a>
@@ -181,6 +199,12 @@
             {% endif %}
           </h3>
           <p class="meta">Фандом: {{ card.fandom or "—" }}</p>
+          <div class="master-status-inline" role="img" aria-label="Готовность {{ status_value }}%">
+            <span class="master-status-inline-track">
+              <span class="master-status-inline-fill" style="width: {{ status_value }}%;"></span>
+            </span>
+            <span class="master-status-inline-text">{{ status_value }}%</span>
+          </div>
           <p class="meta">Тип: {{ "Проект" if card.plan_type == "project" else "Личное" }}</p>
           {% if (card.plan_type or '') == 'project' %}
             {% set project_character_names = [] %}

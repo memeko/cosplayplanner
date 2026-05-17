@@ -69,6 +69,7 @@
   <div class="fullscreen-gallery-content">
     <img src="" alt="Промо-фото" id="cosplayer_promo_image" />
     <p class="meta" id="cosplayer_promo_counter"></p>
+    <button type="button" class="fullscreen-gallery-close-inline" id="cosplayer_promo_close_inline">Закрыть просмотр</button>
   </div>
   <button type="button" class="fullscreen-gallery-nav fullscreen-gallery-next" id="cosplayer_promo_next" aria-label="Следующее фото">›</button>
 </div>
@@ -143,6 +144,7 @@
   const image = document.getElementById('cosplayer_promo_image');
   const counter = document.getElementById('cosplayer_promo_counter');
   const closeButton = document.getElementById('cosplayer_promo_close');
+  const closeInlineButton = document.getElementById('cosplayer_promo_close_inline');
   const prevButton = document.getElementById('cosplayer_promo_prev');
   const nextButton = document.getElementById('cosplayer_promo_next');
   const urls = triggers.map((item) => item.dataset.promoUrl).filter(Boolean);
@@ -183,6 +185,7 @@
   });
 
   closeButton?.addEventListener('click', closeGallery);
+  closeInlineButton?.addEventListener('click', closeGallery);
   prevButton?.addEventListener('click', showPrev);
   nextButton?.addEventListener('click', showNext);
   gallery.addEventListener('click', (event) => {

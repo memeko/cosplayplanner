@@ -1,0 +1,117 @@
+{% extends "base.html" %}
+{% block content %}
+{% include "community_tabs.html" %}
+
+{% set owner = authors_by_id.get(post.user_id) %}
+{% set contact_buttons = external_contact_buttons(post.contact_tg, include_site=False) %}
+
+<section class="section-head">
+  <h1>{{ post.subject }}</h1>
+  <div class="actions-inline">
+    <a href="/community/master-search" class="btn">Назад к заявкам</a>
+    {% if can_manage %}
+      <a href="/community/master-search/{{ post.id }}/edit" class="btn">Редактировать</a>
+      <form method="post" action="/community/master-search/{{ post.id }}/delete" onsubmit="return confirm('Удалить заявку?');">
+        <button type="submit" class="btn btn-danger">Удалить</button>
+      </form>
+    {% endif %}
+  </div>
+</section>
+
+<section class="box">
+  <div class="row-between">
+    <div class="chips-wrap">
+      <span class="chip">{{ master_search_type_label(post.master_type) }}</span>
+      <span class="chip">{{ master_search_price_label(budget_rub=post.budget_rub, is_price_negotiable=post.is_price_negotiable) }}</span>
+    </div>
+    {% if owner %}
+      <p class="meta">Автор: <span class="{% if user_is_special(owner) %}nick-special{% endif %}">@{{ owner.cosplay_nick or owner.username }}</span></p>
+    {% endif %}
+  </div>
+
+  {% if post.deadline %}
+    <p class="meta">Дедлайн: {{ post.deadline.strftime('%d-%m-%Y') }}</p>
+  {% endif %}
+  {% if post.character_fandom %}
+    <p class="meta">Персонаж и фандом: {{ post.character_fandom }}</p>
+  {% endif %}
+  {% if contact_buttons %}
+    <p class="meta">Связь:</p>
+    <div class="actions-inline">
+      {% for button in contact_buttons %}
+        <a href="{{ button.url }}" target="_blank" rel="noreferrer" class="btn btn-small btn-platform">{{ button.label }}</a>
+      {% endfor %}
+    </div>
+  {% elif post.contact_tg %}
+    <p class="meta">ТГ для связи: {{ post.contact_tg }}</p>
+  {% endif %}
+  {% if post.details %}
+    <p class="notes-block top-offset">{{ post.details|render_text }}</p>
+  {% endif %}
+</section>
+
+{% set references = post.references_json or [] %}
+{% if references %}
+<section class="box">
+  <h3>Референсы</h3>
+  <div class="reference-grid top-offset">
+    {% for url in references %}
+      <a class="reference-tile" href="{{ url }}" target="_blank" rel="noreferrer">
+        <img src="{{ url }}" alt="Референс заявки" loading="lazy" />
+      </a>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
+<section class="box">
+  <h3>Отклики мастеров</h3>
+  {% if comments %}
+    <div class="comments-list top-offset">
+      {% for comment in comments %}
+        {% set author = authors_by_id.get(comment.user_id) %}
+        <article class="comment-card">
+          <div class="comment-row">
+            <img src="{{ user_avatar_url(author) }}" alt="Аватар автора комментария" class="avatar-vh10" loading="lazy" />
+            <div class="comment-body-wrap">
+              <p class="comment-meta">
+                {% if author %}
+                  <span class="{% if user_is_special(author) %}nick-special{% endif %}">@{{ author.cosplay_nick or author.username }}</span>
+                {% else %}
+                  @unknown
+                {% endif %}
+                • {{ comment.created_at.strftime('%d-%m-%Y %H:%M') if comment.created_at else "—" }}
+              </p>
+              <p class="notes-block">{{ comment.body|render_text }}</p>
+              {% if user and comment.user_id == user.id %}
+                <div class="actions-inline top-offset">
+                  <form method="post" action="/community/master-search/{{ post.id }}/comments/{{ comment.id }}/delete" onsubmit="return confirm('Удалить комментарий?');">
+                    <button type="submit" class="btn btn-small btn-danger">Удалить</button>
+                  </form>
+                </div>
+              {% endif %}
+            </div>
+          </div>
+        </article>
+      {% endfor %}
+    </div>
+  {% else %}
+    <p class="muted top-offset">Откликов пока нет.</p>
+  {% endif %}
+
+  <form method="post" action="/community/master-search/{{ post.id }}/comments" class="comment-form top-offset">
+    <div class="comment-form-layout">
+      <img src="{{ user_avatar_url(user) }}" alt="Ваш аватар" class="avatar-vh10" loading="lazy" />
+      <div class="comment-form-fields">
+        <label>
+          Добавить отклик
+          <textarea name="body" rows="4" maxlength="4000" placeholder="Опишите, как можете помочь, сроки и условия..." required></textarea>
+        </label>
+        <div class="actions-inline">
+          <button type="submit" class="btn btn-accent">Отправить</button>
+        </div>
+      </div>
+    </div>
+  </form>
+</section>
+{% endblock %}

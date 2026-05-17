@@ -1,0 +1,159 @@
+{% extends "base.html" %}
+{% block content %}
+{% include "community_tabs.html" %}
+
+<section class="section-head">
+  <h1>{{ "Редактирование заявки" if editing else "Новая заявка" }}</h1>
+  <a href="{{ '/community/master-search/' ~ post_id if editing else '/community/master-search' }}" class="btn">Назад</a>
+</section>
+
+<form method="post" action="{{ '/community/master-search/' ~ post_id ~ '/edit' if editing else '/community/master-search/new' }}" class="grid one-col big-form">
+  <section class="box">
+    <div class="grid two-col">
+      <label>
+        Название *
+        <input type="text" name="subject" value="{{ form.subject }}" maxlength="255" required />
+      </label>
+      <label>
+        Тип мастера *
+        <select name="master_type" required>
+          {% for option in type_options %}
+            <option value="{{ option }}" {% if form.master_type == option %}selected{% endif %}>
+              {{ type_labels.get(option, option|capitalize) }}
+            </option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>
+        Примерная цена, ₽
+        <input type="text" name="budget_rub" value="{{ form.budget_rub }}" inputmode="numeric" placeholder="Например: 12000" />
+      </label>
+      <label class="inline-check top-offset">
+        <input type="checkbox" name="is_price_negotiable" value="1" {% if form.is_price_negotiable %}checked{% endif %} />
+        Договорная цена
+      </label>
+      <label>
+        ТГ для связи
+        <input type="text" name="contact_tg" value="{{ form.contact_tg }}" maxlength="255" />
+      </label>
+      <label>
+        Персонаж и фандом
+        <input type="text" name="character_fandom" value="{{ form.character_fandom }}" maxlength="255" />
+      </label>
+      <label>
+        Дедлайн
+        <input type="date" name="deadline" value="{{ form.deadline }}" />
+      </label>
+    </div>
+
+    <label>
+      Подробности заявки
+      <textarea name="details" rows="7" maxlength="4000">{{ form.details }}</textarea>
+    </label>
+
+    <label>
+      Референсы (до 3 ссылок, по одной на строку)
+      <textarea name="references_input" id="master_search_references_input" rows="4" placeholder="https://..." data-max-items="3">{{ form.references_input }}</textarea>
+    </label>
+    <div class="gallery-upload-row">
+      <input type="file" id="master_search_upload_files" accept="image/*" multiple />
+      <button type="button" class="btn" id="master_search_upload_btn">Загрузить фото</button>
+      <span class="muted" id="master_search_upload_status"></span>
+    </div>
+    <div class="reference-grid" id="master_search_references_preview"></div>
+  </section>
+
+  <div class="actions-inline">
+    <button type="submit" class="btn btn-accent">{{ "Сохранить" if editing else "Опубликовать" }}</button>
+    <a href="{{ '/community/master-search/' ~ post_id if editing else '/community/master-search' }}" class="btn">Отмена</a>
+  </div>
+</form>
+
+<script>
+(function () {
+  function parseListEntries(value) {
+    if (!value) return [];
+    const normalized = value.replace(/,\s*(?=(?:https?:\/\/|\/media\/|iframe:|<iframe))/gi, '\n');
+    return normalized
+      .split(/\n|;/)
+      .map((item) => item.trim())
+      .map((item) => item.replace(/[;,]+$/, ''))
+      .filter(Boolean);
+  }
+
+  function createImageTile(url) {
+    const link = document.createElement('a');
+    link.className = 'reference-tile';
+    link.href = url;
+    link.target = '_blank';
+    link.rel = 'noreferrer';
+    const image = document.createElement('img');
+    image.src = url;
+    image.alt = 'Референс';
+    link.appendChild(image);
+    return link;
+  }
+
+  function appendUrlsToTextarea(textarea, urls) {
+    if (!textarea || !urls.length) return;
+    const existing = textarea.value ? `${textarea.value}\n` : '';
+    textarea.value = `${existing}${urls.join('\n')}`.trim();
+  }
+
+  async function uploadReferenceImages() {
+    const filesInput = document.getElementById('master_search_upload_files');
+    const status = document.getElementById('master_search_upload_status');
+    const textarea = document.getElementById('master_search_references_input');
+    const limit = Number(textarea?.dataset.maxItems || '3');
+    if (!filesInput || !textarea || !filesInput.files?.length) {
+      if (status) status.textContent = 'Выберите изображение.';
+      return;
+    }
+
+    const existingCount = parseListEntries(textarea.value).filter((value) => /^(https?:\/\/|\/media\/)/i.test(value)).length;
+    if (existingCount + filesInput.files.length > limit) {
+      if (status) status.textContent = `Можно сохранить не более ${limit} изображений.`;
+      return;
+    }
+
+    if (status) status.textContent = 'Загрузка...';
+    const uploadedUrls = [];
+    for (const file of Array.from(filesInput.files)) {
+      const formData = new FormData();
+      formData.append('image', file);
+      try {
+        const response = await fetch('/media/upload-image', { method: 'POST', body: formData, credentials: 'same-origin' });
+        const payload = await response.json();
+        if (!response.ok || !payload?.ok || !payload?.url) throw new Error(payload?.detail || 'Ошибка загрузки');
+        uploadedUrls.push(payload.url);
+      } catch (error) {
+        if (status) status.textContent = `Ошибка: ${error.message || 'не удалось загрузить файл'}`;
+        return;
+      }
+    }
+
+    appendUrlsToTextarea(textarea, uploadedUrls);
+    filesInput.value = '';
+    updatePreview();
+    if (status) status.textContent = `Загружено: ${uploadedUrls.length}`;
+  }
+
+  function updatePreview() {
+    const input = document.getElementById('master_search_references_input');
+    const wrap = document.getElementById('master_search_references_preview');
+    if (!input || !wrap) return;
+    wrap.innerHTML = '';
+    const urls = Array.from(new Set(parseListEntries(input.value).filter((value) => /^(https?:\/\/|\/media\/)/i.test(value))));
+    urls.forEach((url) => wrap.appendChild(createImageTile(url)));
+  }
+
+  const referencesInput = document.getElementById('master_search_references_input');
+  if (referencesInput) {
+    referencesInput.addEventListener('input', updatePreview);
+    updatePreview();
+  }
+  const uploadButton = document.getElementById('master_search_upload_btn');
+  if (uploadButton) uploadButton.addEventListener('click', uploadReferenceImages);
+})();
+</script>
+{% endblock %}

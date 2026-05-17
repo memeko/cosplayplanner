@@ -36,6 +36,7 @@
 </section>
 
 <section class="box">
+  {% set status_value = card_status_percent or 0 %}
   {% if card_owner and card_owner.id != user.id %}
     <p class="meta">Участник: {{ card_owner_display }}</p>
   {% endif %}
@@ -43,6 +44,12 @@
   {% if card.plan_type %}
     <p class="meta">Тип: {{ "Проект" if card.plan_type == "project" else "Личное" }}</p>
   {% endif %}
+  <div class="master-status-inline" role="img" aria-label="Готовность {{ status_value }}%">
+    <span class="master-status-inline-track">
+      <span class="master-status-inline-fill" style="width: {{ status_value }}%;"></span>
+    </span>
+    <span class="master-status-inline-text">{{ status_value }}%</span>
+  </div>
   {% if card_is_frozen %}
     <p class="meta"><strong>Статус: Заморожено</strong></p>
   {% endif %}
@@ -76,11 +83,28 @@
   {% endif %}
   {% if related_cards %}
     <p class="meta">Связанные карточки:</p>
-    <ul class="notes-list">
+    <ul class="related-progress-list">
       {% for item in related_cards %}
-        <li><a href="/cosplan/{{ item.id }}">{{ item.label }}</a></li>
+        <li class="related-progress-item">
+          <a href="/cosplan/{{ item.id }}" class="related-progress-link">{{ item.label }}</a>
+          <div class="master-status-inline" role="img" aria-label="Готовность {{ item.status_percent }}%">
+            <span class="master-status-inline-track">
+              <span class="master-status-inline-fill" style="width: {{ item.status_percent }}%;"></span>
+            </span>
+            <span class="master-status-inline-text">{{ item.status_percent }}%</span>
+          </div>
+        </li>
       {% endfor %}
     </ul>
+    {% if project_status_percent is not none %}
+      <p class="meta"><strong>Готовность проекта (среднее по связанным карточкам): {{ project_status_percent }}%</strong></p>
+      <div class="master-status-inline" role="img" aria-label="Готовность проекта {{ project_status_percent }}%">
+        <span class="master-status-inline-track">
+          <span class="master-status-inline-fill" style="width: {{ project_status_percent }}%;"></span>
+        </span>
+        <span class="master-status-inline-text">{{ project_status_percent }}%</span>
+      </div>
+    {% endif %}
   {% endif %}
   {% if nominations %}<p class="meta">Номинации: {{ nominations | join(", ") }}</p>{% endif %}
   {% if card.project_deadline %}<p class="meta">Дедлайн проекта: {{ card.project_deadline.strftime('%d-%m-%Y') }}</p>{% endif %}

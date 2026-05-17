@@ -725,10 +725,16 @@
           <textarea name="telegram_photos_input" id="telegram_photos_input" rows="4" placeholder="https://...">{{ content_form.telegram_photos_input }}</textarea>
         </label>
         <div class="gallery-upload-row">
-          <input type="file" id="telegram_photo_upload_files" accept="image/*" multiple />
+          <input
+            type="file"
+            id="telegram_photo_upload_files"
+            accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp"
+            multiple
+          />
           <button type="button" class="btn" id="telegram_photo_upload_btn">Загрузить фото</button>
           <span class="muted" id="telegram_photo_upload_status"></span>
         </div>
+        <p class="muted">Поддерживаемые форматы загрузки: JPG, JPEG, PNG, WEBP. GIF и видео (например, MP4) не загружаются.</p>
         <p class="muted">Фото для Telegram не ужимаются по размеру файла. Если большая сторона больше 2000 px, изображение уменьшается до 2000 px; если меньше, сохраняется без сжатия. Через 24 часа после отправки поста в Telegram локально загруженные картинки удаляются с сервера.</p>
         <div class="reference-grid comment-images" id="telegram_photos_preview"></div>
       </section>
@@ -1479,15 +1485,47 @@
     const telegramUploadFiles = document.getElementById('telegram_photo_upload_files');
     const telegramUploadStatus = document.getElementById('telegram_photo_upload_status');
     if (telegramUploadButton && telegramUploadFiles && telegramPhotosInput) {
+      const allowedMimeTypes = new Set(['image/jpeg', 'image/png', 'image/webp']);
+      const allowedExtensions = new Set(['jpg', 'jpeg', 'png', 'webp']);
+
+      function fileExtension(name) {
+        const value = String(name || '').trim().toLowerCase();
+        if (!value.includes('.')) return '';
+        return value.split('.').pop() || '';
+      }
+
+      function isAllowedImageFile(file) {
+        const ext = fileExtension(file?.name);
+        const mime = String(file?.type || '').trim().toLowerCase();
+        if (allowedExtensions.has(ext)) return true;
+        if (allowedMimeTypes.has(mime)) return true;
+        return false;
+      }
+
+      function formatFileProblem(file) {
+        const ext = fileExtension(file?.name) || 'без расширения';
+        return `${file.name || 'файл'} (${ext})`;
+      }
+
       telegramUploadButton.addEventListener('click', async function () {
         const files = Array.from(telegramUploadFiles.files || []);
         if (!files.length) {
           if (telegramUploadStatus) telegramUploadStatus.textContent = 'Выберите изображения.';
           return;
         }
+        const validFiles = files.filter(isAllowedImageFile);
+        const invalidFiles = files.filter((file) => !isAllowedImageFile(file));
+        if (!validFiles.length) {
+          if (telegramUploadStatus) {
+            const badList = invalidFiles.slice(0, 3).map(formatFileProblem).join(', ');
+            const suffix = invalidFiles.length > 3 ? ', ...' : '';
+            telegramUploadStatus.textContent = `Неподдерживаемый формат: ${badList}${suffix}. Разрешены JPG, JPEG, PNG и WEBP.`;
+          }
+          return;
+        }
         if (telegramUploadStatus) telegramUploadStatus.textContent = 'Загружаем...';
         const uploaded = [];
-        for (const file of files) {
+        for (const file of validFiles) {
           const formData = new FormData();
           formData.append('image', file);
           const response = await fetch('/media/upload-content-image', {
@@ -1506,7 +1544,13 @@
         appendUrlsToTextarea(telegramPhotosInput, uploaded);
         updateTelegramPhotosPreview();
         telegramUploadFiles.value = '';
-        if (telegramUploadStatus) telegramUploadStatus.textContent = `Загружено: ${uploaded.length}`;
+        if (telegramUploadStatus) {
+          if (invalidFiles.length) {
+            telegramUploadStatus.textContent = `Загружено: ${uploaded.length}. Пропущено: ${invalidFiles.length} (неподдерживаемый формат).`;
+          } else {
+            telegramUploadStatus.textContent = `Загружено: ${uploaded.length}`;
+          }
+        }
       });
     }
 

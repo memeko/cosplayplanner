@@ -79,6 +79,10 @@
         </datalist>
       </label>
     </div>
+    <label>
+      Готовность: <span id="status_percent_value">{{ form.status_percent or 0 }}</span>%
+      <input type="range" name="status_percent" id="status_percent_input" min="0" max="100" value="{{ form.status_percent or 0 }}" />
+    </label>
     <datalist id="character-options">
       {% for value in character_options %}
         <option value="{{ value }}"></option>
@@ -525,7 +529,13 @@
             value="{{ item.id }}"
             {% if item.id in form.related_card_ids %}checked{% endif %}
           />
-          {{ item.label }}
+          <span>{{ item.label }}</span>
+          <span class="master-status-inline" role="img" aria-label="Готовность {{ item.status_percent }}%">
+            <span class="master-status-inline-track">
+              <span class="master-status-inline-fill" style="width: {{ item.status_percent }}%;"></span>
+            </span>
+            <span class="master-status-inline-text">{{ item.status_percent }}%</span>
+          </span>
         </label>
         {% endfor %}
       </div>
@@ -1876,6 +1886,17 @@
     performanceCountInput.addEventListener("change", updateEstimatedTotal);
   }
 
+  const statusInput = document.getElementById("status_percent_input");
+  const statusValue = document.getElementById("status_percent_value");
+  const updateStatusValue = () => {
+    if (!statusInput || !statusValue) return;
+    statusValue.textContent = statusInput.value || "0";
+  };
+  if (statusInput) {
+    statusInput.addEventListener("input", updateStatusValue);
+    statusInput.addEventListener("change", updateStatusValue);
+  }
+
   bindAliasSuggest({ inputId: "project_leader", listId: "project-leader-suggest", multi: false });
   setupCoproplayerRows();
   setupProjectCharacterRows();
@@ -1887,6 +1908,7 @@
   applyFormRules();
   applyFestivalCityFilter();
   updateEstimatedTotal();
+  updateStatusValue();
   updateReferencesPreview();
 </script>
 {% endblock %}

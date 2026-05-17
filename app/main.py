@@ -65,6 +65,8 @@ from .models import (
     CommunityMasterComment,
     CommunityMasterOrder,
     CommunityMasterRating,
+    CommunityMasterSearchComment,
+    CommunityMasterSearchPost,
     CommunityMarketplaceSale,
     CommunityMarketplaceSearch,
     CommunityQuestion,
@@ -468,8 +470,13 @@ SMM_MANAGER_ROLE_GROUP = "profile_is_smm_manager"
 CONTENT_MANAGER_OWNER_GROUP = "content_manager_owner"
 CONTENT_MANAGER_USER_GROUP = "content_manager_user"
 PIGEON_CHAT_LABEL_GROUP = "pigeon_chat_label"
+PROFILE_TELEGRAM_SECRET_CODE_GROUP = "profile_telegram_secret_code"
 PIGEON_MESSAGE_ENCRYPTED_PREFIX = "pg2:"
 PIGEON_MESSAGE_ENCRYPTION_SCOPE = "pigeon-messages-v2"
+PIGEON_MESSAGE_META_PREFIX = "[[pgmeta:"
+PIGEON_MESSAGE_META_SUFFIX = "]]"
+PIGEON_MESSAGE_META_PATTERN = re.compile(r"\s*\[\[pgmeta:([A-Za-z0-9_-]+)\]\]\s*$", re.DOTALL)
+PIGEON_PROJECT_LABEL_MAX_LENGTH = 140
 BIRTHDAY_PIGEON_LAST_SENT_GROUP = "birthday_pigeon_last_sent_date"
 BIRTHDAY_PIGEON_SYSTEM_ALIAS = "cosplayplanner"
 BIRTHDAY_PIGEON_MESSAGE = (
@@ -671,6 +678,22 @@ MASTER_TYPE_OPTIONS = [
     "видеограф",
     "другое",
 ]
+MASTER_SEARCH_TYPE_OPTIONS = [
+    "3d",
+    "ретушь",
+    *MASTER_TYPE_OPTIONS,
+]
+MASTER_SEARCH_TYPE_LABELS = {
+    "3d": "3D",
+    "ретушь": "Ретушь",
+    "фотограф": "Фотограф",
+    "швея": "Швея",
+    "крафтер": "Крафтер",
+    "вигмейкер": "Вигмейкер",
+    "художник": "Художник",
+    "видеограф": "Видеограф",
+    "другое": "Другое",
+}
 
 STUDIO_TAG_OPTIONS = [
     "Китай",
@@ -1067,6 +1090,7 @@ def apply_schema_migrations() -> None:
             ("craft_material_price", "FLOAT"),
             ("craft_deadline", "DATE"),
             ("craft_currency", "VARCHAR(16)"),
+            ("status_percent", "INTEGER NOT NULL DEFAULT 0"),
             ("related_cards_json", "JSON NOT NULL DEFAULT '[]'"),
             ("project_characters_json", "JSON NOT NULL DEFAULT '[]'"),
             ("references_json", "JSON NOT NULL DEFAULT '[]'"),
@@ -1186,6 +1210,21 @@ def apply_schema_migrations() -> None:
         "community_master_orders": [
             ("status", "VARCHAR(32) NOT NULL DEFAULT 'pending'"),
         ],
+        "community_master_search_posts": [
+            ("subject", "VARCHAR(255)"),
+            ("master_type", "VARCHAR(64)"),
+            ("contact_tg", "VARCHAR(255)"),
+            ("character_fandom", "VARCHAR(255)"),
+            ("details", "TEXT"),
+            ("deadline", "DATE"),
+            ("references_json", "JSON NOT NULL DEFAULT '[]'"),
+            ("budget_rub", "INTEGER"),
+            ("is_price_negotiable", "BOOLEAN NOT NULL DEFAULT 0"),
+            ("updated_at", "DATETIME DEFAULT CURRENT_TIMESTAMP"),
+        ],
+        "community_master_search_comments": [
+            ("body", "TEXT"),
+        ],
         "character_library_entries": [
             ("id", "INTEGER PRIMARY KEY"),
             ("created_by_user_id", "INTEGER"),
@@ -1274,6 +1313,10 @@ def apply_schema_migrations() -> None:
             CommunityMasterRating.__table__.create(bind=conn, checkfirst=True)
         if "community_master_orders" not in existing_tables:
             CommunityMasterOrder.__table__.create(bind=conn, checkfirst=True)
+        if "community_master_search_posts" not in existing_tables:
+            CommunityMasterSearchPost.__table__.create(bind=conn, checkfirst=True)
+        if "community_master_search_comments" not in existing_tables:
+            CommunityMasterSearchComment.__table__.create(bind=conn, checkfirst=True)
         if "character_library_entries" not in existing_tables:
             CharacterLibraryEntry.__table__.create(bind=conn, checkfirst=True)
         if "community_studios" not in existing_tables:
@@ -1717,7 +1760,15 @@ async def media_upload_content_image(
         raise HTTPException(status_code=400, detail="Файл не передан.")
     content_type = (image.content_type or "").lower()
     if not content_type.startswith("image/"):
-        raise HTTPException(status_code=400, detail="Нужен файл изображения.")
+        raise HTTPException(
+            status_code=400,
+            detail="Нужен файл изображения (JPG, PNG или WEBP). Видео и другие форматы не поддерживаются.",
+        )
+    if content_type == "image/gif":
+        raise HTTPException(
+            status_code=400,
+            detail="GIF не поддерживается. Загрузите статичное изображение JPG, PNG или WEBP.",
+        )
 
     raw_bytes = await image.read(MAX_UPLOAD_INPUT_BYTES + 1)
     if len(raw_bytes) > MAX_UPLOAD_INPUT_BYTES:
@@ -2524,6 +2575,14 @@ def parse_id_list(values: list[Any]) -> list[int]:
             continue
         parsed.append(parsed_value)
     return parsed
+
+
+def normalize_status_percent(raw_value: Any) -> int:
+    try:
+        value = int(str(raw_value or "").strip())
+    except (TypeError, ValueError):
+        value = 0
+    return max(0, min(100, value))
 
 
 def parse_related_card_links(raw_values: list[Any], *, legacy_user_id: int | None = None) -> list[dict[str, int]]:
@@ -5672,42 +5731,45 @@ def publish_content_post_to_telegram(
 
     last_message_id = ""
     if photo_refs:
-        first_photo = photo_refs[0]
-        remaining = photo_refs[1:]
         caption_text = message_html if len(strip_telegram_html(message_html)) <= 1024 else ""
-        first_photo_payload, first_files_payload = build_telegram_photo_request_payload(first_photo)
-        if not first_photo_payload:
-            raise RuntimeError("Не удалось подготовить первое изображение для Telegram.")
-        first_request_payload = {
-            key: value
-            for key, value in {
-                "chat_id": chat_id,
-                **first_photo_payload,
-                "caption": caption_text or None,
-                "parse_mode": "HTML" if caption_text else None,
-            }.items()
-            if value is not None
-        }
-        photo_payload = telegram_custom_request(
-            token,
-            "sendPhoto",
-            data_payload=first_request_payload,
-            files_payload=first_files_payload,
-        )
-        result = photo_payload.get("result") or {}
-        last_message_id = str(result.get("message_id") or "")
-        for photo_ref in remaining:
+        media_items: list[dict[str, str]] = []
+        media_files_payload: dict[str, Any] = {}
+        for media_index, photo_ref in enumerate(photo_refs):
             photo_payload_data, photo_files_payload = build_telegram_photo_request_payload(photo_ref)
-            if not photo_payload_data:
+            media_value = str(photo_payload_data.get("photo") or "").strip() if photo_payload_data else ""
+            if not media_value:
                 continue
-            extra_payload = telegram_custom_request(
-                token,
-                "sendPhoto",
-                data_payload={"chat_id": chat_id, **photo_payload_data},
-                files_payload=photo_files_payload,
-            )
-            extra_result = extra_payload.get("result") or {}
-            last_message_id = str(extra_result.get("message_id") or last_message_id)
+            if media_value.startswith("attach://") and photo_files_payload:
+                file_item = photo_files_payload.get("photo")
+                if file_item:
+                    attach_key = f"photo_{media_index}"
+                    media_files_payload[attach_key] = file_item
+                    media_value = f"attach://{attach_key}"
+            media_item: dict[str, str] = {"type": "photo", "media": media_value}
+            if not media_items and caption_text:
+                media_item["caption"] = caption_text
+                media_item["parse_mode"] = "HTML"
+            media_items.append(media_item)
+        if not media_items:
+            raise RuntimeError("Не удалось подготовить изображения для Telegram.")
+
+        media_group_payload = telegram_custom_request(
+            token,
+            "sendMediaGroup",
+            data_payload={
+                "chat_id": chat_id,
+                "media": media_items,
+            },
+            files_payload=media_files_payload or None,
+        )
+        media_group_result = media_group_payload.get("result") or []
+        if isinstance(media_group_result, list):
+            for result_item in media_group_result:
+                if not isinstance(result_item, dict):
+                    continue
+                message_id = str(result_item.get("message_id") or "").strip()
+                if message_id:
+                    last_message_id = message_id
         if not caption_text:
             text_payload = telegram_custom_request(
                 token,
@@ -5744,8 +5806,8 @@ def publish_content_post_to_vk(
     rubric_tag: str | None = None,
 ) -> str:
     token = str(group.get("api_token") or "").strip()
-    owner_id = str(group.get("owner_id") or "").strip()
     group_id = str(group.get("group_id") or "").strip()
+    owner_id = f"-{group_id}" if group_id else ""
     if not token or not owner_id or not group_id:
         raise RuntimeError("VK-сообщество задано некорректно.")
 
@@ -5758,6 +5820,7 @@ def publish_content_post_to_vk(
     params: dict[str, Any] = {
         "owner_id": owner_id,
         "from_group": 1,
+        "signed": 0,
     }
     if message_text:
         params["message"] = message_text
@@ -6380,6 +6443,8 @@ def prepare_content_image_upload(raw_bytes: bytes) -> tuple[bytes, int, int, str
     try:
         with Image.open(io.BytesIO(raw_bytes)) as source:
             source_format = (source.format or "").upper()
+            if source_format == "GIF":
+                raise ValueError("GIF не поддерживается. Загрузите статичное изображение JPG, PNG или WEBP.")
             prepared = ImageOps.exif_transpose(source)
             width, height = prepared.size
             has_alpha = "A" in prepared.getbands()
@@ -6845,6 +6910,7 @@ def set_user_bot_secret_code(user: User, raw_code: str, db: Session) -> None:
         raise ValueError("Секретный код для ботов должен быть не короче 6 символов.")
     user.telegram_secret_code_hash = password_context.hash(secret_code)
     user.telegram_secret_code_updated_at = datetime.utcnow()
+    set_secret_user_option_value(db, user.id, PROFILE_TELEGRAM_SECRET_CODE_GROUP, secret_code)
     # Re-auth in bots after code rotation.
     user.telegram_chat_id = None
     user.telegram_username = None
@@ -8317,6 +8383,109 @@ def save_master_order_from_form(form: Any, order: CommunityMasterOrder) -> tuple
     return True, ""
 
 
+def master_search_type_label(master_type: str | None) -> str:
+    key = str(master_type or "").strip().lower()
+    if not key:
+        return "Другое"
+    return MASTER_SEARCH_TYPE_LABELS.get(key, key.capitalize())
+
+
+def format_rub_amount(value: int | None) -> str:
+    if value is None:
+        return ""
+    return f"{int(value):,}".replace(",", " ") + " ₽"
+
+
+def master_search_price_label(
+    *,
+    budget_rub: int | None,
+    is_price_negotiable: bool,
+) -> str:
+    if is_price_negotiable:
+        return "Договорная цена"
+    if isinstance(budget_rub, int) and budget_rub > 0:
+        return f"~ {format_rub_amount(budget_rub)}"
+    return "—"
+
+
+def get_master_search_form_values(post: CommunityMasterSearchPost | None = None) -> dict[str, Any]:
+    if not post:
+        return {
+            "subject": "",
+            "master_type": MASTER_SEARCH_TYPE_OPTIONS[0],
+            "contact_tg": "",
+            "character_fandom": "",
+            "details": "",
+            "deadline": "",
+            "references_input": "",
+            "budget_rub": "",
+            "is_price_negotiable": False,
+        }
+
+    return {
+        "subject": post.subject or "",
+        "master_type": (post.master_type or MASTER_SEARCH_TYPE_OPTIONS[0]).strip().lower(),
+        "contact_tg": post.contact_tg or "",
+        "character_fandom": post.character_fandom or "",
+        "details": post.details or "",
+        "deadline": post.deadline.isoformat() if post.deadline else "",
+        "references_input": "\n".join(as_list(post.references_json)),
+        "budget_rub": "" if post.budget_rub is None else str(post.budget_rub),
+        "is_price_negotiable": bool(post.is_price_negotiable),
+    }
+
+
+def save_master_search_from_form(form: Any, post: CommunityMasterSearchPost) -> tuple[bool, str]:
+    subject = str(form.get("subject", "")).strip()
+    master_type = str(form.get("master_type", "")).strip().lower()
+    contact_tg = str(form.get("contact_tg", "")).strip()
+    character_fandom = str(form.get("character_fandom", "")).strip()
+    details = str(form.get("details", "")).strip()
+    deadline = parse_date(str(form.get("deadline", "")).strip())
+    references = parse_reference_values(str(form.get("references_input", "")))[:3]
+    is_price_negotiable = to_bool(form.get("is_price_negotiable"))
+    budget_raw = str(form.get("budget_rub", "")).strip()
+    budget_rub: int | None = None
+    if budget_raw:
+        normalized_budget = re.sub(r"[^\d]", "", budget_raw)
+        if not normalized_budget:
+            return False, "Примерная цена должна быть указана числом в рублях."
+        try:
+            budget_rub = int(normalized_budget)
+        except ValueError:
+            return False, "Примерная цена должна быть указана числом в рублях."
+        if budget_rub <= 0:
+            return False, "Примерная цена должна быть больше нуля."
+        if budget_rub > 1_000_000_000:
+            return False, "Примерная цена слишком большая."
+
+    if not subject:
+        return False, "Укажите название заявки."
+    if len(subject) > 255:
+        return False, "Название заявки должно быть не длиннее 255 символов."
+    if master_type not in MASTER_SEARCH_TYPE_OPTIONS:
+        return False, "Выберите корректный тип мастера."
+    if len(contact_tg) > 255:
+        return False, "Поле TG для связи должно быть не длиннее 255 символов."
+    if len(character_fandom) > 255:
+        return False, "Поле персонажа и фандома должно быть не длиннее 255 символов."
+    if len(details) > 4000:
+        return False, "Подробности должны быть не длиннее 4000 символов."
+    if not is_price_negotiable and budget_rub is None:
+        return False, "Укажите примерную цену в рублях или выберите «Договорная цена»."
+
+    post.subject = subject
+    post.master_type = master_type
+    post.contact_tg = contact_tg or None
+    post.character_fandom = character_fandom or None
+    post.details = details or None
+    post.deadline = deadline
+    post.references_json = references
+    post.is_price_negotiable = is_price_negotiable
+    post.budget_rub = None if is_price_negotiable else budget_rub
+    return True, ""
+
+
 def project_board_status_label(status: str) -> str:
     mapping = {
         PROJECT_BOARD_STATUS_ACTIVE: "Активно",
@@ -8631,7 +8800,142 @@ def decrypt_pigeon_message_payload(payload: str | None) -> str:
         return ""
 
 
-def parse_pigeon_message(message: str | None) -> tuple[str, str] | None:
+def sanitize_pigeon_project_label(value: str | None) -> str:
+    cleaned = " ".join(str(value or "").split()).strip()
+    if len(cleaned) > PIGEON_PROJECT_LABEL_MAX_LENGTH:
+        cleaned = cleaned[:PIGEON_PROJECT_LABEL_MAX_LENGTH].rstrip()
+    return cleaned
+
+
+def pigeon_project_label_from_card(card: CosplanCard | None) -> str:
+    if not card:
+        return ""
+    character_name = " ".join(str(card.character_name or "").split()).strip() or "Без названия"
+    fandom_name = " ".join(str(card.fandom or "").split()).strip()
+    if fandom_name:
+        return sanitize_pigeon_project_label(f"{character_name} · {fandom_name}")
+    return sanitize_pigeon_project_label(character_name)
+
+
+def build_pigeon_project_attachment_options(db: Session, user: User) -> list[dict[str, Any]]:
+    rows = db.execute(
+        select(InProgressCard)
+        .join(CosplanCard, InProgressCard.cosplan_card_id == CosplanCard.id)
+        .where(
+            InProgressCard.user_id == user.id,
+            CosplanCard.user_id == user.id,
+            CosplanCard.plan_type == "project",
+            CosplanCard.is_completed.is_(False),
+        )
+        .order_by(InProgressCard.is_frozen.asc(), InProgressCard.updated_at.desc(), InProgressCard.id.desc())
+    ).scalars().all()
+    options: list[dict[str, Any]] = []
+    for row in rows:
+        card = row.cosplan_card
+        if not card:
+            continue
+        label = pigeon_project_label_from_card(card)
+        if row.is_frozen:
+            label = f"{label} (заморожено)"
+        options.append(
+            {
+                "card_id": int(card.id),
+                "label": label or "Проект без названия",
+                "url": f"/cosplan/{int(card.id)}",
+                "is_frozen": bool(row.is_frozen),
+            }
+        )
+    return options
+
+
+def resolve_pigeon_project_attachment_card_for_user(
+    db: Session,
+    *,
+    user: User,
+    card_id: int,
+) -> CosplanCard | None:
+    return db.execute(
+        select(CosplanCard)
+        .join(InProgressCard, InProgressCard.cosplan_card_id == CosplanCard.id)
+        .where(
+            InProgressCard.user_id == user.id,
+            CosplanCard.user_id == user.id,
+            CosplanCard.id == int(card_id),
+            CosplanCard.plan_type == "project",
+            CosplanCard.is_completed.is_(False),
+        )
+    ).scalar_one_or_none()
+
+
+def encode_pigeon_message_meta(
+    *,
+    image_ref: str | None = None,
+    project_card_id: int | None = None,
+    project_label: str | None = None,
+) -> str:
+    payload: dict[str, Any] = {}
+    normalized_image = normalize_local_media_reference(image_ref)
+    if normalized_image:
+        payload["img"] = normalized_image
+    if project_card_id:
+        payload["pcid"] = int(project_card_id)
+    normalized_label = sanitize_pigeon_project_label(project_label)
+    if normalized_label:
+        payload["plbl"] = normalized_label
+    if not payload:
+        return ""
+    raw_json = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    encoded = base64.urlsafe_b64encode(raw_json.encode("utf-8")).decode("ascii").rstrip("=")
+    if not encoded:
+        return ""
+    return f"{PIGEON_MESSAGE_META_PREFIX}{encoded}{PIGEON_MESSAGE_META_SUFFIX}"
+
+
+def decode_pigeon_message_meta(encoded_value: str | None) -> dict[str, Any]:
+    encoded = str(encoded_value or "").strip()
+    if not encoded:
+        return {}
+    padded = encoded + ("=" * ((4 - (len(encoded) % 4)) % 4))
+    try:
+        raw_json = base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8")
+        decoded = json.loads(raw_json)
+    except Exception:
+        return {}
+    if not isinstance(decoded, dict):
+        return {}
+
+    normalized: dict[str, Any] = {}
+    normalized_image = normalize_local_media_reference(decoded.get("img"))
+    if normalized_image:
+        normalized["img"] = normalized_image
+
+    project_card_id = parse_positive_int(str(decoded.get("pcid", "")).strip())
+    if project_card_id:
+        normalized["pcid"] = int(project_card_id)
+
+    normalized_label = sanitize_pigeon_project_label(decoded.get("plbl"))
+    if normalized_label:
+        normalized["plbl"] = normalized_label
+
+    if "img" not in normalized and "pcid" not in normalized:
+        return {}
+
+    return normalized
+
+
+def split_pigeon_message_body_and_meta(value: str | None) -> tuple[str, dict[str, Any]]:
+    raw = str(value or "")
+    match = PIGEON_MESSAGE_META_PATTERN.search(raw)
+    if not match:
+        return raw.strip(), {}
+    decoded = decode_pigeon_message_meta(match.group(1))
+    if not decoded:
+        return raw.strip(), {}
+    body = raw[:match.start()].rstrip()
+    return body, decoded
+
+
+def parse_pigeon_message_payload(message: str | None) -> dict[str, Any] | None:
     text_value = decrypt_pigeon_message_payload(message)
     if not text_value:
         return None
@@ -8639,10 +8943,114 @@ def parse_pigeon_message(message: str | None) -> tuple[str, str] | None:
     if not match:
         return None
     sender_alias = normalize_username(match.group(1))
-    body = (match.group(2) or "").strip()
     if not sender_alias:
         return None
-    return sender_alias, body
+
+    body_raw = match.group(2) or ""
+    body_text, meta = split_pigeon_message_body_and_meta(body_raw)
+    image_ref = str(meta.get("img") or "").strip()
+    project_card_id = parse_positive_int(str(meta.get("pcid", "")).strip())
+    project_url = f"/cosplan/{int(project_card_id)}" if project_card_id else ""
+    project_label = sanitize_pigeon_project_label(meta.get("plbl"))
+    if project_url and not project_label:
+        project_label = "Проект «В работе»"
+
+    return {
+        "sender_alias": sender_alias,
+        "body": body_text.strip(),
+        "image_ref": image_ref,
+        "project_card_id": int(project_card_id) if project_card_id else None,
+        "project_url": project_url,
+        "project_label": project_label,
+    }
+
+
+def build_pigeon_message_preview(
+    body_text: str | None,
+    *,
+    image_ref: str | None = None,
+    project_label: str | None = None,
+) -> str:
+    compact = " ".join(str(body_text or "").split()).strip()
+    has_image = bool(normalize_local_media_reference(image_ref))
+    has_project = bool(sanitize_pigeon_project_label(project_label))
+    if compact:
+        suffixes: list[str] = []
+        if has_image:
+            suffixes.append("фото")
+        if has_project:
+            suffixes.append("проект")
+        if suffixes:
+            compact = f"{compact} [{'+'.join(suffixes)}]"
+        return compact
+    if has_image and has_project:
+        return "Фото + проект «В работе»"
+    if has_image:
+        return "Фото"
+    if has_project:
+        return "Проект «В работе»"
+    return "Без текста"
+
+
+def render_pigeon_message_attachments(
+    *,
+    image_ref: str | None = None,
+    project_url: str | None = None,
+    project_label: str | None = None,
+) -> Markup:
+    parts: list[str] = []
+    normalized_image = normalize_local_media_reference(image_ref)
+    if normalized_image:
+        escaped_src = html.escape(normalized_image, quote=True)
+        parts.append(
+            '<a class="pigeon-message-attachment-image-link" href="{src}" target="_blank" rel="noreferrer">'
+            '<img class="pigeon-message-attachment-image" src="{src}" alt="Вложенное изображение" loading="lazy" />'
+            "</a>".format(src=escaped_src)
+        )
+
+    normalized_project_url = str(project_url or "").strip()
+    if re.fullmatch(r"/cosplan/\d+", normalized_project_url):
+        label = sanitize_pigeon_project_label(project_label) or "Проект «В работе»"
+        parts.append(
+            '<a class="pigeon-message-project-link" href="{href}">Проект «В работе»: {label}</a>'.format(
+                href=html.escape(normalized_project_url, quote=True),
+                label=html.escape(label),
+            )
+        )
+
+    if not parts:
+        return Markup("")
+    return Markup(f'<div class="pigeon-message-attachments">{"".join(parts)}</div>')
+
+
+def render_pigeon_message_body_html(
+    body_text: str | None,
+    *,
+    image_ref: str | None = None,
+    project_url: str | None = None,
+    project_label: str | None = None,
+) -> Markup:
+    parts: list[str] = []
+    normalized_body = str(body_text or "").strip()
+    if normalized_body:
+        parts.append(str(render_text_content(normalized_body)))
+    attachment_html = render_pigeon_message_attachments(
+        image_ref=image_ref,
+        project_url=project_url,
+        project_label=project_label,
+    )
+    if attachment_html:
+        parts.append(str(attachment_html))
+    if not parts:
+        parts.append(str(render_text_content("Без текста")))
+    return Markup("".join(parts))
+
+
+def parse_pigeon_message(message: str | None) -> tuple[str, str] | None:
+    payload = parse_pigeon_message_payload(message)
+    if not payload:
+        return None
+    return str(payload.get("sender_alias") or ""), str(payload.get("body") or "")
 
 
 def is_pigeon_message(message: str | None) -> bool:
@@ -8687,9 +9095,22 @@ def send_pigeon_notification(
     recipient: User,
     message_body: str,
     reply_to_notification_id: int | None = None,
+    attachment_image_ref: str | None = None,
+    linked_project_card: CosplanCard | None = None,
 ) -> bool:
     sender_alias = preferred_user_alias(sender)
-    raw_payload = f"Курлык! (@{sender_alias}) {message_body.strip()}"
+    normalized_body = str(message_body or "").strip()
+    message_meta = encode_pigeon_message_meta(
+        image_ref=attachment_image_ref,
+        project_card_id=linked_project_card.id if linked_project_card else None,
+        project_label=pigeon_project_label_from_card(linked_project_card),
+    )
+    raw_payload = f"Курлык! (@{sender_alias}) {normalized_body}"
+    if message_meta:
+        if normalized_body:
+            raw_payload = f"{raw_payload}\n{message_meta}"
+        else:
+            raw_payload = f"{raw_payload}{message_meta}"
     payload = encrypt_pigeon_message_payload(raw_payload)
     db.add(
         FestivalNotification(
@@ -8760,7 +9181,7 @@ def build_pigeon_dialogs_for_user(db: Session, user: User) -> list[dict[str, Any
     dialogs_by_user_id: dict[int, dict[str, Any]] = {}
 
     for note in notes:
-        parsed = parse_pigeon_message(note.message)
+        parsed = parse_pigeon_message_payload(note.message)
         if not parsed:
             continue
 
@@ -8777,8 +9198,11 @@ def build_pigeon_dialogs_for_user(db: Session, user: User) -> list[dict[str, Any
         if not dialog_user_id:
             continue
 
-        sender_alias, body = parsed
-        body_text = body or "Без текста"
+        sender_alias = str(parsed.get("sender_alias") or "")
+        body_text = str(parsed.get("body") or "").strip()
+        image_ref = str(parsed.get("image_ref") or "").strip()
+        project_url = str(parsed.get("project_url") or "").strip()
+        project_label = str(parsed.get("project_label") or "").strip()
         dialog = dialogs_by_user_id.setdefault(
             dialog_user_id,
             {
@@ -8801,7 +9225,15 @@ def build_pigeon_dialogs_for_user(db: Session, user: User) -> list[dict[str, Any
                 "direction": direction,
                 "sender_alias": sender_alias,
                 "body": body_text,
-                "body_html": render_text_content(body_text),
+                "body_html": render_pigeon_message_body_html(
+                    body_text,
+                    image_ref=image_ref,
+                    project_url=project_url,
+                    project_label=project_label,
+                ),
+                "image_ref": image_ref,
+                "project_url": project_url,
+                "project_label": project_label,
                 "created_at": note.created_at,
                 "is_read": bool(note.is_read),
             }
@@ -8811,7 +9243,11 @@ def build_pigeon_dialogs_for_user(db: Session, user: User) -> list[dict[str, Any
 
         note_id = int(note.id or 0)
         if note_id >= int(dialog["last_notification_id"] or 0):
-            preview = " ".join(body_text.split())
+            preview = build_pigeon_message_preview(
+                body_text,
+                image_ref=image_ref,
+                project_label=project_label,
+            )
             if len(preview) > 120:
                 preview = preview[:117].rstrip() + "..."
             dialog["last_notification_id"] = note_id
@@ -8933,10 +9369,14 @@ def get_latest_unread_pigeon(db: Session, user_id: int) -> dict[str, Any] | None
         .limit(50)
     ).scalars().all()
     for note in notifications:
-        parsed = parse_pigeon_message(note.message)
+        parsed = parse_pigeon_message_payload(note.message)
         if not parsed:
             continue
-        sender_alias, body = parsed
+        sender_alias = str(parsed.get("sender_alias") or "")
+        body_text = str(parsed.get("body") or "").strip()
+        image_ref = str(parsed.get("image_ref") or "").strip()
+        project_url = str(parsed.get("project_url") or "").strip()
+        project_label = str(parsed.get("project_label") or "").strip()
         sender_user_id = parse_positive_int(str(note.from_user_id or "").strip())
         can_open_chat = bool(sender_user_id)
         chat_url = f"/pigeons?chat={sender_user_id}" if sender_user_id else "/pigeons"
@@ -8944,8 +9384,19 @@ def get_latest_unread_pigeon(db: Session, user_id: int) -> dict[str, Any] | None
             "id": note.id,
             "sender_alias": sender_alias,
             "sender_user_id": sender_user_id or 0,
-            "body": body or "Без текста",
-            "body_html": str(render_text_content(body or "Без текста")),
+            "body": build_pigeon_message_preview(
+                body_text,
+                image_ref=image_ref,
+                project_label=project_label,
+            ),
+            "body_html": str(
+                render_pigeon_message_body_html(
+                    body_text,
+                    image_ref=image_ref,
+                    project_url=project_url,
+                    project_label=project_label,
+                )
+            ),
             "created_at": (note.created_at.isoformat() if note.created_at else ""),
             "can_open_chat": can_open_chat,
             "chat_url": chat_url,
@@ -9368,6 +9819,7 @@ def card_fields_for_sync() -> list[str]:
         "craft_material_price",
         "craft_deadline",
         "craft_currency",
+        "status_percent",
         "plan_type",
         "project_leader",
         "cosbands_json",
@@ -9958,6 +10410,34 @@ def decode_content_vk_group_value(value: str) -> dict[str, str] | None:
     }
 
 
+def format_vk_content_api_error(method: str, error_payload: dict[str, Any]) -> str:
+    message = str(error_payload.get("error_msg") or "Неизвестная ошибка VK API").strip()
+    error_code_text = str(error_payload.get("error_code") or "").strip()
+    error_code = parse_positive_int(error_code_text)
+    prefix = f"VK API ({method})"
+    if error_code:
+        prefix = f"{prefix} [код {error_code}]"
+    error_text = f"{prefix}: {message}"
+
+    publish_methods = {"wall.post", "photos.getWallUploadServer", "photos.saveWallPhoto"}
+    if error_code == 5:
+        return (
+            f"{error_text}. Ключ VK недействителен или истёк. "
+            "Сгенерируйте новый ключ доступа сообщества и сохраните его в настройках."
+        )
+    if error_code in {15, 200} and method in publish_methods:
+        return (
+            f"{error_text}. Проверьте, что ключ выдан именно для этого сообщества, "
+            "у него есть права «стена» и «фотографии», а у владельца ключа в этом сообществе роль не ниже редактора."
+        )
+    if error_code == 27:
+        return (
+            f"{error_text}. Метод недоступен для текущего типа авторизации. "
+            "Для публикации в сообщество используйте ключ доступа сообщества (раздел «Работа с API» в настройках сообщества)."
+        )
+    return error_text
+
+
 def vk_content_api_call(
     token: str,
     method: str,
@@ -9990,8 +10470,7 @@ def vk_content_api_call(
 
     error_payload = result.get("error")
     if isinstance(error_payload, dict):
-        message = str(error_payload.get("error_msg") or "Неизвестная ошибка VK API").strip()
-        raise RuntimeError(f"VK API ({method}): {message}")
+        raise RuntimeError(format_vk_content_api_error(method, error_payload))
     if "response" not in result:
         raise RuntimeError(f"VK API ({method}) не вернул ожидаемого поля response.")
     return result.get("response")
@@ -10803,6 +11282,7 @@ def get_card_form_values(card: CosplanCard | None = None, *, actor_user_id: int 
             "craft_material_price": "",
             "craft_deadline": "",
             "craft_currency": "RUB",
+            "status_percent": 0,
             "plan_type": "personal",
             "project_leader": "",
             "cosbands_json": [],
@@ -10941,6 +11421,7 @@ def get_card_form_values(card: CosplanCard | None = None, *, actor_user_id: int 
         "craft_material_price": "" if card.craft_material_price is None else f"{card.craft_material_price:g}",
         "craft_deadline": card.craft_deadline.isoformat() if card.craft_deadline else "",
         "craft_currency": card.craft_currency or "RUB",
+        "status_percent": normalize_status_percent(card.status_percent),
         "plan_type": card.plan_type or "personal",
         "project_leader": card.project_leader or "",
         "cosbands_json": as_list(card.cosbands_json),
@@ -11472,6 +11953,7 @@ def card_options(
         {
             "id": int(card.id),
             "label": f"{card.character_name}, @{author_alias}",
+            "status_percent": normalize_status_percent(card.status_percent),
         }
         for card in own_cards
         if card.character_name and (not current_card_id or card.id != current_card_id)
@@ -12105,6 +12587,7 @@ def pigeons_messenger(request: Request, db: Session = Depends(get_db)):
 
     unread_chat_total = sum(int(item.get("unread_count") or 0) for item in dialogs)
     latest_pigeon_id = latest_pigeon_activity_id(db, user.id)
+    project_attachment_options = build_pigeon_project_attachment_options(db, user)
 
     return template_response(
         request,
@@ -12117,6 +12600,7 @@ def pigeons_messenger(request: Request, db: Session = Depends(get_db)):
         unread_chat_total=unread_chat_total,
         latest_pigeon_id=latest_pigeon_id,
         pigeon_alias_options=build_pigeon_alias_options(db, user),
+        pigeon_project_attachment_options=project_attachment_options,
     )
 
 
@@ -13246,12 +13730,17 @@ def profile_page(request: Request, db: Session = Depends(get_db)):
     if not user:
         return redirect("/login")
 
+    saved_bot_secret_code = get_secret_user_option_value(db, user.id, PROFILE_TELEGRAM_SECRET_CODE_GROUP)
+    has_legacy_bot_secret_without_reveal = bool((user.telegram_secret_code_hash or "").strip() and not saved_bot_secret_code)
+
     return template_response(
         request,
         "profile.html",
         user=user,
         active_tab="profile",
         can_view_admin_dashboard=can_view_admin_dashboard(user),
+        saved_bot_secret_code=saved_bot_secret_code,
+        has_legacy_bot_secret_without_reveal=has_legacy_bot_secret_without_reveal,
     )
 
 
@@ -14123,6 +14612,7 @@ def cosplan_export_csv(request: Request, db: Session = Depends(get_db)):
             "character_name",
             "fandom",
             "plan_type",
+            "status_percent",
             "city",
             "planned_festivals",
             "related_cards",
@@ -14157,6 +14647,7 @@ def cosplan_export_csv(request: Request, db: Session = Depends(get_db)):
                 card.character_name or "",
                 card.fandom or "",
                 card.plan_type or "",
+                normalize_status_percent(card.status_percent),
                 card.city or "",
                 ", ".join(as_list(card.planned_festivals_json)),
                 ", ".join(
@@ -14343,7 +14834,10 @@ def cosplan_detail(card_id: int, request: Request, db: Session = Depends(get_db)
     ).scalar_one_or_none()
     card_in_progress = bool(progress_row)
     card_is_frozen = bool(progress_row and progress_row.is_frozen)
+    card_status_percent = normalize_status_percent(card.status_percent)
     related_cards: list[dict[str, Any]] = []
+    related_status_values: list[int] = []
+    project_status_percent: int | None = None
     related_links = parse_related_card_links(as_list(card.related_cards_json), legacy_user_id=card.user_id)
     if related_links:
         related_ids = [item["card_id"] for item in related_links]
@@ -14368,18 +14862,24 @@ def cosplan_detail(card_id: int, request: Request, db: Session = Depends(get_db)
             link_author = related_owners.get(related_link["user_id"]) or related_owners.get(linked.user_id)
             author_label = f"@{preferred_user_alias(link_author)}" if link_author else ""
             card_label = linked.character_name or f"Карточка #{linked.id}"
+            related_status = normalize_status_percent(linked.status_percent)
+            related_status_values.append(related_status)
             related_cards.append(
                 {
                     "id": linked.id,
                     "label": f"{card_label}, {author_label}".strip(", "),
+                    "status_percent": related_status,
                 }
             )
+    if related_status_values:
+        project_status_percent = int(round(sum(related_status_values) / len(related_status_values)))
     return template_response(
         request,
         "cosplan_detail.html",
         user=user,
         active_tab="cosplan",
         card=card,
+        card_status_percent=card_status_percent,
         card_owner=card_owner,
         card_owner_display=(f"@{preferred_user_alias(card_owner)}" if card_owner else ""),
         project_leader_display=project_leader_display,
@@ -14393,6 +14893,7 @@ def cosplan_detail(card_id: int, request: Request, db: Session = Depends(get_db)
         studios=as_list(card.studios_json),
         unknown_price_fields=as_list(card.unknown_prices_json),
         related_cards=related_cards,
+        project_status_percent=project_status_percent,
         card_total=card_total,
         card_total_currency=card_total_currency,
         reference_urls=as_list(card.references_json),
@@ -14712,6 +15213,7 @@ def save_card_from_form(form: Any, card: CosplanCard, user: User, db: Session) -
         card.craft_deadline = None
         card.craft_material_price = parse_price_field("craft_material_price")
     card.craft_currency = str(form.get("craft_currency", "")).strip() or None
+    card.status_percent = normalize_status_percent(form.get("status_percent", "0"))
 
     card.plan_type = str(form.get("plan_type", "")).strip() or None
     if card.plan_type == "project":
@@ -20806,6 +21308,315 @@ def community_masters_delete(master_id: int, request: Request, db: Session = Dep
     return redirect("/community/masters")
 
 
+@app.get("/community/master-search", response_class=HTMLResponse)
+def community_master_search_list(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    q = request.query_params.get("q", "").strip()
+    selected_type = str(request.query_params.get("type", "")).strip().lower()
+    if selected_type not in MASTER_SEARCH_TYPE_OPTIONS:
+        selected_type = ""
+
+    posts = db.execute(
+        select(CommunityMasterSearchPost).order_by(
+            CommunityMasterSearchPost.updated_at.desc(),
+            CommunityMasterSearchPost.id.desc(),
+        )
+    ).scalars().all()
+
+    if selected_type:
+        posts = [item for item in posts if (item.master_type or "").strip().lower() == selected_type]
+    if q:
+        needle = q.casefold()
+        posts = [
+            item
+            for item in posts
+            if needle in (item.subject or "").casefold()
+            or needle in (item.details or "").casefold()
+            or needle in (item.character_fandom or "").casefold()
+            or needle in (item.contact_tg or "").casefold()
+        ]
+
+    owner_ids = {item.user_id for item in posts}
+    owners_by_id: dict[int, User] = {}
+    if owner_ids:
+        owners = db.execute(select(User).where(User.id.in_(owner_ids))).scalars().all()
+        owners_by_id = {item.id: item for item in owners}
+
+    post_ids = [item.id for item in posts]
+    comment_counts: dict[int, int] = {}
+    if post_ids:
+        comment_counts = {
+            int(post_id): int(count or 0)
+            for post_id, count in db.execute(
+                select(
+                    CommunityMasterSearchComment.post_id,
+                    func.count(CommunityMasterSearchComment.id),
+                )
+                .where(CommunityMasterSearchComment.post_id.in_(post_ids))
+                .group_by(CommunityMasterSearchComment.post_id)
+            ).all()
+        }
+
+    my_posts = db.execute(
+        select(CommunityMasterSearchPost)
+        .where(CommunityMasterSearchPost.user_id == user.id)
+        .order_by(CommunityMasterSearchPost.updated_at.desc(), CommunityMasterSearchPost.id.desc())
+    ).scalars().all()
+
+    return template_response(
+        request,
+        "community_master_search_list.html",
+        user=user,
+        active_tab="community",
+        community_tab="master-search",
+        posts=posts,
+        owners_by_id=owners_by_id,
+        comment_counts=comment_counts,
+        q=q,
+        selected_type=selected_type,
+        type_options=MASTER_SEARCH_TYPE_OPTIONS,
+        type_labels=MASTER_SEARCH_TYPE_LABELS,
+        my_posts=my_posts,
+        master_search_type_label=master_search_type_label,
+        master_search_price_label=master_search_price_label,
+    )
+
+
+@app.get("/community/master-search/new", response_class=HTMLResponse)
+def community_master_search_new(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    return template_response(
+        request,
+        "community_master_search_form.html",
+        user=user,
+        active_tab="community",
+        community_tab="master-search",
+        editing=False,
+        post_id=None,
+        form=get_master_search_form_values(),
+        type_options=MASTER_SEARCH_TYPE_OPTIONS,
+        type_labels=MASTER_SEARCH_TYPE_LABELS,
+    )
+
+
+@app.post("/community/master-search/new")
+async def community_master_search_create(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    form = await request.form()
+    post = CommunityMasterSearchPost(
+        user_id=user.id,
+        subject="",
+        master_type=MASTER_SEARCH_TYPE_OPTIONS[0],
+    )
+    ok, error_text = save_master_search_from_form(form, post)
+    if not ok:
+        add_flash(request, error_text, "error")
+        return redirect("/community/master-search/new")
+
+    db.add(post)
+    db.commit()
+    add_flash(request, "Заявка опубликована.", "success")
+    return redirect(f"/community/master-search/{post.id}")
+
+
+@app.get("/community/master-search/{post_id}", response_class=HTMLResponse)
+def community_master_search_detail(post_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    post = db.get(CommunityMasterSearchPost, post_id)
+    if not post:
+        add_flash(request, "Заявка не найдена.", "error")
+        return redirect("/community/master-search")
+
+    comments = db.execute(
+        select(CommunityMasterSearchComment)
+        .where(CommunityMasterSearchComment.post_id == post.id)
+        .order_by(CommunityMasterSearchComment.created_at, CommunityMasterSearchComment.id)
+    ).scalars().all()
+
+    author_ids = {post.user_id, *(item.user_id for item in comments)}
+    authors_by_id: dict[int, User] = {}
+    if author_ids:
+        authors = db.execute(select(User).where(User.id.in_(author_ids))).scalars().all()
+        authors_by_id = {item.id: item for item in authors}
+
+    return template_response(
+        request,
+        "community_master_search_detail.html",
+        user=user,
+        active_tab="community",
+        community_tab="master-search",
+        post=post,
+        comments=comments,
+        authors_by_id=authors_by_id,
+        can_manage=can_manage_master_search(user, post),
+        master_search_type_label=master_search_type_label,
+        master_search_price_label=master_search_price_label,
+    )
+
+
+@app.get("/community/master-search/{post_id}/edit", response_class=HTMLResponse)
+def community_master_search_edit(post_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    post = db.get(CommunityMasterSearchPost, post_id)
+    if not post:
+        add_flash(request, "Заявка не найдена.", "error")
+        return redirect("/community/master-search")
+    if not can_manage_master_search(user, post):
+        add_flash(request, "Редактировать можно только свою заявку.", "error")
+        return redirect(f"/community/master-search/{post_id}")
+
+    return template_response(
+        request,
+        "community_master_search_form.html",
+        user=user,
+        active_tab="community",
+        community_tab="master-search",
+        editing=True,
+        post_id=post.id,
+        form=get_master_search_form_values(post),
+        type_options=MASTER_SEARCH_TYPE_OPTIONS,
+        type_labels=MASTER_SEARCH_TYPE_LABELS,
+    )
+
+
+@app.post("/community/master-search/{post_id}/edit")
+async def community_master_search_update(post_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    post = db.get(CommunityMasterSearchPost, post_id)
+    if not post:
+        add_flash(request, "Заявка не найдена.", "error")
+        return redirect("/community/master-search")
+    if not can_manage_master_search(user, post):
+        add_flash(request, "Редактировать можно только свою заявку.", "error")
+        return redirect(f"/community/master-search/{post_id}")
+
+    form = await request.form()
+    ok, error_text = save_master_search_from_form(form, post)
+    if not ok:
+        add_flash(request, error_text, "error")
+        return redirect(f"/community/master-search/{post_id}/edit")
+
+    db.commit()
+    add_flash(request, "Заявка обновлена.", "success")
+    return redirect(f"/community/master-search/{post_id}")
+
+
+@app.post("/community/master-search/{post_id}/delete")
+def community_master_search_delete(post_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    post = db.get(CommunityMasterSearchPost, post_id)
+    if not post:
+        add_flash(request, "Заявка не найдена.", "error")
+        return redirect("/community/master-search")
+    if not can_manage_master_search(user, post):
+        add_flash(request, "Удалять можно только свою заявку.", "error")
+        return redirect(f"/community/master-search/{post_id}")
+
+    db.delete(post)
+    db.commit()
+    add_flash(request, "Заявка удалена.", "info")
+    return redirect("/community/master-search")
+
+
+@app.post("/community/master-search/{post_id}/comments")
+async def community_master_search_add_comment(post_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    post = db.get(CommunityMasterSearchPost, post_id)
+    if not post:
+        add_flash(request, "Заявка не найдена.", "error")
+        return redirect("/community/master-search")
+
+    form = await request.form()
+    body = str(form.get("body", "")).strip()
+    if not body:
+        add_flash(request, "Введите текст комментария.", "error")
+        return redirect(f"/community/master-search/{post_id}")
+    if len(body) > 4000:
+        add_flash(request, "Комментарий должен быть не длиннее 4000 символов.", "error")
+        return redirect(f"/community/master-search/{post_id}")
+
+    db.add(
+        CommunityMasterSearchComment(
+            post_id=post.id,
+            user_id=user.id,
+            body=body,
+        )
+    )
+    if post.user_id != user.id:
+        preview = body if len(body) <= 120 else body[:117].rstrip() + "..."
+        db.add(
+            FestivalNotification(
+                user_id=post.user_id,
+                from_user_id=user.id,
+                source_card_id=None,
+                message=f"Новый отклик в заявке «{post.subject}»: {preview}",
+                is_read=False,
+            )
+        )
+
+    db.commit()
+    add_flash(request, "Комментарий добавлен.", "success")
+    return redirect(f"/community/master-search/{post_id}")
+
+
+@app.post("/community/master-search/{post_id}/comments/{comment_id}/delete")
+def community_master_search_delete_comment(
+    post_id: int,
+    comment_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    post = db.get(CommunityMasterSearchPost, post_id)
+    if not post:
+        add_flash(request, "Заявка не найдена.", "error")
+        return redirect("/community/master-search")
+
+    comment = db.execute(
+        select(CommunityMasterSearchComment).where(
+            CommunityMasterSearchComment.id == comment_id,
+            CommunityMasterSearchComment.post_id == post.id,
+        )
+    ).scalar_one_or_none()
+    if not comment:
+        add_flash(request, "Комментарий не найден.", "error")
+        return redirect(f"/community/master-search/{post.id}")
+    if comment.user_id != user.id:
+        add_flash(request, "Удалить комментарий может только его автор.", "error")
+        return redirect(f"/community/master-search/{post.id}")
+
+    db.delete(comment)
+    db.commit()
+    add_flash(request, "Комментарий удалён.", "info")
+    return redirect(f"/community/master-search/{post.id}")
+
+
 def normalize_cosplayer_skills(raw_skills: list[str]) -> list[str]:
     normalized_map = {value.casefold(): value for value in COSPLAYER_SKILL_OPTIONS}
     result: list[str] = []
@@ -22013,6 +22824,10 @@ def can_manage_marketplace_sale(user: User | None, sale: CommunityMarketplaceSal
 
 def can_manage_marketplace_search(user: User | None, search_item: CommunityMarketplaceSearch | None) -> bool:
     return bool(user and search_item and (search_item.user_id == user.id or user_is_special(user)))
+
+
+def can_manage_master_search(user: User | None, post: CommunityMasterSearchPost | None) -> bool:
+    return bool(user and post and (post.user_id == user.id or user_is_special(user)))
 
 
 def get_marketplace_sale_form_values(sale: CommunityMarketplaceSale | None = None) -> dict[str, Any]:
@@ -24706,15 +25521,33 @@ async def notifications_send_pigeon(request: Request, db: Session = Depends(get_
     recipient_user_id = parse_positive_int(str(form.get("recipient_user_id", "")).strip())
     recipient_alias_raw = str(form.get("recipient_alias", "")).strip()
     message_body = str(form.get("message", "")).strip()
+    attachment_image_raw = str(form.get("attachment_image", "")).strip()
+    selected_project_card_id = parse_positive_int(str(form.get("in_progress_project_card_id", "")).strip())
     reply_to_raw = str(form.get("reply_to_notification_id", "")).strip()
     next_target_raw = str(form.get("next", "")).strip()
     next_url = safe_redirect_target(next_target_raw, "/pigeons")
 
-    if not message_body:
-        add_flash(request, "Введите текст сообщения.", "error")
+    attachment_image_ref = normalize_local_media_reference(attachment_image_raw) if attachment_image_raw else ""
+    if attachment_image_raw and not attachment_image_ref:
+        add_flash(request, "Не удалось прикрепить фото. Загрузите изображение заново.", "error")
         return redirect(next_url)
     if len(message_body) > 1500:
         add_flash(request, "Сообщение слишком длинное (максимум 1500 символов).", "error")
+        return redirect(next_url)
+
+    linked_project_card: CosplanCard | None = None
+    if selected_project_card_id:
+        linked_project_card = resolve_pigeon_project_attachment_card_for_user(
+            db,
+            user=user,
+            card_id=selected_project_card_id,
+        )
+        if not linked_project_card:
+            add_flash(request, "Выбранная карточка «В работе» недоступна для прикрепления.", "error")
+            return redirect(next_url)
+
+    if not message_body and not attachment_image_ref and not linked_project_card:
+        add_flash(request, "Добавьте текст сообщения, фото или ссылку на проект.", "error")
         return redirect(next_url)
 
     recipient: User | None = None
@@ -24757,6 +25590,8 @@ async def notifications_send_pigeon(request: Request, db: Session = Depends(get_
         recipient=recipient,
         message_body=message_body,
         reply_to_notification_id=reply_to_notification_id,
+        attachment_image_ref=attachment_image_ref,
+        linked_project_card=linked_project_card,
     )
     db.commit()
 

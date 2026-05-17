@@ -1,0 +1,847 @@
+Инвентаризация модулей и функций текущего веб-приложения
+===================================================
+
+Корень проекта: /Users/anso/Documents/Cosplay
+Стек: FastAPI, Jinja2, SQLAlchemy, SQLite, requests, Pillow, itsdangerous, passlib, cryptography.
+
+Сводка
+------
+- Python-модулей приложения: 6
+- Top-level классов: 33
+- Top-level функций: 562
+- HTTP-маршрутов FastAPI: 160
+- HTML-шаблонов Jinja2: 38
+
+Python-модули
+-------------
+app/__init__.py
+Назначение: Маркер Python-пакета приложения.
+Классы (0):
+- нет
+Функции (0):
+- нет
+
+app/database.py
+Назначение: Настройка SQLAlchemy engine/session и dependency для доступа к БД.
+Классы (0):
+- нет
+Функции (3):
+- [7] _persistent_sqlite_url
+- [15] _resolve_database_url
+- [40] get_db
+
+app/services.py
+Назначение: Общие сервисные функции: парсинг значений, работа со списками и пользовательскими опциями.
+Классы (0):
+- нет
+Функции (10):
+- [12] parse_date
+- [24] parse_float
+- [37] split_csv
+- [46] merge_unique
+- [64] as_list
+- [80] get_options
+- [90] remember_options
+- [102] iso_today
+- [106] to_bool
+- [110] esc_ics
+
+app/cosplay2_parser.py
+Назначение: Парсинг фестивалей с cosplay2.ru из JSON-LD и выделение даты/дедлайна.
+Классы (1):
+- [12] Cosplay2Event
+Функции (7):
+- [21] normalize_url
+- [33] guess_name_from_url
+- [47] parse_event_date
+- [73] extract_deadline
+- [109] cleanup_loose_json
+- [119] parse_ld_json_blocks
+- [133] parse_events_from_homepage
+
+app/models.py
+Назначение: SQLAlchemy-модели доменных сущностей приложения.
+Классы (30):
+- [20] User
+- [173] UserOption
+- [186] PasswordResetToken
+- [199] HomeNews
+- [211] CosplanCard
+- [336] CardComment
+- [352] InProgressCard
+- [368] RehearsalCard
+- [387] RehearsalEntry
+- [408] PersonalCalendarEvent
+- [424] WorkShiftDay
+- [440] ContentPlanPost
+- [472] Festival
+- [502] ProjectSearchPost
+- [524] ProjectSearchComment
+- [537] FestivalNotification
+- [555] FestivalAnnouncement
+- [581] CommunityArticle
+- [600] CommunityArticleComment
+- [613] CommunityArticleFavorite
+- [629] CommunityQuestion
+- [648] CommunityQuestionComment
+- [661] CommunityMaster
+- [687] CommunityMasterComment
+- [702] CommunityMasterRating
+- [720] CommunityMasterOrder
+- [738] CommunityStudio
+- [759] CommunityStudioComment
+- [772] CommunityCosplayer
+- [794] CommunityCosplayerComment
+Функции (0):
+- нет
+
+app/main.py
+Назначение: Основной FastAPI-модуль: инициализация приложения, middleware, бизнес-логика, интеграции, фоновые воркеры и HTTP-маршруты.
+Классы (2):
+- [2599] PinterestUnauthorizedError
+- [3151] TelegramHTMLToEntitiesParser
+Функции (542):
+- [95] load_project_name
+- [106] load_secret_key
+- [628] apply_schema_migrations
+- [880] startup
+- [906] ensure_daily_backup
+- [926] read_session_user_id_from_cookie
+- [944] restrict_smm_manager_scope
+- [975] healthz
+- [980] readyz
+- [986] media_file
+- [996] media_upload_image
+- [1042] media_upload_content_image
+- [1083] estimate_card_total_and_currency
+- [1149] estimate_card_total
+- [1154] normalize_username
+- [1163] nick_is_special
+- [1167] user_is_special
+- [1175] is_moderator_user
+- [1179] is_smm_manager_user
+- [1183] can_manage_master
+- [1191] can_manage_project_board_post
+- [1199] usernames_match
+- [1205] user_aliases
+- [1209] preferred_user_alias
+- [1213] build_user_alias_lookup
+- [1235] resolve_alias_to_username
+- [1242] resolve_aliases_to_usernames
+- [1247] user_matches_alias
+- [1254] format_coproplayer_names
+- [1273] normalize_city
+- [1298] city_matches
+- [1313] split_city_values
+- [1320] city_matches_any
+- [1324] nearest_big_city_keys_for_home_cities
+- [1335] nearest_big_city_labels
+- [1342] can_comment_on_card
+- [1350] card_coproplayer_aliases
+- [1354] card_task_assignee_options
+- [1383] format_in_progress_tasks
+- [1414] task_scope_card_ids
+- [1432] task_scope_progress_rows
+- [1443] task_rows_to_storage
+- [1455] load_scoped_task_rows
+- [1472] store_scoped_task_rows
+- [1481] user_is_card_coproplayer
+- [1485] can_edit_card
+- [1495] resolve_source_card
+- [1505] get_editable_card
+- [1515] safe_redirect_target
+- [1524] parse_id_list
+- [1537] parse_related_card_links
+- [1575] related_card_ids_for_user
+- [1587] get_accessible_card
+- [1607] month_label_ru
+- [1611] cache_get_or_load
+- [1623] safe_date_with_leap_support
+- [1633] upcoming_user_birthdays_this_week
+- [1662] parse_day_month_from_text
+- [1689] fetch_character_birthdays_from_sheet
+- [1740] fetch_character_birthdays_from_genshin
+- [1799] fetch_character_birthdays_from_anisearch
+- [1856] character_birthdays_this_month
+- [1873] clean_character_birthday_name
+- [1885] normalize_anisearch_character_url
+- [1894] fetch_anisearch_anime_title
+- [1934] character_display_name
+- [1946] character_birthdays_today
+- [1988] event_matches_day
+- [2009] weekly_infopovods
+- [2090] month_calendar_grid
+- [2149] festival_range_end
+- [2157] festival_is_active
+- [2164] parse_time_hhmm
+- [2180] normalize_calendar_view
+- [2187] normalize_content_scope
+- [2196] get_content_scope_for_request
+- [2210] selected_content_owner_id_for_scope
+- [2222] calendar_redirect_for_view
+- [2239] content_calendar_redirect
+- [2254] shift_months_safe
+- [2262] card_anchor_date_for_budget
+- [2278] build_budget_month_groups
+- [2385] normalize_content_status
+- [2392] get_content_plan_form_values
+- [2459] save_content_plan_post_from_form
+- [2574] get_content_telegram_settings
+- [2589] get_content_vk_settings
+- [2603] pinterest_app_configured
+- [2607] pinterest_authorize_url
+- [2621] build_pinterest_oauth_state
+- [2630] verify_pinterest_oauth_state
+- [2664] pinterest_basic_auth_header
+- [2669] pinterest_token_request
+- [2694] store_content_pinterest_token_payload
+- [2706] refresh_content_pinterest_access_token
+- [2722] pinterest_content_api_call
+- [2761] pinterest_authorized_api_call
+- [2792] encode_content_pinterest_profile_value
+- [2806] decode_content_pinterest_profile_value
+- [2829] encode_content_pinterest_board_value
+- [2841] decode_content_pinterest_board_value
+- [2862] get_content_pinterest_profile
+- [2866] get_content_pinterest_boards
+- [2881] extract_pinterest_board_list
+- [2893] fetch_content_pinterest_profile
+- [2906] fetch_content_pinterest_boards
+- [2934] sync_content_pinterest_remote_data
+- [2948] resolve_content_pinterest_boards
+- [2971] get_content_pinterest_settings
+- [2994] mask_secret_value
+- [3001] normalize_telegram_target
+- [3024] telegram_custom_api_url
+- [3028] telegram_custom_file_url
+- [3033] telegram_custom_request
+- [3084] extract_telegram_custom_emoji_id
+- [3089] extract_telegram_custom_emoji_ids
+- [3102] resolve_telegram_custom_emoji_fallback_map
+- [3136] utf16_length
+- [3140] sanitize_telegram_entity_url
+- [3273] build_telegram_text_entities
+- [3283] normalize_telegram_custom_emoji_html
+- [3314] strip_telegram_html
+- [3326] append_rubric_tag_to_message
+- [3339] find_cached_telegram_custom_emoji_preview
+- [3349] cache_telegram_custom_emoji_preview
+- [3404] user_has_content_plan_access
+- [3408] content_connections_editable
+- [3412] content_manager_access_editable
+- [3416] ensure_content_owner_for_action
+- [3435] telegram_membership_is_active
+- [3440] get_telegram_custom_bot_identity
+- [3453] check_brfox_content_subscription
+- [3504] build_content_plan_access_state
+- [3516] ensure_content_plan_access
+- [3527] content_post_targets_telegram
+- [3531] content_post_targets_vk
+- [3535] content_post_targets_pinterest
+- [3539] content_post_publish_datetime
+- [3556] normalize_local_media_reference
+- [3583] local_media_reference_to_path
+- [3590] build_telegram_photo_request_payload
+- [3603] mark_content_post_telegram_published
+- [3633] append_rubric_tag_to_plain_message
+- [3644] build_content_post_plain_message
+- [3657] first_content_post_external_link
+- [3667] load_content_photo_binary
+- [3694] upload_content_photo_to_vk
+- [3755] mark_content_post_vk_published
+- [3781] mark_content_post_pinterest_published
+- [3806] build_content_post_pinterest_payload
+- [3849] publish_content_post_to_pinterest
+- [3876] publish_content_post_to_pinterest_boards
+- [3912] publish_content_post_to_telegram
+- [3999] publish_content_post_to_vk
+- [4038] publish_content_post_to_vk_groups
+- [4071] publish_content_post_to_telegram_channels
+- [4112] hsl_to_hex
+- [4117] rubric_color_map
+- [4128] content_calendar_grid
+- [4187] normalize_duration_mmss
+- [4199] parse_positive_int
+- [4209] looks_like_url
+- [4214] looks_like_telegram_username
+- [4219] normalize_url_with_scheme
+- [4232] classify_external_url
+- [4252] build_external_url
+- [4261] button_label_for_external_url
+- [4272] _trim_link_trailing_punctuation
+- [4279] extract_urls_from_text
+- [4295] external_contact_buttons
+- [4330] static_pixel_emoji_root
+- [4334] slugify_pixel_emoji_code
+- [4340] build_pixel_emoji_catalog
+- [4366] render_text_content
+- [4408] build_text_preview
+- [4425] replace_pixel_emoji_tokens_for_bots
+- [4445] is_mp3_url
+- [4455] performance_rehearsal_total
+- [4464] rehearsal_status_label
+- [4474] can_manage_project_card
+- [4480] get_or_create_rehearsal_card
+- [4502] sqlite_database_path
+- [4511] backup_storage_path
+- [4521] media_storage_path
+- [4539] safe_media_filename
+- [4546] _resize_to_width
+- [4554] _resize_to_max_side
+- [4564] prepare_content_image_upload
+- [4620] compress_image_to_webp
+- [4677] create_sqlite_backup_file
+- [4693] auto_backup_if_needed
+- [4708] _short_names
+- [4718] iter_date_range
+- [4732] enqueue_notification_if_missing
+- [4775] is_shared_card_notification_message
+- [4788] remove_shared_card_notifications
+- [4803] is_external_bot_eligible_notification
+- [4823] is_telegram_eligible_notification
+- [4827] telegram_api_url
+- [4831] telegram_send_message
+- [4853] telegram_delete_message
+- [4872] telegram_get_updates
+- [4894] reset_telegram_auth
+- [4899] set_telegram_auth_step
+- [4907] get_telegram_auth_step
+- [4912] start_telegram_auth
+- [4931] resolve_user_for_telegram_login
+- [4941] verify_user_telegram_secret_code
+- [4951] handle_telegram_auth_message
+- [5018] handle_telegram_reply_command
+- [5051] handle_telegram_update
+- [5116] format_external_bot_notification_message
+- [5132] format_telegram_notification_message
+- [5136] dispatch_telegram_notifications
+- [5197] telegram_bot_loop
+- [5216] start_telegram_worker
+- [5231] cleanup_expired_content_telegram_media
+- [5309] dispatch_scheduled_content_posts
+- [5425] content_telegram_loop
+- [5434] start_content_telegram_worker
+- [5447] vk_bot_api_call
+- [5464] vk_bot_send_message
+- [5486] reset_vk_bot_auth
+- [5491] set_vk_bot_auth_step
+- [5499] get_vk_bot_auth_step
+- [5504] start_vk_bot_auth
+- [5523] handle_vk_bot_auth_message
+- [5583] handle_vk_bot_reply_command
+- [5623] handle_vk_bot_message
+- [5693] handle_vk_bot_message_allow
+- [5704] handle_vk_bot_message_deny
+- [5718] handle_vk_bot_event
+- [5736] dispatch_vk_bot_notifications
+- [5796] vk_bot_loop
+- [5807] start_vk_bot_worker
+- [5822] user_busy_items_on_date
+- [5889] parse_reference_values
+- [5922] pinterest_embed_src
+- [5935] parse_parts_from_form
+- [5968] format_parts_for_form
+- [5986] parse_checklist_rows_from_form
+- [6004] format_checklist_for_form
+- [6019] parse_master_price_rows_from_form
+- [6048] format_master_price_rows_for_form
+- [6065] save_master_order_from_form
+- [6093] project_board_status_label
+- [6102] question_status_label
+- [6110] normalize_question_topics
+- [6122] can_manage_question
+- [6130] announcement_status_label
+- [6139] parse_article_tags
+- [6154] extract_youtube_embed_url
+- [6183] conflict_subject_from_message
+- [6191] parse_pigeon_message
+- [6205] is_pigeon_message
+- [6209] latest_pigeon_notification_for_reply
+- [6225] send_pigeon_notification
+- [6245] get_latest_unread_pigeon
+- [6270] get_user_pigeon_notification
+- [6282] _render_article_inline
+- [6316] render_article_markdown
+- [6367] notify_coproplayer_conflicts_for_card
+- [6441] notify_coproplayer_conflicts_for_festival
+- [6506] build_card_date_conflicts
+- [6611] card_fields_for_sync
+- [6703] clone_card_data
+- [6708] delete_card_with_runtime_dependents
+- [6719] sync_shared_cards_for_nicks
+- [6821] add_flash
+- [6825] pop_flash
+- [6832] current_user
+- [6845] encrypt_secret_option_value
+- [6853] decrypt_secret_option_value
+- [6868] get_user_option_value
+- [6878] get_secret_user_option_value
+- [6882] set_user_option_value
+- [6899] set_secret_user_option_value
+- [6903] get_user_option_values
+- [6915] replace_user_option_values
+- [6942] get_user_option_positive_int_values
+- [6954] get_content_manager_owner_ids
+- [6958] get_content_manager_user_ids
+- [6962] get_users_by_ids
+- [6975] get_content_manager_owners
+- [6979] get_content_managers
+- [6983] sync_content_manager_links
+- [7028] find_user_by_site_alias
+- [7037] get_content_owner_candidates
+- [7044] resolve_content_owner_for_request
+- [7074] encode_content_telegram_channel_value
+- [7078] decode_content_telegram_channel_value
+- [7095] parse_content_telegram_channel_lines
+- [7118] format_content_telegram_channel_lines
+- [7130] get_content_telegram_channels
+- [7149] resolve_content_telegram_channels
+- [7172] normalize_vk_group_target
+- [7201] encode_content_vk_group_value
+- [7215] decode_content_vk_group_value
+- [7245] vk_content_api_call
+- [7284] extract_vk_group_list
+- [7296] resolve_content_vk_group_entry
+- [7323] parse_content_vk_group_lines
+- [7363] format_content_vk_group_lines
+- [7380] get_content_vk_groups
+- [7397] resolve_content_vk_groups
+- [7420] encode_content_premium_emoji_value
+- [7424] decode_content_premium_emoji_value
+- [7441] parse_content_premium_emoji_lines
+- [7458] format_content_premium_emoji_lines
+- [7466] get_content_premium_emoji_entries
+- [7475] normalize_content_rubric_tag
+- [7486] encode_content_rubric_tag_value
+- [7490] decode_content_rubric_tag_value
+- [7507] get_content_rubric_tags
+- [7517] save_content_rubric_tags
+- [7526] smtp_is_configured
+- [7530] send_plain_email
+- [7558] hash_password_reset_token
+- [7562] build_password_reset_link
+- [7567] create_password_reset_token
+- [7591] find_active_password_reset_token
+- [7606] _deep_find_string
+- [7632] extract_vk_access_token
+- [7636] extract_vk_id_token
+- [7640] extract_vk_email
+- [7647] fetch_vk_public_profile
+- [7693] get_verified_vk_profile
+- [7700] sanitize_vk_username
+- [7709] build_unique_username
+- [7723] build_unique_email
+- [7737] upsert_user_by_vk
+- [7800] link_existing_user_with_vk
+- [7826] template_response
+- [7863] robots_txt
+- [7868] vk_bot_callback
+- [7900] redirect
+- [7904] get_card_form_values
+- [8116] card_options
+- [8181] get_festival_form_values
+- [8214] get_festival_announcement_form_values
+- [8240] save_festival_announcement_from_form
+- [8264] propagate_approved_announcement
+- [8306] get_project_search_post_form_values
+- [8333] index
+- [8399] home_news_create
+- [8423] home_news_update
+- [8452] home_news_delete
+- [8472] privacy_policy_page
+- [8478] register_page
+- [8486] register_submit
+- [8533] login_page
+- [8543] auth_vk_complete
+- [8575] profile_vk_link
+- [8606] profile_vk_unlink
+- [8623] forgot_password_page
+- [8631] forgot_password_submit
+- [8672] reset_password_page
+- [8685] reset_password_submit
+- [8736] login_submit
+- [8758] logout
+- [8765] users_search_api
+- [8812] profile_page
+- [8862] profile_update
+- [8940] profile_vk_bot_unlink
+- [8954] cosplan_list
+- [9101] cosplan_export_csv
+- [9191] cosplan_new
+- [9209] cosplan_detail
+- [9374] cosplan_add_comment
+- [9423] cosplan_edit
+- [9451] save_card_from_form
+- [9760] cosplan_create
+- [9792] cosplan_update
+- [9830] cosplan_priority_toggle
+- [9856] cosplan_completed_toggle
+- [9882] cosplan_delete
+- [9933] in_progress_add
+- [9959] in_progress_list
+- [10034] in_progress_checklist_add
+- [10059] in_progress_checklist_toggle
+- [10083] in_progress_checklist_delete
+- [10105] in_progress_task_add
+- [10174] in_progress_task_toggle
+- [10208] in_progress_task_delete
+- [10242] in_progress_remove
+- [10262] in_progress_toggle_freeze
+- [10284] rehearsals_list
+- [10348] rehearsals_create
+- [10387] rehearsals_add_date
+- [10450] rehearsals_respond
+- [10486] rehearsals_entry_delete
+- [10516] my_projects_list
+- [10593] my_projects_comment
+- [10620] my_projects_propose_rehearsal
+- [10735] my_projects_rehearsal_decision
+- [10768] my_calendar
+- [11220] my_calendar_event_create
+- [11256] my_calendar_work_shift_add
+- [11429] my_calendar_work_shift_clear
+- [11451] my_calendar_event_delete
+- [11474] my_calendar_content_access_check
+- [11505] my_calendar_content_managers_save
+- [11550] my_calendar_content_create
+- [11577] my_calendar_content_update
+- [11612] my_calendar_content_delete
+- [11642] my_calendar_content_telegram_custom_emoji_preview
+- [11675] my_calendar_content_telegram_connect
+- [11736] my_calendar_content_telegram_disconnect
+- [11759] my_calendar_content_vk_connect
+- [11813] my_calendar_content_vk_disconnect
+- [11835] my_calendar_content_pinterest_oauth_start
+- [11860] my_calendar_content_pinterest_oauth_callback
+- [11905] my_calendar_content_pinterest_sync
+- [11930] my_calendar_content_pinterest_disconnect
+- [11955] my_calendar_content_publish_telegram
+- [12026] my_calendar_content_publish_vk
+- [12090] my_calendar_content_publish_pinterest
+- [12158] ics_calendar_header
+- [12168] append_ics_event
+- [12212] my_calendar_export_ics
+- [12354] my_calendar_content_export_ics
+- [12416] project_board_fandom_options
+- [12423] project_board_city_options
+- [12430] save_project_search_post_from_form
+- [12467] project_board_list
+- [12554] project_board_new
+- [12574] project_board_create
+- [12595] project_board_edit
+- [12623] project_board_update
+- [12650] project_board_update_status
+- [12680] project_board_delete
+- [12700] project_board_add_comment
+- [12743] community_index
+- [12750] get_question_form_values
+- [12768] save_question_from_form
+- [12793] community_questions_list
+- [12851] community_questions_new
+- [12873] community_questions_create
+- [12891] community_questions_detail
+- [12930] community_questions_edit
+- [12961] community_questions_update
+- [12986] community_questions_update_status
+- [13012] community_questions_delete
+- [13032] community_questions_add_comment
+- [13054] get_master_form_values
+- [13077] save_master_from_form
+- [13107] community_master_city_options
+- [13114] master_rating_maps
+- [13155] community_masters_list
+- [13223] community_masters_new
+- [13241] community_masters_create
+- [13265] community_masters_detail
+- [13319] community_masters_edit
+- [13346] community_masters_update
+- [13371] community_masters_add_comment
+- [13422] community_masters_create_order
+- [13459] community_masters_delete_order
+- [13489] community_masters_rate
+- [13532] community_masters_delete
+- [13551] normalize_cosplayer_skills
+- [13564] get_cosplayer_form_values
+- [13588] save_cosplayer_from_form
+- [13627] community_cosplayers_list
+- [13697] community_cosplayers_new
+- [13716] community_cosplayers_create
+- [13735] community_cosplayers_detail
+- [13773] community_cosplayers_edit
+- [13801] community_cosplayers_update
+- [13826] community_cosplayers_delete
+- [13846] community_cosplayers_add_comment
+- [13887] normalize_studio_tags
+- [13900] get_studio_form_values
+- [13922] save_studio_from_form
+- [13955] community_studios_list
+- [14018] community_studios_new
+- [14036] community_studios_create
+- [14055] community_studios_detail
+- [14092] community_studios_edit
+- [14119] community_studios_update
+- [14144] community_studios_delete
+- [14164] community_studios_add_comment
+- [14203] get_article_form_values
+- [14222] save_article_from_form
+- [14252] build_authority_map
+- [14266] community_articles_list
+- [14340] community_articles_new
+- [14357] community_articles_create
+- [14376] community_articles_detail
+- [14429] community_articles_edit
+- [14455] community_articles_update
+- [14480] community_articles_delete
+- [14500] community_articles_toggle_favorite
+- [14528] community_articles_add_comment
+- [14550] app_state_storage_path
+- [14568] external_import_state_path
+- [14572] load_external_import_state
+- [14585] save_external_import_state
+- [14590] parse_state_datetime
+- [14604] should_run_import_by_interval
+- [14611] vk_api_call
+- [14650] get_import_owner_user
+- [14660] normalize_event_name_key
+- [14667] festival_name_keywords
+- [14683] festivals_look_like_duplicates
+- [14708] detect_master_type_from_text
+- [14729] attachment_photo_urls
+- [14759] import_cosplay_team_masters
+- [14889] html_to_plain_lines
+- [14904] parse_year_for_raf_page
+- [14911] _build_date_or_none
+- [14918] parse_date_range_from_line
+- [14968] parse_raf_city_and_name
+- [14991] parse_raf_events_from_page_html
+- [15056] fetch_raf_page_html
+- [15083] fetch_raf_events_from_vk
+- [15108] import_raf_events_for_user
+- [15177] auto_import_external_sources_if_needed
+- [15213] community_masters_import_cosplay_team
+- [15249] festivals_import_raf
+- [15282] festivals_list
+- [15491] festivals_notifications_mark_read
+- [15507] notifications_pigeon_pending
+- [15515] notifications_pigeon_seen
+- [15530] notifications_pigeon_delete
+- [15553] notifications_send_pigeon
+- [15608] festivals_notifications_clear
+- [15624] festivals_notification_ignore
+- [15649] festivals_announcements_new
+- [15665] festivals_announcements_create
+- [15688] festivals_announcements_approve
+- [15724] festivals_announcements_reject
+- [15758] festivals_announcements_delete
+- [15781] festivals_new
+- [15800] festivals_edit
+- [15828] save_festival_from_form
+- [15867] festivals_create
+- [15894] festivals_update
+- [15927] festivals_toggle_going
+- [15956] festivals_delete
+- [15979] festivals_delete_all
+- [16039] festivals_import_cosplay2
+- [16155] festivals_export_ics
+HTTP-маршруты (160):
+- [975] GET /healthz -> healthz
+- [980] GET /readyz -> readyz
+- [986] GET /media/{filename} -> media_file
+- [996] POST /media/upload-image -> media_upload_image
+- [1042] POST /media/upload-content-image -> media_upload_content_image
+- [7863] GET /robots.txt -> robots_txt
+- [7868] POST /vk/bot/callback -> vk_bot_callback
+- [8333] GET / -> index
+- [8399] POST /home-news/new -> home_news_create
+- [8423] POST /home-news/{news_id}/edit -> home_news_update
+- [8452] POST /home-news/{news_id}/delete -> home_news_delete
+- [8472] GET /privacy-policy -> privacy_policy_page
+- [8478] GET /register -> register_page
+- [8486] POST /register -> register_submit
+- [8533] GET /login -> login_page
+- [8543] POST /auth/vk/complete -> auth_vk_complete
+- [8575] POST /profile/vk/link -> profile_vk_link
+- [8606] POST /profile/vk/unlink -> profile_vk_unlink
+- [8623] GET /forgot-password -> forgot_password_page
+- [8631] POST /forgot-password -> forgot_password_submit
+- [8672] GET /reset-password -> reset_password_page
+- [8685] POST /reset-password -> reset_password_submit
+- [8736] POST /login -> login_submit
+- [8758] POST /logout -> logout
+- [8765] GET /api/users/search -> users_search_api
+- [8812] GET /profile -> profile_page
+- [8862] POST /profile -> profile_update
+- [8940] POST /profile/vk-bot/unlink -> profile_vk_bot_unlink
+- [8954] GET /cosplan -> cosplan_list
+- [9101] GET /cosplan/export.csv -> cosplan_export_csv
+- [9191] GET /cosplan/new -> cosplan_new
+- [9209] GET /cosplan/{card_id} -> cosplan_detail
+- [9374] POST /cosplan/{card_id}/comments -> cosplan_add_comment
+- [9423] GET /cosplan/{card_id}/edit -> cosplan_edit
+- [9760] POST /cosplan/new -> cosplan_create
+- [9792] POST /cosplan/{card_id}/edit -> cosplan_update
+- [9830] POST /cosplan/{card_id}/priority-toggle -> cosplan_priority_toggle
+- [9856] POST /cosplan/{card_id}/completed-toggle -> cosplan_completed_toggle
+- [9882] POST /cosplan/{card_id}/delete -> cosplan_delete
+- [9933] POST /in-progress/add/{card_id} -> in_progress_add
+- [9959] GET /in-progress -> in_progress_list
+- [10034] POST /in-progress/{progress_id}/checklist/add -> in_progress_checklist_add
+- [10059] POST /in-progress/{progress_id}/checklist/toggle/{item_index} -> in_progress_checklist_toggle
+- [10083] POST /in-progress/{progress_id}/checklist/delete/{item_index} -> in_progress_checklist_delete
+- [10105] POST /in-progress/{progress_id}/tasks/add -> in_progress_task_add
+- [10174] POST /in-progress/{progress_id}/tasks/toggle/{task_index} -> in_progress_task_toggle
+- [10208] POST /in-progress/{progress_id}/tasks/delete/{task_index} -> in_progress_task_delete
+- [10242] POST /in-progress/{progress_id}/remove -> in_progress_remove
+- [10262] POST /in-progress/{progress_id}/freeze-toggle -> in_progress_toggle_freeze
+- [10284] GET /rehearsals -> rehearsals_list
+- [10348] POST /rehearsals/new -> rehearsals_create
+- [10387] POST /rehearsals/{rehearsal_card_id}/add-date -> rehearsals_add_date
+- [10450] POST /rehearsals/entries/{entry_id}/respond -> rehearsals_respond
+- [10486] POST /rehearsals/entries/{entry_id}/delete -> rehearsals_entry_delete
+- [10516] GET /my-projects -> my_projects_list
+- [10593] POST /my-projects/{card_id}/comment -> my_projects_comment
+- [10620] POST /my-projects/rehearsals/propose -> my_projects_propose_rehearsal
+- [10735] POST /my-projects/rehearsals/{entry_id}/decision -> my_projects_rehearsal_decision
+- [10768] GET /my-calendar -> my_calendar
+- [11220] POST /my-calendar/events/new -> my_calendar_event_create
+- [11256] POST /my-calendar/work-shifts/add -> my_calendar_work_shift_add
+- [11429] POST /my-calendar/work-shifts/clear -> my_calendar_work_shift_clear
+- [11451] POST /my-calendar/events/{event_id}/delete -> my_calendar_event_delete
+- [11474] POST /my-calendar/content/access/check -> my_calendar_content_access_check
+- [11505] POST /my-calendar/content/managers/save -> my_calendar_content_managers_save
+- [11550] POST /my-calendar/content/new -> my_calendar_content_create
+- [11577] POST /my-calendar/content/{post_id}/edit -> my_calendar_content_update
+- [11612] POST /my-calendar/content/{post_id}/delete -> my_calendar_content_delete
+- [11642] GET /my-calendar/content/telegram/custom-emoji/{emoji_id} -> my_calendar_content_telegram_custom_emoji_preview
+- [11675] POST /my-calendar/content/telegram/connect -> my_calendar_content_telegram_connect
+- [11736] POST /my-calendar/content/telegram/disconnect -> my_calendar_content_telegram_disconnect
+- [11759] POST /my-calendar/content/vk/connect -> my_calendar_content_vk_connect
+- [11813] POST /my-calendar/content/vk/disconnect -> my_calendar_content_vk_disconnect
+- [11835] GET /my-calendar/content/pinterest/oauth/start -> my_calendar_content_pinterest_oauth_start
+- [11860] GET /my-calendar/content/pinterest/oauth/callback -> my_calendar_content_pinterest_oauth_callback
+- [11905] POST /my-calendar/content/pinterest/sync -> my_calendar_content_pinterest_sync
+- [11930] POST /my-calendar/content/pinterest/disconnect -> my_calendar_content_pinterest_disconnect
+- [11955] POST /my-calendar/content/{post_id}/telegram-publish -> my_calendar_content_publish_telegram
+- [12026] POST /my-calendar/content/{post_id}/vk-publish -> my_calendar_content_publish_vk
+- [12090] POST /my-calendar/content/{post_id}/pinterest-publish -> my_calendar_content_publish_pinterest
+- [12212] GET /my-calendar/export.ics -> my_calendar_export_ics
+- [12354] GET /my-calendar/content/export.ics -> my_calendar_content_export_ics
+- [12467] GET /project-board -> project_board_list
+- [12554] GET /project-board/new -> project_board_new
+- [12574] POST /project-board/new -> project_board_create
+- [12595] GET /project-board/{post_id}/edit -> project_board_edit
+- [12623] POST /project-board/{post_id}/edit -> project_board_update
+- [12650] POST /project-board/{post_id}/status -> project_board_update_status
+- [12680] POST /project-board/{post_id}/delete -> project_board_delete
+- [12700] POST /project-board/{post_id}/comments -> project_board_add_comment
+- [12743] GET /community -> community_index
+- [12793] GET /community/questions -> community_questions_list
+- [12851] GET /community/questions/new -> community_questions_new
+- [12873] POST /community/questions/new -> community_questions_create
+- [12891] GET /community/questions/{question_id} -> community_questions_detail
+- [12930] GET /community/questions/{question_id}/edit -> community_questions_edit
+- [12961] POST /community/questions/{question_id}/edit -> community_questions_update
+- [12986] POST /community/questions/{question_id}/status -> community_questions_update_status
+- [13012] POST /community/questions/{question_id}/delete -> community_questions_delete
+- [13032] POST /community/questions/{question_id}/comments -> community_questions_add_comment
+- [13155] GET /community/masters -> community_masters_list
+- [13223] GET /community/masters/new -> community_masters_new
+- [13241] POST /community/masters/new -> community_masters_create
+- [13265] GET /community/masters/{master_id} -> community_masters_detail
+- [13319] GET /community/masters/{master_id}/edit -> community_masters_edit
+- [13346] POST /community/masters/{master_id}/edit -> community_masters_update
+- [13371] POST /community/masters/{master_id}/comments -> community_masters_add_comment
+- [13422] POST /community/masters/{master_id}/orders -> community_masters_create_order
+- [13459] POST /community/masters/{master_id}/orders/{order_id}/delete -> community_masters_delete_order
+- [13489] POST /community/masters/{master_id}/rate -> community_masters_rate
+- [13532] POST /community/masters/{master_id}/delete -> community_masters_delete
+- [13627] GET /community/cosplayers -> community_cosplayers_list
+- [13697] GET /community/cosplayers/new -> community_cosplayers_new
+- [13716] POST /community/cosplayers/new -> community_cosplayers_create
+- [13735] GET /community/cosplayers/{cosplayer_id} -> community_cosplayers_detail
+- [13773] GET /community/cosplayers/{cosplayer_id}/edit -> community_cosplayers_edit
+- [13801] POST /community/cosplayers/{cosplayer_id}/edit -> community_cosplayers_update
+- [13826] POST /community/cosplayers/{cosplayer_id}/delete -> community_cosplayers_delete
+- [13846] POST /community/cosplayers/{cosplayer_id}/comments -> community_cosplayers_add_comment
+- [13955] GET /community/studios -> community_studios_list
+- [14018] GET /community/studios/new -> community_studios_new
+- [14036] POST /community/studios/new -> community_studios_create
+- [14055] GET /community/studios/{studio_id} -> community_studios_detail
+- [14092] GET /community/studios/{studio_id}/edit -> community_studios_edit
+- [14119] POST /community/studios/{studio_id}/edit -> community_studios_update
+- [14144] POST /community/studios/{studio_id}/delete -> community_studios_delete
+- [14164] POST /community/studios/{studio_id}/comments -> community_studios_add_comment
+- [14266] GET /community/articles -> community_articles_list
+- [14340] GET /community/articles/new -> community_articles_new
+- [14357] POST /community/articles/new -> community_articles_create
+- [14376] GET /community/articles/{article_id} -> community_articles_detail
+- [14429] GET /community/articles/{article_id}/edit -> community_articles_edit
+- [14455] POST /community/articles/{article_id}/edit -> community_articles_update
+- [14480] POST /community/articles/{article_id}/delete -> community_articles_delete
+- [14500] POST /community/articles/{article_id}/favorite -> community_articles_toggle_favorite
+- [14528] POST /community/articles/{article_id}/comments -> community_articles_add_comment
+- [15213] POST /community/masters/import-cosplay-team -> community_masters_import_cosplay_team
+- [15249] POST /festivals/import-raf -> festivals_import_raf
+- [15282] GET /festivals -> festivals_list
+- [15491] POST /festivals/notifications/mark-read -> festivals_notifications_mark_read
+- [15507] GET /notifications/pigeon/pending -> notifications_pigeon_pending
+- [15515] POST /notifications/pigeon/{notification_id}/seen -> notifications_pigeon_seen
+- [15530] POST /notifications/pigeon/{notification_id}/delete -> notifications_pigeon_delete
+- [15553] POST /notifications/pigeon -> notifications_send_pigeon
+- [15608] POST /festivals/notifications/clear -> festivals_notifications_clear
+- [15624] POST /festivals/notifications/{notification_id}/ignore -> festivals_notification_ignore
+- [15649] GET /festivals/announcements/new -> festivals_announcements_new
+- [15665] POST /festivals/announcements/new -> festivals_announcements_create
+- [15688] POST /festivals/announcements/{announcement_id}/approve -> festivals_announcements_approve
+- [15724] POST /festivals/announcements/{announcement_id}/reject -> festivals_announcements_reject
+- [15758] POST /festivals/announcements/{announcement_id}/delete -> festivals_announcements_delete
+- [15781] GET /festivals/new -> festivals_new
+- [15800] GET /festivals/{festival_id}/edit -> festivals_edit
+- [15867] POST /festivals/new -> festivals_create
+- [15894] POST /festivals/{festival_id}/edit -> festivals_update
+- [15927] POST /festivals/{festival_id}/toggle-going -> festivals_toggle_going
+- [15956] POST /festivals/{festival_id}/delete -> festivals_delete
+- [15979] POST /festivals/{festival_id}/delete-all -> festivals_delete_all
+- [16039] POST /festivals/import-cosplay2 -> festivals_import_cosplay2
+- [16155] GET /festivals/export.ics -> festivals_export_ics
+
+Jinja2-шаблоны
+---------------
+- base.html
+- community_article_detail.html
+- community_article_form.html
+- community_articles_list.html
+- community_cosplayer_detail.html
+- community_cosplayer_form.html
+- community_cosplayers_list.html
+- community_master_detail.html
+- community_master_form.html
+- community_masters_list.html
+- community_question_detail.html
+- community_question_form.html
+- community_questions_list.html
+- community_studio_detail.html
+- community_studio_form.html
+- community_studios_list.html
+- community_tabs.html
+- cosplan_detail.html
+- cosplan_form.html
+- cosplan_list.html
+- festival_announcement_form.html
+- festival_form.html
+- festivals_list.html
+- forgot_password.html
+- in_progress.html
+- landing.html
+- login.html
+- login_vkid.html
+- my_calendar.html
+- my_projects.html
+- news.html
+- privacy_policy.html
+- profile.html
+- project_board_form.html
+- project_board_list.html
+- register.html
+- rehearsals.html
+- reset_password.html

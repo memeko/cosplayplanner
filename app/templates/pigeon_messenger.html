@@ -127,6 +127,31 @@
                 </div>
               </details>
             {% endif %}
+            <div class="pigeon-compose-tools">
+              <div class="pigeon-attachment-tools" data-pigeon-attachment>
+                <input type="hidden" name="attachment_image" class="pigeon-attachment-image-path" value="" />
+                <input type="file" accept="image/*" class="pigeon-attachment-image-file" hidden />
+                <div class="actions-inline wrap">
+                  <button type="button" class="btn btn-small pigeon-attachment-upload-btn">Прикрепить фото</button>
+                  <button type="button" class="btn btn-small pigeon-attachment-clear-btn" hidden>Убрать фото</button>
+                  <span class="muted small-note pigeon-attachment-status">Фото не прикреплено.</span>
+                </div>
+                <a class="pigeon-attachment-preview-link" href="#" target="_blank" rel="noreferrer" hidden>
+                  <img class="pigeon-attachment-preview-image" src="" alt="Превью вложения" loading="lazy" />
+                </a>
+              </div>
+              {% if pigeon_project_attachment_options %}
+                <label class="pigeon-project-link-field">
+                  Ссылка на проект «В работе»
+                  <select name="in_progress_project_card_id">
+                    <option value="">Без ссылки</option>
+                    {% for option in pigeon_project_attachment_options %}
+                      <option value="{{ option.card_id }}">{{ option.label }}</option>
+                    {% endfor %}
+                  </select>
+                </label>
+              {% endif %}
+            </div>
             <div class="pigeon-phone-compose-row">
               <textarea
                 name="message"
@@ -134,7 +159,6 @@
                 rows="2"
                 maxlength="1500"
                 placeholder="Напишите сообщение..."
-                required
               ></textarea>
               <button type="submit" class="btn btn-accent">Отправить</button>
             </div>
@@ -175,9 +199,33 @@
           rows="3"
           maxlength="1500"
           placeholder="Напишите сообщение..."
-          required
         ></textarea>
       </label>
+      <div class="pigeon-compose-tools">
+        <div class="pigeon-attachment-tools" data-pigeon-attachment>
+          <input type="hidden" name="attachment_image" class="pigeon-attachment-image-path" value="" />
+          <input type="file" accept="image/*" class="pigeon-attachment-image-file" hidden />
+          <div class="actions-inline wrap">
+            <button type="button" class="btn btn-small pigeon-attachment-upload-btn">Прикрепить фото</button>
+            <button type="button" class="btn btn-small pigeon-attachment-clear-btn" hidden>Убрать фото</button>
+            <span class="muted small-note pigeon-attachment-status">Фото не прикреплено.</span>
+          </div>
+          <a class="pigeon-attachment-preview-link" href="#" target="_blank" rel="noreferrer" hidden>
+            <img class="pigeon-attachment-preview-image" src="" alt="Превью вложения" loading="lazy" />
+          </a>
+        </div>
+        {% if pigeon_project_attachment_options %}
+          <label class="pigeon-project-link-field">
+            Ссылка на проект «В работе»
+            <select name="in_progress_project_card_id">
+              <option value="">Без ссылки</option>
+              {% for option in pigeon_project_attachment_options %}
+                <option value="{{ option.card_id }}">{{ option.label }}</option>
+              {% endfor %}
+            </select>
+          </label>
+        {% endif %}
+      </div>
       <div class="actions-inline">
         <button type="submit" class="btn btn-accent">Начать диалог</button>
       </div>
@@ -223,6 +271,87 @@
           insertAtCursor(target, `[[emoji:${code}]]`);
         });
       });
+    });
+
+    function setPigeonAttachmentState(container, imagePath, statusText) {
+      if (!container) return;
+      const hiddenInput = container.querySelector('.pigeon-attachment-image-path');
+      const previewLink = container.querySelector('.pigeon-attachment-preview-link');
+      const previewImage = container.querySelector('.pigeon-attachment-preview-image');
+      const clearButton = container.querySelector('.pigeon-attachment-clear-btn');
+      const statusNode = container.querySelector('.pigeon-attachment-status');
+      const normalizedPath = String(imagePath || '').trim();
+      if (hiddenInput) {
+        hiddenInput.value = normalizedPath;
+      }
+      if (previewLink && previewImage) {
+        if (normalizedPath) {
+          previewImage.src = normalizedPath;
+          previewLink.href = normalizedPath;
+          previewLink.hidden = false;
+        } else {
+          previewImage.src = '';
+          previewLink.href = '#';
+          previewLink.hidden = true;
+        }
+      }
+      if (clearButton) {
+        clearButton.hidden = !normalizedPath;
+      }
+      if (statusNode) {
+        statusNode.textContent = statusText || (normalizedPath ? 'Фото прикреплено.' : 'Фото не прикреплено.');
+      }
+    }
+
+    async function uploadPigeonAttachmentImage(container, file) {
+      if (!container || !file) return;
+      const statusNode = container.querySelector('.pigeon-attachment-status');
+      if (file.type && !file.type.startsWith('image/')) {
+        setPigeonAttachmentState(container, '', 'Нужен файл изображения.');
+        return;
+      }
+      if (statusNode) statusNode.textContent = 'Загрузка фото...';
+      const formData = new FormData();
+      formData.append('image', file);
+      try {
+        const response = await fetch('/media/upload-image', {
+          method: 'POST',
+          body: formData,
+          credentials: 'same-origin'
+        });
+        const payload = await response.json();
+        if (!response.ok || !payload?.ok) {
+          throw new Error(payload?.detail || 'Ошибка загрузки');
+        }
+        const imagePath = String(payload?.path || payload?.url || '').trim();
+        if (!imagePath) {
+          throw new Error('Сервер не вернул ссылку на файл');
+        }
+        setPigeonAttachmentState(container, imagePath, 'Фото прикреплено.');
+      } catch (error) {
+        setPigeonAttachmentState(container, '', `Ошибка: ${error?.message || 'не удалось загрузить фото'}`);
+      }
+    }
+
+    document.querySelectorAll('[data-pigeon-attachment]').forEach((container) => {
+      const fileInput = container.querySelector('.pigeon-attachment-image-file');
+      const uploadButton = container.querySelector('.pigeon-attachment-upload-btn');
+      const clearButton = container.querySelector('.pigeon-attachment-clear-btn');
+      if (!fileInput || !uploadButton || !clearButton) return;
+
+      uploadButton.addEventListener('click', function () {
+        fileInput.click();
+      });
+      fileInput.addEventListener('change', function () {
+        const file = fileInput.files && fileInput.files.length ? fileInput.files[0] : null;
+        if (!file) return;
+        uploadPigeonAttachmentImage(container, file);
+        fileInput.value = '';
+      });
+      clearButton.addEventListener('click', function () {
+        setPigeonAttachmentState(container, '', 'Фото не прикреплено.');
+      });
+      setPigeonAttachmentState(container, '', '');
     });
 
     const activeThread = document.getElementById('pigeon-active-thread');

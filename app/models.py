@@ -93,6 +93,16 @@ class User(Base):
         back_populates="customer",
         cascade="all, delete-orphan",
     )
+    community_master_search_posts = relationship(
+        "CommunityMasterSearchPost",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+    community_master_search_comments = relationship(
+        "CommunityMasterSearchComment",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
     character_library_entries = relationship(
         "CharacterLibraryEntry",
         back_populates="created_by",
@@ -320,6 +330,7 @@ class CosplanCard(Base):
     craft_material_price = Column(Float, nullable=True)
     craft_deadline = Column(Date, nullable=True)
     craft_currency = Column(String(16), nullable=True)
+    status_percent = Column(Integer, nullable=False, default=0)
 
     plan_type = Column(String(32), nullable=True)  # project | personal
     project_leader = Column(String(255), nullable=True)
@@ -937,6 +948,40 @@ class CommunityMasterOrder(Base):
 
     master = relationship("CommunityMaster", back_populates="orders")
     customer = relationship("User", back_populates="community_master_orders")
+
+
+class CommunityMasterSearchPost(Base):
+    __tablename__ = "community_master_search_posts"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    subject = Column(String(255), nullable=False, index=True)
+    master_type = Column(String(64), nullable=False, index=True)
+    contact_tg = Column(String(255), nullable=True)
+    character_fandom = Column(String(255), nullable=True)
+    details = Column(Text, nullable=True)
+    deadline = Column(Date, nullable=True, index=True)
+    references_json = Column(JSON, nullable=False, default=list)
+    budget_rub = Column(Integer, nullable=True)
+    is_price_negotiable = Column(Boolean, nullable=False, default=False, server_default="0")
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    user = relationship("User", back_populates="community_master_search_posts")
+    comments = relationship("CommunityMasterSearchComment", back_populates="post", cascade="all, delete-orphan")
+
+
+class CommunityMasterSearchComment(Base):
+    __tablename__ = "community_master_search_comments"
+
+    id = Column(Integer, primary_key=True)
+    post_id = Column(Integer, ForeignKey("community_master_search_posts.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    body = Column(Text, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    post = relationship("CommunityMasterSearchPost", back_populates="comments")
+    user = relationship("User", back_populates="community_master_search_comments")
 
 
 class CommunityStudio(Base):
