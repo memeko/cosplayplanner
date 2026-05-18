@@ -28,8 +28,8 @@
       </form>
     {% endif %}
     <a href="/community/masters/new" class="btn btn-accent">Добавить мастера</a>
-    {% if my_master_cards %}
-      <a href="/community/masters/{{ my_master_cards[0].id }}" class="btn">Моя карточка</a>
+    {% if my_master_cards_all %}
+      <a href="/community/masters/{{ my_master_cards_all[0].id }}" class="btn">Моя карточка</a>
     {% endif %}
   </div>
 </section>
@@ -38,7 +38,9 @@
 <section class="box compact-box">
   <div class="row-between">
     <h3>Мои карточки ({{ my_master_cards|length }})</h3>
-    <a href="/community/masters/{{ my_master_cards[0].id }}" class="btn btn-small">Открыть последнюю</a>
+    {% if my_master_cards_all %}
+      <a href="/community/masters/{{ my_master_cards_all[0].id }}" class="btn btn-small">Открыть последнюю</a>
+    {% endif %}
   </div>
   <div class="cards-grid top-offset">
     {% for my_card in my_master_cards %}

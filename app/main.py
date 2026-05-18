@@ -20894,10 +20894,21 @@ def save_master_from_form(form: Any, master: CommunityMaster) -> tuple[bool, str
 
 
 def community_master_city_options(db: Session) -> list[str]:
-    cities = db.execute(
+    raw_cities = db.execute(
         select(CommunityMaster.city).where(CommunityMaster.city.is_not(None)).order_by(CommunityMaster.city)
     ).scalars().all()
-    return merge_unique(cities)
+    cities: list[str] = []
+    for value in raw_cities:
+        if not value:
+            continue
+        parsed = split_city_values(value)
+        if parsed:
+            cities.extend(parsed)
+        else:
+            cleaned = str(value).strip()
+            if cleaned:
+                cities.append(cleaned)
+    return sorted(merge_unique(cities), key=str.casefold)
 
 
 def master_rating_maps(
@@ -20959,19 +20970,29 @@ def community_masters_list(request: Request, db: Session = Depends(get_db)):
     ).scalars().all()
     city_options = community_master_city_options(db)
 
-    if master_type and master_type in MASTER_TYPE_OPTIONS:
-        masters = [item for item in masters if (item.master_type or "").strip().lower() == master_type]
-    if selected_city:
-        masters = [item for item in masters if city_matches(selected_city, item.city)]
-    if q:
-        needle = q.casefold()
-        masters = [
-            item
-            for item in masters
-            if needle in (item.nick or "").casefold()
-            or needle in (item.city or "").casefold()
-            or needle in (item.details or "").casefold()
-        ]
+    def master_matches_filters(item: CommunityMaster) -> bool:
+        if master_type and master_type in MASTER_TYPE_OPTIONS:
+            if (item.master_type or "").strip().lower() != master_type:
+                return False
+        if selected_city:
+            city_parts = split_city_values(item.city) if item.city else []
+            if city_parts:
+                if not city_matches_any(city_parts, selected_city):
+                    return False
+            elif not city_matches(selected_city, item.city):
+                return False
+        if q:
+            needle = q.casefold()
+            if (
+                needle not in (item.nick or "").casefold()
+                and needle not in (item.city or "").casefold()
+                and needle not in (item.details or "").casefold()
+            ):
+                return False
+        return True
+
+    masters = [item for item in masters if master_matches_filters(item)]
+    filtered_my_master_cards = [item for item in my_master_cards if master_matches_filters(item)]
 
     owner_ids = {item.user_id for item in masters}
     owners_by_id: dict[int, User] = {}
@@ -21010,7 +21031,8 @@ def community_masters_list(request: Request, db: Session = Depends(get_db)):
         selected_city=selected_city,
         city_options=city_options,
         master_type_options=MASTER_TYPE_OPTIONS,
-        my_master_cards=my_master_cards,
+        my_master_cards=filtered_my_master_cards,
+        my_master_cards_all=my_master_cards,
     )
 
 
