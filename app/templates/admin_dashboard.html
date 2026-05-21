@@ -23,6 +23,63 @@
 {% endif %}
 
 <section class="box">
+  <h2>Премиум-пользователи</h2>
+  {% if can_manage_premium_users %}
+  <form method="post" action="/admin/premium-users/add" class="grid two-col top-offset">
+    <label>
+      Добавить по нику
+      <input
+        type="text"
+        name="premium_alias"
+        list="premium-user-alias-options"
+        placeholder="@nickname"
+        required
+      />
+      <datalist id="premium-user-alias-options">
+        {% for alias in premium_alias_options %}
+          <option value="{{ alias }}"></option>
+        {% endfor %}
+      </datalist>
+    </label>
+    <div class="actions-inline">
+      <button type="submit" class="btn btn-accent">Добавить в премиум</button>
+    </div>
+  </form>
+  {% else %}
+  <p class="muted top-offset">Добавление доступно только аккаунту @brfox_cosplay.</p>
+  {% endif %}
+
+  {% if premium_user_rows %}
+  <table class="table top-offset">
+    <thead>
+      <tr>
+        <th>Ник</th>
+        <th>Email</th>
+        <th>Город</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in premium_user_rows %}
+      <tr>
+        <td>
+          {% if row.profile_url %}
+            <a href="{{ row.profile_url }}">{{ row.alias }}</a>
+          {% else %}
+            {{ row.alias }}
+          {% endif %}
+        </td>
+        <td>{{ row.email or "—" }}</td>
+        <td>{{ row.city or "—" }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted top-offset">Список премиум-пользователей пока пуст.</p>
+  {% endif %}
+</section>
+
+<section class="box">
   <h2>Ключевые показатели</h2>
   <div class="cards-grid admin-kpi-grid top-offset">
     {% for item in overview_cards %}

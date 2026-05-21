@@ -181,7 +181,15 @@
       <input type="hidden" name="next" value="/pigeons" />
       <label>
         Ник косплеера
-        <input id="pigeon-new-dialog-recipient" type="text" name="recipient_alias" list="pigeon-recipients" placeholder="Введите ник" required />
+        <input
+          id="pigeon-new-dialog-recipient"
+          type="text"
+          name="recipient_alias"
+          list="pigeon-recipients"
+          placeholder="Введите ник"
+          value="{{ pigeon_compose_recipient_alias or '' }}"
+          required
+        />
         <datalist id="pigeon-recipients">
           {% for alias in pigeon_alias_options %}
             <option value="{{ alias }}"></option>
@@ -348,6 +356,7 @@
     const closeNewDialogBtn = document.getElementById('pigeon-close-new-dialog');
     const newDialogModal = document.getElementById('pigeon-new-dialog-modal');
     const newDialogRecipient = document.getElementById('pigeon-new-dialog-recipient');
+    const autoOpenNewDialog = {{ pigeon_open_new_dialog|tojson }};
     const chatLabelTag = document.getElementById('pigeon-chat-label-tag');
     const chatLabelForm = document.getElementById('pigeon-chat-label-form');
     const chatLabelInput = document.getElementById('pigeon-chat-label-input');
@@ -380,6 +389,9 @@
           closeNewDialogModal();
         }
       });
+    }
+    if (autoOpenNewDialog) {
+      openNewDialogModal();
     }
     document.addEventListener('keydown', function (event) {
       if (event.key === 'Escape' && newDialogModal && !newDialogModal.hidden) {

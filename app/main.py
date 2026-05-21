@@ -270,6 +270,12 @@ REHEARSAL_STATUS_PROPOSED = "proposed"
 REHEARSAL_STATUS_APPROVED = "approved"
 REHEARSAL_STATUS_ACCEPTED = "accepted"
 REHEARSAL_STATUS_DECLINED = "declined"
+REHEARSAL_ACTIVE_STATUS_VALUES = (
+    REHEARSAL_STATUS_PROPOSED,
+    REHEARSAL_STATUS_APPROVED,
+    REHEARSAL_STATUS_ACCEPTED,
+)
+REHEARSAL_ACTIVE_STATUS_SET = set(REHEARSAL_ACTIVE_STATUS_VALUES)
 
 IN_PROGRESS_SCOPE_COSPLAYER = "cosplayer"
 IN_PROGRESS_SCOPE_MASTER = "master"
@@ -449,6 +455,15 @@ CONTENT_STATUS_LABELS = {
     "draft": "Черновик",
     "published": "Опубликовано",
 }
+CONTENT_RECOMMENDATION_TYPE_BIRTHDAY = "birthday"
+CONTENT_RECOMMENDATION_TYPE_PROJECT_CHARACTER = "project_character"
+CONTENT_RECOMMENDATION_TYPE_MASTER_PROGRESS = "master_progress"
+CONTENT_RECOMMENDATION_KIND_LABELS = {
+    CONTENT_RECOMMENDATION_TYPE_BIRTHDAY: "День рождения",
+    CONTENT_RECOMMENDATION_TYPE_PROJECT_CHARACTER: "Персонаж проекта",
+    CONTENT_RECOMMENDATION_TYPE_MASTER_PROGRESS: "Деятельность мастера",
+}
+CONTENT_RECOMMENDATION_LOOKAHEAD_DAYS = 21
 CONTENT_TELEGRAM_TOKEN_GROUP = "content_telegram_bot_token"
 CONTENT_TELEGRAM_CHAT_GROUP = "content_telegram_chat"
 CONTENT_TELEGRAM_PACK_GROUP = "content_telegram_premium_pack_id"
@@ -471,6 +486,21 @@ CONTENT_MANAGER_OWNER_GROUP = "content_manager_owner"
 CONTENT_MANAGER_USER_GROUP = "content_manager_user"
 PIGEON_CHAT_LABEL_GROUP = "pigeon_chat_label"
 PROFILE_TELEGRAM_SECRET_CODE_GROUP = "profile_telegram_secret_code"
+PROFILE_ABOUT_MARKDOWN_GROUP = "profile_about_markdown"
+PROFILE_PHOTO_URL_GROUP = "profile_photo_url"
+PREMIUM_USER_ID_GROUP = "premium_user_id"
+PROFILE_SOCIAL_OPTION_FIELDS: tuple[tuple[str, str, str], ...] = (
+    ("telegram_channel", "Telegram-канал", "profile_social_telegram_channel"),
+    ("telegram", "Telegram", "profile_social_telegram"),
+    ("vk_public", "VK-паблик", "profile_social_vk_public"),
+    ("vk", "VK", "profile_social_vk"),
+    ("pinterest", "Pinterest", "profile_social_pinterest"),
+    ("red_note", "Red Note", "profile_social_red_note"),
+    ("reddit", "Reddit", "profile_social_reddit"),
+    ("x", "X", "profile_social_x"),
+    ("it", "ИТ", "profile_social_it"),
+    ("other", "Другое", "profile_social_other"),
+)
 PIGEON_MESSAGE_ENCRYPTED_PREFIX = "pg2:"
 PIGEON_MESSAGE_ENCRYPTION_SCOPE = "pigeon-messages-v2"
 PIGEON_MESSAGE_META_PREFIX = "[[pgmeta:"
@@ -1557,6 +1587,7 @@ async def restrict_smm_manager_scope(request: Request, call_next):
         or path.startswith("/pigeons")
         or path.startswith("/notifications/pigeon")
         or path.startswith("/festivals")
+        or path.startswith("/users/")
         or path.startswith("/media/")
     ):
         return await call_next(request)
@@ -1957,12 +1988,26 @@ def nick_is_special(value: str | None) -> bool:
     return normalize_username(value).casefold() == SPECIAL_HIGHLIGHT_USERNAME
 
 
-def user_is_special(user: User | None) -> bool:
+PREMIUM_USER_IDS_CACHE: set[int] = set()
+
+
+def is_primary_admin_user(user: User | None) -> bool:
     if not user:
         return False
     if nick_is_special(user.username) or nick_is_special(user.cosplay_nick):
         return True
     return (user.email or "").strip().casefold() == SPECIAL_HIGHLIGHT_EMAIL
+
+
+def user_is_special(user: User | None) -> bool:
+    if not user:
+        return False
+    if is_primary_admin_user(user):
+        return True
+    user_id = int(getattr(user, "id", 0) or 0)
+    if user_id and user_id in PREMIUM_USER_IDS_CACHE:
+        return True
+    return False
 
 
 def is_moderator_user(user: User | None) -> bool:
@@ -2041,6 +2086,116 @@ def user_aliases(user: User) -> list[str]:
 
 def preferred_user_alias(user: User) -> str:
     return normalize_username(user.cosplay_nick) or normalize_username(user.username)
+
+
+def user_profile_url_for_alias(alias: str | None) -> str:
+    normalized = normalize_username(alias)
+    if not normalized:
+        return ""
+    return f"/users/{quote(normalized)}"
+
+
+def user_profile_url_for_user(target_user: User | None) -> str:
+    if not target_user:
+        return ""
+    return user_profile_url_for_alias(preferred_user_alias(target_user))
+
+
+def resolve_user_by_alias(db: Session, alias: str | None) -> User | None:
+    normalized = normalize_username(alias).casefold()
+    if not normalized:
+        return None
+    candidates = db.execute(
+        select(User).where(
+            or_(
+                func.lower(User.username) == normalized,
+                func.lower(User.cosplay_nick) == normalized,
+            )
+        )
+    ).scalars().all()
+    if not candidates:
+        return None
+    for item in candidates:
+        if normalize_username(item.cosplay_nick).casefold() == normalized:
+            return item
+    return candidates[0]
+
+
+def normalize_profile_photo_urls(raw_values: list[str]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for raw_value in raw_values:
+        value = str(raw_value or "").strip().rstrip(",;")
+        if not value or value.startswith("iframe:"):
+            continue
+        if not (value.startswith("/media/") or value.lower().startswith(("http://", "https://"))):
+            continue
+        if value in seen:
+            continue
+        seen.add(value)
+        result.append(value)
+    return result
+
+
+def parse_profile_photo_input(raw_value: str) -> list[str]:
+    return normalize_profile_photo_urls(parse_reference_values(raw_value))
+
+
+def get_user_profile_photo_urls(db: Session, user_id: int) -> list[str]:
+    return normalize_profile_photo_urls(get_user_option_values(db, int(user_id), PROFILE_PHOTO_URL_GROUP))[:10]
+
+
+def get_user_profile_social_values(db: Session, user_id: int) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for field_key, _field_label, option_group in PROFILE_SOCIAL_OPTION_FIELDS:
+        values[field_key] = str(get_user_option_value(db, int(user_id), option_group) or "").strip()
+    return values
+
+
+def build_profile_social_url(field_key: str, value: str | None) -> str:
+    normalized = str(value or "").strip()
+    if not normalized:
+        return ""
+
+    kind = classify_external_url(normalized)
+    if kind:
+        return build_external_url(normalized)
+
+    username_like = normalized.lstrip("@").strip()
+    if field_key in {"telegram_channel", "telegram"} and re.fullmatch(r"[A-Za-z0-9_]{3,64}", username_like):
+        return f"https://t.me/{username_like}"
+    if field_key in {"vk_public", "vk"} and re.fullmatch(r"[A-Za-z0-9_.-]{2,64}", username_like):
+        return f"https://vk.com/{username_like}"
+    if field_key == "x":
+        x_like = username_like.removeprefix("x.com/").lstrip("/")
+        if re.fullmatch(r"[A-Za-z0-9_]{1,64}", x_like):
+            return f"https://x.com/{x_like}"
+    if field_key == "reddit":
+        reddit_like = username_like.removeprefix("u/").removeprefix("r/").lstrip("/")
+        if re.fullmatch(r"[A-Za-z0-9_]{2,64}", reddit_like):
+            if normalized.lstrip("@").strip().casefold().startswith("r/"):
+                return f"https://www.reddit.com/r/{reddit_like}"
+            return f"https://www.reddit.com/u/{reddit_like}"
+    if field_key == "pinterest" and re.fullmatch(r"[A-Za-z0-9_.-]{2,64}", username_like):
+        return f"https://www.pinterest.com/{username_like}/"
+    return ""
+
+
+def build_profile_social_rows(values: dict[str, str]) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    for field_key, field_label, _option_group in PROFILE_SOCIAL_OPTION_FIELDS:
+        raw_value = str(values.get(field_key, "") or "").strip()
+        if not raw_value:
+            continue
+        rows.append(
+            {
+                "key": field_key,
+                "label": field_label,
+                "value": raw_value,
+                "url": build_profile_social_url(field_key, raw_value),
+            }
+        )
+    return rows
 
 
 def normalize_user_avatar_path(value: str | None) -> str:
@@ -3728,6 +3883,259 @@ def detach_content_post_shared_pair(db: Session, post: ContentPlanPost) -> None:
     peer_post.shared_partner_user_id = None
     peer_post.is_repost = False
     peer_post.manual_publish_only = False
+
+
+def normalize_content_recommendation_title_key(value: str | None) -> str:
+    return re.sub(r"\s+", " ", str(value or "").strip()).casefold()
+
+
+def content_post_title_keys_by_date(posts: list[ContentPlanPost]) -> set[tuple[date, str]]:
+    keys: set[tuple[date, str]] = set()
+    for post in posts:
+        if not isinstance(post.publish_date, date):
+            continue
+        title_key = normalize_content_recommendation_title_key(post.title or "")
+        if not title_key:
+            continue
+        keys.add((post.publish_date, title_key))
+    return keys
+
+
+def project_card_character_names(card: CosplanCard) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+
+    for item in as_list(card.project_characters_json):
+        if isinstance(item, dict):
+            raw_name = str(
+                item.get("character_name")
+                or item.get("name")
+                or item.get("character")
+                or ""
+            ).strip()
+        else:
+            raw_name = str(item or "").strip()
+        if not raw_name:
+            continue
+        key = raw_name.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(raw_name)
+
+    fallback_name = str(card.character_name or "").strip()
+    if fallback_name and fallback_name.casefold() not in seen:
+        result.append(fallback_name)
+
+    return result
+
+
+def recommended_project_character_post_date(
+    card: CosplanCard,
+    today: date,
+    fallback_date: date,
+) -> date:
+    limit_day = today + timedelta(days=CONTENT_RECOMMENDATION_LOOKAHEAD_DAYS)
+    planned_dates: list[date] = []
+    for candidate in [card.photoset_date, card.project_deadline, card.submission_date]:
+        if isinstance(candidate, date) and candidate >= today:
+            planned_dates.append(candidate)
+    if planned_dates:
+        anchor = min(planned_dates)
+        if anchor <= limit_day:
+            # Небольшой прогрев перед дедлайном/фотосетом.
+            return max(today, anchor - timedelta(days=5))
+    return max(today, fallback_date)
+
+
+def build_content_plan_recommendations(
+    db: Session,
+    content_owner: User | None,
+    content_posts: list[ContentPlanPost],
+    *,
+    today: date,
+) -> list[dict[str, Any]]:
+    if not content_owner:
+        return []
+
+    recommendations: list[dict[str, Any]] = []
+    existing_keys = content_post_title_keys_by_date(content_posts)
+    generated_keys: set[tuple[date, str]] = set()
+
+    def add_recommendation(
+        recommendation_type: str,
+        *,
+        publish_date: date,
+        title: str,
+        description: str,
+        rubric: str,
+        telegram_body_html: str,
+    ) -> bool:
+        title_key = normalize_content_recommendation_title_key(title)
+        if not title_key:
+            return False
+        key = (publish_date, title_key)
+        if key in existing_keys or key in generated_keys:
+            return False
+        generated_keys.add(key)
+        recommendations.append(
+            {
+                "type": recommendation_type,
+                "kind_label": CONTENT_RECOMMENDATION_KIND_LABELS.get(recommendation_type, "Рекомендация"),
+                "publish_date": publish_date,
+                "title": title,
+                "description": description,
+                "rubric": rubric,
+                "telegram_body_html": telegram_body_html,
+            }
+        )
+        return True
+
+    # 1) Репост-поздравления для пользователей на неделю вперед.
+    users_with_birthdays = db.execute(select(User).where(User.birth_date.is_not(None))).scalars().all()
+    birthday_count = 0
+    for birthday_item in upcoming_user_birthdays_this_week(users_with_birthdays, today):
+        birthday_user = birthday_item.get("user")
+        if not isinstance(birthday_user, User):
+            continue
+        if birthday_user.id == content_owner.id:
+            continue
+        alias = preferred_user_alias(birthday_user)
+        if not alias:
+            continue
+        target_day = birthday_item.get("date")
+        if not isinstance(target_day, date):
+            continue
+        title = f"Репост-поздравление для @{alias}"
+        description = f"Рекомендуется запланировать репост/поздравление для @{alias} в день рождения."
+        if add_recommendation(
+            CONTENT_RECOMMENDATION_TYPE_BIRTHDAY,
+            publish_date=target_day,
+            title=title,
+            description=description,
+            rubric="Поздравления",
+            telegram_body_html=(
+                f"<b>С днём рождения, @{alias}!</b>\n"
+                "\n"
+                "Пусть творческих идей и сил становится только больше."
+            ),
+        ):
+            birthday_count += 1
+        if birthday_count >= 8:
+            break
+
+    # 2) Посты про персонажей из проектных карточек.
+    project_cards = db.execute(
+        select(CosplanCard).where(
+            CosplanCard.user_id == content_owner.id,
+            CosplanCard.is_shared_copy.is_(False),
+            CosplanCard.is_completed.is_(False),
+            CosplanCard.plan_type == "project",
+        )
+    ).scalars().all()
+
+    def project_sort_key(card: CosplanCard) -> tuple[date, str, int]:
+        future_dates = [
+            candidate
+            for candidate in [card.photoset_date, card.project_deadline, card.submission_date]
+            if isinstance(candidate, date) and candidate >= today
+        ]
+        anchor = min(future_dates) if future_dates else (today + timedelta(days=CONTENT_RECOMMENDATION_LOOKAHEAD_DAYS + 1))
+        return anchor, str(card.character_name or "").casefold(), int(card.id or 0)
+
+    project_character_count = 0
+    for card_index, card in enumerate(sorted(project_cards, key=project_sort_key), start=1):
+        characters = project_card_character_names(card)
+        if not characters:
+            continue
+        primary_character = characters[0]
+        extra_names = ", ".join(characters[1:4])
+        target_day = recommended_project_character_post_date(
+            card,
+            today,
+            today + timedelta(days=min(card_index, 7)),
+        )
+        fandom_text = str(card.fandom or "").strip()
+        title = f"Персонаж проекта: {primary_character}"
+        description_parts = [f"Рекомендуется пост про образ «{primary_character}»."]
+        if fandom_text:
+            description_parts.append(f"Фандом: {fandom_text}.")
+        if extra_names:
+            description_parts.append(f"Можно упомянуть и других: {extra_names}.")
+        if add_recommendation(
+            CONTENT_RECOMMENDATION_TYPE_PROJECT_CHARACTER,
+            publish_date=target_day,
+            title=title,
+            description=" ".join(description_parts),
+            rubric="Персонажи проекта",
+            telegram_body_html=(
+                f"<b>Персонаж проекта: {primary_character}</b>\n"
+                f"\nФандом: {fandom_text or '—'}\n"
+                f"Почему выбрали этот образ, на каком этапе сейчас проект и что будет дальше."
+            ),
+        ):
+            project_character_count += 1
+        if project_character_count >= 10:
+            break
+
+    # 3) Прогресс по мастерской деятельности.
+    master_cards = db.execute(
+        select(InProgressMasterCard).where(InProgressMasterCard.user_id == content_owner.id)
+    ).scalars().all()
+    if master_cards:
+        active_master_cards = [card for card in master_cards if not bool(card.is_archived)]
+        active_count = len(active_master_cards)
+        total_count = len(master_cards)
+        average_progress = (
+            int(round(sum(normalize_status_percent(card.status_percent) for card in active_master_cards) / active_count))
+            if active_count
+            else 0
+        )
+        nearest_deadline = min(
+            (
+                card.deadline_date
+                for card in active_master_cards
+                if isinstance(card.deadline_date, date) and card.deadline_date >= today
+            ),
+            default=None,
+        )
+        deadline_hint = (
+            f" Ближайший дедлайн: {nearest_deadline.strftime('%d-%m-%Y')}."
+            if isinstance(nearest_deadline, date)
+            else ""
+        )
+        master_post_date = today + timedelta(days=1 if today.weekday() in {5, 6} else 0)
+        add_recommendation(
+            CONTENT_RECOMMENDATION_TYPE_MASTER_PROGRESS,
+            publish_date=master_post_date,
+            title="Прогресс по мастерской деятельности",
+            description=(
+                f"Рекомендуется короткий апдейт: активных карточек мастера — {active_count} "
+                f"из {total_count}, средний прогресс — {average_progress}%."
+                f"{deadline_hint}"
+            ),
+            rubric="Мастерская",
+            telegram_body_html=(
+                "<b>Апдейт по мастерской деятельности</b>\n"
+                f"\nАктивных карточек: {active_count} из {total_count}"
+                f"\nСредний прогресс: {average_progress}%"
+                f"{f'\nБлижайший дедлайн: {nearest_deadline.strftime('%d-%m-%Y')}' if isinstance(nearest_deadline, date) else ''}"
+            ),
+        )
+
+    type_order = {
+        CONTENT_RECOMMENDATION_TYPE_BIRTHDAY: 0,
+        CONTENT_RECOMMENDATION_TYPE_PROJECT_CHARACTER: 1,
+        CONTENT_RECOMMENDATION_TYPE_MASTER_PROGRESS: 2,
+    }
+    recommendations.sort(
+        key=lambda item: (
+            item.get("publish_date") or today,
+            type_order.get(str(item.get("type") or ""), 99),
+            normalize_content_recommendation_title_key(item.get("title")),
+        )
+    )
+    return recommendations
 
 
 def get_content_plan_form_values(
@@ -10098,9 +10506,11 @@ def current_user(request: Request, db: Session) -> User | None:
     user_id = request.session.get("user_id")
     if not user_id:
         return None
+    refresh_premium_user_ids_cache(db)
     user = db.get(User, int(user_id))
     if user:
         setattr(user, "_is_smm_manager", to_bool(get_user_option_value(db, user.id, SMM_MANAGER_ROLE_GROUP)))
+        setattr(user, "_is_premium_user", int(user.id) in PREMIUM_USER_IDS_CACHE)
     return user
 
 
@@ -10214,6 +10624,67 @@ def get_user_option_positive_int_values(db: Session, user_id: int, group: str) -
         seen.add(parsed)
         result.append(parsed)
     return result
+
+
+def premium_settings_owner_user(db: Session) -> User | None:
+    return resolve_user_by_alias(db, SPECIAL_HIGHLIGHT_USERNAME)
+
+
+def get_premium_user_ids(db: Session) -> list[int]:
+    owner = premium_settings_owner_user(db)
+    if not owner:
+        return []
+    return get_user_option_positive_int_values(db, owner.id, PREMIUM_USER_ID_GROUP)
+
+
+def replace_premium_user_ids(db: Session, user_ids: list[int]) -> None:
+    owner = premium_settings_owner_user(db)
+    if not owner:
+        raise ValueError("Не найден аккаунт владельца премиум-настроек (@brfox_cosplay).")
+    normalized: list[str] = []
+    seen: set[int] = set()
+    for value in user_ids:
+        parsed = parse_positive_int(str(value))
+        if not parsed or parsed in seen:
+            continue
+        seen.add(parsed)
+        normalized.append(str(parsed))
+    replace_user_option_values(db, owner.id, PREMIUM_USER_ID_GROUP, normalized)
+
+
+def refresh_premium_user_ids_cache(db: Session) -> None:
+    global PREMIUM_USER_IDS_CACHE
+    PREMIUM_USER_IDS_CACHE = set(get_premium_user_ids(db))
+
+
+def build_premium_user_rows(db: Session) -> list[dict[str, Any]]:
+    premium_ids = get_premium_user_ids(db)
+    if not premium_ids:
+        return []
+    users = db.execute(select(User).where(User.id.in_(premium_ids))).scalars().all()
+    users_by_id = {int(item.id): item for item in users if item and item.id}
+    rows: list[dict[str, Any]] = []
+    for user_id in premium_ids:
+        target_user = users_by_id.get(int(user_id))
+        if not target_user:
+            continue
+        rows.append(
+            {
+                "id": int(target_user.id),
+                "alias": f"@{preferred_user_alias(target_user)}",
+                "username": normalize_username(target_user.username),
+                "cosplay_nick": normalize_username(target_user.cosplay_nick),
+                "email": str(target_user.email or "").strip(),
+                "city": str(target_user.home_city or "").strip(),
+                "profile_url": user_profile_url_for_user(target_user),
+            }
+        )
+    return rows
+
+
+def build_premium_alias_options(db: Session) -> list[str]:
+    _alias_to_username, _users_by_username, alias_options = build_user_alias_lookup(db)
+    return alias_options
 
 
 def get_content_manager_owner_ids(db: Session, manager_user_id: int) -> list[int]:
@@ -11134,6 +11605,8 @@ def template_response(
         "nick_is_special": nick_is_special,
         "user_is_special": user_is_special,
         "user_avatar_url": user_avatar_url,
+        "user_profile_url_for_alias": user_profile_url_for_alias,
+        "user_profile_url_for_user": user_profile_url_for_user,
         "is_smm_manager_user": is_smm_manager_user,
         "notification_conflict_subject": conflict_subject_from_message,
         "external_contact_buttons": external_contact_buttons,
@@ -12805,6 +13278,19 @@ def pigeons_messenger(request: Request, db: Session = Depends(get_db)):
         return redirect("/login")
 
     selected_chat_user_id = parse_positive_int(str(request.query_params.get("chat") or "").strip())
+    compose_alias_raw = normalize_username(str(request.query_params.get("compose_alias") or "").strip())
+    compose_recipient_alias = ""
+    compose_target_user_id = 0
+    if compose_alias_raw:
+        compose_target_user = resolve_user_by_alias(db, compose_alias_raw)
+        if compose_target_user and int(compose_target_user.id) != int(user.id):
+            compose_target_user_id = int(compose_target_user.id)
+            compose_recipient_alias = preferred_user_alias(compose_target_user)
+            if not selected_chat_user_id:
+                selected_chat_user_id = compose_target_user_id
+        else:
+            compose_recipient_alias = compose_alias_raw
+
     if selected_chat_user_id and selected_chat_user_id != user.id:
         if mark_pigeon_dialog_as_read(db, user.id, selected_chat_user_id):
             db.commit()
@@ -12818,6 +13304,9 @@ def pigeons_messenger(request: Request, db: Session = Depends(get_db)):
     if not selected_chat and dialogs:
         selected_chat = dialogs[0]
         selected_chat_user_id = int(selected_chat["user_id"])
+    open_new_dialog = bool(compose_recipient_alias) and (
+        not compose_target_user_id or compose_target_user_id not in dialogs_by_user_id
+    )
 
     unread_chat_total = sum(int(item.get("unread_count") or 0) for item in dialogs)
     latest_pigeon_id = latest_pigeon_activity_id(db, user.id)
@@ -12835,6 +13324,8 @@ def pigeons_messenger(request: Request, db: Session = Depends(get_db)):
         latest_pigeon_id=latest_pigeon_id,
         pigeon_alias_options=build_pigeon_alias_options(db, user),
         pigeon_project_attachment_options=project_attachment_options,
+        pigeon_compose_recipient_alias=compose_recipient_alias,
+        pigeon_open_new_dialog=open_new_dialog,
     )
 
 
@@ -14024,6 +14515,7 @@ def admin_dashboard(request: Request, db: Session = Depends(get_db)):
         return redirect("/profile")
 
     dashboard = build_admin_dashboard_stats(db)
+    premium_user_rows = build_premium_user_rows(db)
     return template_response(
         request,
         "admin_dashboard.html",
@@ -14031,8 +14523,53 @@ def admin_dashboard(request: Request, db: Session = Depends(get_db)):
         active_tab="admin",
         title="Админ-дашборд — Cosplay Planner",
         seo_robots="noindex,nofollow,noarchive",
+        can_manage_premium_users=is_primary_admin_user(user),
+        premium_user_rows=premium_user_rows,
+        premium_alias_options=build_premium_alias_options(db),
         **dashboard,
     )
+
+
+@app.post("/admin/premium-users/add")
+async def admin_add_premium_user(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    if not can_view_admin_dashboard(user):
+        add_flash(request, "Доступ запрещён.", "error")
+        return redirect("/profile")
+    if not is_primary_admin_user(user):
+        add_flash(request, "Добавлять премиум-пользователей может только аккаунт @brfox_cosplay.", "error")
+        return redirect("/admin/dashboard")
+
+    form = await request.form()
+    raw_alias = normalize_username(str(form.get("premium_alias", "")).strip())
+    if not raw_alias:
+        add_flash(request, "Введите ник пользователя.", "error")
+        return redirect("/admin/dashboard")
+
+    target_user = resolve_user_by_alias(db, raw_alias)
+    if not target_user:
+        add_flash(request, f"Пользователь @{raw_alias} не найден.", "error")
+        return redirect("/admin/dashboard")
+
+    premium_user_ids = get_premium_user_ids(db)
+    target_user_id = int(target_user.id)
+    if target_user_id in premium_user_ids:
+        add_flash(request, f"@{preferred_user_alias(target_user)} уже в списке премиум.", "info")
+        return redirect("/admin/dashboard")
+
+    premium_user_ids.append(target_user_id)
+    try:
+        replace_premium_user_ids(db, premium_user_ids)
+    except ValueError as exc:
+        add_flash(request, str(exc), "error")
+        return redirect("/admin/dashboard")
+
+    db.commit()
+    refresh_premium_user_ids_cache(db)
+    add_flash(request, f"@{preferred_user_alias(target_user)} добавлен(а) в премиум.", "success")
+    return redirect("/admin/dashboard")
 
 
 @app.get("/profile", response_class=HTMLResponse)
@@ -14043,6 +14580,9 @@ def profile_page(request: Request, db: Session = Depends(get_db)):
 
     saved_bot_secret_code = get_secret_user_option_value(db, user.id, PROFILE_TELEGRAM_SECRET_CODE_GROUP)
     has_legacy_bot_secret_without_reveal = bool((user.telegram_secret_code_hash or "").strip() and not saved_bot_secret_code)
+    profile_social_values = get_user_profile_social_values(db, user.id)
+    profile_about_markdown = get_user_option_value(db, user.id, PROFILE_ABOUT_MARKDOWN_GROUP)
+    profile_photo_urls = get_user_profile_photo_urls(db, user.id)
 
     return template_response(
         request,
@@ -14052,6 +14592,11 @@ def profile_page(request: Request, db: Session = Depends(get_db)):
         can_view_admin_dashboard=can_view_admin_dashboard(user),
         saved_bot_secret_code=saved_bot_secret_code,
         has_legacy_bot_secret_without_reveal=has_legacy_bot_secret_without_reveal,
+        profile_social_fields=PROFILE_SOCIAL_OPTION_FIELDS,
+        profile_social_values=profile_social_values,
+        profile_about_markdown=profile_about_markdown,
+        profile_photo_urls=profile_photo_urls,
+        profile_gallery_input="\n".join(profile_photo_urls),
     )
 
 
@@ -14071,8 +14616,27 @@ async def profile_update(request: Request, db: Session = Depends(get_db)):
     home_city = str(form.get("home_city", "")).strip()
     birth_date = parse_date(str(form.get("birth_date", "")).strip())
     telegram_secret_code = str(form.get("telegram_secret_code", "")).strip()
+    profile_about_markdown = normalize_text_line_breaks(str(form.get("profile_about_markdown", "")).strip())
+    profile_gallery_input = str(form.get("profile_gallery_input", ""))
     new_password = str(form.get("new_password", "")).strip()
     new_password_confirm = str(form.get("new_password_confirm", "")).strip()
+
+    profile_social_values: dict[str, str] = {}
+    for field_key, field_label, _option_group in PROFILE_SOCIAL_OPTION_FIELDS:
+        field_value = str(form.get(f"profile_social_{field_key}", "")).strip()
+        if len(field_value) > 255:
+            add_flash(request, f"Поле «{field_label}» слишком длинное (до 255 символов).", "error")
+            return redirect("/profile")
+        profile_social_values[field_key] = field_value
+
+    if len(profile_about_markdown) > 8000:
+        add_flash(request, "Поле «О себе» слишком длинное (до 8000 символов).", "error")
+        return redirect("/profile")
+
+    profile_photo_urls = parse_profile_photo_input(profile_gallery_input)
+    if len(profile_photo_urls) > 10:
+        add_flash(request, "Можно сохранить не более 10 фотографий профиля.", "error")
+        return redirect("/profile")
 
     if username and username != user.username:
         exists = db.execute(
@@ -14133,9 +14697,43 @@ async def profile_update(request: Request, db: Session = Depends(get_db)):
             old_cosplay_nick=old_cosplay_nick,
         )
 
+    set_user_option_value(db, user.id, PROFILE_ABOUT_MARKDOWN_GROUP, profile_about_markdown)
+    replace_user_option_values(db, user.id, PROFILE_PHOTO_URL_GROUP, profile_photo_urls)
+    for field_key, _field_label, option_group in PROFILE_SOCIAL_OPTION_FIELDS:
+        set_user_option_value(db, user.id, option_group, profile_social_values.get(field_key, ""))
+
     db.commit()
     add_flash(request, "Профиль обновлён.", "success")
     return redirect("/profile")
+
+
+@app.get("/users/{alias}", response_class=HTMLResponse)
+def user_public_card(alias: str, request: Request, db: Session = Depends(get_db)):
+    viewer = current_user(request, db)
+    if not viewer:
+        return redirect("/login")
+
+    target_user = resolve_user_by_alias(db, alias)
+    if not target_user:
+        add_flash(request, "Профиль участника не найден.", "error")
+        return redirect("/")
+
+    social_values = get_user_profile_social_values(db, target_user.id)
+    social_rows = build_profile_social_rows(social_values)
+    profile_about_markdown = get_user_option_value(db, target_user.id, PROFILE_ABOUT_MARKDOWN_GROUP)
+    profile_photo_urls = get_user_profile_photo_urls(db, target_user.id)
+
+    return template_response(
+        request,
+        "user_card.html",
+        user=viewer,
+        active_tab=None,
+        target_user=target_user,
+        social_rows=social_rows,
+        profile_about_markdown=profile_about_markdown,
+        profile_photo_urls=profile_photo_urls,
+        can_message_user=int(viewer.id) != int(target_user.id),
+    )
 
 
 @app.post("/profile/vk-bot/unlink")
@@ -17599,11 +18197,11 @@ def rehearsals_list(request: Request, db: Session = Depends(get_db)):
         .order_by(RehearsalEntry.entry_date, RehearsalEntry.entry_time, RehearsalEntry.id)
     ).scalars().all()
     entries_by_card: dict[int, list[RehearsalEntry]] = defaultdict(list)
-    participant_entries_count: dict[int, int] = defaultdict(int)
+    rehearsal_dates_count_by_card: dict[int, int] = defaultdict(int)
     for entry in entries:
         entries_by_card[entry.rehearsal_card_id].append(entry)
-        if entry.source_type == REHEARSAL_SOURCE_PARTICIPANT:
-            participant_entries_count[entry.rehearsal_card_id] += 1
+        if entry.status in REHEARSAL_ACTIVE_STATUS_SET:
+            rehearsal_dates_count_by_card[entry.rehearsal_card_id] += 1
 
     proposer_ids = {entry.proposed_by_user_id for entry in entries if entry.proposed_by_user_id}
     proposers_by_id: dict[int, User] = {}
@@ -17619,7 +18217,7 @@ def rehearsals_list(request: Request, db: Session = Depends(get_db)):
         available_cards=available_cards,
         rehearsal_cards=rehearsal_cards,
         entries_by_card=entries_by_card,
-        participant_entries_count=participant_entries_count,
+        rehearsal_dates_count_by_card=rehearsal_dates_count_by_card,
         proposers_by_id=proposers_by_id,
         rehearsal_status_labels={
             REHEARSAL_STATUS_PROPOSED: rehearsal_status_label(REHEARSAL_STATUS_PROPOSED),
@@ -17739,15 +18337,16 @@ async def rehearsals_add_date(rehearsal_card_id: int, request: Request, db: Sess
         add_flash(request, "Укажите дату репетиции.", "error")
         return redirect("/rehearsals")
 
-    participant_entries_count = db.execute(
-        select(RehearsalEntry)
-        .where(
-            RehearsalEntry.rehearsal_card_id == rehearsal_card.id,
-            RehearsalEntry.source_type == REHEARSAL_SOURCE_PARTICIPANT,
-        )
-        .order_by(RehearsalEntry.id)
-    ).scalars().all()
-    if len(participant_entries_count) >= 10:
+    rehearsal_dates_count = int(
+        db.execute(
+            select(func.count(RehearsalEntry.id)).where(
+                RehearsalEntry.rehearsal_card_id == rehearsal_card.id,
+                RehearsalEntry.status.in_(REHEARSAL_ACTIVE_STATUS_VALUES),
+            )
+        ).scalar()
+        or 0
+    )
+    if rehearsal_dates_count >= 10:
         add_flash(request, "В одной карточке можно указать не более 10 дат репетиций.", "error")
         return redirect("/rehearsals")
 
@@ -18100,6 +18699,8 @@ async def my_projects_propose_rehearsal(request: Request, db: Session = Depends(
         return redirect("/my-projects")
 
     created = 0
+    skipped_due_limit = 0
+    active_rehearsal_counts_by_card_id: dict[int, int] = {}
     for card in target_cards:
         source_card = resolve_source_card(db, card)
         if not source_card:
@@ -18128,6 +18729,21 @@ async def my_projects_propose_rehearsal(request: Request, db: Session = Depends(
                 user_id=participant_user.id,
                 cosplan_card=participant_card,
             )
+            rehearsal_card_id = int(rehearsal_card.id)
+            if rehearsal_card_id not in active_rehearsal_counts_by_card_id:
+                active_rehearsal_counts_by_card_id[rehearsal_card_id] = int(
+                    db.execute(
+                        select(func.count(RehearsalEntry.id)).where(
+                            RehearsalEntry.rehearsal_card_id == rehearsal_card_id,
+                            RehearsalEntry.status.in_(REHEARSAL_ACTIVE_STATUS_VALUES),
+                        )
+                    ).scalar()
+                    or 0
+                )
+            if active_rehearsal_counts_by_card_id[rehearsal_card_id] >= 10:
+                skipped_due_limit += 1
+                continue
+
             readable_date = rehearsal_date.strftime("%d-%m-%Y")
             readable_time = f" {rehearsal_time}" if rehearsal_time else ""
             leader_alias = preferred_user_alias(user)
@@ -18186,7 +18802,7 @@ async def my_projects_propose_rehearsal(request: Request, db: Session = Depends(
                 )
             db.add(
                 RehearsalEntry(
-                    rehearsal_card_id=rehearsal_card.id,
+                    rehearsal_card_id=rehearsal_card_id,
                     user_id=participant_user.id,
                     cosplan_card_id=participant_card.id,
                     proposed_by_user_id=user.id,
@@ -18196,13 +18812,27 @@ async def my_projects_propose_rehearsal(request: Request, db: Session = Depends(
                     entry_time=rehearsal_time,
                 )
             )
+            active_rehearsal_counts_by_card_id[rehearsal_card_id] += 1
             created += 1
 
     db.commit()
     if created > 0:
         add_flash(request, f"Предложение репетиции отправлено участникам: {created}.", "success")
+        if skipped_due_limit > 0:
+            add_flash(
+                request,
+                f"Пропущено из-за лимита 10 активных дат в карточке: {skipped_due_limit}.",
+                "info",
+            )
     else:
-        add_flash(request, "Новых предложений не создано (возможны дубли на эту дату и время).", "info")
+        if skipped_due_limit > 0:
+            add_flash(
+                request,
+                "Новых предложений не создано: у выбранных участников уже достигнут лимит 10 активных дат.",
+                "info",
+            )
+        else:
+            add_flash(request, "Новых предложений не создано (возможны дубли на эту дату и время).", "info")
     return redirect("/my-projects")
 
 
@@ -18677,6 +19307,15 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
             }
         )
 
+    content_recommendations: list[dict[str, Any]] = []
+    if active_view == CALENDAR_VIEW_CONTENT and content_access_state.get("has_access"):
+        content_recommendations = build_content_plan_recommendations(
+            db,
+            content_owner,
+            content_posts,
+            today=today,
+        )
+
     content_by_month: dict[tuple[int, int], list[dict[str, Any]]] = defaultdict(list)
     for row in content_rows:
         publish_date = row.get("date")
@@ -18734,6 +19373,7 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
         content_status_options=CONTENT_STATUS_OPTIONS,
         content_status_labels=CONTENT_STATUS_LABELS,
         question_topic_options=QUESTION_TOPIC_OPTIONS,
+        content_recommendations=content_recommendations,
         content_rubric_options=rubric_options,
         content_rubric_colors=rubric_colors,
         content_rubric_tags=rubric_tags,
@@ -19124,6 +19764,78 @@ async def my_calendar_content_managers_save(request: Request, db: Session = Depe
     db.commit()
     add_flash(request, "Список менеджеров обновлён.", "success")
     return content_calendar_redirect(request, user, form=form, content_owner=content_owner)
+
+
+@app.post("/my-calendar/content/recommendations/create")
+async def my_calendar_content_recommendation_create(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    access_redirect = ensure_content_plan_access(request, user, db)
+    if access_redirect:
+        return access_redirect
+
+    form = await request.form()
+    content_owner, owner_redirect = ensure_content_owner_for_action(request, user, db, form=form)
+    if owner_redirect or not content_owner:
+        return owner_redirect or content_calendar_redirect(request, user, form=form)
+
+    title = str(form.get("title", "")).strip()
+    description = str(form.get("description", "")).strip()
+    rubric = str(form.get("rubric", "")).strip() or "Рекомендации"
+    telegram_body_html = str(form.get("telegram_body_html", "")).strip()
+    publish_date = parse_date(str(form.get("publish_date", "")).strip()) or date.today()
+
+    if not title:
+        add_flash(request, "У рекомендации нет названия поста. Обновите страницу и попробуйте снова.", "error")
+        return content_calendar_redirect(request, user, form=form, content_owner=content_owner)
+    if len(title) > 255:
+        add_flash(request, "Название рекомендации слишком длинное (максимум 255 символов).", "error")
+        return content_calendar_redirect(request, user, form=form, content_owner=content_owner)
+    if len(rubric) > 120:
+        add_flash(request, "Рубрика рекомендации слишком длинная (максимум 120 символов).", "error")
+        return content_calendar_redirect(request, user, form=form, content_owner=content_owner)
+    if len(description) > 4000:
+        add_flash(request, "Описание рекомендации слишком длинное (максимум 4000 символов).", "error")
+        return content_calendar_redirect(request, user, form=form, content_owner=content_owner)
+    if len(telegram_body_html) > 12000:
+        add_flash(request, "Текст Telegram для рекомендации слишком длинный (максимум 12000 символов).", "error")
+        return content_calendar_redirect(request, user, form=form, content_owner=content_owner)
+
+    post = ContentPlanPost(
+        user_id=content_owner.id,
+        title=title,
+        publish_date=publish_date,
+        rubric=rubric,
+    )
+    post.description = description or None
+    post.publish_time = None
+    post.socials_json = ["ТГ"]
+    post.status = "plan"
+    post.telegram_body_html = normalize_telegram_custom_emoji_html(telegram_body_html)
+
+    available_telegram_channels = get_content_telegram_channels(db, content_owner.id)
+    if len(available_telegram_channels) == 1 and available_telegram_channels[0].get("chat_id"):
+        post.telegram_channels_json = [available_telegram_channels[0]["chat_id"]]
+    else:
+        post.telegram_channels_json = []
+
+    remember_options(db, content_owner.id, "content_rubric", [rubric])
+    db.add(post)
+    db.commit()
+    db.refresh(post)
+
+    add_flash(request, "Черновик по рекомендации создан. Можно отредактировать и сохранить.", "success")
+    content_scope = get_content_scope_for_request(request, user, form=form)
+    query_params: dict[str, str] = {
+        "view": CALENDAR_VIEW_CONTENT,
+        "content_scope": content_scope,
+        "edit_post_id": str(post.id),
+    }
+    selected_owner_id = selected_content_owner_id_for_scope(user, content_owner, content_scope)
+    if selected_owner_id:
+        query_params["content_owner_id"] = str(selected_owner_id)
+    return redirect(f"/my-calendar?{urlencode(query_params)}#content-form")
 
 
 @app.post("/my-calendar/content/new")

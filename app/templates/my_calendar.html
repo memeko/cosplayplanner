@@ -610,6 +610,36 @@
     </div>
   </details>
 
+  {% if content_recommendations %}
+  <section class="box top-offset">
+    <h2>Рекомендации для контент-плана</h2>
+    <p class="muted">Подсказки формируются на основе дней рождения пользователей, проектных карточек и вашей мастерской деятельности.</p>
+    <ul class="calendar-list top-offset">
+      {% for recommendation in content_recommendations %}
+        <li>
+          <span class="calendar-date">{{ recommendation.publish_date.strftime('%d-%m-%Y') if recommendation.publish_date else "—" }}</span>
+          <span class="chip">{{ recommendation.kind_label }}</span>
+          <span class="chip">{{ recommendation.rubric }}</span>
+          <strong>{{ recommendation.title }}</strong>
+          {% if recommendation.description %}
+            <span class="muted">{{ recommendation.description }}</span>
+          {% endif %}
+          <form method="post" action="/my-calendar/content/recommendations/create">
+            <input type="hidden" name="content_scope" value="{{ content_scope }}" />
+            {% if content_owner_id %}<input type="hidden" name="content_owner_id" value="{{ content_owner_id }}" />{% endif %}
+            <input type="hidden" name="title" value="{{ recommendation.title }}" />
+            <input type="hidden" name="description" value="{{ recommendation.description }}" />
+            <input type="hidden" name="rubric" value="{{ recommendation.rubric }}" />
+            <input type="hidden" name="publish_date" value="{{ recommendation.publish_date.isoformat() if recommendation.publish_date else '' }}" />
+            <textarea name="telegram_body_html" hidden>{{ recommendation.telegram_body_html }}</textarea>
+            <button type="submit" class="btn btn-small">Создать черновик</button>
+          </form>
+        </li>
+      {% endfor %}
+    </ul>
+  </section>
+  {% endif %}
+
   <details class="box calendar-spoiler" id="content-form" {% if editing_content_post %}open{% endif %}>
     <summary>{{ "Редактировать пост" if editing_content_post else "Добавить пост в контент-план" }}</summary>
     <div class="calendar-spoiler-body">

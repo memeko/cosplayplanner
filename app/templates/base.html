@@ -343,6 +343,95 @@
       });
     })();
   </script>
+  <script>
+    (function () {
+      const mentionPattern = /(^|[\s(>"'«])@([^\s@<>{}\[\](),;:!?"'«»]{2,64})(?=$|[\s).,!?:;"'»<])/gu;
+
+      function shouldSkipNode(node) {
+        const parent = node && node.parentElement;
+        if (!parent) return true;
+        if (parent.closest("a, textarea, input, button, code, pre, script, style")) {
+          return true;
+        }
+        return false;
+      }
+
+      function buildAliasLink(alias) {
+        const normalized = String(alias || "").trim().replace(/^@+/, "");
+        if (!normalized) return null;
+        const anchor = document.createElement("a");
+        anchor.className = "user-alias-link";
+        anchor.href = "/users/" + encodeURIComponent(normalized);
+        anchor.textContent = "@" + normalized;
+        return anchor;
+      }
+
+      function linkifyTextNode(node) {
+        const text = String(node.nodeValue || "");
+        if (!text || text.indexOf("@") === -1 || shouldSkipNode(node)) {
+          return;
+        }
+        mentionPattern.lastIndex = 0;
+        let match = null;
+        let lastIndex = 0;
+        let replaced = false;
+        const fragment = document.createDocumentFragment();
+
+        while ((match = mentionPattern.exec(text))) {
+          const prefix = String(match[1] || "");
+          const alias = String(match[2] || "");
+          const mentionText = "@" + alias;
+          const mentionStart = match.index + prefix.length;
+          if (mentionStart < lastIndex) {
+            continue;
+          }
+          if (mentionStart > lastIndex) {
+            fragment.appendChild(document.createTextNode(text.slice(lastIndex, mentionStart)));
+          }
+          const link = buildAliasLink(alias);
+          if (link) {
+            fragment.appendChild(link);
+            replaced = true;
+          } else {
+            fragment.appendChild(document.createTextNode(mentionText));
+          }
+          lastIndex = mentionStart + mentionText.length;
+        }
+
+        if (!replaced) {
+          return;
+        }
+        if (lastIndex < text.length) {
+          fragment.appendChild(document.createTextNode(text.slice(lastIndex)));
+        }
+        if (node.parentNode) {
+          node.parentNode.replaceChild(fragment, node);
+        }
+      }
+
+      function linkifyMentions(root) {
+        if (!root) return;
+        const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+        const nodes = [];
+        while (walker.nextNode()) {
+          nodes.push(walker.currentNode);
+        }
+        nodes.forEach(linkifyTextNode);
+      }
+
+      document.addEventListener("DOMContentLoaded", function () {
+        linkifyMentions(document.querySelector("main"));
+      });
+
+      const popupBody = document.getElementById("pigeon-popup-body");
+      if (popupBody && typeof MutationObserver !== "undefined") {
+        const observer = new MutationObserver(function () {
+          linkifyMentions(popupBody);
+        });
+        observer.observe(popupBody, { childList: true, subtree: true });
+      }
+    })();
+  </script>
   {% endif %}
   {% block scripts %}{% endblock %}
 </body>

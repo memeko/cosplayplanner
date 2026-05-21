@@ -39,62 +39,93 @@
 </section>
 
 <section class="box">
-  <form method="post" action="/profile" class="grid two-col">
+  <form method="post" action="/profile" class="grid one-col">
+    <div class="grid two-col">
+      <label>
+        Ник
+        <input type="text" name="username" value="{{ user.username }}" required />
+      </label>
+      <label>
+        Ник косплеера
+        <input type="text" name="cosplay_nick" value="{{ user.cosplay_nick or '' }}" placeholder="Например, neko_cos" />
+      </label>
+      <label>
+        Email
+        <input type="email" name="email" value="{{ user.email }}" required />
+      </label>
+      <label>
+        Основной город
+        <input type="text" name="home_city" value="{{ user.home_city or '' }}" placeholder="Например, Москва, Тула" />
+      </label>
+      <label>
+        День рождения
+        <input type="date" name="birth_date" value="{{ user.birth_date.isoformat() if user.birth_date else '' }}" />
+      </label>
+      <label>
+        Текущий секретный код для ботов
+        <div class="profile-secret-wrap">
+          <input
+            type="password"
+            id="saved-telegram-secret-code"
+            value="{{ saved_bot_secret_code or '' }}"
+            readonly
+            placeholder="{{ 'Код не сохранен' if not saved_bot_secret_code else '' }}"
+          />
+          <button
+            type="button"
+            class="btn btn-small"
+            id="saved-telegram-secret-toggle"
+            aria-controls="saved-telegram-secret-code"
+            aria-label="Показать или скрыть секретный код"
+          >👁</button>
+        </div>
+        <small class="muted">Используется для входа в Telegram-боте и VK-боте вместо пароля сайта.</small>
+        {% if has_legacy_bot_secret_without_reveal %}
+          <small class="muted">Для текущего старого кода просмотр недоступен. Задайте новый код, и его можно будет посмотреть позже.</small>
+        {% endif %}
+      </label>
+      <label>
+        Новый секретный код для ботов
+        <input type="password" name="telegram_secret_code" placeholder="Оставьте пустым, чтобы не менять" />
+      </label>
+      <label>
+        Новый пароль
+        <input type="password" name="new_password" placeholder="Оставьте пустым, чтобы не менять" />
+      </label>
+      <label>
+        Повтор нового пароля
+        <input type="password" name="new_password_confirm" placeholder="Повторите новый пароль" />
+      </label>
+    </div>
+
+    <h3>Социальные сети</h3>
+    <div class="grid two-col">
+      {% for field_key, field_label, _group in profile_social_fields %}
+        <label>
+          {{ field_label }}
+          <input type="text" name="profile_social_{{ field_key }}" value="{{ profile_social_values.get(field_key, '') }}" maxlength="255" />
+        </label>
+      {% endfor %}
+    </div>
+
+    <h3>О себе</h3>
     <label>
-      Ник
-      <input type="text" name="username" value="{{ user.username }}" required />
+      Поддерживается markdown
+      <textarea name="profile_about_markdown" rows="8" maxlength="8000" placeholder="Расскажите о себе, опыте и интересах.">{{ profile_about_markdown or '' }}</textarea>
     </label>
+
+    <h3>Фотографии</h3>
     <label>
-      Ник косплеера
-      <input type="text" name="cosplay_nick" value="{{ user.cosplay_nick or '' }}" placeholder="Например, neko_cos" />
+      Ссылки на фото профиля (до 10 URL, по одному на строку)
+      <textarea name="profile_gallery_input" id="profile_gallery_input" rows="6" placeholder="https://..." maxlength="8000">{{ profile_gallery_input }}</textarea>
     </label>
-    <label>
-      Email
-      <input type="email" name="email" value="{{ user.email }}" required />
-    </label>
-    <label>
-      Основной город
-      <input type="text" name="home_city" value="{{ user.home_city or '' }}" placeholder="Например, Москва, Тула" />
-    </label>
-    <label>
-      День рождения
-      <input type="date" name="birth_date" value="{{ user.birth_date.isoformat() if user.birth_date else '' }}" />
-    </label>
-    <label>
-      Текущий секретный код для ботов
-      <div class="profile-secret-wrap">
-        <input
-          type="password"
-          id="saved-telegram-secret-code"
-          value="{{ saved_bot_secret_code or '' }}"
-          readonly
-          placeholder="{{ 'Код не сохранен' if not saved_bot_secret_code else '' }}"
-        />
-        <button
-          type="button"
-          class="btn btn-small"
-          id="saved-telegram-secret-toggle"
-          aria-controls="saved-telegram-secret-code"
-          aria-label="Показать или скрыть секретный код"
-        >👁</button>
-      </div>
-      <small class="muted">Используется для входа в Telegram-боте и VK-боте вместо пароля сайта.</small>
-      {% if has_legacy_bot_secret_without_reveal %}
-        <small class="muted">Для текущего старого кода просмотр недоступен. Задайте новый код, и его можно будет посмотреть позже.</small>
-      {% endif %}
-    </label>
-    <label>
-      Новый секретный код для ботов
-      <input type="password" name="telegram_secret_code" placeholder="Оставьте пустым, чтобы не менять" />
-    </label>
-    <label>
-      Новый пароль
-      <input type="password" name="new_password" placeholder="Оставьте пустым, чтобы не менять" />
-    </label>
-    <label>
-      Повтор нового пароля
-      <input type="password" name="new_password_confirm" placeholder="Повторите новый пароль" />
-    </label>
+    <div class="gallery-upload-row">
+      <input type="file" id="profile_gallery_upload_files" accept="image/*" multiple />
+      <button type="button" class="btn" id="profile_gallery_upload_btn">Загрузить фото</button>
+      <span class="muted" id="profile_gallery_upload_status"></span>
+    </div>
+    <div class="reference-grid" id="profile_gallery_preview"></div>
+
     <div class="actions-inline">
       <button type="submit" class="btn btn-accent">Сохранить профиль</button>
     </div>
@@ -525,6 +556,106 @@
       saveButton.disabled = false;
     }
   });
+})();
+</script>
+<script>
+(function () {
+  const MAX_PROFILE_PHOTOS = 10;
+  const input = document.getElementById("profile_gallery_input");
+  const filesInput = document.getElementById("profile_gallery_upload_files");
+  const uploadButton = document.getElementById("profile_gallery_upload_btn");
+  const statusNode = document.getElementById("profile_gallery_upload_status");
+  const previewWrap = document.getElementById("profile_gallery_preview");
+  if (!input || !filesInput || !uploadButton || !previewWrap) {
+    return;
+  }
+
+  function parseListEntries(value) {
+    if (!value) return [];
+    const normalized = value.replace(/,\s*(?=(?:https?:\/\/|\/media\/))/gi, "\n");
+    return normalized
+      .split(/\n|;/)
+      .map((item) => item.trim())
+      .map((item) => item.replace(/[;,]+$/, ""))
+      .filter(Boolean);
+  }
+
+  function uniquePhotoUrls(values) {
+    return Array.from(
+      new Set(
+        values.filter((value) => /^(https?:\/\/|\/media\/)/i.test(value))
+      )
+    );
+  }
+
+  function updatePreview() {
+    const urls = uniquePhotoUrls(parseListEntries(input.value));
+    if (urls.length > MAX_PROFILE_PHOTOS) {
+      input.value = urls.slice(0, MAX_PROFILE_PHOTOS).join("\n");
+      if (statusNode) {
+        statusNode.textContent = "Оставлены только первые 10 фото.";
+      }
+    }
+    const finalUrls = uniquePhotoUrls(parseListEntries(input.value)).slice(0, MAX_PROFILE_PHOTOS);
+    previewWrap.innerHTML = "";
+    finalUrls.forEach((url) => {
+      const link = document.createElement("a");
+      link.className = "reference-tile";
+      link.href = url;
+      link.target = "_blank";
+      link.rel = "noreferrer";
+      const image = document.createElement("img");
+      image.src = url;
+      image.alt = "Фото профиля участника";
+      link.appendChild(image);
+      previewWrap.appendChild(link);
+    });
+  }
+
+  async function uploadImages() {
+    if (!filesInput.files || !filesInput.files.length) {
+      if (statusNode) statusNode.textContent = "Выберите изображения.";
+      return;
+    }
+
+    const existingUrls = uniquePhotoUrls(parseListEntries(input.value));
+    const freeSlots = Math.max(0, MAX_PROFILE_PHOTOS - existingUrls.length);
+    if (freeSlots <= 0) {
+      if (statusNode) statusNode.textContent = "Достигнут лимит: 10 фото.";
+      return;
+    }
+
+    if (statusNode) statusNode.textContent = "Загрузка...";
+    const uploadedUrls = [];
+    for (const file of Array.from(filesInput.files).slice(0, freeSlots)) {
+      const formData = new FormData();
+      formData.append("image", file);
+      try {
+        const response = await fetch("/media/upload-image", {
+          method: "POST",
+          body: formData,
+          credentials: "same-origin"
+        });
+        const payload = await response.json().catch(function () { return {}; });
+        if (!response.ok || !payload || !payload.ok || !payload.url) {
+          throw new Error((payload && payload.detail) || "Ошибка загрузки");
+        }
+        uploadedUrls.push(payload.url);
+      } catch (error) {
+        if (statusNode) statusNode.textContent = `Ошибка: ${error && error.message ? error.message : "не удалось загрузить файл"}`;
+        return;
+      }
+    }
+
+    input.value = uniquePhotoUrls(existingUrls.concat(uploadedUrls)).slice(0, MAX_PROFILE_PHOTOS).join("\n");
+    filesInput.value = "";
+    updatePreview();
+    if (statusNode) statusNode.textContent = `Загружено: ${uploadedUrls.length}`;
+  }
+
+  input.addEventListener("input", updatePreview);
+  uploadButton.addEventListener("click", uploadImages);
+  updatePreview();
 })();
 </script>
 {% endblock %}

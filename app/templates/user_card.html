@@ -1,0 +1,125 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="section-head">
+  <h1>Карточка участника</h1>
+  <div class="actions-inline">
+    {% if can_message_user %}
+      <a href="/pigeons?compose_alias={{ (target_user.cosplay_nick or target_user.username)|urlencode }}" class="btn btn-accent">Написать</a>
+    {% else %}
+      <a href="/pigeons" class="btn btn-accent">Открыть голубей</a>
+    {% endif %}
+    <a href="/community/cosplayers" class="btn">К косплеерам</a>
+  </div>
+</section>
+
+<section class="box">
+  <div class="user-card-hero">
+    <img src="{{ user_avatar_url(target_user) }}" alt="Аватар @{{ target_user.cosplay_nick or target_user.username }}" class="avatar-vh10 user-card-avatar" loading="lazy" />
+    <div>
+      <h2><span class="{% if user_is_special(target_user) %}nick-special{% endif %}">@{{ target_user.cosplay_nick or target_user.username }}</span></h2>
+      <p class="meta">Город: {{ target_user.home_city or "—" }}</p>
+      <p class="meta">День рождения: {{ target_user.birth_date.strftime('%d-%m-%Y') if target_user.birth_date else "—" }}</p>
+    </div>
+  </div>
+</section>
+
+{% if social_rows %}
+<section class="box top-offset">
+  <h2>Социальные сети</h2>
+  <table class="table top-offset">
+    <tbody>
+      {% for row in social_rows %}
+        <tr>
+          <th>{{ row.label }}</th>
+          <td>
+            {% if row.url %}
+              <a href="{{ row.url }}" target="_blank" rel="noreferrer">{{ row.value }}</a>
+            {% else %}
+              {{ row.value }}
+            {% endif %}
+          </td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+
+{% if profile_photo_urls %}
+<section class="box top-offset">
+  <h2>Фотографии</h2>
+  <div class="user-profile-slider top-offset" id="user-profile-slider">
+    <button type="button" class="btn user-profile-slider-nav" id="user-profile-slider-prev" aria-label="Предыдущая фотография">‹</button>
+    <div class="user-profile-slider-frame">
+      <img src="" alt="Фото профиля участника" id="user-profile-slider-image" loading="lazy" />
+    </div>
+    <button type="button" class="btn user-profile-slider-nav" id="user-profile-slider-next" aria-label="Следующая фотография">›</button>
+  </div>
+  <p class="meta top-offset" id="user-profile-slider-counter"></p>
+  <div class="chips-wrap top-offset">
+    {% for photo_url in profile_photo_urls %}
+      <button type="button" class="chip user-profile-slider-dot" data-index="{{ loop.index0 }}">{{ loop.index }}</button>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
+{% if profile_about_markdown %}
+<section class="box top-offset">
+  <h2>О себе</h2>
+  <div class="notes-block top-offset">{{ profile_about_markdown|render_markdown }}</div>
+</section>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+{% if profile_photo_urls %}
+<script>
+(function () {
+  const urls = {{ profile_photo_urls|tojson }};
+  const imageNode = document.getElementById("user-profile-slider-image");
+  const counterNode = document.getElementById("user-profile-slider-counter");
+  const prevButton = document.getElementById("user-profile-slider-prev");
+  const nextButton = document.getElementById("user-profile-slider-next");
+  const dots = Array.from(document.querySelectorAll(".user-profile-slider-dot"));
+  if (!urls.length || !imageNode || !counterNode || !prevButton || !nextButton) {
+    return;
+  }
+
+  let index = 0;
+
+  function render() {
+    if (!urls.length) return;
+    if (index < 0) index = urls.length - 1;
+    if (index >= urls.length) index = 0;
+    imageNode.src = urls[index];
+    counterNode.textContent = `${index + 1} / ${urls.length}`;
+    dots.forEach((dot) => {
+      const dotIndex = Number(dot.dataset.index || "0");
+      dot.classList.toggle("active", dotIndex === index);
+    });
+  }
+
+  prevButton.addEventListener("click", function () {
+    index -= 1;
+    render();
+  });
+
+  nextButton.addEventListener("click", function () {
+    index += 1;
+    render();
+  });
+
+  dots.forEach((dot) => {
+    dot.addEventListener("click", function () {
+      index = Number(dot.dataset.index || "0");
+      render();
+    });
+  });
+
+  render();
+})();
+</script>
+{% endif %}
+{% endblock %}

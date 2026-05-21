@@ -37,7 +37,7 @@
           Карточка удалена
         {% endif %}
       </h3>
-      <span class="chip">Дат: {{ participant_entries_count.get(row.id, 0) }}/10</span>
+      <span class="chip">Дат: {{ rehearsal_dates_count_by_card.get(row.id, 0) }}/10</span>
     </div>
     <p class="meta">Фандом: {{ card.fandom if card else "—" }}</p>
     <p class="meta">Тип: {{ "Проект" if card and card.plan_type == "project" else "Личное" }}</p>
