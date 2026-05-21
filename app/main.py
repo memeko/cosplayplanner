@@ -489,6 +489,25 @@ PROFILE_TELEGRAM_SECRET_CODE_GROUP = "profile_telegram_secret_code"
 PROFILE_ABOUT_MARKDOWN_GROUP = "profile_about_markdown"
 PROFILE_PHOTO_URL_GROUP = "profile_photo_url"
 PREMIUM_USER_ID_GROUP = "premium_user_id"
+PREMIUM_USER_ACCESS_GROUP = "premium_user_access"
+PREMIUM_DURATION_MONTH_1 = "month_1"
+PREMIUM_DURATION_MONTH_3 = "month_3"
+PREMIUM_DURATION_MONTH_6 = "month_6"
+PREMIUM_DURATION_MONTH_12 = "month_12"
+PREMIUM_DURATION_FOREVER = "forever"
+PREMIUM_DURATION_MONTHS_MAP = {
+    PREMIUM_DURATION_MONTH_1: 1,
+    PREMIUM_DURATION_MONTH_3: 3,
+    PREMIUM_DURATION_MONTH_6: 6,
+    PREMIUM_DURATION_MONTH_12: 12,
+}
+PREMIUM_DURATION_OPTIONS: tuple[tuple[str, str], ...] = (
+    (PREMIUM_DURATION_MONTH_1, "месяц"),
+    (PREMIUM_DURATION_MONTH_3, "3 месяца"),
+    (PREMIUM_DURATION_MONTH_6, "6 месяцев"),
+    (PREMIUM_DURATION_MONTH_12, "год"),
+    (PREMIUM_DURATION_FOREVER, "навсегда"),
+)
 PROFILE_SOCIAL_OPTION_FIELDS: tuple[tuple[str, str, str], ...] = (
     ("telegram_channel", "Telegram-канал", "profile_social_telegram_channel"),
     ("telegram", "Telegram", "profile_social_telegram"),
@@ -10630,44 +10649,160 @@ def premium_settings_owner_user(db: Session) -> User | None:
     return resolve_user_by_alias(db, SPECIAL_HIGHLIGHT_USERNAME)
 
 
-def get_premium_user_ids(db: Session) -> list[int]:
+def normalize_premium_duration(value: str | None) -> str:
+    normalized = str(value or "").strip()
+    allowed = {item[0] for item in PREMIUM_DURATION_OPTIONS}
+    if normalized in allowed:
+        return normalized
+    return PREMIUM_DURATION_MONTH_1
+
+
+def encode_premium_access_value(user_id: int, expires_on: date | None) -> str:
+    payload = {
+        "user_id": int(user_id),
+        "expires_on": expires_on.isoformat() if isinstance(expires_on, date) else "",
+    }
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+
+def decode_premium_access_value(value: str | None) -> dict[str, Any] | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+
+    if raw.isdigit():
+        return {"user_id": int(raw), "expires_on": None}
+
+    try:
+        payload = json.loads(raw)
+    except ValueError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+
+    user_id = parse_positive_int(str(payload.get("user_id", "")).strip())
+    if not user_id:
+        return None
+    raw_expires = str(payload.get("expires_on", "")).strip()
+    expires_on = parse_date(raw_expires) if raw_expires else None
+    if raw_expires and not isinstance(expires_on, date):
+        return None
+    return {"user_id": int(user_id), "expires_on": expires_on}
+
+
+def normalize_premium_access_entries(
+    entries: list[dict[str, Any]],
+    *,
+    today: date | None = None,
+    drop_expired: bool = False,
+) -> list[dict[str, Any]]:
+    today_date = today or date.today()
+    order: list[int] = []
+    merged: dict[int, date | None] = {}
+
+    for entry in entries:
+        user_id = parse_positive_int(str(entry.get("user_id", "")).strip())
+        if not user_id:
+            continue
+        expires_on = entry.get("expires_on")
+        if not isinstance(expires_on, date):
+            expires_on = None
+
+        existing = merged.get(int(user_id))
+        if int(user_id) not in merged:
+            order.append(int(user_id))
+            merged[int(user_id)] = expires_on
+            continue
+        if existing is None:
+            continue
+        if expires_on is None:
+            merged[int(user_id)] = None
+            continue
+        if expires_on > existing:
+            merged[int(user_id)] = expires_on
+
+    normalized: list[dict[str, Any]] = []
+    for user_id in order:
+        expires_on = merged.get(user_id)
+        if drop_expired and isinstance(expires_on, date) and expires_on < today_date:
+            continue
+        normalized.append(
+            {
+                "user_id": int(user_id),
+                "expires_on": expires_on if isinstance(expires_on, date) else None,
+            }
+        )
+    return normalized
+
+
+def get_premium_access_entries(db: Session, *, include_expired: bool = False) -> list[dict[str, Any]]:
     owner = premium_settings_owner_user(db)
     if not owner:
         return []
-    return get_user_option_positive_int_values(db, owner.id, PREMIUM_USER_ID_GROUP)
+
+    raw_new_values = get_user_option_values(db, owner.id, PREMIUM_USER_ACCESS_GROUP)
+    parsed_entries: list[dict[str, Any]] = []
+    if raw_new_values:
+        for value in raw_new_values:
+            decoded = decode_premium_access_value(value)
+            if decoded:
+                parsed_entries.append(decoded)
+    else:
+        for legacy_id in get_user_option_positive_int_values(db, owner.id, PREMIUM_USER_ID_GROUP):
+            parsed_entries.append({"user_id": int(legacy_id), "expires_on": None})
+
+    return normalize_premium_access_entries(
+        parsed_entries,
+        today=date.today(),
+        drop_expired=not include_expired,
+    )
 
 
-def replace_premium_user_ids(db: Session, user_ids: list[int]) -> None:
+def save_premium_access_entries(db: Session, entries: list[dict[str, Any]]) -> None:
     owner = premium_settings_owner_user(db)
     if not owner:
         raise ValueError("Не найден аккаунт владельца премиум-настроек (@brfox_cosplay).")
-    normalized: list[str] = []
-    seen: set[int] = set()
-    for value in user_ids:
-        parsed = parse_positive_int(str(value))
-        if not parsed or parsed in seen:
-            continue
-        seen.add(parsed)
-        normalized.append(str(parsed))
-    replace_user_option_values(db, owner.id, PREMIUM_USER_ID_GROUP, normalized)
+
+    normalized_entries = normalize_premium_access_entries(entries, today=date.today(), drop_expired=False)
+    values = [
+        encode_premium_access_value(int(item["user_id"]), item.get("expires_on"))
+        for item in normalized_entries
+        if parse_positive_int(str(item.get("user_id", "")).strip())
+    ]
+    replace_user_option_values(db, owner.id, PREMIUM_USER_ACCESS_GROUP, values)
+    # Legacy-блок очищаем после первой записи в новый формат.
+    replace_user_option_values(db, owner.id, PREMIUM_USER_ID_GROUP, [])
+
+
+def premium_expires_label(expires_on: date | None) -> str:
+    if isinstance(expires_on, date):
+        return expires_on.strftime("%d.%m.%Y")
+    return "навсегда"
 
 
 def refresh_premium_user_ids_cache(db: Session) -> None:
     global PREMIUM_USER_IDS_CACHE
-    PREMIUM_USER_IDS_CACHE = set(get_premium_user_ids(db))
+    PREMIUM_USER_IDS_CACHE = {
+        int(item["user_id"])
+        for item in get_premium_access_entries(db, include_expired=False)
+        if parse_positive_int(str(item.get("user_id", "")).strip())
+    }
 
 
 def build_premium_user_rows(db: Session) -> list[dict[str, Any]]:
-    premium_ids = get_premium_user_ids(db)
-    if not premium_ids:
+    access_entries = get_premium_access_entries(db, include_expired=False)
+    if not access_entries:
         return []
+    premium_ids = [int(item["user_id"]) for item in access_entries if parse_positive_int(str(item.get("user_id", "")).strip())]
     users = db.execute(select(User).where(User.id.in_(premium_ids))).scalars().all()
     users_by_id = {int(item.id): item for item in users if item and item.id}
     rows: list[dict[str, Any]] = []
-    for user_id in premium_ids:
+    for entry in access_entries:
+        user_id = int(entry["user_id"])
         target_user = users_by_id.get(int(user_id))
         if not target_user:
             continue
+        expires_on = entry.get("expires_on")
         rows.append(
             {
                 "id": int(target_user.id),
@@ -10676,6 +10811,7 @@ def build_premium_user_rows(db: Session) -> list[dict[str, Any]]:
                 "cosplay_nick": normalize_username(target_user.cosplay_nick),
                 "email": str(target_user.email or "").strip(),
                 "city": str(target_user.home_city or "").strip(),
+                "expires_at": premium_expires_label(expires_on if isinstance(expires_on, date) else None),
                 "profile_url": user_profile_url_for_user(target_user),
             }
         )
@@ -14526,6 +14662,7 @@ def admin_dashboard(request: Request, db: Session = Depends(get_db)):
         can_manage_premium_users=is_primary_admin_user(user),
         premium_user_rows=premium_user_rows,
         premium_alias_options=build_premium_alias_options(db),
+        premium_duration_options=PREMIUM_DURATION_OPTIONS,
         **dashboard,
     )
 
@@ -14544,6 +14681,7 @@ async def admin_add_premium_user(request: Request, db: Session = Depends(get_db)
 
     form = await request.form()
     raw_alias = normalize_username(str(form.get("premium_alias", "")).strip())
+    premium_duration = normalize_premium_duration(form.get("premium_duration"))
     if not raw_alias:
         add_flash(request, "Введите ник пользователя.", "error")
         return redirect("/admin/dashboard")
@@ -14553,22 +14691,57 @@ async def admin_add_premium_user(request: Request, db: Session = Depends(get_db)
         add_flash(request, f"Пользователь @{raw_alias} не найден.", "error")
         return redirect("/admin/dashboard")
 
-    premium_user_ids = get_premium_user_ids(db)
     target_user_id = int(target_user.id)
-    if target_user_id in premium_user_ids:
-        add_flash(request, f"@{preferred_user_alias(target_user)} уже в списке премиум.", "info")
-        return redirect("/admin/dashboard")
+    today_date = date.today()
+    access_entries = get_premium_access_entries(db, include_expired=True)
+    current_entry = next((item for item in access_entries if int(item.get("user_id", 0)) == target_user_id), None)
 
-    premium_user_ids.append(target_user_id)
+    if premium_duration == PREMIUM_DURATION_FOREVER:
+        next_expires_on: date | None = None
+    else:
+        if current_entry and current_entry.get("expires_on") is None:
+            add_flash(request, f"@{preferred_user_alias(target_user)} уже выдан бессрочный премиум.", "info")
+            return redirect("/admin/dashboard")
+        months_delta = int(PREMIUM_DURATION_MONTHS_MAP.get(premium_duration, 1))
+        base_date = today_date
+        current_expires = current_entry.get("expires_on") if current_entry else None
+        if isinstance(current_expires, date) and current_expires >= today_date:
+            base_date = current_expires
+        next_expires_on = shift_months_safe(base_date, months_delta)
+
+    updated_entries: list[dict[str, Any]] = []
+    has_target = False
+    for item in access_entries:
+        user_id = parse_positive_int(str(item.get("user_id", "")).strip())
+        if not user_id:
+            continue
+        if user_id == target_user_id:
+            updated_entries.append({"user_id": target_user_id, "expires_on": next_expires_on})
+            has_target = True
+        else:
+            updated_entries.append(
+                {
+                    "user_id": user_id,
+                    "expires_on": item.get("expires_on") if isinstance(item.get("expires_on"), date) else None,
+                }
+            )
+    if not has_target:
+        updated_entries.append({"user_id": target_user_id, "expires_on": next_expires_on})
+
     try:
-        replace_premium_user_ids(db, premium_user_ids)
+        save_premium_access_entries(db, updated_entries)
     except ValueError as exc:
         add_flash(request, str(exc), "error")
         return redirect("/admin/dashboard")
 
     db.commit()
     refresh_premium_user_ids_cache(db)
-    add_flash(request, f"@{preferred_user_alias(target_user)} добавлен(а) в премиум.", "success")
+    expires_label = premium_expires_label(next_expires_on)
+    add_flash(
+        request,
+        f"Премиум для @{preferred_user_alias(target_user)} выдан: {expires_label}.",
+        "success",
+    )
     return redirect("/admin/dashboard")
 
 

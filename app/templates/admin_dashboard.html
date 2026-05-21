@@ -41,8 +41,16 @@
         {% endfor %}
       </datalist>
     </label>
+    <label>
+      Выдать на
+      <select name="premium_duration" required>
+        {% for value, label in premium_duration_options %}
+          <option value="{{ value }}">{{ label }}</option>
+        {% endfor %}
+      </select>
+    </label>
     <div class="actions-inline">
-      <button type="submit" class="btn btn-accent">Добавить в премиум</button>
+      <button type="submit" class="btn btn-accent">Выдать на</button>
     </div>
   </form>
   {% else %}
@@ -54,6 +62,7 @@
     <thead>
       <tr>
         <th>Ник</th>
+        <th>Премиум действителен до</th>
         <th>Email</th>
         <th>Город</th>
       </tr>
@@ -68,6 +77,7 @@
             {{ row.alias }}
           {% endif %}
         </td>
+        <td>{{ row.expires_at }}</td>
         <td>{{ row.email or "—" }}</td>
         <td>{{ row.city or "—" }}</td>
       </tr>
