@@ -118,14 +118,24 @@ def load_project_name() -> str:
         return default_name
 
 
+def resolve_runtime_secret_key_path() -> Path:
+    configured_path = os.getenv("RUNTIME_SECRET_KEY_FILE", "").strip()
+    if configured_path:
+        return Path(configured_path).expanduser()
+
+    data_dir = Path("/data")
+    if data_dir.exists() and os.access(data_dir, os.W_OK):
+        return (data_dir / ".runtime-secret-key").resolve()
+
+    return Path("./app/.runtime-secret-key").expanduser().resolve()
+
+
 def load_secret_key() -> str:
     secret = os.getenv("SECRET_KEY", "").strip()
     if secret and secret != "change-this-secret-key":
         return secret
 
-    runtime_key_path = Path(
-        os.getenv("RUNTIME_SECRET_KEY_FILE", "./app/.runtime-secret-key").strip() or "./app/.runtime-secret-key"
-    ).expanduser()
+    runtime_key_path = resolve_runtime_secret_key_path()
     try:
         if runtime_key_path.exists():
             persisted_secret = runtime_key_path.read_text(encoding="utf-8").strip()
@@ -1712,6 +1722,67 @@ async def media_upload_image(
     }
 
 
+@app.post("/media/upload-profile-image")
+async def media_upload_profile_image(
+    request: Request,
+    image: UploadFile = File(...),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    user = current_user(request, db)
+    if not user:
+        raise HTTPException(status_code=401, detail="Требуется авторизация.")
+
+    if not image.filename:
+        raise HTTPException(status_code=400, detail="Файл не передан.")
+    content_type = (image.content_type or "").lower()
+    if not content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="Нужен файл изображения.")
+
+    raw_bytes = await image.read(MAX_UPLOAD_INPUT_BYTES + 1)
+    if len(raw_bytes) > MAX_UPLOAD_INPUT_BYTES:
+        raise HTTPException(status_code=400, detail="Изображение слишком большое (до 20 МБ).")
+    if not raw_bytes:
+        raise HTTPException(status_code=400, detail="Файл пуст.")
+
+    try:
+        with Image.open(io.BytesIO(raw_bytes)) as source:
+            source_format = (source.format or "").upper()
+            if source_format not in {"JPEG", "JPG", "PNG", "WEBP", "GIF"}:
+                raise ValueError("Неподдерживаемый формат изображения.")
+            prepared = ImageOps.exif_transpose(source)
+            width, height = prepared.size
+    except UnidentifiedImageError as exc:
+        raise HTTPException(status_code=400, detail="Неподдерживаемый формат изображения.") from exc
+    except OSError as exc:
+        raise HTTPException(status_code=400, detail="Не удалось прочитать изображение.") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    extension_map = {
+        "JPEG": ".jpg",
+        "JPG": ".jpg",
+        "PNG": ".png",
+        "WEBP": ".webp",
+        "GIF": ".gif",
+    }
+    file_ext = extension_map.get(source_format, ".img")
+    file_name = f"{datetime.utcnow().strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:14]}{file_ext}"
+    destination = media_storage_path() / file_name
+    destination.write_bytes(raw_bytes)
+
+    public_path = f"/media/{file_name}"
+    base_url = str(request.base_url).rstrip("/")
+    return {
+        "ok": True,
+        "url": f"{base_url}{public_path}",
+        "path": public_path,
+        "size_bytes": len(raw_bytes),
+        "width": width,
+        "height": height,
+        "format": source_format.lower(),
+    }
+
+
 @app.post("/media/upload-character-reference")
 async def media_upload_character_reference(
     request: Request,
@@ -2121,23 +2192,32 @@ def user_profile_url_for_user(target_user: User | None) -> str:
 
 
 def resolve_user_by_alias(db: Session, alias: str | None) -> User | None:
-    normalized = normalize_username(alias).casefold()
+    normalized = normalize_username(alias)
     if not normalized:
         return None
-    candidates = db.execute(
+
+    # 1) Быстрый точный матч без привязки к SQL lower() (важно для unicode-ников).
+    exact_candidates = db.execute(
         select(User).where(
             or_(
-                func.lower(User.username) == normalized,
-                func.lower(User.cosplay_nick) == normalized,
+                User.username == normalized,
+                User.cosplay_nick == normalized,
             )
         )
     ).scalars().all()
-    if not candidates:
-        return None
-    for item in candidates:
-        if normalize_username(item.cosplay_nick).casefold() == normalized:
-            return item
-    return candidates[0]
+    if exact_candidates:
+        for item in exact_candidates:
+            if normalize_username(item.cosplay_nick) == normalized:
+                return item
+        for item in exact_candidates:
+            if normalize_username(item.username) == normalized:
+                return item
+        return exact_candidates[0]
+
+    # 2) Fallback: строгая связка alias -> username через lookup в Python.
+    alias_to_username, users_by_username, _alias_options = build_user_alias_lookup(db)
+    canonical_username = resolve_alias_to_username(normalized, alias_to_username)
+    return users_by_username.get(canonical_username.casefold())
 
 
 def normalize_profile_photo_urls(raw_values: list[str]) -> list[str]:
@@ -5425,7 +5505,27 @@ def cache_telegram_custom_emoji_preview(token: str, emoji_id: str) -> Path | Non
     return destination
 
 
+def user_has_premium_status(db: Session, user: User | None) -> bool:
+    if not user:
+        return False
+    if is_primary_admin_user(user):
+        return True
+    user_id = int(getattr(user, "id", 0) or 0)
+    if not user_id:
+        return False
+    if user_id in PREMIUM_USER_IDS_CACHE:
+        return True
+    active_premium_user_ids = {
+        int(item["user_id"])
+        for item in get_premium_access_entries(db, include_expired=False)
+        if parse_positive_int(str(item.get("user_id", "")).strip())
+    }
+    return user_id in active_premium_user_ids
+
+
 def user_has_content_plan_access(db: Session, user: User) -> bool:
+    if user_has_premium_status(db, user):
+        return True
     return bool(str(get_user_option_value(db, user.id, CONTENT_PLAN_ACCESS_VERIFIED_GROUP) or "").strip())
 
 
@@ -5563,7 +5663,7 @@ def build_content_plan_access_state(user: User, db: Session) -> dict[str, Any]:
         "channel_handle": channel_handle,
         "notifications_bot_url": f"https://t.me/{TELEGRAM_NOTIFICATIONS_BOT_USERNAME}",
         "notifications_bot_handle": f"@{TELEGRAM_NOTIFICATIONS_BOT_USERNAME}",
-        "requires_telegram_link": not bool(parse_positive_int(user.telegram_chat_id)),
+        "requires_telegram_link": (not has_access) and (not bool(parse_positive_int(user.telegram_chat_id))),
     }
 
 
@@ -7417,13 +7517,7 @@ def start_telegram_auth(chat_id: str, *, with_greeting: bool = False) -> None:
 
 
 def resolve_user_for_telegram_login(db: Session, raw_username: str) -> User | None:
-    normalized = normalize_username(raw_username).casefold()
-    if not normalized:
-        return None
-    user = db.execute(select(User).where(func.lower(User.username) == normalized)).scalar_one_or_none()
-    if user:
-        return user
-    return db.execute(select(User).where(func.lower(User.cosplay_nick) == normalized)).scalar_one_or_none()
+    return resolve_user_by_alias(db, raw_username)
 
 
 def set_user_bot_secret_code(user: User, raw_code: str, db: Session) -> None:
@@ -7689,7 +7783,9 @@ def dispatch_telegram_notifications() -> None:
                     must_commit = True
                     continue
 
-                if error_code in {401, 403}:
+                # 401 обычно означает проблему токена/среды деплоя, а не пользователя.
+                # Чтобы не "разлогинивать" всех, отвязываем только при 403.
+                if error_code == 403:
                     user.telegram_chat_id = None
                     user.telegram_username = None
                     user.telegram_linked_at = None
@@ -19868,6 +19964,12 @@ async def my_calendar_content_access_check(request: Request, db: Session = Depen
     user = current_user(request, db)
     if not user:
         return redirect("/login")
+
+    if user_has_premium_status(db, user):
+        set_user_option_value(db, user.id, CONTENT_PLAN_ACCESS_VERIFIED_GROUP, datetime.utcnow().isoformat())
+        db.commit()
+        add_flash(request, "Премиум-доступ активен. Контент-план открыт без проверки подписки.", "success")
+        return content_calendar_redirect(request, user)
 
     if not parse_positive_int(user.telegram_chat_id):
         add_flash(

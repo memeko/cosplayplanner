@@ -345,7 +345,7 @@
   </script>
   <script>
     (function () {
-      const mentionPattern = /(^|[\s(>"'«])@([^\s@<>{}\[\](),;:!?"'«»]{2,64})(?=$|[\s).,!?:;"'»<])/gu;
+      const mentionPattern = /(^|[\s(>"'«])@([^\s@<>{}\[\](),;:!?"'«»]{2,64}(?:\s+[^\s@<>{}\[\](),;:!?"'«»]{1,64})?)(?=$|[\s).,!?:;"'»<])/gu;
 
       function shouldSkipNode(node) {
         const parent = node && node.parentElement;

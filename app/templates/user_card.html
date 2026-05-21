@@ -64,12 +64,14 @@
 </section>
 {% endif %}
 
-{% if profile_about_markdown %}
 <section class="box top-offset">
-  <h2>О себе</h2>
+  <h2>Обо мне</h2>
+  {% if profile_about_markdown %}
   <div class="notes-block top-offset">{{ profile_about_markdown|render_markdown }}</div>
+  {% else %}
+  <p class="muted top-offset">Пользователь пока не заполнил раздел «Обо мне».</p>
+  {% endif %}
 </section>
-{% endif %}
 {% endblock %}
 
 {% block scripts %}
