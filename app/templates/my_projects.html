@@ -41,7 +41,7 @@
   {% set owner = owners_by_id.get(card.user_id) %}
   {% set pending_rehearsals = pending_rehearsals_by_card.get(card.id, []) %}
   {% set rehearsal_history = leader_rehearsal_history_by_card.get(card.id, []) %}
-  <article class="card">
+  <article class="card" id="my-project-card-{{ card.id }}">
     <h3><a href="/cosplan/{{ card.id }}" class="card-title-link">{{ card.character_name }}</a></h3>
     <p class="meta">
       Участник:
@@ -84,14 +84,16 @@
             <div class="actions-inline">
               <form method="post" action="/my-projects/rehearsals/{{ entry.id }}/decision">
                 <input type="hidden" name="decision" value="approve" />
+                <input type="hidden" name="next" value="/my-projects#my-project-card-{{ card.id }}" />
                 <button type="submit" class="btn btn-accept">Одобрить</button>
               </form>
               <form method="post" action="/my-projects/rehearsals/{{ entry.id }}/decision">
                 <input type="hidden" name="decision" value="reject" />
+                <input type="hidden" name="next" value="/my-projects#my-project-card-{{ card.id }}" />
                 <button type="submit" class="btn btn-decline">Отклонить</button>
               </form>
               <form method="post" action="/rehearsals/entries/{{ entry.id }}/delete" onsubmit="return confirm('Удалить эту репетицию?');">
-                <input type="hidden" name="next" value="/my-projects" />
+                <input type="hidden" name="next" value="/my-projects#my-project-card-{{ card.id }}" />
                 <button type="submit" class="btn btn-danger">Удалить</button>
               </form>
             </div>
@@ -130,7 +132,7 @@
             </div>
             <div class="actions-inline">
               <form method="post" action="/rehearsals/entries/{{ entry.id }}/delete" onsubmit="return confirm('Удалить эту репетицию из истории?');">
-                <input type="hidden" name="next" value="/my-projects" />
+                <input type="hidden" name="next" value="/my-projects#my-project-card-{{ card.id }}" />
                 <button type="submit" class="btn btn-danger">Удалить</button>
               </form>
             </div>

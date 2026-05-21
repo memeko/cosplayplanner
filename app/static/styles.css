@@ -1707,6 +1707,11 @@ textarea {
   line-height: 1.45;
 }
 
+.pigeon-popup-card .pigeon-message-attachment-image-link {
+  width: 60%;
+  max-width: 60%;
+}
+
 .pigeon-popup .actions-inline {
   gap: 8px;
   flex-wrap: wrap;
@@ -3212,6 +3217,13 @@ textarea {
   gap: 10px;
 }
 
+.master-board-toolbar-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
 .master-board-inline-label {
   display: inline-flex;
   align-items: center;
@@ -3257,6 +3269,7 @@ textarea {
 .master-board-canvas-wrap {
   width: 100%;
   min-height: 500px;
+  touch-action: none;
 }
 
 .master-board-drop-hint {
@@ -3275,6 +3288,11 @@ textarea {
 .master-board-canvas-wrap canvas {
   display: block;
   width: 100%;
+  touch-action: none;
+}
+
+.master-board-hint {
+  margin-top: 8px;
 }
 
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
@@ -3512,5 +3530,39 @@ textarea {
   .master-board-shell,
   .master-board-canvas-wrap {
     min-height: 420px;
+  }
+}
+
+@media (max-width: 900px) {
+  .master-board-toolbar-row {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    padding-bottom: 4px;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: thin;
+  }
+
+  .master-board-toolbar-row .btn,
+  .master-board-toolbar-row button {
+    width: auto;
+    max-width: none;
+    flex: 0 0 auto;
+    white-space: nowrap;
+  }
+
+  .master-board-toolbar-row .master-board-inline-label {
+    width: auto;
+    justify-content: flex-start;
+    flex: 0 0 auto;
+    white-space: nowrap;
+  }
+
+  .master-board-toolbar-row .master-board-inline-label input[type="range"] {
+    max-width: 120px;
+  }
+
+  .master-board-shell,
+  .master-board-canvas-wrap {
+    min-height: 320px;
   }
 }

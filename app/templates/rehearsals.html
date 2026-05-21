@@ -28,7 +28,7 @@
   {% for row in rehearsal_cards %}
   {% set card = row.cosplan_card %}
   {% set row_entries = entries_by_card.get(row.id, []) %}
-  <article class="card">
+  <article class="card" id="rehearsal-card-{{ row.id }}">
     <div class="row-between">
       <h3>
         {% if card %}
@@ -77,23 +77,23 @@
           <div class="actions-inline">
             <form method="post" action="/rehearsals/entries/{{ entry.id }}/respond">
               <input type="hidden" name="decision" value="accept" />
-              <input type="hidden" name="next" value="/rehearsals" />
+              <input type="hidden" name="next" value="/rehearsals#rehearsal-card-{{ row.id }}" />
               <button type="submit" class="btn btn-accept">Принять</button>
             </form>
             <form method="post" action="/rehearsals/entries/{{ entry.id }}/respond">
               <input type="hidden" name="decision" value="decline" />
-              <input type="hidden" name="next" value="/rehearsals" />
+              <input type="hidden" name="next" value="/rehearsals#rehearsal-card-{{ row.id }}" />
               <button type="submit" class="btn btn-decline">Отклонить</button>
             </form>
             <form method="post" action="/rehearsals/entries/{{ entry.id }}/delete" onsubmit="return confirm('Удалить эту репетицию?');">
-              <input type="hidden" name="next" value="/rehearsals" />
+              <input type="hidden" name="next" value="/rehearsals#rehearsal-card-{{ row.id }}" />
               <button type="submit" class="btn btn-danger">Удалить</button>
             </form>
           </div>
           {% else %}
           <div class="actions-inline">
             <form method="post" action="/rehearsals/entries/{{ entry.id }}/delete" onsubmit="return confirm('Удалить эту репетицию?');">
-              <input type="hidden" name="next" value="/rehearsals" />
+              <input type="hidden" name="next" value="/rehearsals#rehearsal-card-{{ row.id }}" />
               <button type="submit" class="btn btn-danger">Удалить</button>
             </form>
           </div>

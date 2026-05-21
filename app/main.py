@@ -18117,20 +18117,21 @@ async def my_projects_rehearsal_decision(entry_id: int, request: Request, db: Se
         return redirect("/login")
 
     form = await request.form()
+    next_url = safe_redirect_target(str(form.get("next", "")).strip(), "/my-projects")
     decision = str(form.get("decision", "")).strip().lower()
     if decision not in {"approve", "reject"}:
         add_flash(request, "Некорректное действие.", "error")
-        return redirect("/my-projects")
+        return redirect(next_url)
 
     entry = db.get(RehearsalEntry, entry_id)
     if not entry or entry.source_type != REHEARSAL_SOURCE_PARTICIPANT:
         add_flash(request, "Запись репетиции не найдена.", "error")
-        return redirect("/my-projects")
+        return redirect(next_url)
 
     card = db.get(CosplanCard, entry.cosplan_card_id)
     if not card or not can_manage_project_card(user, card):
         add_flash(request, "Недостаточно прав для изменения статуса.", "error")
-        return redirect("/my-projects")
+        return redirect(next_url)
 
     if decision == "approve":
         entry.status = REHEARSAL_STATUS_APPROVED
@@ -18140,7 +18141,7 @@ async def my_projects_rehearsal_decision(entry_id: int, request: Request, db: Se
         db.delete(entry)
         db.commit()
         add_flash(request, "Репетиция отклонена и удалена из предложений.", "info")
-    return redirect("/my-projects")
+    return redirect(next_url)
 
 
 @app.get("/my-calendar", response_class=HTMLResponse)
