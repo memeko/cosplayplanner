@@ -12649,11 +12649,106 @@ def get_project_search_post_form_values(post: ProjectSearchPost | None = None, u
     }
 
 
+def build_home_activity_leaderboard(db: Session, *, limit: int = 10) -> list[dict[str, Any]]:
+    max_limit = max(1, min(int(limit or 10), 20))
+    users = db.execute(select(User).order_by(User.username)).scalars().all()
+    if not users:
+        return []
+
+    alias_to_user_id: dict[str, int] = {}
+    for participant in users:
+        for alias in user_aliases(participant):
+            normalized_alias = normalize_username(alias).casefold()
+            if normalized_alias and normalized_alias not in alias_to_user_id:
+                alias_to_user_id[normalized_alias] = int(participant.id)
+
+    card_counts: dict[int, int] = {}
+    card_count_rows = db.execute(
+        select(CosplanCard.user_id, func.count(CosplanCard.id))
+        .where(CosplanCard.is_shared_copy.is_(False))
+        .group_by(CosplanCard.user_id)
+    ).all()
+    for user_id, count in card_count_rows:
+        if user_id:
+            card_counts[int(user_id)] = int(count or 0)
+
+    rehearsal_counts: dict[int, int] = {}
+    rehearsal_count_rows = db.execute(
+        select(RehearsalEntry.user_id, func.count(RehearsalEntry.id))
+        .where(
+            RehearsalEntry.status.in_(
+                [REHEARSAL_STATUS_APPROVED, REHEARSAL_STATUS_ACCEPTED]
+            )
+        )
+        .group_by(RehearsalEntry.user_id)
+    ).all()
+    for user_id, count in rehearsal_count_rows:
+        if user_id:
+            rehearsal_counts[int(user_id)] = int(count or 0)
+
+    project_leader_counts: dict[int, int] = defaultdict(int)
+    project_leader_values = db.execute(
+        select(CosplanCard.project_leader).where(
+            CosplanCard.is_shared_copy.is_(False),
+            CosplanCard.plan_type == "project",
+            CosplanCard.project_leader.is_not(None),
+            func.trim(CosplanCard.project_leader) != "",
+        )
+    ).scalars().all()
+    for leader_value in project_leader_values:
+        normalized_leader = normalize_username(str(leader_value or "")).casefold()
+        if not normalized_leader:
+            continue
+        leader_user_id = alias_to_user_id.get(normalized_leader)
+        if not leader_user_id:
+            continue
+        project_leader_counts[int(leader_user_id)] += 1
+
+    leaderboard_rows: list[dict[str, Any]] = []
+    for participant in users:
+        cards_count = int(card_counts.get(int(participant.id), 0))
+        rehearsals_count = int(rehearsal_counts.get(int(participant.id), 0))
+        led_projects_count = int(project_leader_counts.get(int(participant.id), 0))
+        activity_total = cards_count + rehearsals_count + led_projects_count
+        if activity_total <= 0:
+            continue
+        leaderboard_rows.append(
+            {
+                "user_id": int(participant.id),
+                "user_label": f"@{preferred_user_alias(participant)}",
+                "is_special": user_is_special(participant),
+                "cards_count": cards_count,
+                "rehearsals_count": rehearsals_count,
+                "led_projects_count": led_projects_count,
+                "activity_total": activity_total,
+                "sort_username": normalize_username(participant.username).casefold(),
+            }
+        )
+
+    leaderboard_rows.sort(
+        key=lambda item: (
+            -int(item["activity_total"]),
+            -int(item["cards_count"]),
+            -int(item["rehearsals_count"]),
+            -int(item["led_projects_count"]),
+            str(item["sort_username"]),
+        )
+    )
+
+    top_rows: list[dict[str, Any]] = []
+    for index, item in enumerate(leaderboard_rows[:max_limit], start=1):
+        item["place"] = index
+        item.pop("sort_username", None)
+        top_rows.append(item)
+    return top_rows
+
+
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request, db: Session = Depends(get_db)):
     user = current_user(request, db)
     if user:
         today = date.today()
+        activity_leaderboard = build_home_activity_leaderboard(db, limit=10)
         news_items = db.execute(
             select(HomeNews).order_by(HomeNews.created_at.desc(), HomeNews.id.desc()).limit(40)
         ).scalars().all()
@@ -12696,6 +12791,7 @@ def index(request: Request, db: Session = Depends(get_db)):
             character_birthdays_today=character_birthdays_today_rows,
             unread_notifications=unread_notifications,
             news_items=news_items,
+            activity_leaderboard=activity_leaderboard,
             can_manage_news=is_moderator_user(user),
             mergeable_duplicate_notification_ids=mergeable_duplicate_notification_ids,
         )

@@ -106,6 +106,45 @@
 </section>
 
 <section class="box top-offset">
+  <div class="row-between">
+    <h2>Турнирная таблица активности</h2>
+    <span class="muted">Топ-10</span>
+  </div>
+  {% if activity_leaderboard %}
+    <div class="home-leaderboard-wrap top-offset">
+      <table class="table home-leaderboard-table">
+        <thead>
+          <tr>
+            <th class="home-leaderboard-rank">#</th>
+            <th class="home-leaderboard-user">Пользователь</th>
+            <th>Карточки</th>
+            <th>Репетиции</th>
+            <th>Проекты (рук.)</th>
+            <th>Итого</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in activity_leaderboard %}
+            <tr>
+              <td class="home-leaderboard-rank">{{ row.place }}</td>
+              <td class="home-leaderboard-user">
+                <span class="{% if row.is_special %}nick-special{% endif %}">{{ row.user_label }}</span>
+              </td>
+              <td>{{ row.cards_count }}</td>
+              <td>{{ row.rehearsals_count }}</td>
+              <td>{{ row.led_projects_count }}</td>
+              <td class="home-leaderboard-total">{{ row.activity_total }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <p class="muted top-offset">Пока недостаточно данных для турнирной таблицы.</p>
+  {% endif %}
+</section>
+
+<section class="box top-offset">
   <h2>Дни рождения</h2>
   {% if birthdays_this_week %}
     <ul class="notifications-list">

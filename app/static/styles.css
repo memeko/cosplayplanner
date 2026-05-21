@@ -2181,6 +2181,34 @@ textarea {
   font-weight: 600;
 }
 
+.home-leaderboard-wrap {
+  overflow-x: auto;
+}
+
+.home-leaderboard-table {
+  min-width: 680px;
+}
+
+.home-leaderboard-table th,
+.home-leaderboard-table td {
+  white-space: nowrap;
+}
+
+.home-leaderboard-rank {
+  width: 52px;
+  min-width: 52px;
+  font-weight: 700;
+}
+
+.home-leaderboard-user {
+  min-width: 210px;
+  white-space: normal;
+}
+
+.home-leaderboard-total {
+  font-weight: 700;
+}
+
 .calendar-list {
   list-style: none;
   margin: 10px 0 0;
