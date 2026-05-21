@@ -141,6 +141,47 @@
       <p class="muted">Пока нет ответов по предложениям руководителя.</p>
     {% endif %}
 
+    <h4>Статистика откликов на репетиции</h4>
+    {% set rehearsal_response_table = rehearsal_response_tables_by_card.get(card.id) %}
+    {% if rehearsal_response_table and rehearsal_response_table.columns and rehearsal_response_table.rows %}
+      <div class="rehearsal-stats-wrap">
+        <table class="table rehearsal-stats-table">
+          <thead>
+            <tr>
+              <th>Участник</th>
+              {% for column in rehearsal_response_table.columns %}
+                <th>
+                  <span class="rehearsal-stats-column-date">{{ column.date_label }}</span>
+                  {% if column.time_label %}
+                    <span class="rehearsal-stats-column-time muted">{{ column.time_label }}</span>
+                  {% endif %}
+                </th>
+              {% endfor %}
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in rehearsal_response_table.rows %}
+              <tr class="{% if row.highlight_declined_streak %}rehearsal-stats-row-alert{% endif %}">
+                <td class="rehearsal-stats-participant">
+                  <span class="{% if row.participant_is_special %}nick-special{% endif %}">{{ row.participant_label }}</span>
+                  {% if row.highlight_declined_streak %}
+                    <div class="rehearsal-stats-participant-mark">
+                      <span class="chip chip-alert">3 отклонения подряд</span>
+                    </div>
+                  {% endif %}
+                </td>
+                {% for cell in row.cells %}
+                  <td class="rehearsal-stats-cell-{{ cell.status_key }}">{{ cell.label }}</td>
+                {% endfor %}
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <p class="muted">По этому проекту еще нет предложенных дат от руководителя.</p>
+    {% endif %}
+
     <form method="post" action="/my-projects/{{ card.id }}/comment">
       <label>
         Комментарий руководителя

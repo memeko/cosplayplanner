@@ -2,7 +2,7 @@
 {% block content %}
 <section class="auth-card">
   <h1>Регистрация</h1>
-  <form method="post" action="/register" class="grid one-col">
+  <form method="post" action="/register" class="grid one-col" id="register-form">
     <label>
       Логин
       <input type="text" name="username" required />
@@ -36,8 +36,30 @@
       При регистрации соглашаюсь с
       <a href="/privacy-policy" target="_blank" rel="noreferrer">Политикой обработки персональных данных</a>.
     </p>
-    <button type="submit" class="btn btn-accent">Создать аккаунт</button>
+    <div class="flash flash-info register-progress-note" id="register-progress-note" hidden>
+      Регистрируем аккаунт, это может занять несколько секунд.
+    </div>
+    <button type="submit" class="btn btn-accent" id="register-submit">Создать аккаунт</button>
   </form>
   <p class="muted">Уже есть аккаунт? <a href="/login">Войти</a></p>
 </section>
+<script>
+  (function () {
+    const form = document.getElementById("register-form");
+    const submitButton = document.getElementById("register-submit");
+    const progressNote = document.getElementById("register-progress-note");
+    if (!form || !submitButton || !progressNote) {
+      return;
+    }
+
+    form.addEventListener("submit", function () {
+      if (submitButton.disabled) {
+        return;
+      }
+      submitButton.disabled = true;
+      submitButton.textContent = "Регистрируем...";
+      progressNote.hidden = false;
+    });
+  })();
+</script>
 {% endblock %}

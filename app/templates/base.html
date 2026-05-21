@@ -110,21 +110,13 @@
     {% if flash and flash.kind == "welcome" %}
       <div class="welcome-overlay" id="welcome-modal">
         <div class="welcome-modal">
-          <h2>Спасибо за регистрацию и успешных проектов!</h2>
-          <p>Планнер поможет быстрее разложить косплей по этапам, бюджету и датам. Начните с первой карточки, чтобы сразу получить связки с «В работе», фестивалями и календарями.</p>
+          <button type="button" class="btn btn-small welcome-close" onclick="document.getElementById('welcome-modal').style.display='none'" aria-label="Закрыть">✕</button>
+          <h2>{{ flash.text or "Спасибо за регистрацию!" }}</h2>
+          <p>Аккаунт успешно создан. Можно сразу добавить первую карточку проекта или перейти к заполнению профиля.</p>
           <div class="welcome-actions-grid top-offset">
             <a href="/cosplan/new" class="btn btn-accent">Создать первую карточку</a>
             <a href="/profile" class="btn">Заполнить профиль</a>
             <a href="/festivals" class="btn">Открыть фестивали</a>
-          </div>
-          <p>
-            Этот проект некоммерческий. Но я буду благодарен, если ты подпишешься на мой телеграм-канал «Братец Лис».
-            <a href="https://t.me/brfox_cosplay" target="_blank" rel="noreferrer" class="btn btn-small btn-platform">Телеграм</a>
-            Также ты можешь писать в сообщения канала свои пожелания по развитию проекта.
-          </p>
-          <p>С уважением,<br />Братец Лис</p>
-          <div class="actions-inline">
-            <button type="button" class="btn" onclick="document.getElementById('welcome-modal').style.display='none'">Закрыть</button>
           </div>
         </div>
       </div>

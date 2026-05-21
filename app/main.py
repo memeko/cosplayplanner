@@ -6423,6 +6423,24 @@ def rehearsal_status_label(status: str) -> str:
     return mapping.get(status, status)
 
 
+def rehearsal_response_status_key(status: str | None) -> str:
+    normalized = str(status or "").strip().lower()
+    if normalized in {REHEARSAL_STATUS_APPROVED, REHEARSAL_STATUS_ACCEPTED}:
+        return "accepted"
+    if normalized == REHEARSAL_STATUS_DECLINED:
+        return "declined"
+    return "no_response"
+
+
+def rehearsal_response_status_label(status_key: str) -> str:
+    mapping = {
+        "accepted": "Принято",
+        "declined": "Отклонено",
+        "no_response": "Не ответил",
+    }
+    return mapping.get(status_key, "Не ответил")
+
+
 def can_manage_project_card(user: User, card: CosplanCard) -> bool:
     if card.plan_type != "project":
         return False
@@ -12588,6 +12606,23 @@ def ensure_user_has_shared_festivals(db: Session, user_id: int) -> int:
     return propagate_shared_festivals_to_user(db, user_id=int(user_id))
 
 
+def propagate_registration_seed_data(user_id: int) -> None:
+    if int(user_id) <= 0:
+        return
+    try:
+        with SessionLocal() as db:
+            approved_announcements = db.execute(
+                select(FestivalAnnouncement).where(FestivalAnnouncement.status == ANNOUNCEMENT_STATUS_APPROVED)
+            ).scalars().all()
+            for announcement in approved_announcements:
+                propagate_approved_announcement(db, announcement, target_user_ids=[int(user_id)])
+            propagate_shared_festivals_to_user(db, user_id=int(user_id))
+            db.commit()
+    except Exception:
+        # Best-effort sync: registration must stay fast and successful even if background sync fails.
+        pass
+
+
 def get_project_search_post_form_values(post: ProjectSearchPost | None = None, user: User | None = None) -> dict[str, Any]:
     default_nick = preferred_user_alias(user) if user else ""
     if not post:
@@ -12953,17 +12988,16 @@ async def register_submit(request: Request, db: Session = Depends(get_db)):
     set_user_bot_secret_code(user, telegram_secret_code, db)
     if is_smm_manager:
         set_user_option_value(db, user.id, SMM_MANAGER_ROLE_GROUP, "1")
-
-    approved_announcements = db.execute(
-        select(FestivalAnnouncement).where(FestivalAnnouncement.status == ANNOUNCEMENT_STATUS_APPROVED)
-    ).scalars().all()
-    for announcement in approved_announcements:
-        propagate_approved_announcement(db, announcement, target_user_ids=[user.id])
-    propagate_shared_festivals_to_user(db, user_id=user.id)
     db.commit()
+    threading.Thread(
+        target=propagate_registration_seed_data,
+        args=(int(user.id),),
+        name=f"register-seed-{user.id}",
+        daemon=True,
+    ).start()
 
     request.session["user_id"] = user.id
-    add_flash(request, "welcome", "welcome")
+    add_flash(request, "Спасибо за регистрацию!", "welcome")
     return redirect("/my-calendar?view=content&content_scope=client" if is_smm_manager else "/cosplan")
 
 
@@ -17500,6 +17534,54 @@ def rehearsals_list(request: Request, db: Session = Depends(get_db)):
     )
 
 
+@app.get("/rehearsals/export.ics")
+def rehearsals_export_ics(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    entries = db.execute(
+        select(RehearsalEntry)
+        .where(
+            RehearsalEntry.user_id == user.id,
+            RehearsalEntry.entry_date.is_not(None),
+            RehearsalEntry.status.in_([REHEARSAL_STATUS_APPROVED, REHEARSAL_STATUS_ACCEPTED]),
+        )
+        .order_by(RehearsalEntry.entry_date, RehearsalEntry.entry_time, RehearsalEntry.id)
+    ).scalars().all()
+
+    lines = ics_calendar_header()
+    dtstamp = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+    for entry in entries:
+        if not entry.entry_date:
+            continue
+        card = entry.cosplan_card
+        if not card:
+            continue
+        append_ics_event(
+            lines,
+            dtstamp=dtstamp,
+            uid_prefix=f"rehearsal-only-{entry.id}",
+            summary=f"Репетиция: {card.character_name or 'Без названия'}",
+            event_date=entry.entry_date,
+            time_hhmm=entry.entry_time or "",
+            duration_minutes=120,
+            location=card.city or "",
+            description=(
+                "Экспорт раздела «Репетиции». "
+                f"Статус: {rehearsal_status_label(entry.status)}."
+            ),
+        )
+
+    lines.append("END:VCALENDAR")
+    body = "\r\n".join(lines) + "\r\n"
+    return PlainTextResponse(
+        body,
+        media_type="text/calendar; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="cosplay-rehearsals.ics"'},
+    )
+
+
 @app.post("/rehearsals/new")
 async def rehearsals_create(request: Request, db: Session = Depends(get_db)):
     user = current_user(request, db)
@@ -17698,6 +17780,10 @@ def my_projects_list(request: Request, db: Session = Depends(get_db)):
 
     pending_rehearsals_by_card: dict[int, list[RehearsalEntry]] = defaultdict(list)
     leader_rehearsal_history_by_card: dict[int, list[RehearsalEntry]] = defaultdict(list)
+    rehearsal_response_slots_by_card: dict[int, dict[str, tuple[date, str]]] = defaultdict(dict)
+    rehearsal_response_participant_ids_by_card: dict[int, set[int]] = defaultdict(set)
+    rehearsal_response_entries_by_cell: dict[tuple[int, int, str], RehearsalEntry] = {}
+    rehearsal_response_tables_by_card: dict[int, dict[str, Any]] = {}
     rehearsal_participant_ids: set[int] = set()
     rehearsal_participants_by_id: dict[int, User] = {}
     scope_card_to_source_id: dict[int, int] = {}
@@ -17708,6 +17794,10 @@ def my_projects_list(request: Request, db: Session = Depends(get_db)):
             if scoped_id not in scope_card_to_source_id:
                 scoped_card_ids.append(scoped_id)
             scope_card_to_source_id[scoped_id] = int(source_card.id)
+            if scoped_card.user_id:
+                participant_id = int(scoped_card.user_id)
+                rehearsal_participant_ids.add(participant_id)
+                rehearsal_response_participant_ids_by_card[int(source_card.id)].add(participant_id)
 
     if scoped_card_ids:
         pending_entries = db.execute(
@@ -17740,11 +17830,94 @@ def my_projects_list(request: Request, db: Session = Depends(get_db)):
             if entry.user_id:
                 rehearsal_participant_ids.add(int(entry.user_id))
 
+        response_entries = db.execute(
+            select(RehearsalEntry)
+            .where(
+                RehearsalEntry.cosplan_card_id.in_(scoped_card_ids),
+                RehearsalEntry.source_type == REHEARSAL_SOURCE_LEADER,
+            )
+            .order_by(RehearsalEntry.entry_date, RehearsalEntry.entry_time, RehearsalEntry.id)
+        ).scalars().all()
+        for entry in response_entries:
+            source_id = int(scope_card_to_source_id.get(entry.cosplan_card_id, entry.cosplan_card_id))
+            if not entry.user_id:
+                continue
+            participant_id = int(entry.user_id)
+            slot_key = f"{entry.entry_date.isoformat()}|{entry.entry_time or ''}"
+            rehearsal_response_slots_by_card[source_id][slot_key] = (entry.entry_date, entry.entry_time or "")
+            rehearsal_response_participant_ids_by_card[source_id].add(participant_id)
+            rehearsal_participant_ids.add(participant_id)
+            cell_key = (source_id, participant_id, slot_key)
+            existing = rehearsal_response_entries_by_cell.get(cell_key)
+            if existing is None or int(existing.id) < int(entry.id):
+                rehearsal_response_entries_by_cell[cell_key] = entry
+
     if rehearsal_participant_ids:
         rehearsal_participants = db.execute(
             select(User).where(User.id.in_(rehearsal_participant_ids))
         ).scalars().all()
         rehearsal_participants_by_id = {item.id: item for item in rehearsal_participants}
+
+    for card in cards:
+        card_id = int(card.id)
+        slot_map = rehearsal_response_slots_by_card.get(card_id, {})
+        sorted_slots = sorted(
+            slot_map.items(),
+            key=lambda item: (item[1][0], item[1][1] or "", item[0]),
+        )
+        columns = [
+            {
+                "key": slot_key,
+                "date_label": slot_date.strftime("%d-%m-%Y"),
+                "time_label": slot_time,
+            }
+            for slot_key, (slot_date, slot_time) in sorted_slots
+        ]
+
+        participant_ids = sorted(
+            rehearsal_response_participant_ids_by_card.get(card_id, set()),
+            key=lambda participant_id: (
+                preferred_user_alias(rehearsal_participants_by_id.get(participant_id)).casefold()
+                if rehearsal_participants_by_id.get(participant_id)
+                else f"zz-{participant_id}"
+            ),
+        )
+        rows: list[dict[str, Any]] = []
+        for participant_id in participant_ids:
+            participant = rehearsal_participants_by_id.get(participant_id)
+            participant_label = f"@{preferred_user_alias(participant)}" if participant else "@unknown"
+            declined_streak = 0
+            max_declined_streak = 0
+            cells: list[dict[str, str]] = []
+            for column in columns:
+                slot_key = str(column["key"])
+                entry = rehearsal_response_entries_by_cell.get((card_id, participant_id, slot_key))
+                status_key = rehearsal_response_status_key(entry.status if entry else "")
+                if status_key == "declined":
+                    declined_streak += 1
+                    max_declined_streak = max(max_declined_streak, declined_streak)
+                else:
+                    declined_streak = 0
+                cells.append(
+                    {
+                        "status_key": status_key,
+                        "label": rehearsal_response_status_label(status_key),
+                    }
+                )
+
+            rows.append(
+                {
+                    "participant_label": participant_label,
+                    "participant_is_special": bool(participant and user_is_special(participant)),
+                    "highlight_declined_streak": max_declined_streak >= 3,
+                    "cells": cells,
+                }
+            )
+
+        rehearsal_response_tables_by_card[card_id] = {
+            "columns": columns,
+            "rows": rows,
+        }
 
     return template_response(
         request,
@@ -17758,6 +17931,7 @@ def my_projects_list(request: Request, db: Session = Depends(get_db)):
         pending_rehearsals_by_card=pending_rehearsals_by_card,
         leader_rehearsal_history_by_card=leader_rehearsal_history_by_card,
         rehearsal_participants_by_id=rehearsal_participants_by_id,
+        rehearsal_response_tables_by_card=rehearsal_response_tables_by_card,
         rehearsal_status_labels={
             REHEARSAL_STATUS_PROPOSED: rehearsal_status_label(REHEARSAL_STATUS_PROPOSED),
             REHEARSAL_STATUS_APPROVED: rehearsal_status_label(REHEARSAL_STATUS_APPROVED),
