@@ -39,6 +39,22 @@
   .festival-nomination-list .chip {
     text-decoration: none;
   }
+  .festival-packlist {
+    margin: 0.35rem 0 0;
+    padding-left: 1.15rem;
+  }
+  .festival-packlist li.done {
+    color: #64748b;
+    text-decoration: line-through;
+  }
+  .festival-ticket-block,
+  .festival-timing-block {
+    margin-top: 0.55rem;
+    padding: 0.55rem 0.65rem;
+    border: 1px solid #d9e2ec;
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.52);
+  }
 </style>
 
 {% if user_home_city %}
@@ -310,6 +326,63 @@
     {% endif %}
     {% if festival.going_coproplayers_json %}
       <p class="meta">Сокосплеер: {{ festival_coproplayers_display.get(festival.id, []) | join(', ') }}</p>
+    {% endif %}
+    {% set packlist_items = festival_packlist_by_id.get(festival.id, []) %}
+    {% if packlist_items %}
+      <p class="meta">Взять с собой:</p>
+      <ul class="festival-packlist">
+        {% for item in packlist_items %}
+          <li class="{% if item.done %}done{% endif %}">{{ item.text }}</li>
+        {% endfor %}
+      </ul>
+    {% endif %}
+    {% if festival.tickets_required %}
+      {% set outbound = festival_ticket_outbound_by_id.get(festival.id, {}) %}
+      {% set return_trip = festival_ticket_return_by_id.get(festival.id, {}) %}
+      <div class="festival-ticket-block">
+        <p class="meta"><strong>Билеты:</strong> требуется</p>
+        {% if outbound.transport or outbound.departure_date or outbound.departure_time or outbound.arrival_date or outbound.arrival_time or outbound.route_name or outbound.departure_place or outbound.arrival_place %}
+          <p class="meta">
+            <strong>Туда:</strong>
+            {{ festival_ticket_transport_labels.get(outbound.transport, outbound.transport) or "—" }}
+            {% if outbound.route_name %} · {{ outbound.route_name }}{% endif %}
+            {% if outbound.departure_date %} · {{ outbound.departure_date }}{% endif %}
+            {% if outbound.departure_time %} {{ outbound.departure_time }}{% endif %}
+            {% if outbound.departure_place %} · {{ outbound.departure_place }}{% endif %}
+            {% if outbound.arrival_date %} → {{ outbound.arrival_date }}{% endif %}
+            {% if outbound.arrival_time %} {{ outbound.arrival_time }}{% endif %}
+            {% if outbound.arrival_place %} · {{ outbound.arrival_place }}{% endif %}
+          </p>
+        {% endif %}
+        {% if return_trip.transport or return_trip.departure_date or return_trip.departure_time or return_trip.arrival_date or return_trip.arrival_time or return_trip.route_name or return_trip.departure_place or return_trip.arrival_place %}
+          <p class="meta">
+            <strong>Обратно:</strong>
+            {{ festival_ticket_transport_labels.get(return_trip.transport, return_trip.transport) or "—" }}
+            {% if return_trip.route_name %} · {{ return_trip.route_name }}{% endif %}
+            {% if return_trip.departure_date %} · {{ return_trip.departure_date }}{% endif %}
+            {% if return_trip.departure_time %} {{ return_trip.departure_time }}{% endif %}
+            {% if return_trip.departure_place %} · {{ return_trip.departure_place }}{% endif %}
+            {% if return_trip.arrival_date %} → {{ return_trip.arrival_date }}{% endif %}
+            {% if return_trip.arrival_time %} {{ return_trip.arrival_time }}{% endif %}
+            {% if return_trip.arrival_place %} · {{ return_trip.arrival_place }}{% endif %}
+          </p>
+        {% endif %}
+      </div>
+    {% endif %}
+    {% set timing = festival_timing_by_id.get(festival.id, {}) %}
+    {% if timing.event_start_date or timing.event_start_time or timing.block_start_time %}
+      <div class="festival-timing-block">
+        <p class="meta"><strong>Тайминг:</strong></p>
+        <p class="meta">
+          Начало мероприятия:
+          {% if timing.event_start_date or timing.event_start_time %}
+            {{ timing.event_start_date or "—" }}{% if timing.event_start_time %} {{ timing.event_start_time }}{% endif %}
+          {% else %}
+            —
+          {% endif %}
+        </p>
+        <p class="meta">Начало блока: {{ timing.block_start_time or "—" }}</p>
+      </div>
     {% endif %}
     {% if festival.url %}
       <p><a href="{{ festival.url }}" target="_blank" rel="noreferrer">Ссылка на фестиваль</a></p>

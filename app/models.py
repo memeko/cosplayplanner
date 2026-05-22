@@ -699,6 +699,13 @@ class Festival(Base):
 
     is_going = Column(Boolean, nullable=False, default=False)
     going_coproplayers_json = Column(JSON, nullable=False, default=list)
+    packlist_json = Column(JSON, nullable=False, default=list)
+    tickets_required = Column(Boolean, nullable=False, default=False)
+    ticket_outbound_json = Column(JSON, nullable=False, default=dict)
+    ticket_return_json = Column(JSON, nullable=False, default=dict)
+    timing_event_start_date = Column(Date, nullable=True)
+    timing_event_start_time = Column(String(8), nullable=True)
+    timing_block_start_time = Column(String(8), nullable=True)
     is_global_announcement = Column(Boolean, nullable=False, default=False)
     source_announcement_id = Column(Integer, ForeignKey("festival_announcements.id", ondelete="SET NULL"), nullable=True, index=True)
     import_source = Column(String(64), nullable=True, index=True)

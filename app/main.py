@@ -714,6 +714,14 @@ PARTNER_FESTIVAL_NAME_MARKERS = (
     "raxus prime",
 )
 FESTIVAL_ICON_UNSET = object()
+FESTIVAL_TICKET_TRANSPORT_OPTIONS: list[tuple[str, str]] = [
+    ("bus", "Автобус"),
+    ("train", "Поезд"),
+    ("plane", "Самолет"),
+    ("other", "Другое"),
+]
+FESTIVAL_TICKET_TRANSPORT_LABELS = dict(FESTIVAL_TICKET_TRANSPORT_OPTIONS)
+FESTIVAL_TICKET_TRANSPORT_VALUES = {value for value, _label in FESTIVAL_TICKET_TRANSPORT_OPTIONS}
 
 telegram_auth_state_lock = threading.Lock()
 telegram_auth_state: dict[str, dict[str, str]] = {}
@@ -1245,6 +1253,13 @@ def apply_schema_migrations() -> None:
             ("is_partner_festival", "BOOLEAN NOT NULL DEFAULT 0"),
             ("shared_note", "TEXT"),
             ("icon_path", "VARCHAR(255)"),
+            ("packlist_json", "JSON NOT NULL DEFAULT '[]'"),
+            ("tickets_required", "BOOLEAN NOT NULL DEFAULT 0"),
+            ("ticket_outbound_json", "JSON NOT NULL DEFAULT '{}'"),
+            ("ticket_return_json", "JSON NOT NULL DEFAULT '{}'"),
+            ("timing_event_start_date", "DATE"),
+            ("timing_event_start_time", "VARCHAR(8)"),
+            ("timing_block_start_time", "VARCHAR(8)"),
         ],
         "work_shift_days": [
             ("is_half_day", "BOOLEAN NOT NULL DEFAULT 0"),
@@ -10483,6 +10498,757 @@ def card_fields_for_sync() -> list[str]:
     ]
 
 
+def festival_fields_for_mobile_sync() -> list[str]:
+    return [
+        "name",
+        "url",
+        "city",
+        "event_date",
+        "event_end_date",
+        "submission_deadline",
+        "nomination_1",
+        "nomination_2",
+        "nomination_3",
+        "nominations_json",
+        "planned_nominations_json",
+        "has_photo_cosplay",
+        "is_partner_festival",
+        "shared_note",
+        "icon_path",
+        "is_going",
+        "going_coproplayers_json",
+        "packlist_json",
+        "tickets_required",
+        "ticket_outbound_json",
+        "ticket_return_json",
+        "timing_event_start_date",
+        "timing_event_start_time",
+        "timing_block_start_time",
+        "is_global_announcement",
+        "source_announcement_id",
+        "import_source",
+        "import_external_id",
+    ]
+
+
+MOBILE_CARD_DATE_FIELDS = {
+    "costume_deadline",
+    "shoes_deadline",
+    "wig_deadline",
+    "craft_deadline",
+    "project_deadline",
+    "submission_date",
+    "photoset_date",
+}
+MOBILE_CARD_FLOAT_FIELDS = {
+    "costume_prepayment",
+    "costume_postpayment",
+    "costume_fabric_price",
+    "costume_hardware_price",
+    "costume_buy_price",
+    "shoes_buy_price",
+    "shoes_price",
+    "lenses_price",
+    "wig_price",
+    "wig_buy_price",
+    "craft_price",
+    "craft_material_price",
+    "photoset_price",
+    "photoset_photographer_price",
+    "photoset_studio_price",
+    "photoset_props_price",
+    "photoset_extra_price",
+    "performance_rehearsal_price",
+}
+MOBILE_CARD_BOOL_FIELDS = {
+    "is_au",
+    "sewing_fabric",
+    "sewing_hardware",
+    "sewing_pattern",
+    "sewing_mockup",
+    "sewing_fitting",
+    "sewing_details",
+    "costume_bought",
+    "shoes_bought",
+    "lenses_enabled",
+    "wig_restyle",
+    "is_priority",
+    "is_completed",
+}
+MOBILE_CARD_INT_FIELDS = {"status_percent", "performance_rehearsal_count"}
+MOBILE_CARD_LIST_FIELDS = {
+    "costume_fabric_rows_json",
+    "costume_hardware_rows_json",
+    "cosbands_json",
+    "related_cards_json",
+    "project_characters_json",
+    "planned_festivals_json",
+    "nominations_json",
+    "photographers_json",
+    "studios_json",
+    "photoset_props_checklist_json",
+    "references_json",
+    "pose_references_json",
+    "unknown_prices_json",
+    "costume_parts_json",
+    "craft_parts_json",
+    "coproplayers_json",
+    "coproplayer_nicks_json",
+}
+MOBILE_FESTIVAL_DATE_FIELDS = {"event_date", "event_end_date", "submission_deadline", "timing_event_start_date"}
+MOBILE_FESTIVAL_BOOL_FIELDS = {
+    "has_photo_cosplay",
+    "is_partner_festival",
+    "is_going",
+    "tickets_required",
+    "is_global_announcement",
+}
+MOBILE_FESTIVAL_INT_FIELDS = {"source_announcement_id"}
+MOBILE_FESTIVAL_LIST_FIELDS = {"nominations_json", "planned_nominations_json", "going_coproplayers_json", "packlist_json"}
+MOBILE_FESTIVAL_DICT_FIELDS = {"ticket_outbound_json", "ticket_return_json"}
+
+
+def mobile_iso_date(value: date | None) -> str | None:
+    return value.isoformat() if isinstance(value, date) else None
+
+
+def mobile_iso_datetime(value: datetime | None) -> str | None:
+    return value.isoformat() if isinstance(value, datetime) else None
+
+
+def parse_mobile_datetime(value: Any) -> datetime | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    normalized = raw.replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    if parsed.tzinfo is not None:
+        return datetime.utcfromtimestamp(parsed.timestamp())
+    return parsed
+
+
+def mobile_time_equal(left: datetime | None, right: datetime | None, *, epsilon_seconds: float = 0.001) -> bool:
+    if left is None or right is None:
+        return False
+    return abs((left - right).total_seconds()) <= epsilon_seconds
+
+
+def mobile_normalize_compare_value(value: Any) -> Any:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, list):
+        return [mobile_normalize_compare_value(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): mobile_normalize_compare_value(item) for key, item in value.items()}
+    return value
+
+
+def mobile_values_equal(left: Any, right: Any) -> bool:
+    normalized_left = mobile_normalize_compare_value(left)
+    normalized_right = mobile_normalize_compare_value(right)
+    try:
+        return json.dumps(normalized_left, sort_keys=True, ensure_ascii=False) == json.dumps(
+            normalized_right,
+            sort_keys=True,
+            ensure_ascii=False,
+        )
+    except (TypeError, ValueError):
+        return normalized_left == normalized_right
+
+
+def mobile_value_is_empty(value: Any) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, bool):
+        return not value
+    if isinstance(value, str):
+        return not value.strip()
+    if isinstance(value, dict):
+        if len(value) == 0:
+            return True
+        return all(mobile_value_is_empty(item) for item in value.values())
+    if isinstance(value, (list, tuple, set)):
+        return len(value) == 0
+    return False
+
+
+def merge_mobile_list_values(server_list: list[Any], incoming_list: list[Any]) -> list[Any]:
+    merged: list[Any] = []
+    seen: set[str] = set()
+    for item in [*incoming_list, *server_list]:
+        normalized = mobile_normalize_compare_value(item)
+        try:
+            key = json.dumps(normalized, sort_keys=True, ensure_ascii=False)
+        except (TypeError, ValueError):
+            key = str(normalized)
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(item)
+    return merged
+
+
+def mobile_prefer_more_complete(field: str, server_value: Any, incoming_value: Any) -> Any:
+    if mobile_values_equal(server_value, incoming_value):
+        return incoming_value
+    if mobile_value_is_empty(server_value) and not mobile_value_is_empty(incoming_value):
+        return incoming_value
+    if mobile_value_is_empty(incoming_value) and not mobile_value_is_empty(server_value):
+        return server_value
+
+    if isinstance(server_value, list) and isinstance(incoming_value, list):
+        return merge_mobile_list_values(server_value, incoming_value)
+
+    if isinstance(server_value, bool) and isinstance(incoming_value, bool):
+        if server_value == incoming_value:
+            return incoming_value
+        return bool(server_value or incoming_value)
+
+    if isinstance(server_value, str) and isinstance(incoming_value, str):
+        return incoming_value if len(incoming_value.strip()) >= len(server_value.strip()) else server_value
+
+    if isinstance(server_value, (int, float)) and isinstance(incoming_value, (int, float)):
+        if field == "status_percent":
+            return max(int(server_value), int(incoming_value))
+        return incoming_value
+
+    return incoming_value
+
+
+def merge_mobile_entity_field(
+    field: str,
+    *,
+    base_value: Any,
+    server_value: Any,
+    incoming_value: Any,
+    has_base: bool,
+) -> Any:
+    if has_base:
+        changed_on_server = not mobile_values_equal(server_value, base_value)
+        changed_on_client = not mobile_values_equal(incoming_value, base_value)
+        if changed_on_client and not changed_on_server:
+            return incoming_value
+        if changed_on_server and not changed_on_client:
+            return server_value
+        if not changed_on_server and not changed_on_client:
+            return incoming_value
+    return mobile_prefer_more_complete(field, server_value, incoming_value)
+
+
+def mobile_diff_fields(fields: list[str], server_payload: dict[str, Any], incoming_payload: dict[str, Any]) -> list[str]:
+    changed: list[str] = []
+    for field in fields:
+        if not mobile_values_equal(server_payload.get(field), incoming_payload.get(field)):
+            changed.append(field)
+    return changed
+
+
+def serialize_user_for_mobile(user: User) -> dict[str, Any]:
+    return {
+        "id": int(user.id),
+        "username": user.username,
+        "cosplay_nick": user.cosplay_nick,
+        "email": user.email,
+        "home_city": user.home_city,
+        "created_at": mobile_iso_datetime(user.created_at),
+    }
+
+
+def serialize_card_for_mobile(card: CosplanCard) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    for field in card_fields_for_sync():
+        value = getattr(card, field)
+        if field in MOBILE_CARD_DATE_FIELDS:
+            payload[field] = mobile_iso_date(value)
+        elif field in MOBILE_CARD_LIST_FIELDS:
+            payload[field] = as_list(value)
+        elif field == "status_percent":
+            payload[field] = normalize_status_percent(value)
+        else:
+            payload[field] = value
+
+    return {
+        "id": int(card.id),
+        "user_id": int(card.user_id),
+        "is_shared_copy": bool(card.is_shared_copy),
+        "source_card_id": card.source_card_id,
+        "shared_from_user_id": card.shared_from_user_id,
+        "created_at": mobile_iso_datetime(card.created_at),
+        "updated_at": mobile_iso_datetime(card.updated_at),
+        "payload": payload,
+    }
+
+
+def serialize_festival_for_mobile(festival: Festival) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    for field in festival_fields_for_mobile_sync():
+        value = getattr(festival, field)
+        if field in MOBILE_FESTIVAL_DATE_FIELDS:
+            payload[field] = mobile_iso_date(value)
+        elif field in MOBILE_FESTIVAL_LIST_FIELDS:
+            payload[field] = as_list(value)
+        elif field in MOBILE_FESTIVAL_DICT_FIELDS:
+            payload[field] = normalize_festival_ticket_segment_payload(value)
+        else:
+            payload[field] = value
+
+    return {
+        "id": int(festival.id),
+        "user_id": int(festival.user_id),
+        "created_at": mobile_iso_datetime(festival.created_at),
+        "updated_at": mobile_iso_datetime(festival.updated_at),
+        "payload": payload,
+    }
+
+
+def normalize_mobile_card_payload(raw_payload: Any) -> dict[str, Any]:
+    source = raw_payload if isinstance(raw_payload, dict) else {}
+    normalized: dict[str, Any] = {}
+    for field in card_fields_for_sync():
+        if field not in source:
+            continue
+        raw_value = source.get(field)
+        if field in MOBILE_CARD_DATE_FIELDS:
+            normalized[field] = parse_date(str(raw_value or ""))
+            continue
+        if field in MOBILE_CARD_FLOAT_FIELDS:
+            if isinstance(raw_value, (int, float)):
+                normalized[field] = float(raw_value)
+            else:
+                normalized[field] = parse_float(str(raw_value or ""))
+            continue
+        if field in MOBILE_CARD_BOOL_FIELDS:
+            normalized[field] = to_bool(raw_value)
+            continue
+        if field in MOBILE_CARD_INT_FIELDS:
+            if field == "status_percent":
+                normalized[field] = normalize_status_percent(raw_value)
+            else:
+                normalized[field] = parse_positive_int(str(raw_value or ""))
+            continue
+        if field in MOBILE_CARD_LIST_FIELDS:
+            normalized[field] = as_list(raw_value)
+            continue
+        if raw_value is None:
+            normalized[field] = None
+            continue
+        cleaned = str(raw_value).strip()
+        normalized[field] = cleaned or None
+    return normalized
+
+
+def apply_mobile_card_payload(card: CosplanCard, payload: dict[str, Any]) -> None:
+    for field, value in payload.items():
+        if field not in card_fields_for_sync():
+            continue
+        setattr(card, field, value)
+    card.status_percent = normalize_status_percent(card.status_percent)
+    if not (card.character_name or "").strip():
+        card.character_name = "Без имени"
+
+
+def normalize_mobile_festival_payload(raw_payload: Any) -> dict[str, Any]:
+    source = raw_payload if isinstance(raw_payload, dict) else {}
+    normalized: dict[str, Any] = {}
+    for field in festival_fields_for_mobile_sync():
+        if field not in source:
+            continue
+        raw_value = source.get(field)
+        if field in MOBILE_FESTIVAL_DATE_FIELDS:
+            normalized[field] = parse_date(str(raw_value or ""))
+            continue
+        if field in MOBILE_FESTIVAL_BOOL_FIELDS:
+            normalized[field] = to_bool(raw_value)
+            continue
+        if field in MOBILE_FESTIVAL_INT_FIELDS:
+            normalized[field] = parse_positive_int(str(raw_value or ""))
+            continue
+        if field in MOBILE_FESTIVAL_LIST_FIELDS:
+            normalized[field] = as_list(raw_value)
+            continue
+        if field in MOBILE_FESTIVAL_DICT_FIELDS:
+            normalized[field] = normalize_festival_ticket_segment_payload(raw_value)
+            continue
+        if raw_value is None:
+            normalized[field] = None
+            continue
+        cleaned = str(raw_value).strip()
+        normalized[field] = cleaned or None
+    return normalized
+
+
+def apply_mobile_festival_payload(festival: Festival, payload: dict[str, Any], *, user: User) -> None:
+    for field, value in payload.items():
+        if field not in festival_fields_for_mobile_sync():
+            continue
+
+        if field in {"is_global_announcement", "source_announcement_id", "import_source", "import_external_id"}:
+            continue
+        if field == "has_photo_cosplay" and not user_is_special(user):
+            continue
+        if field == "is_partner_festival" and not user_is_special(user):
+            continue
+        if field in {"shared_note", "icon_path"} and not user_is_special(user):
+            continue
+        setattr(festival, field, value)
+
+    if festival.event_date and festival.event_end_date and festival.event_end_date < festival.event_date:
+        festival.event_end_date = festival.event_date
+    if not festival.event_date and festival.event_end_date:
+        festival.event_date = festival.event_end_date
+    festival.packlist_json = normalize_festival_packlist_items(as_list(festival.packlist_json))
+    festival.tickets_required = bool(festival.tickets_required)
+    festival.ticket_outbound_json = normalize_festival_ticket_segment_payload(festival.ticket_outbound_json)
+    festival.ticket_return_json = normalize_festival_ticket_segment_payload(festival.ticket_return_json)
+    if not festival.tickets_required:
+        festival.ticket_outbound_json = empty_festival_ticket_segment()
+        festival.ticket_return_json = empty_festival_ticket_segment()
+    festival.timing_event_start_time = parse_time_hhmm(str(festival.timing_event_start_time or "")) or None
+    festival.timing_block_start_time = parse_time_hhmm(str(festival.timing_block_start_time or "")) or None
+    if festival.name:
+        festival.is_partner_festival = bool(festival.is_partner_festival) or festival_is_partner_by_name(festival.name)
+    if not festival.name:
+        festival.name = "Без названия"
+
+
+def build_mobile_hybrid_payload(
+    fields: list[str],
+    *,
+    base_payload: dict[str, Any] | None,
+    server_payload: dict[str, Any],
+    incoming_payload: dict[str, Any],
+) -> dict[str, Any]:
+    merged: dict[str, Any] = {}
+    base = base_payload or {}
+    has_base = bool(base_payload)
+    for field in fields:
+        merged[field] = merge_mobile_entity_field(
+            field,
+            base_value=base.get(field),
+            server_value=server_payload.get(field),
+            incoming_value=incoming_payload.get(field),
+            has_base=has_base,
+        )
+    return merged
+
+
+def serialize_mobile_card_payload_values(payload: dict[str, Any]) -> dict[str, Any]:
+    serialized: dict[str, Any] = {}
+    for field in card_fields_for_sync():
+        if field not in payload:
+            continue
+        value = payload.get(field)
+        if field in MOBILE_CARD_DATE_FIELDS:
+            serialized[field] = mobile_iso_date(value)
+        elif field in MOBILE_CARD_LIST_FIELDS:
+            serialized[field] = as_list(value)
+        elif field == "status_percent":
+            serialized[field] = normalize_status_percent(value)
+        else:
+            serialized[field] = value
+    return serialized
+
+
+def serialize_mobile_festival_payload_values(payload: dict[str, Any]) -> dict[str, Any]:
+    serialized: dict[str, Any] = {}
+    for field in festival_fields_for_mobile_sync():
+        if field not in payload:
+            continue
+        value = payload.get(field)
+        if field in MOBILE_FESTIVAL_DATE_FIELDS:
+            serialized[field] = mobile_iso_date(value)
+        elif field in MOBILE_FESTIVAL_LIST_FIELDS:
+            serialized[field] = as_list(value)
+        elif field in MOBILE_FESTIVAL_DICT_FIELDS:
+            serialized[field] = normalize_festival_ticket_segment_payload(value)
+        else:
+            serialized[field] = value
+    return serialized
+
+
+def process_mobile_card_sync_item(raw_item: Any, *, user: User, db: Session) -> dict[str, Any]:
+    item = raw_item if isinstance(raw_item, dict) else {}
+    client_uid = str(item.get("client_uid", "")).strip()
+    record_id = parse_positive_int(str(item.get("id", "")))
+    force = to_bool(item.get("force"))
+    resolution = str(item.get("resolution", "client_wins")).strip().lower() or "client_wins"
+    incoming_partial_payload = normalize_mobile_card_payload(item.get("payload"))
+    base_payload_raw = item.get("base_payload") if isinstance(item.get("base_payload"), dict) else None
+    base_payload = normalize_mobile_card_payload(base_payload_raw) if isinstance(base_payload_raw, dict) else None
+
+    if not record_id:
+        if not (incoming_partial_payload.get("character_name") or "").strip():
+            return {
+                "_applied": False,
+                "status": "error",
+                "client_uid": client_uid,
+                "error": "Для новой карточки нужно заполнить character_name.",
+            }
+
+        card = CosplanCard(
+            user_id=user.id,
+            character_name=str(incoming_partial_payload.get("character_name") or "Без имени").strip(),
+        )
+        apply_mobile_card_payload(card, incoming_partial_payload)
+        card.is_shared_copy = False
+        card.source_card_id = None
+        card.shared_from_user_id = None
+
+        db.add(card)
+        db.flush()
+        conflict_notifications = notify_coproplayer_conflicts_for_card(db, card=card, owner=user)
+        sync_shared_cards_for_nicks(card, user, db)
+
+        return {
+            "_applied": True,
+            "status": "applied",
+            "client_uid": client_uid,
+            "id": int(card.id),
+            "updated_at": mobile_iso_datetime(card.updated_at),
+            "conflict_notifications": int(conflict_notifications),
+            "record": serialize_card_for_mobile(card),
+        }
+
+    card = get_editable_card(db, record_id, user)
+    if not card:
+        return {
+            "_applied": False,
+            "status": "error",
+            "client_uid": client_uid,
+            "id": record_id,
+            "error": "Карточка не найдена или недоступна для редактирования.",
+        }
+
+    server_record = serialize_card_for_mobile(card)
+    server_payload = normalize_mobile_card_payload(server_record.get("payload", {}))
+    incoming_payload = dict(server_payload)
+    incoming_payload.update(incoming_partial_payload)
+
+    base_updated_at = parse_mobile_datetime(item.get("base_updated_at"))
+    server_updated_at = card.updated_at
+    has_timestamp_conflict = (
+        base_updated_at is not None
+        and server_updated_at is not None
+        and not mobile_time_equal(base_updated_at, server_updated_at)
+    )
+
+    if has_timestamp_conflict and not force:
+        fields = card_fields_for_sync()
+        merged_payload = build_mobile_hybrid_payload(
+            fields,
+            base_payload=base_payload,
+            server_payload=server_payload,
+            incoming_payload=incoming_payload,
+        )
+        return {
+            "_applied": False,
+            "status": "conflict",
+            "client_uid": client_uid,
+            "id": int(card.id),
+            "message": (
+                "На сервере есть более свежая версия карточки. "
+                "Покажите пользователю diff и попросите подтвердить стратегию слияния."
+            ),
+            "server_updated_at": mobile_iso_datetime(server_updated_at),
+            "base_updated_at": mobile_iso_datetime(base_updated_at),
+            "conflict_fields": mobile_diff_fields(
+                fields,
+                server_payload,
+                incoming_payload,
+            ),
+            "server_record": server_record,
+            "incoming_payload": serialize_mobile_card_payload_values(incoming_payload),
+            "suggested_hybrid_payload": serialize_mobile_card_payload_values(merged_payload),
+        }
+
+    if has_timestamp_conflict and force and resolution == "server_wins":
+        return {
+            "_applied": False,
+            "status": "skipped_server_wins",
+            "client_uid": client_uid,
+            "id": int(card.id),
+            "record": server_record,
+        }
+
+    final_payload = incoming_payload
+    if has_timestamp_conflict and force and resolution == "hybrid":
+        final_payload = build_mobile_hybrid_payload(
+            card_fields_for_sync(),
+            base_payload=base_payload,
+            server_payload=server_payload,
+            incoming_payload=incoming_payload,
+        )
+
+    apply_mobile_card_payload(card, final_payload)
+    conflict_notifications = notify_coproplayer_conflicts_for_card(db, card=card, owner=user)
+    sync_shared_cards_for_nicks(card, user, db)
+    linked_rehearsal_cards = db.execute(
+        select(RehearsalCard).where(RehearsalCard.cosplan_card_id == card.id)
+    ).scalars().all()
+    for rehearsal_card in linked_rehearsal_cards:
+        rehearsal_card.deadline_date = card.project_deadline
+
+    db.flush()
+    return {
+        "_applied": True,
+        "status": "applied",
+        "client_uid": client_uid,
+        "id": int(card.id),
+        "updated_at": mobile_iso_datetime(card.updated_at),
+        "conflict_notifications": int(conflict_notifications),
+        "record": serialize_card_for_mobile(card),
+    }
+
+
+def process_mobile_festival_sync_item(raw_item: Any, *, user: User, db: Session) -> dict[str, Any]:
+    item = raw_item if isinstance(raw_item, dict) else {}
+    client_uid = str(item.get("client_uid", "")).strip()
+    record_id = parse_positive_int(str(item.get("id", "")))
+    force = to_bool(item.get("force"))
+    resolution = str(item.get("resolution", "client_wins")).strip().lower() or "client_wins"
+    incoming_partial_payload = normalize_mobile_festival_payload(item.get("payload"))
+    base_payload_raw = item.get("base_payload") if isinstance(item.get("base_payload"), dict) else None
+    base_payload = normalize_mobile_festival_payload(base_payload_raw) if isinstance(base_payload_raw, dict) else None
+
+    global_festival_edit_mode = can_manage_festival_globally(user)
+
+    if not record_id:
+        if not (incoming_partial_payload.get("name") or "").strip():
+            return {
+                "_applied": False,
+                "status": "error",
+                "client_uid": client_uid,
+                "error": "Для нового фестиваля нужно заполнить name.",
+            }
+
+        festival = Festival(
+            user_id=user.id,
+            name=str(incoming_partial_payload.get("name") or "Без названия").strip(),
+        )
+        apply_mobile_festival_payload(festival, incoming_partial_payload, user=user)
+
+        db.add(festival)
+        db.flush()
+        notify_count = notify_coproplayer_conflicts_for_festival(db, festival=festival, owner=user)
+
+        return {
+            "_applied": True,
+            "status": "applied",
+            "client_uid": client_uid,
+            "id": int(festival.id),
+            "updated_at": mobile_iso_datetime(festival.updated_at),
+            "conflict_notifications": int(notify_count),
+            "record": serialize_festival_for_mobile(festival),
+        }
+
+    if global_festival_edit_mode:
+        festival = db.get(Festival, record_id)
+    else:
+        festival = db.execute(
+            select(Festival).where(
+                Festival.id == record_id,
+                Festival.user_id == user.id,
+            )
+        ).scalar_one_or_none()
+    if not festival:
+        return {
+            "_applied": False,
+            "status": "error",
+            "client_uid": client_uid,
+            "id": record_id,
+            "error": "Фестиваль не найден или недоступен для редактирования.",
+        }
+    if festival.is_global_announcement and not global_festival_edit_mode:
+        return {
+            "_applied": False,
+            "status": "error",
+            "client_uid": client_uid,
+            "id": int(festival.id),
+            "error": "Карточку глобального анонса нельзя редактировать.",
+        }
+
+    server_record = serialize_festival_for_mobile(festival)
+    server_payload = normalize_mobile_festival_payload(server_record.get("payload", {}))
+    incoming_payload = dict(server_payload)
+    incoming_payload.update(incoming_partial_payload)
+
+    base_updated_at = parse_mobile_datetime(item.get("base_updated_at"))
+    server_updated_at = festival.updated_at
+    has_timestamp_conflict = (
+        base_updated_at is not None
+        and server_updated_at is not None
+        and not mobile_time_equal(base_updated_at, server_updated_at)
+    )
+
+    if has_timestamp_conflict and not force:
+        fields = festival_fields_for_mobile_sync()
+        merged_payload = build_mobile_hybrid_payload(
+            fields,
+            base_payload=base_payload,
+            server_payload=server_payload,
+            incoming_payload=incoming_payload,
+        )
+        return {
+            "_applied": False,
+            "status": "conflict",
+            "client_uid": client_uid,
+            "id": int(festival.id),
+            "message": (
+                "На сервере есть более свежая версия фестиваля. "
+                "Покажите пользователю diff и подтвердите стратегию слияния."
+            ),
+            "server_updated_at": mobile_iso_datetime(server_updated_at),
+            "base_updated_at": mobile_iso_datetime(base_updated_at),
+            "conflict_fields": mobile_diff_fields(
+                fields,
+                server_payload,
+                incoming_payload,
+            ),
+            "server_record": server_record,
+            "incoming_payload": serialize_mobile_festival_payload_values(incoming_payload),
+            "suggested_hybrid_payload": serialize_mobile_festival_payload_values(merged_payload),
+        }
+
+    if has_timestamp_conflict and force and resolution == "server_wins":
+        return {
+            "_applied": False,
+            "status": "skipped_server_wins",
+            "client_uid": client_uid,
+            "id": int(festival.id),
+            "record": server_record,
+        }
+
+    final_payload = incoming_payload
+    if has_timestamp_conflict and force and resolution == "hybrid":
+        final_payload = build_mobile_hybrid_payload(
+            festival_fields_for_mobile_sync(),
+            base_payload=base_payload,
+            server_payload=server_payload,
+            incoming_payload=incoming_payload,
+        )
+
+    apply_mobile_festival_payload(festival, final_payload, user=user)
+    notify_count = 0
+    if festival.user_id == user.id:
+        notify_count = notify_coproplayer_conflicts_for_festival(db, festival=festival, owner=user)
+
+    db.flush()
+    return {
+        "_applied": True,
+        "status": "applied",
+        "client_uid": client_uid,
+        "id": int(festival.id),
+        "updated_at": mobile_iso_datetime(festival.updated_at),
+        "conflict_notifications": int(notify_count),
+        "record": serialize_festival_for_mobile(festival),
+    }
+
+
 def clone_card_data(source: CosplanCard, target: CosplanCard) -> None:
     for field in card_fields_for_sync():
         setattr(target, field, getattr(source, field))
@@ -12936,8 +13702,126 @@ def parse_festival_nomination_items_from_form(form: Any) -> list[dict[str, str]]
     return normalize_festival_nomination_items(rows)
 
 
+def normalize_festival_packlist_items(raw_items: Any) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    seen_indexes: dict[str, int] = {}
+    for raw_item in as_list(raw_items):
+        if isinstance(raw_item, dict):
+            text_value = str(raw_item.get("text", "")).strip()
+            done_value = to_bool(raw_item.get("done"))
+        else:
+            text_value = str(raw_item).strip()
+            done_value = False
+        if not text_value:
+            continue
+        text_value = text_value[:500]
+        key = text_value.casefold()
+        existing_index = seen_indexes.get(key)
+        if existing_index is not None:
+            if done_value:
+                normalized[existing_index]["done"] = True
+            continue
+        seen_indexes[key] = len(normalized)
+        normalized.append({"text": text_value, "done": bool(done_value)})
+    return normalized
+
+
+def empty_festival_ticket_segment() -> dict[str, str]:
+    return {
+        "transport": "",
+        "departure_date": "",
+        "departure_time": "",
+        "arrival_date": "",
+        "arrival_time": "",
+        "route_name": "",
+        "departure_place": "",
+        "arrival_place": "",
+    }
+
+
+def normalize_festival_ticket_transport(value: Any) -> str:
+    normalized = str(value or "").strip().lower()
+    return normalized if normalized in FESTIVAL_TICKET_TRANSPORT_VALUES else ""
+
+
+def normalize_festival_ticket_segment_payload(raw_segment: Any) -> dict[str, str]:
+    source = raw_segment if isinstance(raw_segment, dict) else {}
+    normalized = empty_festival_ticket_segment()
+    normalized["transport"] = normalize_festival_ticket_transport(source.get("transport"))
+    departure_date = parse_date(str(source.get("departure_date", "")))
+    arrival_date = parse_date(str(source.get("arrival_date", "")))
+    departure_time = parse_time_hhmm(str(source.get("departure_time", "")))
+    arrival_time = parse_time_hhmm(str(source.get("arrival_time", "")))
+    normalized["departure_date"] = departure_date.isoformat() if departure_date else ""
+    normalized["arrival_date"] = arrival_date.isoformat() if arrival_date else ""
+    normalized["departure_time"] = departure_time or ""
+    normalized["arrival_time"] = arrival_time or ""
+    normalized["route_name"] = str(source.get("route_name", "")).strip()[:255]
+    normalized["departure_place"] = str(source.get("departure_place", "")).strip()[:255]
+    normalized["arrival_place"] = str(source.get("arrival_place", "")).strip()[:255]
+    return normalized
+
+
+def festival_ticket_segment_has_values(raw_segment: Any) -> bool:
+    segment = normalize_festival_ticket_segment_payload(raw_segment)
+    return any(
+        bool(segment.get(field))
+        for field in (
+            "transport",
+            "departure_date",
+            "departure_time",
+            "arrival_date",
+            "arrival_time",
+            "route_name",
+            "departure_place",
+            "arrival_place",
+        )
+    )
+
+
+def festival_ticket_segment_to_display(raw_segment: Any) -> dict[str, str]:
+    segment = normalize_festival_ticket_segment_payload(raw_segment)
+    for field_name in ("departure_date", "arrival_date"):
+        parsed = parse_date(segment.get(field_name, ""))
+        if parsed:
+            segment[field_name] = parsed.strftime("%d-%m-%Y")
+    return segment
+
+
+def parse_festival_ticket_segment_from_form(form: Any, prefix: str) -> dict[str, str]:
+    payload = {
+        "transport": str(form.get(f"{prefix}_transport", "")).strip(),
+        "departure_date": str(form.get(f"{prefix}_departure_date", "")).strip(),
+        "departure_time": str(form.get(f"{prefix}_departure_time", "")).strip(),
+        "arrival_date": str(form.get(f"{prefix}_arrival_date", "")).strip(),
+        "arrival_time": str(form.get(f"{prefix}_arrival_time", "")).strip(),
+        "route_name": str(form.get(f"{prefix}_route_name", "")).strip(),
+        "departure_place": str(form.get(f"{prefix}_departure_place", "")).strip(),
+        "arrival_place": str(form.get(f"{prefix}_arrival_place", "")).strip(),
+    }
+    return normalize_festival_ticket_segment_payload(payload)
+
+
 def get_festival_form_values(festival: Festival | None = None) -> dict[str, Any]:
     nomination_items = festival_nomination_items(festival)
+    packlist_items = normalize_festival_packlist_items(as_list(getattr(festival, "packlist_json", []))) if festival else []
+    ticket_outbound = normalize_festival_ticket_segment_payload(
+        getattr(festival, "ticket_outbound_json", {})
+    ) if festival else empty_festival_ticket_segment()
+    ticket_return = normalize_festival_ticket_segment_payload(
+        getattr(festival, "ticket_return_json", {})
+    ) if festival else empty_festival_ticket_segment()
+    timing_event_start_date = ""
+    timing_event_start_time = ""
+    timing_block_start_time = ""
+    if festival:
+        timing_event_start_date = (
+            festival.timing_event_start_date.isoformat()
+            if isinstance(festival.timing_event_start_date, date)
+            else ""
+        )
+        timing_event_start_time = parse_time_hhmm(str(festival.timing_event_start_time or "")) or ""
+        timing_block_start_time = parse_time_hhmm(str(festival.timing_block_start_time or "")) or ""
     nomination_rows = [
         {
             "row_id": f"festival-nomination-{index}",
@@ -12964,6 +13848,13 @@ def get_festival_form_values(festival: Festival | None = None) -> dict[str, Any]
             "is_going": False,
             "going_coproplayers_json": [],
             "going_coproplayers_input": "",
+            "packlist_json": [],
+            "tickets_required": False,
+            "ticket_outbound": ticket_outbound,
+            "ticket_return": ticket_return,
+            "timing_event_start_date": "",
+            "timing_event_start_time": "",
+            "timing_block_start_time": "",
         }
 
     return {
@@ -12983,6 +13874,13 @@ def get_festival_form_values(festival: Festival | None = None) -> dict[str, Any]
         "is_going": bool(festival.is_going),
         "going_coproplayers_json": as_list(festival.going_coproplayers_json),
         "going_coproplayers_input": ", ".join(as_list(festival.going_coproplayers_json)),
+        "packlist_json": format_checklist_for_form(packlist_items),
+        "tickets_required": bool(festival.tickets_required),
+        "ticket_outbound": ticket_outbound,
+        "ticket_return": ticket_return,
+        "timing_event_start_date": timing_event_start_date,
+        "timing_event_start_time": timing_event_start_time,
+        "timing_block_start_time": timing_block_start_time,
     }
 
 
@@ -13083,6 +13981,22 @@ def apply_festival_personal_fields_from_form(form: Any, festival: Festival, db: 
         split_csv(str(form.get("going_coproplayers_new", ""))),
     )
     festival.going_coproplayers_json = resolve_aliases_to_usernames(raw_coproplayer_aliases, alias_to_username)
+
+    festival.packlist_json = normalize_festival_packlist_items(
+        parse_checklist_rows_from_form(form, "festival_pack_item")
+    )
+
+    tickets_required_value = str(form.get("tickets_required", "not_required")).strip().lower()
+    festival.tickets_required = tickets_required_value == "required"
+    festival.ticket_outbound_json = parse_festival_ticket_segment_from_form(form, "ticket_outbound")
+    festival.ticket_return_json = parse_festival_ticket_segment_from_form(form, "ticket_return")
+    if not festival.tickets_required:
+        festival.ticket_outbound_json = empty_festival_ticket_segment()
+        festival.ticket_return_json = empty_festival_ticket_segment()
+
+    festival.timing_event_start_date = parse_date(str(form.get("timing_event_start_date", "")))
+    festival.timing_event_start_time = parse_time_hhmm(str(form.get("timing_event_start_time", "")))
+    festival.timing_block_start_time = parse_time_hhmm(str(form.get("timing_block_start_time", "")))
 
 
 def get_festival_announcement_form_values(announcement: FestivalAnnouncement | None = None) -> dict[str, Any]:
@@ -14097,6 +15011,121 @@ def users_search_api(request: Request, q: str = "", limit: int = 8, db: Session 
             break
 
     return {"items": values}
+
+
+@app.get("/api/mobile/bootstrap")
+def mobile_bootstrap_api(request: Request, since: str = "", db: Session = Depends(get_db)) -> dict[str, Any]:
+    user = current_user(request, db)
+    if not user:
+        raise HTTPException(status_code=401, detail="Требуется авторизация.")
+
+    since_dt = parse_mobile_datetime(since)
+
+    cards_stmt = (
+        select(CosplanCard)
+        .where(CosplanCard.user_id == user.id)
+        .order_by(CosplanCard.updated_at.desc(), CosplanCard.id.desc())
+    )
+    festivals_stmt = (
+        select(Festival)
+        .where(Festival.user_id == user.id)
+        .order_by(Festival.updated_at.desc(), Festival.id.desc())
+    )
+
+    if since_dt is not None:
+        cards_stmt = cards_stmt.where(CosplanCard.updated_at >= since_dt)
+        festivals_stmt = festivals_stmt.where(Festival.updated_at >= since_dt)
+
+    cards = db.execute(cards_stmt).scalars().all()
+    festivals = db.execute(festivals_stmt).scalars().all()
+
+    return {
+        "ok": True,
+        "server_time": mobile_iso_datetime(datetime.utcnow()),
+        "since_applied": mobile_iso_datetime(since_dt),
+        "user": serialize_user_for_mobile(user),
+        "cards": [serialize_card_for_mobile(item) for item in cards],
+        "festivals": [serialize_festival_for_mobile(item) for item in festivals],
+        "counts": {
+            "cards": len(cards),
+            "festivals": len(festivals),
+        },
+    }
+
+
+@app.post("/api/mobile/sync")
+async def mobile_sync_api(request: Request, db: Session = Depends(get_db)) -> dict[str, Any]:
+    user = current_user(request, db)
+    if not user:
+        raise HTTPException(status_code=401, detail="Требуется авторизация.")
+
+    try:
+        payload = await request.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Некорректный JSON.") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Ожидается JSON-объект.")
+
+    raw_card_items = payload.get("cards", [])
+    raw_festival_items = payload.get("festivals", [])
+    card_items = raw_card_items if isinstance(raw_card_items, list) else []
+    festival_items = raw_festival_items if isinstance(raw_festival_items, list) else []
+
+    card_results: list[dict[str, Any]] = []
+    festival_results: list[dict[str, Any]] = []
+    applied_changes = False
+
+    for raw_item in card_items:
+        try:
+            with db.begin_nested():
+                result = process_mobile_card_sync_item(raw_item, user=user, db=db)
+        except Exception as exc:  # noqa: BLE001
+            result = {
+                "_applied": False,
+                "status": "error",
+                "client_uid": str((raw_item or {}).get("client_uid", "")).strip()
+                if isinstance(raw_item, dict)
+                else "",
+                "error": f"Не удалось обработать карточку: {exc}",
+            }
+        applied_changes = applied_changes or bool(result.pop("_applied", False))
+        card_results.append(result)
+
+    for raw_item in festival_items:
+        try:
+            with db.begin_nested():
+                result = process_mobile_festival_sync_item(raw_item, user=user, db=db)
+        except Exception as exc:  # noqa: BLE001
+            result = {
+                "_applied": False,
+                "status": "error",
+                "client_uid": str((raw_item or {}).get("client_uid", "")).strip()
+                if isinstance(raw_item, dict)
+                else "",
+                "error": f"Не удалось обработать фестиваль: {exc}",
+            }
+        applied_changes = applied_changes or bool(result.pop("_applied", False))
+        festival_results.append(result)
+
+    if applied_changes:
+        db.commit()
+    else:
+        db.rollback()
+
+    return {
+        "ok": True,
+        "server_time": mobile_iso_datetime(datetime.utcnow()),
+        "cards": card_results,
+        "festivals": festival_results,
+        "summary": {
+            "cards_applied": sum(1 for item in card_results if item.get("status") == "applied"),
+            "cards_conflicts": sum(1 for item in card_results if item.get("status") == "conflict"),
+            "cards_errors": sum(1 for item in card_results if item.get("status") == "error"),
+            "festivals_applied": sum(1 for item in festival_results if item.get("status") == "applied"),
+            "festivals_conflicts": sum(1 for item in festival_results if item.get("status") == "conflict"),
+            "festivals_errors": sum(1 for item in festival_results if item.get("status") == "error"),
+        },
+    }
 
 
 def can_view_admin_dashboard(user: User | None) -> bool:
@@ -18750,18 +19779,19 @@ def my_projects_list(request: Request, db: Session = Depends(get_db)):
     rehearsal_response_tables_by_card: dict[int, dict[str, Any]] = {}
     rehearsal_participant_ids: set[int] = set()
     rehearsal_participants_by_id: dict[int, User] = {}
-    scope_card_to_source_id: dict[int, int] = {}
+    scope_card_to_source_ids: dict[int, set[int]] = defaultdict(set)
     scoped_card_ids: list[int] = []
     for source_card in cards:
+        source_id = int(source_card.id)
         for scoped_card in project_scope_cards(db, source_card):
             scoped_id = int(scoped_card.id)
-            if scoped_id not in scope_card_to_source_id:
+            if scoped_id not in scope_card_to_source_ids:
                 scoped_card_ids.append(scoped_id)
-            scope_card_to_source_id[scoped_id] = int(source_card.id)
+            scope_card_to_source_ids[scoped_id].add(source_id)
             if scoped_card.user_id:
                 participant_id = int(scoped_card.user_id)
                 rehearsal_participant_ids.add(participant_id)
-                rehearsal_response_participant_ids_by_card[int(source_card.id)].add(participant_id)
+                rehearsal_response_participant_ids_by_card[source_id].add(participant_id)
 
     if scoped_card_ids:
         pending_entries = db.execute(
@@ -18774,8 +19804,9 @@ def my_projects_list(request: Request, db: Session = Depends(get_db)):
             .order_by(RehearsalEntry.entry_date, RehearsalEntry.entry_time, RehearsalEntry.id)
         ).scalars().all()
         for entry in pending_entries:
-            source_id = scope_card_to_source_id.get(entry.cosplan_card_id, entry.cosplan_card_id)
-            pending_rehearsals_by_card[source_id].append(entry)
+            source_ids = scope_card_to_source_ids.get(int(entry.cosplan_card_id)) or {int(entry.cosplan_card_id)}
+            for source_id in source_ids:
+                pending_rehearsals_by_card[source_id].append(entry)
             if entry.user_id:
                 rehearsal_participant_ids.add(int(entry.user_id))
 
@@ -18789,8 +19820,9 @@ def my_projects_list(request: Request, db: Session = Depends(get_db)):
             .order_by(RehearsalEntry.updated_at.desc(), RehearsalEntry.id.desc())
         ).scalars().all()
         for entry in history_entries:
-            source_id = scope_card_to_source_id.get(entry.cosplan_card_id, entry.cosplan_card_id)
-            leader_rehearsal_history_by_card[source_id].append(entry)
+            source_ids = scope_card_to_source_ids.get(int(entry.cosplan_card_id)) or {int(entry.cosplan_card_id)}
+            for source_id in source_ids:
+                leader_rehearsal_history_by_card[source_id].append(entry)
             if entry.user_id:
                 rehearsal_participant_ids.add(int(entry.user_id))
 
@@ -18803,18 +19835,19 @@ def my_projects_list(request: Request, db: Session = Depends(get_db)):
             .order_by(RehearsalEntry.entry_date, RehearsalEntry.entry_time, RehearsalEntry.id)
         ).scalars().all()
         for entry in response_entries:
-            source_id = int(scope_card_to_source_id.get(entry.cosplan_card_id, entry.cosplan_card_id))
             if not entry.user_id:
                 continue
             participant_id = int(entry.user_id)
             slot_key = f"{entry.entry_date.isoformat()}|{entry.entry_time or ''}"
-            rehearsal_response_slots_by_card[source_id][slot_key] = (entry.entry_date, entry.entry_time or "")
-            rehearsal_response_participant_ids_by_card[source_id].add(participant_id)
-            rehearsal_participant_ids.add(participant_id)
-            cell_key = (source_id, participant_id, slot_key)
-            existing = rehearsal_response_entries_by_cell.get(cell_key)
-            if existing is None or int(existing.id) < int(entry.id):
-                rehearsal_response_entries_by_cell[cell_key] = entry
+            source_ids = scope_card_to_source_ids.get(int(entry.cosplan_card_id)) or {int(entry.cosplan_card_id)}
+            for source_id in source_ids:
+                rehearsal_response_slots_by_card[source_id][slot_key] = (entry.entry_date, entry.entry_time or "")
+                rehearsal_response_participant_ids_by_card[source_id].add(participant_id)
+                rehearsal_participant_ids.add(participant_id)
+                cell_key = (source_id, participant_id, slot_key)
+                existing = rehearsal_response_entries_by_cell.get(cell_key)
+                if existing is None or int(existing.id) < int(entry.id):
+                    rehearsal_response_entries_by_cell[cell_key] = entry
 
     if rehearsal_participant_ids:
         rehearsal_participants = db.execute(
@@ -18825,6 +19858,21 @@ def my_projects_list(request: Request, db: Session = Depends(get_db)):
     for card in cards:
         card_id = int(card.id)
         slot_map = rehearsal_response_slots_by_card.get(card_id, {})
+        if not slot_map:
+            # Fallback: если по какой-то причине слот-таблица не собралась из общего набора,
+            # строим её прямо по истории ответов руководителю.
+            for entry in leader_rehearsal_history_by_card.get(card_id, []):
+                if not entry.user_id or not isinstance(entry.entry_date, date):
+                    continue
+                participant_id = int(entry.user_id)
+                slot_key = f"{entry.entry_date.isoformat()}|{entry.entry_time or ''}"
+                slot_map[slot_key] = (entry.entry_date, entry.entry_time or "")
+                rehearsal_response_participant_ids_by_card[card_id].add(participant_id)
+                rehearsal_participant_ids.add(participant_id)
+                cell_key = (card_id, participant_id, slot_key)
+                existing = rehearsal_response_entries_by_cell.get(cell_key)
+                if existing is None or int(existing.id) < int(entry.id):
+                    rehearsal_response_entries_by_cell[cell_key] = entry
         sorted_slots = sorted(
             slot_map.items(),
             key=lambda item: (item[1][0], item[1][1] or "", item[0]),
@@ -25723,6 +26771,70 @@ def apply_merged_festival_payload(festival: Festival, payload: dict[str, Any]) -
     festival.import_external_id = payload.get("import_external_id")
 
 
+def festival_ticket_segment_score(raw_segment: Any) -> int:
+    segment = normalize_festival_ticket_segment_payload(raw_segment)
+    score = 0
+    if segment.get("transport"):
+        score += 2
+    for field in (
+        "departure_date",
+        "departure_time",
+        "arrival_date",
+        "arrival_time",
+        "route_name",
+        "departure_place",
+        "arrival_place",
+    ):
+        if segment.get(field):
+            score += 1
+    return score
+
+
+def best_festival_ticket_segment(items: list[Festival], field_name: str) -> dict[str, str]:
+    best_segment = empty_festival_ticket_segment()
+    best_score = -1
+    for item in items:
+        segment = normalize_festival_ticket_segment_payload(getattr(item, field_name, {}))
+        score = festival_ticket_segment_score(segment)
+        if score > best_score:
+            best_score = score
+            best_segment = segment
+    return best_segment
+
+
+def merge_festival_packlist(items: list[Festival]) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    seen_indexes: dict[str, int] = {}
+    for item in items:
+        for entry in normalize_festival_packlist_items(as_list(getattr(item, "packlist_json", []))):
+            text_value = str(entry.get("text", "")).strip()
+            if not text_value:
+                continue
+            key = text_value.casefold()
+            existing_index = seen_indexes.get(key)
+            if existing_index is None:
+                seen_indexes[key] = len(merged)
+                merged.append({"text": text_value, "done": bool(entry.get("done"))})
+                continue
+            if to_bool(entry.get("done")):
+                merged[existing_index]["done"] = True
+    return merged
+
+
+def festival_personal_data_rank(festival: Festival | None) -> tuple[int, int, int, int, int, int]:
+    if not festival:
+        return (0, 0, 0, 0, 0, 0)
+    return (
+        len(normalize_festival_packlist_items(as_list(getattr(festival, "packlist_json", [])))),
+        1 if bool(getattr(festival, "tickets_required", False)) else 0,
+        festival_ticket_segment_score(getattr(festival, "ticket_outbound_json", {}))
+        + festival_ticket_segment_score(getattr(festival, "ticket_return_json", {})),
+        1 if isinstance(getattr(festival, "timing_event_start_date", None), date) else 0,
+        1 if parse_time_hhmm(str(getattr(festival, "timing_event_start_time", "") or "")) else 0,
+        1 if parse_time_hhmm(str(getattr(festival, "timing_block_start_time", "") or "")) else 0,
+    )
+
+
 def duplicate_festival_notification_signature(message: str | None) -> str:
     context = parse_duplicate_festival_notification(message)
     if not context:
@@ -26709,6 +27821,10 @@ def festivals_list(request: Request, db: Session = Depends(get_db)):
     festival_coproplayers_display: dict[int, list[str]] = {}
     festival_nomination_items_by_id: dict[int, list[dict[str, str]]] = {}
     festival_planned_nominations_by_id: dict[int, list[str]] = {}
+    festival_packlist_by_id: dict[int, list[dict[str, Any]]] = {}
+    festival_ticket_outbound_by_id: dict[int, dict[str, str]] = {}
+    festival_ticket_return_by_id: dict[int, dict[str, str]] = {}
+    festival_timing_by_id: dict[int, dict[str, str]] = {}
     festival_name_match_scores: dict[int, int] = {}
 
     filtered: list[Festival] = []
@@ -26719,6 +27835,23 @@ def festivals_list(request: Request, db: Session = Depends(get_db)):
         nomination_items = festival_nomination_items(festival)
         festival_nomination_items_by_id[festival.id] = nomination_items
         festival_planned_nominations_by_id[festival.id] = festival_selected_nomination_titles(festival)
+        festival_packlist_by_id[festival.id] = normalize_festival_packlist_items(as_list(festival.packlist_json))
+        ticket_outbound = normalize_festival_ticket_segment_payload(festival.ticket_outbound_json)
+        ticket_return = normalize_festival_ticket_segment_payload(festival.ticket_return_json)
+        if not festival.tickets_required:
+            ticket_outbound = empty_festival_ticket_segment()
+            ticket_return = empty_festival_ticket_segment()
+        festival_ticket_outbound_by_id[festival.id] = festival_ticket_segment_to_display(ticket_outbound)
+        festival_ticket_return_by_id[festival.id] = festival_ticket_segment_to_display(ticket_return)
+        festival_timing_by_id[festival.id] = {
+            "event_start_date": (
+                festival.timing_event_start_date.strftime("%d-%m-%Y")
+                if isinstance(festival.timing_event_start_date, date)
+                else ""
+            ),
+            "event_start_time": parse_time_hhmm(str(festival.timing_event_start_time or "")) or "",
+            "block_start_time": parse_time_hhmm(str(festival.timing_block_start_time or "")) or "",
+        }
 
         if only_going and not festival.is_going:
             continue
@@ -26905,6 +28038,10 @@ def festivals_list(request: Request, db: Session = Depends(get_db)):
         festival_coproplayers_display=festival_coproplayers_display,
         festival_nomination_items_by_id=festival_nomination_items_by_id,
         festival_planned_nominations_by_id=festival_planned_nominations_by_id,
+        festival_packlist_by_id=festival_packlist_by_id,
+        festival_ticket_outbound_by_id=festival_ticket_outbound_by_id,
+        festival_ticket_return_by_id=festival_ticket_return_by_id,
+        festival_timing_by_id=festival_timing_by_id,
         show_summary=show_summary,
         summary_rows=summary_rows,
         user_home_city=user.home_city or "",
@@ -26923,6 +28060,7 @@ def festivals_list(request: Request, db: Session = Depends(get_db)):
         can_import_cosplay2=user_is_special(user),
         can_import_raf=user_is_special(user) and VK_IMPORT_ENABLED,
         import_source_labels=IMPORT_SOURCE_LABELS,
+        festival_ticket_transport_labels=FESTIVAL_TICKET_TRANSPORT_LABELS,
         announcement_status_labels={
             ANNOUNCEMENT_STATUS_PENDING: announcement_status_label(ANNOUNCEMENT_STATUS_PENDING),
             ANNOUNCEMENT_STATUS_APPROVED: announcement_status_label(ANNOUNCEMENT_STATUS_APPROVED),
@@ -27179,6 +28317,8 @@ async def festivals_notification_merge_duplicate(notification_id: int, request: 
         keep_row = max(user_items, key=festival_merge_rank)
         kept_count += 1
         apply_merged_festival_payload(keep_row, merge_payload)
+        personal_ordered_items = sorted(user_items, key=festival_personal_data_rank, reverse=True)
+        personal_primary = personal_ordered_items[0] if personal_ordered_items else keep_row
         keep_row.is_going = any(bool(item.is_going) for item in user_items)
         keep_row.going_coproplayers_json = merge_unique(
             *[as_list(item.going_coproplayers_json) for item in user_items]
@@ -27191,6 +28331,20 @@ async def festivals_notification_merge_duplicate(notification_id: int, request: 
             for title in merged_planned_titles
             if normalize_nomination_title_key(title) in merged_nomination_keys
         ]
+        keep_row.packlist_json = merge_festival_packlist(user_items)
+        keep_row.tickets_required = any(bool(getattr(item, "tickets_required", False)) for item in user_items)
+        keep_row.ticket_outbound_json = best_festival_ticket_segment(user_items, "ticket_outbound_json")
+        keep_row.ticket_return_json = best_festival_ticket_segment(user_items, "ticket_return_json")
+        if not keep_row.tickets_required:
+            keep_row.ticket_outbound_json = empty_festival_ticket_segment()
+            keep_row.ticket_return_json = empty_festival_ticket_segment()
+        keep_row.timing_event_start_date = getattr(personal_primary, "timing_event_start_date", None)
+        keep_row.timing_event_start_time = (
+            parse_time_hhmm(str(getattr(personal_primary, "timing_event_start_time", "") or "")) or None
+        )
+        keep_row.timing_block_start_time = (
+            parse_time_hhmm(str(getattr(personal_primary, "timing_block_start_time", "") or "")) or None
+        )
 
         for item in user_items:
             if item.id == keep_row.id:
@@ -27385,6 +28539,7 @@ def festivals_new(request: Request, db: Session = Depends(get_db)):
         can_edit_partner_festival=user_is_special(user),
         can_edit_shared_note=user_is_special(user),
         can_edit_festival_icon=can_edit_festival_icon(user),
+        ticket_transport_options=FESTIVAL_TICKET_TRANSPORT_OPTIONS,
     )
 
 
@@ -27425,6 +28580,7 @@ def festivals_edit(festival_id: int, request: Request, db: Session = Depends(get
         can_edit_partner_festival=user_is_special(user),
         can_edit_shared_note=user_is_special(user),
         can_edit_festival_icon=can_edit_festival_icon(user),
+        ticket_transport_options=FESTIVAL_TICKET_TRANSPORT_OPTIONS,
     )
 
 
