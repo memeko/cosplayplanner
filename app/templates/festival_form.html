@@ -31,6 +31,16 @@
   .ticket-segment h5 {
     margin: 0 0 0.65rem;
   }
+  .ticket-files-list {
+    margin: 0.5rem 0 0;
+    padding-left: 1.15rem;
+  }
+  .ticket-files-list li + li {
+    margin-top: 0.28rem;
+  }
+  .ticket-files-list button {
+    margin-left: 0.45rem;
+  }
   .festival-nomination-row {
     display: grid;
     grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) auto;
@@ -239,7 +249,7 @@
         </div>
         <button type="button" class="btn top-offset" id="add_festival_pack_btn">Добавить пункт</button>
 
-        <h4 class="top-offset">Билеты</h4>
+        <h4 class="top-offset">Мои билеты</h4>
         <div class="ticket-radio-group">
           <label class="inline-check">
             <input type="radio" name="tickets_required" value="required" id="tickets_required_yes" {% if form.tickets_required %}checked{% endif %} />
@@ -345,6 +355,38 @@
               </label>
             </div>
           </section>
+
+          {% if can_upload_ticket_files %}
+            <section class="ticket-segment">
+              <h5>Файлы билетов</h5>
+              <p class="muted">До {{ max_festival_ticket_files }} файлов. Форматы: PDF, JPG, PNG. Без сжатия.</p>
+              <div class="actions-inline top-offset">
+                <input type="file" id="ticket_files_upload_files" accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png" multiple />
+                <button type="button" class="btn" id="ticket_files_upload_btn">Загрузить</button>
+              </div>
+              <p class="muted top-offset" id="ticket_files_upload_status"></p>
+              <label class="top-offset">
+                Ссылки на файлы билетов
+                <textarea
+                  name="ticket_files_input"
+                  id="ticket_files_input"
+                  rows="4"
+                  placeholder="/media/festival-ticket-....pdf"
+                >{{ form.ticket_files_input }}</textarea>
+              </label>
+              <ul class="ticket-files-list" id="ticket_files_preview"></ul>
+            </section>
+          {% elif form.ticket_files_json %}
+            <section class="ticket-segment">
+              <h5>Файлы билетов</h5>
+              <ul class="ticket-files-list">
+                {% for path_value in form.ticket_files_json %}
+                  <li><a href="{{ path_value }}" target="_blank" rel="noreferrer">{{ path_value.split('/')[-1] }}</a></li>
+                {% endfor %}
+              </ul>
+              <p class="muted top-offset">Изменение файлов билетов доступно только премиум-пользователям.</p>
+            </section>
+          {% endif %}
         </div>
 
         <h4 class="top-offset">Тайминг</h4>
@@ -383,6 +425,12 @@
   const packRowsWrap = document.getElementById("festival_pack_rows");
   const ticketsDetailsWrap = document.getElementById("tickets_details_wrap");
   const ticketsRequiredRadios = document.querySelectorAll('input[name="tickets_required"]');
+  const ticketFilesInput = document.getElementById("ticket_files_input");
+  const ticketFilesUploadInput = document.getElementById("ticket_files_upload_files");
+  const ticketFilesUploadButton = document.getElementById("ticket_files_upload_btn");
+  const ticketFilesStatus = document.getElementById("ticket_files_upload_status");
+  const ticketFilesPreview = document.getElementById("ticket_files_preview");
+  const maxTicketFiles = Number("{{ max_festival_ticket_files or 5 }}") || 5;
 
   const apply = () => {
     if (coproplayerWrap) {
@@ -441,6 +489,71 @@
       <button type="button" class="btn btn-danger remove-festival-pack-item">Удалить</button>
     `;
     return row;
+  };
+  const normalizeTicketFilePath = (value) => {
+    const raw = String(value || "").trim();
+    if (!raw) return "";
+    try {
+      const parsed = new URL(raw, window.location.origin);
+      if (!parsed.pathname.startsWith("/media/")) return "";
+      const lowerPath = parsed.pathname.toLowerCase();
+      if (!(lowerPath.endsWith(".pdf") || lowerPath.endsWith(".jpg") || lowerPath.endsWith(".jpeg") || lowerPath.endsWith(".png"))) {
+        return "";
+      }
+      return parsed.pathname;
+    } catch (_error) {
+      return "";
+    }
+  };
+  const readTicketFilePaths = () => {
+    if (!ticketFilesInput) return [];
+    const rows = String(ticketFilesInput.value || "")
+      .split(/\n+/)
+      .map((item) => normalizeTicketFilePath(item))
+      .filter(Boolean);
+    return Array.from(new Set(rows)).slice(0, maxTicketFiles);
+  };
+  const writeTicketFilePaths = (paths) => {
+    if (!ticketFilesInput) return;
+    ticketFilesInput.value = paths.join("\n");
+  };
+  const renderTicketFilePaths = () => {
+    if (!ticketFilesPreview || !ticketFilesInput) return;
+    const paths = readTicketFilePaths();
+    writeTicketFilePaths(paths);
+    ticketFilesPreview.innerHTML = "";
+    if (!paths.length) {
+      const empty = document.createElement("li");
+      empty.className = "muted";
+      empty.textContent = "Файлы билетов пока не загружены.";
+      ticketFilesPreview.appendChild(empty);
+      return;
+    }
+    paths.forEach((pathValue, index) => {
+      const item = document.createElement("li");
+      const link = document.createElement("a");
+      link.href = pathValue;
+      link.target = "_blank";
+      link.rel = "noreferrer";
+      link.textContent = pathValue.split("/").pop() || pathValue;
+      const removeButton = document.createElement("button");
+      removeButton.type = "button";
+      removeButton.className = "btn btn-danger btn-small";
+      removeButton.textContent = "Удалить";
+      removeButton.addEventListener("click", () => {
+        const next = readTicketFilePaths().filter((_, currentIndex) => currentIndex !== index);
+        writeTicketFilePaths(next);
+        renderTicketFilePaths();
+      });
+      item.appendChild(link);
+      item.appendChild(removeButton);
+      ticketFilesPreview.appendChild(item);
+    });
+  };
+  const setTicketFilesStatus = (text, isError) => {
+    if (!ticketFilesStatus) return;
+    ticketFilesStatus.textContent = text || "";
+    ticketFilesStatus.style.color = isError ? "#b91c1c" : "";
   };
   if (isGoing) { isGoing.addEventListener("change", apply); }
   ticketsRequiredRadios.forEach((radio) => {
@@ -513,9 +626,60 @@
     });
     input.addEventListener("blur", () => setTimeout(closeSuggest, 120));
   }
+  if (ticketFilesInput) {
+    ticketFilesInput.addEventListener("change", renderTicketFilePaths);
+  }
+  if (ticketFilesUploadButton && ticketFilesUploadInput) {
+    ticketFilesUploadButton.addEventListener("click", async () => {
+      const selectedFiles = Array.from(ticketFilesUploadInput.files || []);
+      if (!selectedFiles.length) {
+        setTicketFilesStatus("Выберите хотя бы один файл.", true);
+        return;
+      }
+      let paths = readTicketFilePaths();
+      if (paths.length >= maxTicketFiles) {
+        setTicketFilesStatus(`Можно сохранить не более ${maxTicketFiles} файлов.`, true);
+        return;
+      }
+
+      ticketFilesUploadButton.disabled = true;
+      setTicketFilesStatus("Загрузка файлов...", false);
+      try {
+        for (const file of selectedFiles) {
+          if (paths.length >= maxTicketFiles) {
+            break;
+          }
+          const formData = new FormData();
+          formData.append("file", file);
+          const response = await fetch("/media/upload-festival-ticket-file", {
+            method: "POST",
+            body: formData,
+          });
+          const payload = await response.json().catch(() => ({}));
+          if (!response.ok || !payload || !payload.path) {
+            throw new Error(payload && payload.detail ? String(payload.detail) : "Не удалось загрузить файл.");
+          }
+          const normalizedPath = normalizeTicketFilePath(payload.path);
+          if (normalizedPath && !paths.includes(normalizedPath)) {
+            paths.push(normalizedPath);
+          }
+        }
+        paths = paths.slice(0, maxTicketFiles);
+        writeTicketFilePaths(paths);
+        renderTicketFilePaths();
+        ticketFilesUploadInput.value = "";
+        setTicketFilesStatus(`Файлы загружены: ${paths.length}/${maxTicketFiles}.`, false);
+      } catch (error) {
+        setTicketFilesStatus(error instanceof Error ? error.message : "Ошибка загрузки файла.", true);
+      } finally {
+        ticketFilesUploadButton.disabled = false;
+      }
+    });
+  }
   bindNominationRemoveButtons();
   bindPackRowRemoveButtons();
   apply();
   applyTicketsVisibility();
+  renderTicketFilePaths();
 </script>
 {% endblock %}

@@ -69,6 +69,13 @@
     border-radius: 10px;
     background: rgba(255, 255, 255, 0.52);
   }
+  .festival-ticket-files {
+    margin: 0.35rem 0 0;
+    padding-left: 1.15rem;
+  }
+  .festival-ticket-files li + li {
+    margin-top: 0.2rem;
+  }
 </style>
 
 {% if user_home_city %}
@@ -354,8 +361,9 @@
     {% if festival.tickets_required %}
       {% set outbound = festival_ticket_outbound_by_id.get(festival.id, {}) %}
       {% set return_trip = festival_ticket_return_by_id.get(festival.id, {}) %}
+      {% set ticket_files = festival_ticket_files_by_id.get(festival.id, []) %}
       <div class="festival-ticket-block">
-        <p class="meta"><strong>Билеты:</strong> требуется</p>
+        <p class="meta"><strong>Мои билеты:</strong> требуется</p>
         {% if outbound.transport or outbound.departure_date or outbound.departure_time or outbound.arrival_date or outbound.arrival_time or outbound.route_name or outbound.departure_place or outbound.arrival_place %}
           <p class="meta">
             <strong>Туда:</strong>
@@ -381,6 +389,14 @@
             {% if return_trip.arrival_time %} {{ return_trip.arrival_time }}{% endif %}
             {% if return_trip.arrival_place %} · {{ return_trip.arrival_place }}{% endif %}
           </p>
+        {% endif %}
+        {% if ticket_files %}
+          <p class="meta"><strong>Файлы билетов:</strong></p>
+          <ul class="festival-ticket-files">
+            {% for item in ticket_files %}
+              <li><a href="{{ item.path }}" target="_blank" rel="noreferrer">{{ item.label }}</a></li>
+            {% endfor %}
+          </ul>
         {% endif %}
       </div>
     {% endif %}

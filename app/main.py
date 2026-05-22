@@ -723,6 +723,14 @@ FESTIVAL_TICKET_TRANSPORT_OPTIONS: list[tuple[str, str]] = [
 ]
 FESTIVAL_TICKET_TRANSPORT_LABELS = dict(FESTIVAL_TICKET_TRANSPORT_OPTIONS)
 FESTIVAL_TICKET_TRANSPORT_VALUES = {value for value, _label in FESTIVAL_TICKET_TRANSPORT_OPTIONS}
+FESTIVAL_TICKET_FILE_ALLOWED_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png"}
+FESTIVAL_TICKET_FILE_CONTENT_TYPE_EXTENSIONS = {
+    "application/pdf": ".pdf",
+    "image/jpeg": ".jpg",
+    "image/jpg": ".jpg",
+    "image/png": ".png",
+}
+MAX_FESTIVAL_TICKET_FILES = 5
 
 telegram_auth_state_lock = threading.Lock()
 telegram_auth_state: dict[str, dict[str, str]] = {}
@@ -1258,6 +1266,7 @@ def apply_schema_migrations() -> None:
             ("tickets_required", "BOOLEAN NOT NULL DEFAULT 0"),
             ("ticket_outbound_json", "JSON NOT NULL DEFAULT '{}'"),
             ("ticket_return_json", "JSON NOT NULL DEFAULT '{}'"),
+            ("ticket_files_json", "JSON NOT NULL DEFAULT '[]'"),
             ("timing_event_start_date", "DATE"),
             ("timing_event_start_time", "VARCHAR(8)"),
             ("timing_block_start_time", "VARCHAR(8)"),
@@ -1796,6 +1805,72 @@ async def media_upload_profile_image(
         "width": width,
         "height": height,
         "format": source_format.lower(),
+    }
+
+
+@app.post("/media/upload-festival-ticket-file")
+async def media_upload_festival_ticket_file(
+    request: Request,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    user = current_user(request, db)
+    if not user:
+        raise HTTPException(status_code=401, detail="Требуется авторизация.")
+    if not user_has_premium_status(db, user):
+        raise HTTPException(status_code=403, detail="Загрузка файлов билетов доступна только премиум-пользователям.")
+
+    original_name = str(file.filename or "").strip()
+    if not original_name:
+        raise HTTPException(status_code=400, detail="Файл не передан.")
+
+    content_type = (file.content_type or "").strip().lower()
+    raw_bytes = await file.read(MAX_UPLOAD_INPUT_BYTES + 1)
+    if len(raw_bytes) > MAX_UPLOAD_INPUT_BYTES:
+        raise HTTPException(status_code=400, detail="Файл слишком большой (до 20 МБ).")
+    if not raw_bytes:
+        raise HTTPException(status_code=400, detail="Файл пуст.")
+
+    file_ext = FESTIVAL_TICKET_FILE_CONTENT_TYPE_EXTENSIONS.get(content_type, "")
+    if not file_ext:
+        suffix = Path(original_name).suffix.lower()
+        if suffix in FESTIVAL_TICKET_FILE_ALLOWED_EXTENSIONS:
+            file_ext = suffix
+    if file_ext not in FESTIVAL_TICKET_FILE_ALLOWED_EXTENSIONS:
+        raise HTTPException(status_code=400, detail="Поддерживаются только PDF, JPG и PNG.")
+
+    width: int | None = None
+    height: int | None = None
+    if file_ext in {".jpg", ".jpeg", ".png"}:
+        try:
+            with Image.open(io.BytesIO(raw_bytes)) as image:
+                source_format = (image.format or "").upper()
+                if source_format not in {"JPEG", "JPG", "PNG"}:
+                    raise ValueError("Поддерживаются только JPG и PNG.")
+                prepared = ImageOps.exif_transpose(image)
+                width, height = prepared.size
+        except UnidentifiedImageError as exc:
+            raise HTTPException(status_code=400, detail="Не удалось прочитать изображение.") from exc
+        except OSError as exc:
+            raise HTTPException(status_code=400, detail="Не удалось прочитать изображение.") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    file_name = f"festival-ticket-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:14]}{file_ext}"
+    destination = media_storage_path() / file_name
+    destination.write_bytes(raw_bytes)
+
+    public_path = f"/media/{file_name}"
+    base_url = str(request.base_url).rstrip("/")
+    return {
+        "ok": True,
+        "url": f"{base_url}{public_path}",
+        "path": public_path,
+        "size_bytes": len(raw_bytes),
+        "width": width,
+        "height": height,
+        "format": file_ext.lstrip("."),
+        "filename": Path(original_name).name,
     }
 
 
@@ -10695,6 +10770,7 @@ def festival_fields_for_mobile_sync() -> list[str]:
         "tickets_required",
         "ticket_outbound_json",
         "ticket_return_json",
+        "ticket_files_json",
         "timing_event_start_date",
         "timing_event_start_time",
         "timing_block_start_time",
@@ -10778,7 +10854,13 @@ MOBILE_FESTIVAL_BOOL_FIELDS = {
     "is_global_announcement",
 }
 MOBILE_FESTIVAL_INT_FIELDS = {"source_announcement_id"}
-MOBILE_FESTIVAL_LIST_FIELDS = {"nominations_json", "planned_nominations_json", "going_coproplayers_json", "packlist_json"}
+MOBILE_FESTIVAL_LIST_FIELDS = {
+    "nominations_json",
+    "planned_nominations_json",
+    "going_coproplayers_json",
+    "packlist_json",
+    "ticket_files_json",
+}
 MOBILE_FESTIVAL_DICT_FIELDS = {"ticket_outbound_json", "ticket_return_json"}
 
 
@@ -11076,6 +11158,7 @@ def apply_mobile_festival_payload(festival: Festival, payload: dict[str, Any], *
     if not festival.event_date and festival.event_end_date:
         festival.event_date = festival.event_end_date
     festival.packlist_json = normalize_festival_packlist_items(as_list(festival.packlist_json))
+    festival.ticket_files_json = normalize_festival_ticket_file_paths(as_list(festival.ticket_files_json))[:MAX_FESTIVAL_TICKET_FILES]
     festival.tickets_required = bool(festival.tickets_required)
     festival.ticket_outbound_json = normalize_festival_ticket_segment_payload(festival.ticket_outbound_json)
     festival.ticket_return_json = normalize_festival_ticket_segment_payload(festival.ticket_return_json)
@@ -14028,6 +14111,112 @@ def parse_festival_ticket_segment_from_form(form: Any, prefix: str) -> dict[str,
     return normalize_festival_ticket_segment_payload(payload)
 
 
+def normalize_festival_ticket_file_path(value: Any) -> str:
+    raw_value = str(value or "").strip()
+    if not raw_value:
+        return ""
+    parsed = urlparse(raw_value)
+    path_value = str(parsed.path or "").strip()
+    if not path_value.startswith("/media/"):
+        return ""
+    file_name = path_value.removeprefix("/media/").strip()
+    if not file_name:
+        return ""
+    try:
+        safe_media_filename(file_name)
+    except HTTPException:
+        return ""
+    file_ext = Path(file_name).suffix.lower()
+    if file_ext not in FESTIVAL_TICKET_FILE_ALLOWED_EXTENSIONS:
+        return ""
+    return f"/media/{file_name}"
+
+
+def normalize_festival_ticket_file_paths(raw_items: Any) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw_item in as_list(raw_items):
+        value = normalize_festival_ticket_file_path(raw_item)
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        normalized.append(value)
+    return normalized
+
+
+def parse_festival_ticket_files_input(raw_value: str) -> list[str]:
+    return normalize_festival_ticket_file_paths(parse_reference_values(raw_value))
+
+
+def festival_ticket_file_label(value: Any) -> str:
+    normalized_path = normalize_festival_ticket_file_path(value)
+    if not normalized_path:
+        return ""
+    file_name = Path(normalized_path).name
+    decoded_name = unquote(file_name).strip()
+    return decoded_name or file_name
+
+
+def build_festival_ticket_schedule_points(
+    festival: Festival,
+    *,
+    min_date: date | None = None,
+) -> list[dict[str, Any]]:
+    if not festival or not bool(festival.tickets_required):
+        return []
+
+    points: list[dict[str, Any]] = []
+    segment_rows = [
+        ("Туда", normalize_festival_ticket_segment_payload(festival.ticket_outbound_json)),
+        ("Обратно", normalize_festival_ticket_segment_payload(festival.ticket_return_json)),
+    ]
+
+    for direction_label, segment in segment_rows:
+        transport_label = FESTIVAL_TICKET_TRANSPORT_LABELS.get(
+            str(segment.get("transport") or ""),
+            str(segment.get("transport") or ""),
+        )
+        route_name = str(segment.get("route_name") or "").strip()
+        departure_place = str(segment.get("departure_place") or "").strip()
+        arrival_place = str(segment.get("arrival_place") or "").strip()
+        path_label = ""
+        if departure_place or arrival_place:
+            path_label = f"{departure_place or '—'} → {arrival_place or '—'}"
+
+        for point_kind, date_field, time_field, place_field in [
+            ("Отправление", "departure_date", "departure_time", "departure_place"),
+            ("Прибытие", "arrival_date", "arrival_time", "arrival_place"),
+        ]:
+            point_date = parse_date(str(segment.get(date_field, "") or ""))
+            if not point_date:
+                continue
+            if min_date and point_date < min_date:
+                continue
+
+            point_time = parse_time_hhmm(str(segment.get(time_field, "") or "")) or ""
+            point_location = str(segment.get(place_field) or "").strip() or festival.city or "—"
+            detail_parts = [direction_label, point_kind]
+            if transport_label:
+                detail_parts.append(transport_label)
+            if route_name:
+                detail_parts.append(route_name)
+            if path_label:
+                detail_parts.append(path_label)
+
+            points.append(
+                {
+                    "date": point_date,
+                    "time": point_time,
+                    "summary_suffix": f"{direction_label} · {point_kind}",
+                    "kind_label": f"Билет ({direction_label} · {point_kind.lower()})",
+                    "location": point_location,
+                    "details": " · ".join(detail_parts),
+                }
+            )
+
+    return points
+
+
 def get_festival_form_values(festival: Festival | None = None) -> dict[str, Any]:
     nomination_items = festival_nomination_items(festival)
     packlist_items = normalize_festival_packlist_items(as_list(getattr(festival, "packlist_json", []))) if festival else []
@@ -14037,6 +14226,11 @@ def get_festival_form_values(festival: Festival | None = None) -> dict[str, Any]
     ticket_return = normalize_festival_ticket_segment_payload(
         getattr(festival, "ticket_return_json", {})
     ) if festival else empty_festival_ticket_segment()
+    ticket_files = (
+        normalize_festival_ticket_file_paths(as_list(getattr(festival, "ticket_files_json", [])))
+        if festival
+        else []
+    )
     timing_event_start_date = ""
     timing_event_start_time = ""
     timing_block_start_time = ""
@@ -14078,6 +14272,8 @@ def get_festival_form_values(festival: Festival | None = None) -> dict[str, Any]
             "tickets_required": False,
             "ticket_outbound": ticket_outbound,
             "ticket_return": ticket_return,
+            "ticket_files_json": ticket_files,
+            "ticket_files_input": "",
             "timing_event_start_date": "",
             "timing_event_start_time": "",
             "timing_block_start_time": "",
@@ -14104,6 +14300,8 @@ def get_festival_form_values(festival: Festival | None = None) -> dict[str, Any]
         "tickets_required": bool(festival.tickets_required),
         "ticket_outbound": ticket_outbound,
         "ticket_return": ticket_return,
+        "ticket_files_json": ticket_files,
+        "ticket_files_input": "\n".join(ticket_files),
         "timing_event_start_date": timing_event_start_date,
         "timing_event_start_time": timing_event_start_time,
         "timing_block_start_time": timing_block_start_time,
@@ -14187,7 +14385,14 @@ def apply_festival_common_fields_from_form(
         festival.icon_path = str(icon_path or "").strip() or None
 
 
-def apply_festival_personal_fields_from_form(form: Any, festival: Festival, db: Session) -> None:
+def apply_festival_personal_fields_from_form(
+    form: Any,
+    festival: Festival,
+    db: Session,
+    *,
+    can_edit_ticket_files: bool = False,
+    ticket_file_paths: list[str] | None = None,
+) -> None:
     alias_to_username, _, _ = build_user_alias_lookup(db)
     festival.is_going = to_bool(form.get("is_going"))
     selected_nomination_keys = {
@@ -14219,6 +14424,8 @@ def apply_festival_personal_fields_from_form(form: Any, festival: Festival, db: 
     if not festival.tickets_required:
         festival.ticket_outbound_json = empty_festival_ticket_segment()
         festival.ticket_return_json = empty_festival_ticket_segment()
+    if can_edit_ticket_files:
+        festival.ticket_files_json = normalize_festival_ticket_file_paths(ticket_file_paths or [])
 
     festival.timing_event_start_date = parse_date(str(form.get("timing_event_start_date", "")))
     festival.timing_event_start_time = parse_time_hhmm(str(form.get("timing_event_start_time", "")))
@@ -20419,6 +20626,20 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
                     "personal_event_id": None,
                 }
             )
+        for ticket_point in build_festival_ticket_schedule_points(festival, min_date=today):
+            entries.append(
+                {
+                    "date": ticket_point["date"],
+                    "time": ticket_point.get("time", ""),
+                    "kind": ticket_point["kind_label"],
+                    "type_key": "festival",
+                    "title": festival.name or "Без названия",
+                    "city": ticket_point.get("location") or festival.city or "—",
+                    "coproplayers": ", ".join(coproplayers_display),
+                    "details": ticket_point.get("details", ""),
+                    "personal_event_id": None,
+                }
+            )
     for card in cards:
         card_coproplayers = as_list(card.coproplayers_json) or as_list(card.coproplayer_nicks_json)
         coproplayers_display = format_coproplayer_names(
@@ -22381,6 +22602,21 @@ def my_calendar_export_ics(request: Request, db: Session = Depends(get_db)):
             url=festival.url or "",
             description="\n".join(description_parts),
         )
+        for point_index, ticket_point in enumerate(
+            build_festival_ticket_schedule_points(festival, min_date=today),
+            start=1,
+        ):
+            append_ics_event(
+                lines,
+                dtstamp=dtstamp,
+                uid_prefix=f"festival-ticket-{festival.id}-{point_index}",
+                summary=f"Билет: {festival.name or 'Без названия'} — {ticket_point['summary_suffix']}",
+                event_date=ticket_point["date"],
+                time_hhmm=str(ticket_point.get("time") or ""),
+                duration_minutes=60,
+                location=str(ticket_point.get("location") or ""),
+                description=str(ticket_point.get("details") or "Билет"),
+            )
 
     for card in cards:
         if not card.photoset_date:
@@ -27955,6 +28191,7 @@ def festivals_list(request: Request, db: Session = Depends(get_db)):
     festival_nomination_items_by_id: dict[int, list[dict[str, str]]] = {}
     festival_planned_nominations_by_id: dict[int, list[str]] = {}
     festival_packlist_by_id: dict[int, list[dict[str, Any]]] = {}
+    festival_ticket_files_by_id: dict[int, list[dict[str, str]]] = {}
     festival_ticket_outbound_by_id: dict[int, dict[str, str]] = {}
     festival_ticket_return_by_id: dict[int, dict[str, str]] = {}
     festival_timing_by_id: dict[int, dict[str, str]] = {}
@@ -27969,6 +28206,11 @@ def festivals_list(request: Request, db: Session = Depends(get_db)):
         festival_nomination_items_by_id[festival.id] = nomination_items
         festival_planned_nominations_by_id[festival.id] = festival_selected_nomination_titles(festival)
         festival_packlist_by_id[festival.id] = normalize_festival_packlist_items(as_list(festival.packlist_json))
+        festival_ticket_files_by_id[festival.id] = [
+            {"path": path_value, "label": festival_ticket_file_label(path_value)}
+            for path_value in normalize_festival_ticket_file_paths(as_list(getattr(festival, "ticket_files_json", [])))
+            if festival_ticket_file_label(path_value)
+        ]
         ticket_outbound = normalize_festival_ticket_segment_payload(festival.ticket_outbound_json)
         ticket_return = normalize_festival_ticket_segment_payload(festival.ticket_return_json)
         if not festival.tickets_required:
@@ -28176,6 +28418,7 @@ def festivals_list(request: Request, db: Session = Depends(get_db)):
         festival_nomination_items_by_id=festival_nomination_items_by_id,
         festival_planned_nominations_by_id=festival_planned_nominations_by_id,
         festival_packlist_by_id=festival_packlist_by_id,
+        festival_ticket_files_by_id=festival_ticket_files_by_id,
         festival_ticket_outbound_by_id=festival_ticket_outbound_by_id,
         festival_ticket_return_by_id=festival_ticket_return_by_id,
         festival_timing_by_id=festival_timing_by_id,
@@ -28676,6 +28919,8 @@ def festivals_new(request: Request, db: Session = Depends(get_db)):
         can_edit_partner_festival=user_is_special(user),
         can_edit_shared_note=user_is_special(user),
         can_edit_festival_icon=can_edit_festival_icon(user),
+        can_upload_ticket_files=user_has_premium_status(db, user),
+        max_festival_ticket_files=MAX_FESTIVAL_TICKET_FILES,
         ticket_transport_options=FESTIVAL_TICKET_TRANSPORT_OPTIONS,
     )
 
@@ -28717,6 +28962,8 @@ def festivals_edit(festival_id: int, request: Request, db: Session = Depends(get
         can_edit_partner_festival=user_is_special(user),
         can_edit_shared_note=user_is_special(user),
         can_edit_festival_icon=can_edit_festival_icon(user),
+        can_upload_ticket_files=user_has_premium_status(db, user),
+        max_festival_ticket_files=MAX_FESTIVAL_TICKET_FILES,
         ticket_transport_options=FESTIVAL_TICKET_TRANSPORT_OPTIONS,
     )
 
@@ -28728,7 +28975,7 @@ def save_festival_from_form(
     db: Session,
     *,
     icon_path: Any = FESTIVAL_ICON_UNSET,
-) -> None:
+) -> str:
     apply_festival_common_fields_from_form(
         form,
         festival,
@@ -28738,7 +28985,19 @@ def save_festival_from_form(
         can_edit_icon=can_edit_festival_icon(user),
         icon_path=icon_path,
     )
-    apply_festival_personal_fields_from_form(form, festival, db)
+    can_edit_ticket_files = user_has_premium_status(db, user)
+    ticket_file_paths: list[str] = []
+    if can_edit_ticket_files:
+        ticket_file_paths = parse_festival_ticket_files_input(str(form.get("ticket_files_input", "")))
+        if len(ticket_file_paths) > MAX_FESTIVAL_TICKET_FILES:
+            return f"Можно сохранить не более {MAX_FESTIVAL_TICKET_FILES} файлов билетов."
+    apply_festival_personal_fields_from_form(
+        form,
+        festival,
+        db,
+        can_edit_ticket_files=can_edit_ticket_files,
+        ticket_file_paths=ticket_file_paths,
+    )
 
     raw_coproplayer_aliases = merge_unique(
         split_csv(str(form.get("going_coproplayers_input", ""))),
@@ -28758,6 +29017,7 @@ def save_festival_from_form(
         ),
     )
     remember_options(db, user.id, "festival", [festival.name])
+    return ""
 
 
 @app.post("/festivals/new")
@@ -28780,7 +29040,10 @@ async def festivals_create(request: Request, db: Session = Depends(get_db)):
         return redirect("/festivals/new")
 
     festival = Festival(user_id=user.id, name=name)
-    save_festival_from_form(form, festival, user, db, icon_path=icon_path)
+    save_error = save_festival_from_form(form, festival, user, db, icon_path=icon_path)
+    if save_error:
+        add_flash(request, save_error, "error")
+        return redirect("/festivals/new")
 
     db.add(festival)
     db.flush()
@@ -28847,6 +29110,7 @@ async def festivals_update(festival_id: int, request: Request, db: Session = Dep
     }
     can_edit_photo_cosplay = user_is_special(user)
     can_edit_icon = can_edit_festival_icon(user)
+    can_edit_ticket_files = user_has_premium_status(db, user)
     apply_festival_common_fields_from_form(
         form,
         festival,
@@ -28860,7 +29124,19 @@ async def festivals_update(festival_id: int, request: Request, db: Session = Dep
     raw_coproplayer_aliases: list[str] = []
     notify_count = 0
     if festival.user_id == user.id:
-        apply_festival_personal_fields_from_form(form, festival, db)
+        ticket_file_paths: list[str] = []
+        if can_edit_ticket_files:
+            ticket_file_paths = parse_festival_ticket_files_input(str(form.get("ticket_files_input", "")))
+            if len(ticket_file_paths) > MAX_FESTIVAL_TICKET_FILES:
+                add_flash(request, f"Можно сохранить не более {MAX_FESTIVAL_TICKET_FILES} файлов билетов.", "error")
+                return redirect(f"/festivals/{festival_id}/edit")
+        apply_festival_personal_fields_from_form(
+            form,
+            festival,
+            db,
+            can_edit_ticket_files=can_edit_ticket_files,
+            ticket_file_paths=ticket_file_paths,
+        )
         raw_coproplayer_aliases = merge_unique(
             split_csv(str(form.get("going_coproplayers_input", ""))),
             form.getlist("going_coproplayers"),

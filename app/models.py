@@ -703,6 +703,7 @@ class Festival(Base):
     tickets_required = Column(Boolean, nullable=False, default=False)
     ticket_outbound_json = Column(JSON, nullable=False, default=dict)
     ticket_return_json = Column(JSON, nullable=False, default=dict)
+    ticket_files_json = Column(JSON, nullable=False, default=list)
     timing_event_start_date = Column(Date, nullable=True)
     timing_event_start_time = Column(String(8), nullable=True)
     timing_block_start_time = Column(String(8), nullable=True)
