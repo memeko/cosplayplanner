@@ -5,6 +5,47 @@
 </section>
 
 <section class="box">
+  <h2>Премиум</h2>
+  <p class="meta top-offset">
+    Премиум: <strong>{{ "есть" if premium_status_active else "нет" }}</strong>
+  </p>
+  <p class="meta">
+    Срок действия: <strong>{{ premium_expires_at_label }}</strong>
+  </p>
+
+  <details class="card-expand top-offset">
+    <summary>Тарифы</summary>
+    <ul class="top-offset">
+      <li>1 месяц - 99 рублей</li>
+      <li>3 месяца - 249 рублей</li>
+      <li>6 месяцев - 449 рублей</li>
+      <li>Год - 749 рублей</li>
+      <li>Навсегда (акция до 1 августа 2026) - 1099 рублей</li>
+      <li>Навсегда - 1499 рублей</li>
+    </ul>
+    <p class="muted top-offset">
+      По вопросам оплаты обращаться к
+      (<a href="https://t.me/brfox" target="_blank" rel="noreferrer" class="btn btn-small btn-accent">Братцу Лису</a>).
+    </p>
+  </details>
+
+  <details class="card-expand top-offset">
+    <summary>Доступно в премиум</summary>
+    <ul class="top-offset">
+      <li>План раскадровки фотосета в карточке косплана</li>
+      <li>Загрузка референсов для раскадровки</li>
+      <li>Возможность экспорта этого плана как PDF или отметок прямо в планере</li>
+      <li>Загрузка и хранение файлов билетов или их фотографий для фестивалей в других городах (любых билетов)</li>
+      <li>Кастомный цвет ника на всём сайте</li>
+      <li>Блок подсказок идей в контент-плане на основе активности</li>
+      <li>Попадание в блок рекламы ТГК на главной (ротация премиум-профилей)</li>
+      <li>Поддержка проекта &lt;3</li>
+    </ul>
+    <p class="muted top-offset">Функции будут пополняться для всех бесплатного и премиум-доступа.</p>
+  </details>
+</section>
+
+<section class="box">
   <h2>Аватар профиля</h2>
   <div class="profile-avatar-layout top-offset">
     <div class="profile-avatar-current-wrap">

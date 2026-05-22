@@ -16859,6 +16859,32 @@ def profile_page(request: Request, db: Session = Depends(get_db)):
     if not user:
         return redirect("/login")
 
+    premium_status_active = user_has_premium_status(db, user)
+    premium_expires_at_label = "—"
+    if is_primary_admin_user(user):
+        premium_expires_at_label = "навсегда"
+    else:
+        premium_access_entry = next(
+            (
+                item
+                for item in get_premium_access_entries(db, include_expired=True)
+                if parse_positive_int(str(item.get("user_id", "")).strip()) == int(user.id)
+            ),
+            None,
+        )
+        premium_expires_on = (
+            premium_access_entry.get("expires_on")
+            if isinstance(premium_access_entry, dict)
+            else None
+        )
+        if isinstance(premium_expires_on, date):
+            expires_text = premium_expires_on.strftime("%d.%m.%Y")
+            premium_expires_at_label = (
+                f"до {expires_text}" if premium_status_active else f"истек {expires_text}"
+            )
+        elif premium_status_active:
+            premium_expires_at_label = "навсегда"
+
     can_customize_premium_nick_color = bool(getattr(user, "_is_premium_user", False))
     saved_premium_nick_color = normalize_premium_nick_color(
         get_user_option_value(db, user.id, PREMIUM_NICK_COLOR_GROUP)
@@ -16880,6 +16906,8 @@ def profile_page(request: Request, db: Session = Depends(get_db)):
         user=user,
         active_tab="profile",
         can_view_admin_dashboard=can_view_admin_dashboard(user),
+        premium_status_active=premium_status_active,
+        premium_expires_at_label=premium_expires_at_label,
         saved_bot_secret_code=saved_bot_secret_code,
         has_legacy_bot_secret_without_reveal=has_legacy_bot_secret_without_reveal,
         profile_social_fields=PROFILE_SOCIAL_OPTION_FIELDS,
