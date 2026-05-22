@@ -40,7 +40,7 @@ from fastapi.templating import Jinja2Templates
 from itsdangerous import BadSignature, TimestampSigner
 from markupsafe import Markup
 from passlib.context import CryptContext
-from PIL import Image, ImageOps, UnidentifiedImageError
+from PIL import Image, ImageDraw, ImageFont, ImageOps, UnidentifiedImageError
 from sqlalchemy import and_, func, inspect, or_, select, text
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
@@ -942,6 +942,10 @@ MAX_CHARACTER_REFERENCE_IMAGE_BYTES = 450 * 1024
 MAX_CHARACTER_REFERENCE_IMAGE_WIDTH = 900
 MAX_PHOTOSET_STORYBOARD_IMAGE_BYTES = 450 * 1024
 MAX_PHOTOSET_STORYBOARD_IMAGE_WIDTH = 600
+STORYBOARD_PDF_PAGE_WIDTH = 1240
+STORYBOARD_PDF_PAGE_HEIGHT = 1754
+STORYBOARD_PDF_DPI = 150
+STORYBOARD_PDF_REFERENCE_MAX_HEIGHT = 260
 MAX_AVATAR_IMAGE_BYTES = 24 * 1024
 MAX_AVATAR_IMAGE_WIDTH = 256
 MAX_PREMIUM_CHANNEL_AD_AVATAR_BYTES = 42 * 1024
@@ -9418,6 +9422,277 @@ def format_photoset_storyboard_rows_for_form(rows: Any) -> list[dict[str, str]]:
     return formatted
 
 
+def storyboard_pdf_font_candidates() -> list[Path]:
+    return [
+        Path("/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf"),
+        Path("/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"),
+        Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
+        Path("/System/Library/Fonts/Supplemental/Arial Unicode.ttf"),
+        Path("/System/Library/Fonts/Supplemental/Arial.ttf"),
+        Path("/Library/Fonts/Arial Unicode.ttf"),
+        Path("/Library/Fonts/Arial.ttf"),
+    ]
+
+
+def resolve_storyboard_pdf_font_path() -> Path | None:
+    for candidate in storyboard_pdf_font_candidates():
+        if candidate.exists() and candidate.is_file():
+            return candidate
+    return None
+
+
+def load_storyboard_pdf_fonts() -> dict[str, ImageFont.ImageFont]:
+    font_path = resolve_storyboard_pdf_font_path()
+    if font_path:
+        try:
+            return {
+                "title": ImageFont.truetype(str(font_path), 36),
+                "subtitle": ImageFont.truetype(str(font_path), 20),
+                "header": ImageFont.truetype(str(font_path), 20),
+                "cell": ImageFont.truetype(str(font_path), 19),
+                "small": ImageFont.truetype(str(font_path), 16),
+            }
+        except OSError:
+            pass
+
+    fallback = ImageFont.load_default()
+    return {
+        "title": fallback,
+        "subtitle": fallback,
+        "header": fallback,
+        "cell": fallback,
+        "small": fallback,
+    }
+
+
+def storyboard_pdf_line_height(draw: ImageDraw.ImageDraw, font: ImageFont.ImageFont) -> int:
+    left, top, right, bottom = draw.textbbox((0, 0), "Ag", font=font)
+    return max(18, int((bottom - top) + 4))
+
+
+def storyboard_pdf_wrap_text(
+    draw: ImageDraw.ImageDraw,
+    text_value: str | None,
+    font: ImageFont.ImageFont,
+    max_width: int,
+) -> list[str]:
+    if max_width <= 10:
+        return [str(text_value or "")]
+
+    normalized = normalize_text_line_breaks(str(text_value or "")).strip()
+    if not normalized:
+        return []
+
+    lines: list[str] = []
+    for raw_line in normalized.split("\n"):
+        stripped = raw_line.strip()
+        if not stripped:
+            lines.append("")
+            continue
+        words = stripped.split()
+        current = ""
+        for word in words:
+            candidate = f"{current} {word}".strip()
+            width = draw.textbbox((0, 0), candidate, font=font)[2]
+            if width <= max_width:
+                current = candidate
+                continue
+            if current:
+                lines.append(current)
+                current = word
+            else:
+                lines.append(word)
+                current = ""
+        if current:
+            lines.append(current)
+    return lines
+
+
+def load_storyboard_reference_image_for_pdf(reference_url: str | None) -> Image.Image | None:
+    raw_reference = str(reference_url or "").strip()
+    if not raw_reference:
+        return None
+
+    image_bytes = b""
+    local_path = local_media_reference_to_path(raw_reference)
+    if local_path and local_path.exists() and local_path.is_file():
+        try:
+            image_bytes = local_path.read_bytes()
+        except OSError:
+            image_bytes = b""
+    elif looks_like_url(raw_reference):
+        try:
+            response = requests.get(raw_reference, timeout=HTTP_TIMEOUT_SECONDS)
+        except requests.RequestException:
+            response = None
+        if response and response.ok:
+            image_bytes = response.content[: MAX_UPLOAD_INPUT_BYTES + 1]
+            if len(image_bytes) > MAX_UPLOAD_INPUT_BYTES:
+                image_bytes = b""
+
+    if not image_bytes:
+        return None
+
+    try:
+        with Image.open(io.BytesIO(image_bytes)) as source:
+            prepared = ImageOps.exif_transpose(source).convert("RGB")
+            return prepared.copy()
+    except (UnidentifiedImageError, OSError):
+        return None
+
+
+def build_storyboard_pdf_document(card: CosplanCard, rows: list[dict[str, Any]]) -> bytes:
+    page_width = STORYBOARD_PDF_PAGE_WIDTH
+    page_height = STORYBOARD_PDF_PAGE_HEIGHT
+    margin = 56
+    table_left = margin
+    table_right = page_width - margin
+    table_width = table_right - table_left
+    done_col_width = 108
+    who_col_width = 276
+    reference_col_width = 410
+    comment_col_width = max(180, table_width - done_col_width - who_col_width - reference_col_width)
+    cell_padding = 10
+
+    fonts = load_storyboard_pdf_fonts()
+    measurement_image = Image.new("RGB", (64, 64), "white")
+    measurement_draw = ImageDraw.Draw(measurement_image)
+    header_line_height = storyboard_pdf_line_height(measurement_draw, fonts["header"])
+    cell_line_height = storyboard_pdf_line_height(measurement_draw, fonts["cell"])
+    small_line_height = storyboard_pdf_line_height(measurement_draw, fonts["small"])
+
+    created_pages: list[Image.Image] = []
+    draw: ImageDraw.ImageDraw | None = None
+    page: Image.Image | None = None
+    current_y = 0
+    page_bottom = page_height - margin
+
+    x_done = table_left + done_col_width
+    x_who = x_done + who_col_width
+    x_ref = x_who + reference_col_width
+
+    now_label = datetime.now(SITE_TIMEZONE).strftime("%d-%m-%Y %H:%M")
+    image_cache: dict[str, Image.Image | None] = {}
+
+    def start_new_page() -> None:
+        nonlocal page, draw, current_y
+        page = Image.new("RGB", (page_width, page_height), "white")
+        draw = ImageDraw.Draw(page)
+
+        title_text = f"Раскадровка: {card.character_name or 'Карточка'}"
+        subtitle_parts = [f"Экспорт: {now_label}", f"Карточка #{card.id}"]
+        if card.fandom:
+            subtitle_parts.append(f"Фандом: {card.fandom}")
+        subtitle_text = " | ".join(subtitle_parts)
+
+        draw.text((margin, margin - 6), title_text, fill="#0f172a", font=fonts["title"])
+        draw.text((margin, margin + 38), subtitle_text, fill="#334155", font=fonts["subtitle"])
+
+        header_top = margin + 84
+        header_bottom = header_top + 44
+        draw.rectangle((table_left, header_top, table_right, header_bottom), fill="#e8eff7", outline="#94a3b8", width=2)
+        draw.line((x_done, header_top, x_done, header_bottom), fill="#94a3b8", width=2)
+        draw.line((x_who, header_top, x_who, header_bottom), fill="#94a3b8", width=2)
+        draw.line((x_ref, header_top, x_ref, header_bottom), fill="#94a3b8", width=2)
+        draw.text((table_left + cell_padding, header_top + 10), "Отснято", fill="#0f172a", font=fonts["header"])
+        draw.text((x_done + cell_padding, header_top + 10), "Кто на фото", fill="#0f172a", font=fonts["header"])
+        draw.text((x_who + cell_padding, header_top + 10), "Референс фотографии", fill="#0f172a", font=fonts["header"])
+        draw.text((x_ref + cell_padding, header_top + 10), "Комментарий", fill="#0f172a", font=fonts["header"])
+
+        current_y = header_bottom
+        created_pages.append(page)
+
+    start_new_page()
+
+    for row in rows:
+        if not draw:
+            break
+
+        done_text = "☑ Да" if to_bool(row.get("done")) else "☐ Нет"
+        who_text = str(row.get("who") or "").strip() or "—"
+        reference_url = str(row.get("reference_url") or "").strip()
+        comment_text = str(row.get("comment") or "").strip() or "—"
+
+        who_lines = storyboard_pdf_wrap_text(draw, who_text, fonts["cell"], who_col_width - cell_padding * 2) or ["—"]
+        comment_lines = storyboard_pdf_wrap_text(draw, comment_text, fonts["cell"], comment_col_width - cell_padding * 2) or ["—"]
+
+        reference_lines = (
+            storyboard_pdf_wrap_text(draw, reference_url, fonts["small"], reference_col_width - cell_padding * 2) if reference_url else []
+        )
+        if not reference_lines:
+            reference_lines = ["—"]
+
+        image_for_row: Image.Image | None = None
+        if reference_url:
+            cached_image = image_cache.get(reference_url)
+            if reference_url not in image_cache:
+                cached_image = load_storyboard_reference_image_for_pdf(reference_url)
+                image_cache[reference_url] = cached_image
+            if cached_image:
+                image_for_row = cached_image.copy()
+                max_image_width = reference_col_width - cell_padding * 2
+                max_image_height = STORYBOARD_PDF_REFERENCE_MAX_HEIGHT
+                image_for_row.thumbnail((max_image_width, max_image_height), Image.Resampling.LANCZOS)
+
+        done_height = cell_line_height
+        who_height = len(who_lines) * cell_line_height
+        comment_height = len(comment_lines) * cell_line_height
+        ref_text_height = len(reference_lines) * small_line_height
+        image_height = image_for_row.height + 8 if image_for_row else 0
+        reference_height = ref_text_height + image_height
+        row_content_height = max(done_height, who_height, comment_height, reference_height, 52)
+        row_height = row_content_height + cell_padding * 2
+
+        if current_y + row_height > page_bottom:
+            start_new_page()
+            if not draw:
+                break
+
+        row_top = current_y
+        row_bottom = row_top + row_height
+        draw.rectangle((table_left, row_top, table_right, row_bottom), outline="#94a3b8", width=1)
+        draw.line((x_done, row_top, x_done, row_bottom), fill="#94a3b8", width=1)
+        draw.line((x_who, row_top, x_who, row_bottom), fill="#94a3b8", width=1)
+        draw.line((x_ref, row_top, x_ref, row_bottom), fill="#94a3b8", width=1)
+
+        draw.text((table_left + cell_padding, row_top + cell_padding), done_text, fill="#0f172a", font=fonts["cell"])
+
+        who_y = row_top + cell_padding
+        for line in who_lines:
+            draw.text((x_done + cell_padding, who_y), line, fill="#0f172a", font=fonts["cell"])
+            who_y += cell_line_height
+
+        ref_y = row_top + cell_padding
+        if image_for_row:
+            page.paste(image_for_row, (x_who + cell_padding, ref_y))
+            ref_y += image_for_row.height + 8
+        for line in reference_lines:
+            draw.text((x_who + cell_padding, ref_y), line, fill="#334155", font=fonts["small"])
+            ref_y += small_line_height
+
+        comment_y = row_top + cell_padding
+        for line in comment_lines:
+            draw.text((x_ref + cell_padding, comment_y), line, fill="#0f172a", font=fonts["cell"])
+            comment_y += cell_line_height
+
+        current_y = row_bottom
+
+    if not created_pages:
+        raise ValueError("Не удалось сформировать PDF.")
+
+    output = io.BytesIO()
+    first_page = created_pages[0]
+    first_page.save(
+        output,
+        format="PDF",
+        save_all=True,
+        append_images=created_pages[1:],
+        resolution=STORYBOARD_PDF_DPI,
+    )
+    output.seek(0)
+    return output.getvalue()
+
+
 def parse_master_price_rows_from_form(form: Any) -> list[dict[str, Any]]:
     row_ids = [str(value).strip() for value in form.getlist("price_row_id")]
     services = [str(value).strip() for value in form.getlist("price_service")]
@@ -17656,6 +17931,46 @@ def cosplan_export_csv(request: Request, db: Session = Depends(get_db)):
     )
 
 
+@app.get("/cosplan/{card_id}/storyboard.pdf")
+def cosplan_storyboard_export_pdf(card_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    card = get_accessible_card(db, card_id, user, allow_project_leader=True, allow_coproplayer=True)
+    if not card:
+        add_flash(request, "Карточка не найдена.", "error")
+        return redirect("/cosplan")
+
+    if not user_has_premium_status(db, user):
+        add_flash(request, "Экспорт раскадровки в PDF доступен только премиум-пользователям.", "error")
+        return redirect(f"/cosplan/{card.id}")
+
+    storyboard_rows = normalize_photoset_storyboard_rows(as_list(card.photoset_storyboard_rows_json))
+    if not storyboard_rows:
+        add_flash(request, "Для этой карточки пока нет строк в раскадровке.", "error")
+        return redirect(f"/cosplan/{card.id}")
+
+    try:
+        pdf_bytes = build_storyboard_pdf_document(card, storyboard_rows)
+    except ValueError as exc:
+        add_flash(request, str(exc), "error")
+        return redirect(f"/cosplan/{card.id}")
+    except OSError:
+        add_flash(request, "Не удалось сформировать PDF. Попробуйте ещё раз позже.", "error")
+        return redirect(f"/cosplan/{card.id}")
+
+    safe_card_name = re.sub(r"[^A-Za-z0-9_-]+", "-", normalize_username(card.character_name) or f"card-{card.id}").strip("-")
+    if not safe_card_name:
+        safe_card_name = f"card-{card.id}"
+    filename = f"storyboard-{safe_card_name}-{date.today().isoformat()}.pdf"
+    return StreamingResponse(
+        iter([pdf_bytes]),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @app.get("/cosplan/new", response_class=HTMLResponse)
 def cosplan_new(request: Request, db: Session = Depends(get_db)):
     user = current_user(request, db)
@@ -17891,6 +18206,7 @@ def cosplan_detail(card_id: int, request: Request, db: Session = Depends(get_db)
         card_date_conflicts=card_date_conflicts,
         can_comment=can_comment_on_card(card, user),
         can_edit_card=bool(editable_card),
+        can_export_storyboard_pdf=user_has_premium_status(db, user),
         edit_card_id=editable_card.id if editable_card else None,
         can_manage_progress=bool(card.user_id == user.id),
         card_in_progress=card_in_progress,

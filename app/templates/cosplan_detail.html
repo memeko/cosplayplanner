@@ -377,6 +377,11 @@
 
   {% if photoset_storyboard_rows %}
     <h3>План раскадровки</h3>
+    {% if can_export_storyboard_pdf %}
+      <div class="actions-inline top-offset">
+        <a href="/cosplan/{{ card.id }}/storyboard.pdf" class="btn btn-small" target="_blank" rel="noreferrer">Экспорт PDF</a>
+      </div>
+    {% endif %}
     <div class="table-wrap">
       <table class="table">
         <thead>

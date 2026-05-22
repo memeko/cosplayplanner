@@ -925,6 +925,11 @@
         <div class="actions-inline wrap">
           <button type="button" class="btn btn-small btn-accent" id="photoset_storyboard_from_calc_btn">Сохранить результат калькулятора</button>
           <button type="button" class="btn btn-small" id="photoset_storyboard_add_row_btn">Добавить строку</button>
+          {% if editing and card_id %}
+            <a href="/cosplan/{{ card_id }}/storyboard.pdf" class="btn btn-small" target="_blank" rel="noreferrer">Экспорт PDF</a>
+          {% else %}
+            <span class="muted">Для экспорта PDF сначала сохраните карточку.</span>
+          {% endif %}
           <span class="muted" id="photoset_storyboard_status"></span>
         </div>
         <div class="storyboard-table-wrap">
