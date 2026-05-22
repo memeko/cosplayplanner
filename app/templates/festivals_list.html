@@ -20,10 +20,10 @@
 </section>
 
 <section class="box compact-box">
-  <div class="actions-inline">
-    <a href="/festivals" class="btn {% if festival_tab != 'my' %}btn-accent{% endif %}">Все фестивали</a>
-    <a href="/festivals?festival_tab=my" class="btn {% if festival_tab == 'my' %}btn-accent{% endif %}">Мои фестивали</a>
-  </div>
+  <nav class="festival-tabs" aria-label="Вкладки фестивалей">
+    <a href="/festivals" class="tab {% if festival_tab != 'my' %}active{% endif %}">Все фестивали</a>
+    <a href="/festivals?festival_tab=my" class="tab {% if festival_tab == 'my' %}active{% endif %}">Мои фестивали</a>
+  </nav>
   <p class="muted top-offset">
     {% if festival_tab == 'my' %}
       Здесь показаны только ваши личные карточки фестивалей с отметкой «Я иду».

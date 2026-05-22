@@ -280,6 +280,27 @@ body::after {
   box-shadow: 0 10px 18px rgba(14, 92, 138, 0.3);
 }
 
+.festival-tabs {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.festival-tabs .tab {
+  color: var(--text);
+  border: 1px solid var(--line-strong);
+  background: rgba(255, 255, 255, 0.52);
+  box-shadow: var(--glass-highlight-soft);
+}
+
+.festival-tabs .tab.active,
+.festival-tabs .tab:hover {
+  color: #ffffff;
+  background: linear-gradient(140deg, rgba(21, 119, 179, 0.94), rgba(14, 92, 138, 0.9));
+  border-color: rgba(255, 255, 255, 0.4);
+  box-shadow: 0 10px 18px rgba(14, 92, 138, 0.32);
+}
+
 .content-platform-settings .calendar-tabs {
   margin-bottom: 14px;
 }
