@@ -926,6 +926,14 @@
           <button type="button" class="btn btn-small btn-accent" id="photoset_storyboard_from_calc_btn">Сохранить результат калькулятора</button>
           <button type="button" class="btn btn-small" id="photoset_storyboard_add_row_btn">Добавить строку</button>
           {% if editing and card_id %}
+            <button
+              type="submit"
+              class="btn btn-small"
+              name="next"
+              value="/cosplan/{{ card_id }}/edit#photoset_storyboard_box"
+            >Сохранить таблицу</button>
+          {% endif %}
+          {% if editing and card_id %}
             <a href="/cosplan/{{ card_id }}/storyboard.pdf" class="btn btn-small" target="_blank" rel="noreferrer">Экспорт PDF</a>
           {% else %}
             <span class="muted">Для экспорта PDF сначала сохраните карточку.</span>
@@ -2473,7 +2481,7 @@
             if (!response.ok || !payload?.ok) {
               throw new Error(payload?.detail || "Не удалось загрузить изображение.");
             }
-            const savedUrl = payload.path || payload.url || "";
+            const savedUrl = payload.url || payload.path || "";
             if (referenceInput) {
               referenceInput.value = savedUrl;
             }
@@ -2535,10 +2543,14 @@
       };
 
       const roles = Array.isArray(distribution?.roles) ? distribution.roles : [];
+      const totalFrames = Math.max(0, Math.floor(Number(distribution?.total) || 0));
+      const allRolesLabel = roles.length > 1
+        ? `Общий кадр: ${roles.join(" + ")}`
+        : "";
       roles.forEach((role, index) => appendRows(role, distribution?.soloCounts?.[index]));
 
       if (roles.length > 1) {
-        appendRows(roles.join(" + "), distribution?.allRolesCount);
+        appendRows(allRolesLabel, distribution?.allRolesCount);
       }
 
       (distribution?.pairCombos || []).forEach((combo, index) => {
@@ -2547,6 +2559,16 @@
       (distribution?.tripleCombos || []).forEach((combo, index) => {
         appendRows(Array.isArray(combo) ? combo.join(" + ") : combo, distribution?.tripleCounts?.[index]);
       });
+
+      // Safety net: storyboard rows must match calculator total exactly.
+      if (totalFrames > 0 && rows.length < totalFrames) {
+        const fallbackWho = allRolesLabel || roles[0] || "Кадр";
+        for (let index = rows.length; index < totalFrames; index += 1) {
+          rows.push({ who: fallbackWho, reference_url: "", comment: "", done: false });
+        }
+      } else if (totalFrames > 0 && rows.length > totalFrames) {
+        rows.length = totalFrames;
+      }
       return rows;
     };
 

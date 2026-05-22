@@ -9348,6 +9348,9 @@ def normalize_photoset_storyboard_reference_url(raw_value: Any) -> str:
         return f"/media/{file_name}"
 
     if looks_like_url(selected):
+        normalized_local_ref = normalize_local_media_reference(selected)
+        if normalized_local_ref:
+            return normalized_local_ref
         return selected
     return ""
 
@@ -9410,11 +9413,13 @@ def parse_photoset_storyboard_rows_from_form(form: Any) -> list[dict[str, Any]]:
 def format_photoset_storyboard_rows_for_form(rows: Any) -> list[dict[str, str]]:
     formatted: list[dict[str, str]] = []
     for index, row in enumerate(normalize_photoset_storyboard_rows(rows)):
+        reference_url = str(row.get("reference_url") or "").strip()
+        reference_url_for_form = build_external_url(reference_url) if reference_url else ""
         formatted.append(
             {
                 "row_id": f"storyboard-{index}",
                 "who": str(row.get("who") or "").strip(),
-                "reference_url": str(row.get("reference_url") or "").strip(),
+                "reference_url": reference_url_for_form,
                 "comment": str(row.get("comment") or "").strip(),
                 "done": "__YES__" if to_bool(row.get("done")) else "__NO__",
             }
@@ -9548,10 +9553,11 @@ def build_storyboard_pdf_document(card: CosplanCard, rows: list[dict[str, Any]])
     table_left = margin
     table_right = page_width - margin
     table_width = table_right - table_left
-    done_col_width = 108
+    num_col_width = 72
+    done_col_width = 104
     who_col_width = 276
     reference_col_width = 410
-    comment_col_width = max(180, table_width - done_col_width - who_col_width - reference_col_width)
+    comment_col_width = max(180, table_width - num_col_width - done_col_width - who_col_width - reference_col_width)
     cell_padding = 10
 
     fonts = load_storyboard_pdf_fonts()
@@ -9567,7 +9573,8 @@ def build_storyboard_pdf_document(card: CosplanCard, rows: list[dict[str, Any]])
     current_y = 0
     page_bottom = page_height - margin
 
-    x_done = table_left + done_col_width
+    x_num = table_left + num_col_width
+    x_done = x_num + done_col_width
     x_who = x_done + who_col_width
     x_ref = x_who + reference_col_width
 
@@ -9591,10 +9598,12 @@ def build_storyboard_pdf_document(card: CosplanCard, rows: list[dict[str, Any]])
         header_top = margin + 84
         header_bottom = header_top + 44
         draw.rectangle((table_left, header_top, table_right, header_bottom), fill="#e8eff7", outline="#94a3b8", width=2)
+        draw.line((x_num, header_top, x_num, header_bottom), fill="#94a3b8", width=2)
         draw.line((x_done, header_top, x_done, header_bottom), fill="#94a3b8", width=2)
         draw.line((x_who, header_top, x_who, header_bottom), fill="#94a3b8", width=2)
         draw.line((x_ref, header_top, x_ref, header_bottom), fill="#94a3b8", width=2)
-        draw.text((table_left + cell_padding, header_top + 10), "Отснято", fill="#0f172a", font=fonts["header"])
+        draw.text((table_left + cell_padding, header_top + 10), "№", fill="#0f172a", font=fonts["header"])
+        draw.text((x_num + cell_padding, header_top + 10), "Отснято", fill="#0f172a", font=fonts["header"])
         draw.text((x_done + cell_padding, header_top + 10), "Кто на фото", fill="#0f172a", font=fonts["header"])
         draw.text((x_who + cell_padding, header_top + 10), "Референс фотографии", fill="#0f172a", font=fonts["header"])
         draw.text((x_ref + cell_padding, header_top + 10), "Комментарий", fill="#0f172a", font=fonts["header"])
@@ -9604,11 +9613,12 @@ def build_storyboard_pdf_document(card: CosplanCard, rows: list[dict[str, Any]])
 
     start_new_page()
 
-    for row in rows:
+    for row_index, row in enumerate(rows, start=1):
         if not draw:
             break
 
-        done_text = "☑ Да" if to_bool(row.get("done")) else "☐ Нет"
+        done_text = "☑" if to_bool(row.get("done")) else "☐"
+        row_number_text = str(row_index)
         who_text = str(row.get("who") or "").strip() or "—"
         reference_url = str(row.get("reference_url") or "").strip()
         comment_text = str(row.get("comment") or "").strip() or "—"
@@ -9616,11 +9626,7 @@ def build_storyboard_pdf_document(card: CosplanCard, rows: list[dict[str, Any]])
         who_lines = storyboard_pdf_wrap_text(draw, who_text, fonts["cell"], who_col_width - cell_padding * 2) or ["—"]
         comment_lines = storyboard_pdf_wrap_text(draw, comment_text, fonts["cell"], comment_col_width - cell_padding * 2) or ["—"]
 
-        reference_lines = (
-            storyboard_pdf_wrap_text(draw, reference_url, fonts["small"], reference_col_width - cell_padding * 2) if reference_url else []
-        )
-        if not reference_lines:
-            reference_lines = ["—"]
+        reference_lines: list[str] = []
 
         image_for_row: Image.Image | None = None
         if reference_url:
@@ -9633,6 +9639,8 @@ def build_storyboard_pdf_document(card: CosplanCard, rows: list[dict[str, Any]])
                 max_image_width = reference_col_width - cell_padding * 2
                 max_image_height = STORYBOARD_PDF_REFERENCE_MAX_HEIGHT
                 image_for_row.thumbnail((max_image_width, max_image_height), Image.Resampling.LANCZOS)
+        if not image_for_row:
+            reference_lines = ["—"]
 
         done_height = cell_line_height
         who_height = len(who_lines) * cell_line_height
@@ -9651,11 +9659,13 @@ def build_storyboard_pdf_document(card: CosplanCard, rows: list[dict[str, Any]])
         row_top = current_y
         row_bottom = row_top + row_height
         draw.rectangle((table_left, row_top, table_right, row_bottom), outline="#94a3b8", width=1)
+        draw.line((x_num, row_top, x_num, row_bottom), fill="#94a3b8", width=1)
         draw.line((x_done, row_top, x_done, row_bottom), fill="#94a3b8", width=1)
         draw.line((x_who, row_top, x_who, row_bottom), fill="#94a3b8", width=1)
         draw.line((x_ref, row_top, x_ref, row_bottom), fill="#94a3b8", width=1)
 
-        draw.text((table_left + cell_padding, row_top + cell_padding), done_text, fill="#0f172a", font=fonts["cell"])
+        draw.text((table_left + cell_padding, row_top + cell_padding), row_number_text, fill="#0f172a", font=fonts["cell"])
+        draw.text((x_num + cell_padding, row_top + cell_padding), done_text, fill="#0f172a", font=fonts["cell"])
 
         who_y = row_top + cell_padding
         for line in who_lines:
@@ -18792,6 +18802,8 @@ async def cosplan_update(card_id: int, request: Request, db: Session = Depends(g
         rehearsal_card.deadline_date = card.project_deadline
     db.commit()
 
+    next_url = safe_redirect_target(str(form.get("next", "")).strip(), "/cosplan")
+
     if conflict_notifications:
         add_flash(
             request,
@@ -18800,7 +18812,7 @@ async def cosplan_update(card_id: int, request: Request, db: Session = Depends(g
         )
     else:
         add_flash(request, "Карточка косплана обновлена.", "success")
-    return redirect("/cosplan")
+    return redirect(next_url)
 
 
 @app.post("/cosplan/{card_id}/priority-toggle")
