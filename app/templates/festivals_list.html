@@ -20,6 +20,20 @@
 </section>
 
 <section class="box compact-box">
+  <div class="actions-inline">
+    <a href="/festivals" class="btn {% if festival_tab != 'my' %}btn-accent{% endif %}">Все фестивали</a>
+    <a href="/festivals?festival_tab=my" class="btn {% if festival_tab == 'my' %}btn-accent{% endif %}">Мои фестивали</a>
+  </div>
+  <p class="muted top-offset">
+    {% if festival_tab == 'my' %}
+      Здесь показаны только ваши личные карточки фестивалей с отметкой «Я иду».
+    {% else %}
+      Полный список доступных фестивалей.
+    {% endif %}
+  </p>
+</section>
+
+<section class="box compact-box">
   <p class="muted">
     Всего фестивалей планируется: <strong>{{ total_planned_festivals }}</strong>.
     Импортировано фестивалей: <strong>{{ imported_festival_total }}</strong>.
@@ -168,8 +182,9 @@
 {% endif %}
 
 <section class="box">
-  <h2>Фильтры (для фестивалей, куда вы идёте)</h2>
+  <h2>Фильтры{% if festival_tab == 'my' %} (мои фестивали){% endif %}</h2>
   <form method="get" action="/festivals" class="grid four-col">
+    <input type="hidden" name="festival_tab" value="{{ festival_tab }}" />
     <label>
       Название
       <input type="text" name="q" value="{{ q }}" placeholder="Начало названия или поиск с опечаткой" />
@@ -207,7 +222,7 @@
     </label>
     <div class="actions-inline">
       <button type="submit" class="btn">Применить</button>
-      <a href="/festivals" class="btn">Сброс</a>
+      <a href="/festivals{% if festival_tab == 'my' %}?festival_tab=my{% endif %}" class="btn">Сброс</a>
     </div>
   </form>
 </section>
@@ -412,7 +427,11 @@
 </div>
 {% else %}
 <section class="box">
-  <p class="muted">Фестивали пока не добавлены.</p>
+  {% if festival_tab == "my" %}
+    <p class="muted">Вкладка «Мои фестивали» пока пуста: отметьте нужные карточки как «Я иду».</p>
+  {% else %}
+    <p class="muted">Фестивали пока не добавлены.</p>
+  {% endif %}
   <div class="actions-inline top-offset">
     <a href="/festivals/new" class="btn btn-accent">Новый фестиваль</a>
     <a href="/festivals/announcements/new" class="btn">Добавить анонс</a>

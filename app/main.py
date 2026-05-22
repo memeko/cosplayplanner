@@ -6983,6 +6983,178 @@ def rehearsal_response_status_label(status_key: str) -> str:
     return mapping.get(status_key, "Не ответил")
 
 
+def build_project_rehearsal_stats_context(
+    db: Session,
+    cards: list[CosplanCard],
+) -> dict[str, Any]:
+    pending_rehearsals_by_card: dict[int, list[RehearsalEntry]] = defaultdict(list)
+    leader_rehearsal_history_by_card: dict[int, list[RehearsalEntry]] = defaultdict(list)
+    rehearsal_response_slots_by_card: dict[int, dict[str, tuple[date, str]]] = defaultdict(dict)
+    rehearsal_response_participant_ids_by_card: dict[int, set[int]] = defaultdict(set)
+    rehearsal_response_entries_by_cell: dict[tuple[int, int, str], RehearsalEntry] = {}
+    rehearsal_response_tables_by_card: dict[int, dict[str, Any]] = {}
+    rehearsal_participant_ids: set[int] = set()
+    rehearsal_participants_by_id: dict[int, User] = {}
+    scope_card_to_source_ids: dict[int, set[int]] = defaultdict(set)
+    scoped_card_ids: list[int] = []
+
+    for source_card in cards:
+        source_id = int(source_card.id)
+        for scoped_card in project_scope_cards(db, source_card):
+            scoped_id = int(scoped_card.id)
+            if scoped_id not in scope_card_to_source_ids:
+                scoped_card_ids.append(scoped_id)
+            scope_card_to_source_ids[scoped_id].add(source_id)
+            if scoped_card.user_id:
+                participant_id = int(scoped_card.user_id)
+                rehearsal_participant_ids.add(participant_id)
+                rehearsal_response_participant_ids_by_card[source_id].add(participant_id)
+
+    if scoped_card_ids:
+        pending_entries = db.execute(
+            select(RehearsalEntry)
+            .where(
+                RehearsalEntry.cosplan_card_id.in_(scoped_card_ids),
+                RehearsalEntry.source_type == REHEARSAL_SOURCE_PARTICIPANT,
+                RehearsalEntry.status == REHEARSAL_STATUS_PROPOSED,
+            )
+            .order_by(RehearsalEntry.entry_date, RehearsalEntry.entry_time, RehearsalEntry.id)
+        ).scalars().all()
+        for entry in pending_entries:
+            source_ids = scope_card_to_source_ids.get(int(entry.cosplan_card_id)) or {int(entry.cosplan_card_id)}
+            for source_id in source_ids:
+                pending_rehearsals_by_card[source_id].append(entry)
+            if entry.user_id:
+                rehearsal_participant_ids.add(int(entry.user_id))
+
+        history_entries = db.execute(
+            select(RehearsalEntry)
+            .where(
+                RehearsalEntry.cosplan_card_id.in_(scoped_card_ids),
+                RehearsalEntry.source_type == REHEARSAL_SOURCE_LEADER,
+                RehearsalEntry.status.in_([REHEARSAL_STATUS_ACCEPTED, REHEARSAL_STATUS_DECLINED]),
+            )
+            .order_by(RehearsalEntry.updated_at.desc(), RehearsalEntry.id.desc())
+        ).scalars().all()
+        for entry in history_entries:
+            source_ids = scope_card_to_source_ids.get(int(entry.cosplan_card_id)) or {int(entry.cosplan_card_id)}
+            for source_id in source_ids:
+                leader_rehearsal_history_by_card[source_id].append(entry)
+            if entry.user_id:
+                rehearsal_participant_ids.add(int(entry.user_id))
+
+        response_entries = db.execute(
+            select(RehearsalEntry)
+            .where(
+                RehearsalEntry.cosplan_card_id.in_(scoped_card_ids),
+                RehearsalEntry.source_type == REHEARSAL_SOURCE_LEADER,
+            )
+            .order_by(RehearsalEntry.entry_date, RehearsalEntry.entry_time, RehearsalEntry.id)
+        ).scalars().all()
+        for entry in response_entries:
+            if not entry.user_id:
+                continue
+            participant_id = int(entry.user_id)
+            slot_key = f"{entry.entry_date.isoformat()}|{entry.entry_time or ''}"
+            source_ids = scope_card_to_source_ids.get(int(entry.cosplan_card_id)) or {int(entry.cosplan_card_id)}
+            for source_id in source_ids:
+                rehearsal_response_slots_by_card[source_id][slot_key] = (entry.entry_date, entry.entry_time or "")
+                rehearsal_response_participant_ids_by_card[source_id].add(participant_id)
+                rehearsal_participant_ids.add(participant_id)
+                cell_key = (source_id, participant_id, slot_key)
+                existing = rehearsal_response_entries_by_cell.get(cell_key)
+                if existing is None or int(existing.id) < int(entry.id):
+                    rehearsal_response_entries_by_cell[cell_key] = entry
+
+    if rehearsal_participant_ids:
+        rehearsal_participants = db.execute(
+            select(User).where(User.id.in_(rehearsal_participant_ids))
+        ).scalars().all()
+        rehearsal_participants_by_id = {item.id: item for item in rehearsal_participants}
+
+    for card in cards:
+        card_id = int(card.id)
+        slot_map = rehearsal_response_slots_by_card.get(card_id, {})
+        if not slot_map:
+            for entry in leader_rehearsal_history_by_card.get(card_id, []):
+                if not entry.user_id or not isinstance(entry.entry_date, date):
+                    continue
+                participant_id = int(entry.user_id)
+                slot_key = f"{entry.entry_date.isoformat()}|{entry.entry_time or ''}"
+                slot_map[slot_key] = (entry.entry_date, entry.entry_time or "")
+                rehearsal_response_participant_ids_by_card[card_id].add(participant_id)
+                rehearsal_participant_ids.add(participant_id)
+                cell_key = (card_id, participant_id, slot_key)
+                existing = rehearsal_response_entries_by_cell.get(cell_key)
+                if existing is None or int(existing.id) < int(entry.id):
+                    rehearsal_response_entries_by_cell[cell_key] = entry
+
+        sorted_slots = sorted(
+            slot_map.items(),
+            key=lambda item: (item[1][0], item[1][1] or "", item[0]),
+        )
+        columns = [
+            {
+                "key": slot_key,
+                "date_label": slot_date.strftime("%d-%m-%Y"),
+                "time_label": slot_time,
+            }
+            for slot_key, (slot_date, slot_time) in sorted_slots
+        ]
+
+        participant_ids = sorted(
+            rehearsal_response_participant_ids_by_card.get(card_id, set()),
+            key=lambda participant_id: (
+                preferred_user_alias(rehearsal_participants_by_id.get(participant_id)).casefold()
+                if rehearsal_participants_by_id.get(participant_id)
+                else f"zz-{participant_id}"
+            ),
+        )
+        rows: list[dict[str, Any]] = []
+        for participant_id in participant_ids:
+            participant = rehearsal_participants_by_id.get(participant_id)
+            participant_label = f"@{preferred_user_alias(participant)}" if participant else "@unknown"
+            declined_streak = 0
+            max_declined_streak = 0
+            cells: list[dict[str, str]] = []
+            for column in columns:
+                slot_key = str(column["key"])
+                entry = rehearsal_response_entries_by_cell.get((card_id, participant_id, slot_key))
+                status_key = rehearsal_response_status_key(entry.status if entry else "")
+                if status_key == "declined":
+                    declined_streak += 1
+                    max_declined_streak = max(max_declined_streak, declined_streak)
+                else:
+                    declined_streak = 0
+                cells.append(
+                    {
+                        "status_key": status_key,
+                        "label": rehearsal_response_status_label(status_key),
+                    }
+                )
+
+            rows.append(
+                {
+                    "participant_label": participant_label,
+                    "participant_is_special": bool(participant and user_is_special(participant)),
+                    "highlight_declined_streak": max_declined_streak >= 3,
+                    "cells": cells,
+                }
+            )
+
+        rehearsal_response_tables_by_card[card_id] = {
+            "columns": columns,
+            "rows": rows,
+        }
+
+    return {
+        "pending_rehearsals_by_card": pending_rehearsals_by_card,
+        "leader_rehearsal_history_by_card": leader_rehearsal_history_by_card,
+        "rehearsal_participants_by_id": rehearsal_participants_by_id,
+        "rehearsal_response_tables_by_card": rehearsal_response_tables_by_card,
+    }
+
+
 def can_manage_project_card(user: User, card: CosplanCard) -> bool:
     if card.plan_type != "project":
         return False
@@ -19526,6 +19698,50 @@ def rehearsals_list(request: Request, db: Session = Depends(get_db)):
     )
 
 
+@app.get("/rehearsals/stats", response_class=HTMLResponse)
+def rehearsals_stats(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    requested_card_id = parse_positive_int(str(request.query_params.get("card_id", "")).strip())
+    project_cards = db.execute(
+        select(CosplanCard).where(
+            CosplanCard.plan_type == "project",
+            CosplanCard.is_shared_copy.is_(False),
+        )
+    ).scalars().all()
+    cards = [card for card in project_cards if can_manage_project_card(user, card)]
+    cards.sort(key=lambda item: item.updated_at or item.created_at or datetime.min, reverse=True)
+
+    selected_card_id: int | None = None
+    if requested_card_id:
+        selected_cards = [card for card in cards if int(card.id) == int(requested_card_id)]
+        if selected_cards:
+            cards = selected_cards
+            selected_card_id = int(requested_card_id)
+        else:
+            add_flash(request, "Карточка проекта для статистики не найдена или недоступна.", "error")
+
+    owner_ids = {card.user_id for card in cards}
+    owners_by_id: dict[int, User] = {}
+    if owner_ids:
+        owners = db.execute(select(User).where(User.id.in_(owner_ids))).scalars().all()
+        owners_by_id = {owner.id: owner for owner in owners}
+
+    rehearsal_stats_context = build_project_rehearsal_stats_context(db, cards)
+    return template_response(
+        request,
+        "rehearsals_stats.html",
+        user=user,
+        active_tab="rehearsals",
+        cards=cards,
+        owners_by_id=owners_by_id,
+        selected_card_id=selected_card_id,
+        rehearsal_response_tables_by_card=rehearsal_stats_context["rehearsal_response_tables_by_card"],
+    )
+
+
 @app.get("/rehearsals/export.ics")
 def rehearsals_export_ics(request: Request, db: Session = Depends(get_db)):
     user = current_user(request, db)
@@ -19771,165 +19987,11 @@ def my_projects_list(request: Request, db: Session = Depends(get_db)):
         card_totals[card.id] = total
         card_total_currencies[card.id] = currency
 
-    pending_rehearsals_by_card: dict[int, list[RehearsalEntry]] = defaultdict(list)
-    leader_rehearsal_history_by_card: dict[int, list[RehearsalEntry]] = defaultdict(list)
-    rehearsal_response_slots_by_card: dict[int, dict[str, tuple[date, str]]] = defaultdict(dict)
-    rehearsal_response_participant_ids_by_card: dict[int, set[int]] = defaultdict(set)
-    rehearsal_response_entries_by_cell: dict[tuple[int, int, str], RehearsalEntry] = {}
-    rehearsal_response_tables_by_card: dict[int, dict[str, Any]] = {}
-    rehearsal_participant_ids: set[int] = set()
-    rehearsal_participants_by_id: dict[int, User] = {}
-    scope_card_to_source_ids: dict[int, set[int]] = defaultdict(set)
-    scoped_card_ids: list[int] = []
-    for source_card in cards:
-        source_id = int(source_card.id)
-        for scoped_card in project_scope_cards(db, source_card):
-            scoped_id = int(scoped_card.id)
-            if scoped_id not in scope_card_to_source_ids:
-                scoped_card_ids.append(scoped_id)
-            scope_card_to_source_ids[scoped_id].add(source_id)
-            if scoped_card.user_id:
-                participant_id = int(scoped_card.user_id)
-                rehearsal_participant_ids.add(participant_id)
-                rehearsal_response_participant_ids_by_card[source_id].add(participant_id)
-
-    if scoped_card_ids:
-        pending_entries = db.execute(
-            select(RehearsalEntry)
-            .where(
-                RehearsalEntry.cosplan_card_id.in_(scoped_card_ids),
-                RehearsalEntry.source_type == REHEARSAL_SOURCE_PARTICIPANT,
-                RehearsalEntry.status == REHEARSAL_STATUS_PROPOSED,
-            )
-            .order_by(RehearsalEntry.entry_date, RehearsalEntry.entry_time, RehearsalEntry.id)
-        ).scalars().all()
-        for entry in pending_entries:
-            source_ids = scope_card_to_source_ids.get(int(entry.cosplan_card_id)) or {int(entry.cosplan_card_id)}
-            for source_id in source_ids:
-                pending_rehearsals_by_card[source_id].append(entry)
-            if entry.user_id:
-                rehearsal_participant_ids.add(int(entry.user_id))
-
-        history_entries = db.execute(
-            select(RehearsalEntry)
-            .where(
-                RehearsalEntry.cosplan_card_id.in_(scoped_card_ids),
-                RehearsalEntry.source_type == REHEARSAL_SOURCE_LEADER,
-                RehearsalEntry.status.in_([REHEARSAL_STATUS_ACCEPTED, REHEARSAL_STATUS_DECLINED]),
-            )
-            .order_by(RehearsalEntry.updated_at.desc(), RehearsalEntry.id.desc())
-        ).scalars().all()
-        for entry in history_entries:
-            source_ids = scope_card_to_source_ids.get(int(entry.cosplan_card_id)) or {int(entry.cosplan_card_id)}
-            for source_id in source_ids:
-                leader_rehearsal_history_by_card[source_id].append(entry)
-            if entry.user_id:
-                rehearsal_participant_ids.add(int(entry.user_id))
-
-        response_entries = db.execute(
-            select(RehearsalEntry)
-            .where(
-                RehearsalEntry.cosplan_card_id.in_(scoped_card_ids),
-                RehearsalEntry.source_type == REHEARSAL_SOURCE_LEADER,
-            )
-            .order_by(RehearsalEntry.entry_date, RehearsalEntry.entry_time, RehearsalEntry.id)
-        ).scalars().all()
-        for entry in response_entries:
-            if not entry.user_id:
-                continue
-            participant_id = int(entry.user_id)
-            slot_key = f"{entry.entry_date.isoformat()}|{entry.entry_time or ''}"
-            source_ids = scope_card_to_source_ids.get(int(entry.cosplan_card_id)) or {int(entry.cosplan_card_id)}
-            for source_id in source_ids:
-                rehearsal_response_slots_by_card[source_id][slot_key] = (entry.entry_date, entry.entry_time or "")
-                rehearsal_response_participant_ids_by_card[source_id].add(participant_id)
-                rehearsal_participant_ids.add(participant_id)
-                cell_key = (source_id, participant_id, slot_key)
-                existing = rehearsal_response_entries_by_cell.get(cell_key)
-                if existing is None or int(existing.id) < int(entry.id):
-                    rehearsal_response_entries_by_cell[cell_key] = entry
-
-    if rehearsal_participant_ids:
-        rehearsal_participants = db.execute(
-            select(User).where(User.id.in_(rehearsal_participant_ids))
-        ).scalars().all()
-        rehearsal_participants_by_id = {item.id: item for item in rehearsal_participants}
-
-    for card in cards:
-        card_id = int(card.id)
-        slot_map = rehearsal_response_slots_by_card.get(card_id, {})
-        if not slot_map:
-            # Fallback: если по какой-то причине слот-таблица не собралась из общего набора,
-            # строим её прямо по истории ответов руководителю.
-            for entry in leader_rehearsal_history_by_card.get(card_id, []):
-                if not entry.user_id or not isinstance(entry.entry_date, date):
-                    continue
-                participant_id = int(entry.user_id)
-                slot_key = f"{entry.entry_date.isoformat()}|{entry.entry_time or ''}"
-                slot_map[slot_key] = (entry.entry_date, entry.entry_time or "")
-                rehearsal_response_participant_ids_by_card[card_id].add(participant_id)
-                rehearsal_participant_ids.add(participant_id)
-                cell_key = (card_id, participant_id, slot_key)
-                existing = rehearsal_response_entries_by_cell.get(cell_key)
-                if existing is None or int(existing.id) < int(entry.id):
-                    rehearsal_response_entries_by_cell[cell_key] = entry
-        sorted_slots = sorted(
-            slot_map.items(),
-            key=lambda item: (item[1][0], item[1][1] or "", item[0]),
-        )
-        columns = [
-            {
-                "key": slot_key,
-                "date_label": slot_date.strftime("%d-%m-%Y"),
-                "time_label": slot_time,
-            }
-            for slot_key, (slot_date, slot_time) in sorted_slots
-        ]
-
-        participant_ids = sorted(
-            rehearsal_response_participant_ids_by_card.get(card_id, set()),
-            key=lambda participant_id: (
-                preferred_user_alias(rehearsal_participants_by_id.get(participant_id)).casefold()
-                if rehearsal_participants_by_id.get(participant_id)
-                else f"zz-{participant_id}"
-            ),
-        )
-        rows: list[dict[str, Any]] = []
-        for participant_id in participant_ids:
-            participant = rehearsal_participants_by_id.get(participant_id)
-            participant_label = f"@{preferred_user_alias(participant)}" if participant else "@unknown"
-            declined_streak = 0
-            max_declined_streak = 0
-            cells: list[dict[str, str]] = []
-            for column in columns:
-                slot_key = str(column["key"])
-                entry = rehearsal_response_entries_by_cell.get((card_id, participant_id, slot_key))
-                status_key = rehearsal_response_status_key(entry.status if entry else "")
-                if status_key == "declined":
-                    declined_streak += 1
-                    max_declined_streak = max(max_declined_streak, declined_streak)
-                else:
-                    declined_streak = 0
-                cells.append(
-                    {
-                        "status_key": status_key,
-                        "label": rehearsal_response_status_label(status_key),
-                    }
-                )
-
-            rows.append(
-                {
-                    "participant_label": participant_label,
-                    "participant_is_special": bool(participant and user_is_special(participant)),
-                    "highlight_declined_streak": max_declined_streak >= 3,
-                    "cells": cells,
-                }
-            )
-
-        rehearsal_response_tables_by_card[card_id] = {
-            "columns": columns,
-            "rows": rows,
-        }
+    rehearsal_stats_context = build_project_rehearsal_stats_context(db, cards)
+    pending_rehearsals_by_card = rehearsal_stats_context["pending_rehearsals_by_card"]
+    leader_rehearsal_history_by_card = rehearsal_stats_context["leader_rehearsal_history_by_card"]
+    rehearsal_participants_by_id = rehearsal_stats_context["rehearsal_participants_by_id"]
+    rehearsal_response_tables_by_card = rehearsal_stats_context["rehearsal_response_tables_by_card"]
 
     return template_response(
         request,
@@ -27798,6 +27860,8 @@ def festivals_list(request: Request, db: Session = Depends(get_db)):
     if not user:
         return redirect("/login")
 
+    festival_tab_raw = str(request.query_params.get("festival_tab", "all") or "").strip().lower()
+    festival_tab = "my" if festival_tab_raw == "my" else "all"
     q = request.query_params.get("q", "").strip()
     city_filter = request.query_params.get("city", "").strip()
     city_filter_values = split_city_values(city_filter)
@@ -27852,6 +27916,9 @@ def festivals_list(request: Request, db: Session = Depends(get_db)):
             "event_start_time": parse_time_hhmm(str(festival.timing_event_start_time or "")) or "",
             "block_start_time": parse_time_hhmm(str(festival.timing_block_start_time or "")) or "",
         }
+
+        if festival_tab == "my" and not festival.is_going:
+            continue
 
         if only_going and not festival.is_going:
             continue
@@ -27982,7 +28049,7 @@ def festivals_list(request: Request, db: Session = Depends(get_db)):
         get_options(db, user.id, "coproplayer"),
     )
 
-    show_summary = not any([q, city_filter, nomination_filter, coproplayer_filter, only_going])
+    show_summary = festival_tab == "all" and not any([q, city_filter, nomination_filter, coproplayer_filter, only_going])
 
     moderator_announcements: list[FestivalAnnouncement] = []
     if is_moderator_user(user):
@@ -28032,6 +28099,7 @@ def festivals_list(request: Request, db: Session = Depends(get_db)):
         nomination_filter=nomination_filter,
         coproplayer_filter=coproplayer_filter,
         only_going=only_going,
+        festival_tab=festival_tab,
         city_options=city_options,
         nomination_options=nomination_options,
         coproplayer_options=coproplayer_options,

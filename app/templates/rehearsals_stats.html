@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="section-head">
+  <h1>Статистика репетиций</h1>
+  <div class="actions-inline">
+    <a href="/rehearsals" class="btn">К репетициям</a>
+    <a href="/my-projects" class="btn">Мои проекты</a>
+  </div>
+</section>
+
+{% if selected_card_id %}
+  <section class="box compact-box">
+    <p class="muted">Показана статистика для выбранной карточки проекта.</p>
+  </section>
+{% endif %}
+
+{% if cards %}
+  <div class="cards-grid">
+    {% for card in cards %}
+      {% set owner = owners_by_id.get(card.user_id) %}
+      {% set rehearsal_response_table = rehearsal_response_tables_by_card.get(card.id) %}
+      <article class="card" id="rehearsal-stats-card-{{ card.id }}">
+        <h3><a href="/cosplan/{{ card.id }}" class="card-title-link">{{ card.character_name }}</a></h3>
+        <p class="meta">
+          Участник:
+          {% if owner %}
+            <span class="{% if user_is_special(owner) %}nick-special{% endif %}">@{{ owner.username }}</span>
+          {% else %}
+            @unknown
+          {% endif %}
+        </p>
+        <p class="meta">Фандом: {{ card.fandom or "—" }}</p>
+        <p class="meta">Дедлайн проекта: {{ card.project_deadline.strftime('%d-%m-%Y') if card.project_deadline else "—" }}</p>
+
+        <h4>Таблица откликов</h4>
+        {% if rehearsal_response_table and rehearsal_response_table.columns %}
+          <div class="rehearsal-stats-wrap">
+            <table class="table rehearsal-stats-table">
+              <thead>
+                <tr>
+                  <th>Участник</th>
+                  {% for column in rehearsal_response_table.columns %}
+                    <th>
+                      <span class="rehearsal-stats-column-date">{{ column.date_label }}</span>
+                      {% if column.time_label %}
+                        <span class="rehearsal-stats-column-time muted">{{ column.time_label }}</span>
+                      {% endif %}
+                    </th>
+                  {% endfor %}
+                </tr>
+              </thead>
+              <tbody>
+                {% if rehearsal_response_table.rows %}
+                  {% for row in rehearsal_response_table.rows %}
+                    <tr class="{% if row.highlight_declined_streak %}rehearsal-stats-row-alert{% endif %}">
+                      <td class="rehearsal-stats-participant">
+                        <span class="{% if row.participant_is_special %}nick-special{% endif %}">{{ row.participant_label }}</span>
+                        {% if row.highlight_declined_streak %}
+                          <div class="rehearsal-stats-participant-mark">
+                            <span class="chip chip-alert">3 отклонения подряд</span>
+                          </div>
+                        {% endif %}
+                      </td>
+                      {% for cell in row.cells %}
+                        <td class="rehearsal-stats-cell-{{ cell.status_key }}">{{ cell.label }}</td>
+                      {% endfor %}
+                    </tr>
+                  {% endfor %}
+                {% else %}
+                  <tr>
+                    <td class="muted" colspan="{{ rehearsal_response_table.columns|length + 1 }}">
+                      Участники для этой таблицы пока не найдены.
+                    </td>
+                  </tr>
+                {% endif %}
+              </tbody>
+            </table>
+          </div>
+        {% else %}
+          <p class="muted">По этому проекту еще нет предложенных дат от руководителя.</p>
+        {% endif %}
+      </article>
+    {% endfor %}
+  </div>
+{% else %}
+  <section class="box">
+    <p class="muted">Нет доступных проектных карточек с репетициями для статистики.</p>
+    <div class="actions-inline top-offset">
+      <a href="/my-projects" class="btn btn-accent">Открыть мои проекты</a>
+      <a href="/rehearsals" class="btn">Открыть репетиции</a>
+    </div>
+  </section>
+{% endif %}
+{% endblock %}

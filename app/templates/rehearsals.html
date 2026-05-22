@@ -3,6 +3,7 @@
 <section class="section-head">
   <h1>Репетиции</h1>
   <div class="actions-inline">
+    <a href="/rehearsals/stats" class="btn">Статистика</a>
     <a href="/rehearsals/export.ics" class="btn">Экспорт репетиций (.ics)</a>
   </div>
 </section>
@@ -37,7 +38,12 @@
           Карточка удалена
         {% endif %}
       </h3>
-      <span class="chip">Дат: {{ rehearsal_dates_count_by_card.get(row.id, 0) }}/10</span>
+      <div class="actions-inline">
+        <span class="chip">Дат: {{ rehearsal_dates_count_by_card.get(row.id, 0) }}/10</span>
+        {% if card and card.plan_type == "project" %}
+          <a href="/rehearsals/stats?card_id={{ card.id }}#rehearsal-stats-card-{{ card.id }}" class="btn btn-small">Статистика</a>
+        {% endif %}
+      </div>
     </div>
     <p class="meta">Фандом: {{ card.fandom if card else "—" }}</p>
     <p class="meta">Тип: {{ "Проект" if card and card.plan_type == "project" else "Личное" }}</p>
