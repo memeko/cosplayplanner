@@ -12,14 +12,23 @@
   <section class="box compact-box">
     <p class="muted">Показана статистика для выбранной карточки проекта.</p>
   </section>
+  <style>
+    .rehearsal-stats-single {
+      display: block;
+    }
+    .rehearsal-stats-single .rehearsal-stats-panel {
+      width: 100%;
+      max-width: none;
+    }
+  </style>
 {% endif %}
 
 {% if cards %}
-  <div class="cards-grid">
+  <div class="{% if selected_card_id %}rehearsal-stats-single{% else %}cards-grid{% endif %}">
     {% for card in cards %}
       {% set owner = owners_by_id.get(card.user_id) %}
       {% set rehearsal_response_table = rehearsal_response_tables_by_card.get(card.id) %}
-      <article class="card" id="rehearsal-stats-card-{{ card.id }}">
+      <article class="{% if selected_card_id %}box rehearsal-stats-panel{% else %}card rehearsal-stats-panel{% endif %}" id="rehearsal-stats-card-{{ card.id }}">
         <h3><a href="/cosplan/{{ card.id }}" class="card-title-link">{{ card.character_name }}</a></h3>
         <p class="meta">
           Участник:

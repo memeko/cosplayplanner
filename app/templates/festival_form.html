@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block content %}
 <section class="section-head">
-  <h1>{{ "Редактирование фестиваля" if editing else "Новый фестиваль" }}</h1>
+  <h1>{% if view_mode %}Карточка фестиваля{% else %}{{ "Редактирование фестиваля" if editing else "Новый фестиваль" }}{% endif %}</h1>
   <a href="/festivals" class="btn">Назад к списку</a>
 </section>
 
@@ -48,6 +48,15 @@
     align-items: end;
     margin-top: 0.75rem;
   }
+  .festival-nomination-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    margin-top: 0.35rem;
+  }
+  .festival-nomination-list .chip {
+    text-decoration: none;
+  }
   .alias-suggest-list {
     position: absolute;
     z-index: 20;
@@ -89,7 +98,7 @@
   }
 </style>
 
-<form method="post" action="{{ '/festivals/' ~ festival_id ~ '/edit' if editing else '/festivals/new' }}" class="grid one-col big-form" id="festival-form" enctype="multipart/form-data">
+<form method="post" action="{{ form_action or ('/festivals/' ~ festival_id ~ '/edit' if editing else '/festivals/new') }}" class="grid one-col big-form" id="festival-form" enctype="multipart/form-data">
   <section class="box">
     {% if global_festival_edit_mode %}
       <div class="flash flash-info">
@@ -97,98 +106,154 @@
       </div>
     {% endif %}
 
-    <div class="grid two-col">
-      <label>
-        Название *
-        <input type="text" name="name" value="{{ form.name }}" required />
-      </label>
-      <label>
-        Ссылка
-        <input type="url" name="url" value="{{ form.url }}" />
-      </label>
-    </div>
-    <div class="grid three-col">
-      <label>
-        Город
-        <input type="text" name="city" value="{{ form.city }}" />
-      </label>
-      <label>
-        Дата начала фестиваля
-        <input type="date" name="event_date" value="{{ form.event_date }}" />
-      </label>
-      <label>
-        Дата окончания
-        <input type="date" name="event_end_date" value="{{ form.event_end_date }}" />
-      </label>
-    </div>
+    {% if view_mode %}
+      <p class="meta"><strong>Название:</strong> {{ form.name or "—" }}</p>
+      <p class="meta">
+        <strong>Ссылка:</strong>
+        {% if form.url %}
+          <a href="{{ form.url }}" target="_blank" rel="noreferrer">{{ form.url }}</a>
+        {% else %}
+          —
+        {% endif %}
+      </p>
+      <p class="meta"><strong>Город:</strong> {{ form.city or "—" }}</p>
+      <p class="meta">
+        <strong>Дата фестиваля:</strong>
+        {% if form.event_date %}
+          {{ form.event_date }}
+          {% if form.event_end_date and form.event_end_date != form.event_date %}
+            — {{ form.event_end_date }}
+          {% endif %}
+        {% else %}
+          —
+        {% endif %}
+      </p>
+      <p class="meta"><strong>Дедлайн подачи:</strong> {{ form.submission_deadline or "—" }}</p>
 
-    <div class="grid three-col">
-      <label>
-        Дедлайн подачи
-        <input type="date" name="submission_deadline" value="{{ form.submission_deadline }}" />
-      </label>
-    </div>
-
-    <div class="top-offset">
-      <div class="row-between">
-        <strong>Номинации фестиваля</strong>
-        <button type="button" class="btn" id="add-festival-nomination">Добавить номинацию</button>
-      </div>
-      <p class="muted top-offset">Для каждой номинации можно указать ссылку на правила или отдельную страницу подачи.</p>
-      <div id="festival_nomination_rows">
-        {% for row in form.nomination_rows %}
-          <div class="festival-nomination-row">
-            <label>
-              Название
-              <input type="text" name="nomination_title" value="{{ row.title }}" maxlength="255" list="festival-nomination-title-options" />
-            </label>
-            <label>
-              Ссылка
-              <input type="url" name="nomination_url" value="{{ row.url }}" placeholder="https://..." />
-            </label>
-            <button type="button" class="btn btn-danger remove-festival-nomination">Удалить</button>
-          </div>
-        {% endfor %}
-      </div>
-      <datalist id="festival-nomination-title-options">
-        {% for value in nomination_title_options %}
-          <option value="{{ value }}"></option>
-        {% endfor %}
-      </datalist>
-    </div>
-
-    {% if can_edit_photo_cosplay %}
-      <label class="inline-check top-offset">
-        <input type="checkbox" name="has_photo_cosplay" {% if form.has_photo_cosplay %}checked{% endif %} />
-        Есть фотокосплей
-      </label>
-    {% endif %}
-
-    {% if can_edit_partner_festival %}
-      <label class="inline-check top-offset">
-        <input type="checkbox" name="is_partner_festival" {% if form.is_partner_festival %}checked{% endif %} />
-        Партнёр фестиваля
-      </label>
-    {% endif %}
-
-    {% if can_edit_shared_note %}
-      <label class="top-offset">
-        Примечание для всех
-        <textarea name="shared_note" rows="4" placeholder="Заметка, которая будет видна всем пользователям">{{ form.shared_note }}</textarea>
-      </label>
-      <p class="muted">Можно использовать Markdown: **жирный**, *курсив*, `код`, [ссылка](https://...).</p>
-    {% endif %}
-
-    {% if can_edit_festival_icon %}
-      <label class="top-offset">
-        Иконка фестиваля
-        <input type="file" name="icon_file" accept="image/*" />
-      </label>
-      {% if form.icon_path %}
-        <p class="muted">Текущая иконка. Оставьте поле пустым, чтобы не менять.</p>
-        <img src="{{ form.icon_path }}" alt="Текущая иконка фестиваля" class="festival-icon-current" loading="lazy" />
+      {% set view_nomination_rows = form.nomination_rows | selectattr("title") | list %}
+      {% if view_nomination_rows %}
+        <p class="meta"><strong>Номинации фестиваля:</strong></p>
+        <div class="festival-nomination-list">
+          {% for row in view_nomination_rows %}
+            {% set nomination_href = build_external_url(row.url) %}
+            {% if nomination_href %}
+              <a href="{{ nomination_href }}" target="_blank" rel="noreferrer" class="chip">{{ row.title }}</a>
+            {% else %}
+              <span class="chip">{{ row.title }}</span>
+            {% endif %}
+          {% endfor %}
+        </div>
       {% else %}
-        <p class="muted">Загружать иконку может только админ @brfox_cosplay.</p>
+        <p class="meta"><strong>Номинации фестиваля:</strong> —</p>
+      {% endif %}
+
+      {% if form.has_photo_cosplay %}
+        <p class="meta"><strong>Фотокосплей:</strong> есть</p>
+      {% endif %}
+      {% if form.is_partner_festival %}
+        <p class="meta"><strong>Партнёр фестиваля:</strong> да</p>
+      {% endif %}
+      {% if form.shared_note %}
+        <p class="notes-block top-offset">{{ form.shared_note|render_markdown }}</p>
+      {% endif %}
+      {% if form.icon_path %}
+        <p class="muted top-offset">Иконка фестиваля</p>
+        <img src="{{ form.icon_path }}" alt="Иконка фестиваля" class="festival-icon-current" loading="lazy" />
+      {% endif %}
+    {% else %}
+      <div class="grid two-col">
+        <label>
+          Название *
+          <input type="text" name="name" value="{{ form.name }}" required />
+        </label>
+        <label>
+          Ссылка
+          <input type="url" name="url" value="{{ form.url }}" />
+        </label>
+      </div>
+      <div class="grid three-col">
+        <label>
+          Город
+          <input type="text" name="city" value="{{ form.city }}" />
+        </label>
+        <label>
+          Дата начала фестиваля
+          <input type="date" name="event_date" value="{{ form.event_date }}" />
+        </label>
+        <label>
+          Дата окончания
+          <input type="date" name="event_end_date" value="{{ form.event_end_date }}" />
+        </label>
+      </div>
+
+      <div class="grid three-col">
+        <label>
+          Дедлайн подачи
+          <input type="date" name="submission_deadline" value="{{ form.submission_deadline }}" />
+        </label>
+      </div>
+
+      <div class="top-offset">
+        <div class="row-between">
+          <strong>Номинации фестиваля</strong>
+          <button type="button" class="btn" id="add-festival-nomination">Добавить номинацию</button>
+        </div>
+        <p class="muted top-offset">Для каждой номинации можно указать ссылку на правила или отдельную страницу подачи.</p>
+        <div id="festival_nomination_rows">
+          {% for row in form.nomination_rows %}
+            <div class="festival-nomination-row">
+              <label>
+                Название
+                <input type="text" name="nomination_title" value="{{ row.title }}" maxlength="255" list="festival-nomination-title-options" />
+              </label>
+              <label>
+                Ссылка
+                <input type="url" name="nomination_url" value="{{ row.url }}" placeholder="https://..." />
+              </label>
+              <button type="button" class="btn btn-danger remove-festival-nomination">Удалить</button>
+            </div>
+          {% endfor %}
+        </div>
+        <datalist id="festival-nomination-title-options">
+          {% for value in nomination_title_options %}
+            <option value="{{ value }}"></option>
+          {% endfor %}
+        </datalist>
+      </div>
+
+      {% if can_edit_photo_cosplay %}
+        <label class="inline-check top-offset">
+          <input type="checkbox" name="has_photo_cosplay" {% if form.has_photo_cosplay %}checked{% endif %} />
+          Есть фотокосплей
+        </label>
+      {% endif %}
+
+      {% if can_edit_partner_festival %}
+        <label class="inline-check top-offset">
+          <input type="checkbox" name="is_partner_festival" {% if form.is_partner_festival %}checked{% endif %} />
+          Партнёр фестиваля
+        </label>
+      {% endif %}
+
+      {% if can_edit_shared_note %}
+        <label class="top-offset">
+          Примечание для всех
+          <textarea name="shared_note" rows="4" placeholder="Заметка, которая будет видна всем пользователям">{{ form.shared_note }}</textarea>
+        </label>
+        <p class="muted">Можно использовать Markdown: **жирный**, *курсив*, `код`, [ссылка](https://...).</p>
+      {% endif %}
+
+      {% if can_edit_festival_icon %}
+        <label class="top-offset">
+          Иконка фестиваля
+          <input type="file" name="icon_file" accept="image/*" />
+        </label>
+        {% if form.icon_path %}
+          <p class="muted">Текущая иконка. Оставьте поле пустым, чтобы не менять.</p>
+          <img src="{{ form.icon_path }}" alt="Текущая иконка фестиваля" class="festival-icon-current" loading="lazy" />
+        {% else %}
+          <p class="muted">Загружать иконку может только админ @brfox_cosplay.</p>
+        {% endif %}
       {% endif %}
     {% endif %}
 
@@ -410,8 +475,8 @@
     </div>
   </section>
 
-  <div class="actions-inline">
-    <button type="submit" class="btn btn-accent">{{ "Сохранить" if editing else "Создать" }}</button>
+<div class="actions-inline">
+    <button type="submit" class="btn btn-accent">{{ "Сохранить личную информацию" if view_mode else ("Сохранить" if editing else "Создать") }}</button>
     <a href="/festivals" class="btn">Отмена</a>
   </div>
 </form>

@@ -88,7 +88,7 @@
     <h2>Основное</h2>
     <div class="grid two-col">
       <label>
-        Имя персонажа *
+        Имя персонажа/Название проекта
         <input type="text" name="character_name" list="character-options" value="{{ form.character_name }}" required />
       </label>
       <label>
@@ -651,8 +651,6 @@
       <a href="/festivals" class="btn btn-small">Открыть фестивали</a>
       <a href="/festivals/announcements/new" class="btn btn-small">Добавить анонс</a>
     </div>
-    <details class="festival-spoiler" {% if form.planned_festivals_json or form.nominations_json or form.performance_track or form.performance_script or form.performance_light_script %}open{% endif %}>
-      <summary>Показать/скрыть блок фестиваля и выступления</summary>
       <label>
         Дата подачи
         <input type="date" name="submission_date" value="{{ form.submission_date }}" />
@@ -760,13 +758,10 @@
         Планируемое количество репетиций
         <input type="number" min="1" step="1" name="performance_rehearsal_count" value="{{ form.performance_rehearsal_count }}" />
       </label>
-    </details>
   </section>
 
   <section class="box">
     <h2>Фотосет</h2>
-    <details class="festival-spoiler" {% if form.photographers_json or form.studios_json or form.photoset_date or form.photoset_comment or form.photoset_props_checklist_json %}open{% endif %}>
-      <summary>Показать/скрыть блок фотосета</summary>
       <div class="actions-inline wrap top-offset">
         <a href="/community/studios" class="btn btn-small">Найти студию</a>
         <a href="/community/masters" class="btn btn-small">Найти мастера</a>
@@ -867,7 +862,40 @@
         {% endfor %}
       </div>
       <button type="button" class="btn" id="add_photoset_prop_btn">Добавить пункт реквизита</button>
-    </details>
+
+      <details class="festival-spoiler top-offset" {% if form.pose_references_json %}open{% endif %}>
+        <summary>Показать/скрыть блок «Референсы поз / кадров»</summary>
+        <label>
+          Ссылки на Pinterest или iframe (через запятую, ; или с новой строки)
+          <textarea name="pose_references_input" id="pose_references_input" rows="5" placeholder="https://www.pinterest.com/pin/...">{{ form.pose_references_input }}</textarea>
+        </label>
+        <div class="gallery-upload-row">
+          <input type="file" id="pose_upload_files" accept="image/*" multiple />
+          <button type="button" class="btn" id="pose_upload_btn">Загрузить фото</button>
+          <span class="muted" id="pose_upload_status"></span>
+        </div>
+        <p class="muted">Можно вставить ссылку на Pinterest-пин или iframe Pinterest, а также загрузить изображения (конвертация в WebP до 30 КБ).</p>
+        <div class="reference-grid" id="pose_references_preview">
+          {% for url in form.pose_references_json %}
+            {% if url.startswith('iframe:') %}
+              <iframe class="pinterest-frame" src="{{ url[7:] }}" loading="lazy"></iframe>
+            {% elif 'pinterest.' in url and '/pin/' in url %}
+              {% set pin_id = (url.split('/pin/')[1].split('/')[0]) if ('/pin/' in url) else '' %}
+              {% if pin_id %}
+                <iframe class="pinterest-frame" src="https://assets.pinterest.com/ext/embed.html?id={{ pin_id }}" loading="lazy"></iframe>
+              {% else %}
+                <a class="reference-tile" href="{{ url }}" target="_blank" rel="noreferrer">
+                  <img src="{{ url }}" alt="Референс позы" loading="lazy" onerror="this.parentElement.remove();" />
+                </a>
+              {% endif %}
+            {% else %}
+              <a class="reference-tile" href="{{ url }}" target="_blank" rel="noreferrer">
+                <img src="{{ url }}" alt="Референс позы" loading="lazy" onerror="this.parentElement.remove();" />
+              </a>
+            {% endif %}
+          {% endfor %}
+        </div>
+      </details>
   </section>
 
   <section class="box">
@@ -887,40 +915,6 @@
         <a class="reference-tile" href="{{ url }}" target="_blank" rel="noreferrer">
           <img src="{{ url }}" alt="Референс" loading="lazy" onerror="this.parentElement.remove();" />
         </a>
-      {% endfor %}
-    </div>
-  </section>
-
-  <section class="box">
-    <h2>Референсы поз / кадров</h2>
-    <label>
-      Ссылки на Pinterest или iframe (через запятую, ; или с новой строки)
-      <textarea name="pose_references_input" id="pose_references_input" rows="5" placeholder="https://www.pinterest.com/pin/...">{{ form.pose_references_input }}</textarea>
-    </label>
-    <div class="gallery-upload-row">
-      <input type="file" id="pose_upload_files" accept="image/*" multiple />
-      <button type="button" class="btn" id="pose_upload_btn">Загрузить фото</button>
-      <span class="muted" id="pose_upload_status"></span>
-    </div>
-    <p class="muted">Можно вставить ссылку на Pinterest-пин или iframe Pinterest, а также загрузить изображения (конвертация в WebP до 30 КБ).</p>
-    <div class="reference-grid" id="pose_references_preview">
-      {% for url in form.pose_references_json %}
-        {% if url.startswith('iframe:') %}
-          <iframe class="pinterest-frame" src="{{ url[7:] }}" loading="lazy"></iframe>
-        {% elif 'pinterest.' in url and '/pin/' in url %}
-          {% set pin_id = (url.split('/pin/')[1].split('/')[0]) if ('/pin/' in url) else '' %}
-          {% if pin_id %}
-            <iframe class="pinterest-frame" src="https://assets.pinterest.com/ext/embed.html?id={{ pin_id }}" loading="lazy"></iframe>
-          {% else %}
-            <a class="reference-tile" href="{{ url }}" target="_blank" rel="noreferrer">
-              <img src="{{ url }}" alt="Референс позы" loading="lazy" onerror="this.parentElement.remove();" />
-            </a>
-          {% endif %}
-        {% else %}
-          <a class="reference-tile" href="{{ url }}" target="_blank" rel="noreferrer">
-            <img src="{{ url }}" alt="Референс позы" loading="lazy" onerror="this.parentElement.remove();" />
-          </a>
-        {% endif %}
       {% endfor %}
     </div>
   </section>

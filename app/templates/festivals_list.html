@@ -61,6 +61,10 @@
     color: #64748b;
     text-decoration: line-through;
   }
+  .festival-title-link {
+    color: inherit;
+    text-decoration: none;
+  }
   .festival-ticket-block,
   .festival-timing-block {
     margin-top: 0.55rem;
@@ -289,7 +293,7 @@
       </div>
     {% endif %}
     <div class="row-between">
-      <h3>{{ festival.name }}</h3>
+      <h3><a href="/festivals/{{ festival.id }}/card" target="_blank" rel="noopener noreferrer" class="festival-title-link">{{ festival.name }}</a></h3>
       <div class="actions-inline">
         {% if festival.has_photo_cosplay %}
           <span class="festival-photo-marker" title="Есть фотокосплей">📷</span>

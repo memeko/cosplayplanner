@@ -28922,6 +28922,8 @@ def festivals_new(request: Request, db: Session = Depends(get_db)):
         can_upload_ticket_files=user_has_premium_status(db, user),
         max_festival_ticket_files=MAX_FESTIVAL_TICKET_FILES,
         ticket_transport_options=FESTIVAL_TICKET_TRANSPORT_OPTIONS,
+        view_mode=False,
+        form_action="/festivals/new",
     )
 
 
@@ -28965,6 +28967,46 @@ def festivals_edit(festival_id: int, request: Request, db: Session = Depends(get
         can_upload_ticket_files=user_has_premium_status(db, user),
         max_festival_ticket_files=MAX_FESTIVAL_TICKET_FILES,
         ticket_transport_options=FESTIVAL_TICKET_TRANSPORT_OPTIONS,
+        view_mode=False,
+        form_action=f"/festivals/{festival.id}/edit",
+    )
+
+
+@app.get("/festivals/{festival_id}/card", response_class=HTMLResponse)
+def festivals_card_view(festival_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    festival = db.execute(
+        select(Festival).where(Festival.id == festival_id, Festival.user_id == user.id)
+    ).scalar_one_or_none()
+    if not festival:
+        add_flash(request, "Фестиваль не найден.", "error")
+        return redirect("/festivals")
+
+    _, _, alias_options = build_user_alias_lookup(db)
+    return template_response(
+        request,
+        "festival_form.html",
+        user=user,
+        active_tab="festivals",
+        editing=True,
+        festival_id=festival.id,
+        form=get_festival_form_values(festival),
+        nomination_title_options=merge_unique_nomination_titles(DEFAULT_NOMINATIONS, get_options(db, user.id, "nomination")),
+        coproplayer_alias_options=merge_unique(alias_options, get_options(db, user.id, "coproplayer")),
+        global_festival_edit_mode=False,
+        can_edit_personal_festival_fields=True,
+        can_edit_photo_cosplay=False,
+        can_edit_partner_festival=False,
+        can_edit_shared_note=False,
+        can_edit_festival_icon=False,
+        can_upload_ticket_files=user_has_premium_status(db, user),
+        max_festival_ticket_files=MAX_FESTIVAL_TICKET_FILES,
+        ticket_transport_options=FESTIVAL_TICKET_TRANSPORT_OPTIONS,
+        view_mode=True,
+        form_action=f"/festivals/{festival.id}/personal",
     )
 
 
@@ -29208,6 +29250,68 @@ async def festivals_update(festival_id: int, request: Request, db: Session = Dep
     else:
         add_flash(request, "Фестиваль обновлён.", "success")
     return redirect("/festivals")
+
+
+@app.post("/festivals/{festival_id}/personal")
+async def festivals_update_personal(festival_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    festival = db.execute(
+        select(Festival).where(Festival.id == festival_id, Festival.user_id == user.id)
+    ).scalar_one_or_none()
+    if not festival:
+        add_flash(request, "Фестиваль не найден.", "error")
+        return redirect("/festivals")
+
+    form = await request.form()
+    can_edit_ticket_files = user_has_premium_status(db, user)
+    ticket_file_paths: list[str] = []
+    if can_edit_ticket_files:
+        ticket_file_paths = parse_festival_ticket_files_input(str(form.get("ticket_files_input", "")))
+        if len(ticket_file_paths) > MAX_FESTIVAL_TICKET_FILES:
+            add_flash(request, f"Можно сохранить не более {MAX_FESTIVAL_TICKET_FILES} файлов билетов.", "error")
+            return redirect(f"/festivals/{festival_id}/card")
+
+    apply_festival_personal_fields_from_form(
+        form,
+        festival,
+        db,
+        can_edit_ticket_files=can_edit_ticket_files,
+        ticket_file_paths=ticket_file_paths,
+    )
+    raw_coproplayer_aliases = merge_unique(
+        split_csv(str(form.get("going_coproplayers_input", ""))),
+        form.getlist("going_coproplayers"),
+        split_csv(str(form.get("going_coproplayers_new", ""))),
+    )
+    remember_options(
+        db,
+        user.id,
+        "coproplayer",
+        merge_unique(raw_coproplayer_aliases, festival.going_coproplayers_json),
+    )
+    remember_options(
+        db,
+        user.id,
+        "nomination",
+        merge_unique_nomination_titles(
+            DEFAULT_NOMINATIONS,
+            festival_nomination_titles(festival),
+            as_list(festival.planned_nominations_json),
+        ),
+    )
+    remember_options(db, user.id, "festival", [festival.name])
+
+    notify_count = notify_coproplayer_conflicts_for_festival(db, festival=festival, owner=user)
+    db.commit()
+
+    if notify_count:
+        add_flash(request, f"Личная информация обновлена. Конфликтов по сокосплеерам: {notify_count}.", "success")
+    else:
+        add_flash(request, "Личная информация обновлена.", "success")
+    return redirect(f"/festivals/{festival_id}/card")
 
 
 @app.post("/festivals/{festival_id}/toggle-going")
