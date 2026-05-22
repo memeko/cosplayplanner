@@ -103,16 +103,49 @@
       <div class="grid two-col">
         <label>
           Цвет отображения ника
-          <input type="color" name="premium_nick_color" value="{{ premium_nick_color }}" />
+          <div class="actions-inline">
+            <input type="color" name="premium_nick_color" id="premium_nick_color_input" value="{{ premium_nick_color }}" />
+            <button type="button" class="btn btn-small" id="premium_nick_color_ok">ОК</button>
+          </div>
+          <small class="muted" id="premium_nick_color_status"></small>
         </label>
         <div>
           <p class="meta">Предпросмотр</p>
           <p>
-            <span class="nick-special" style="color: {{ premium_nick_color }};">@{{ user.cosplay_nick or user.username }}</span>
+            <span class="nick-special" id="premium_nick_color_preview" style="color: {{ premium_nick_color }};">@{{ user.cosplay_nick or user.username }}</span>
           </p>
           <p class="muted">Цвет применяется к вашему нику по сайту, пока активен премиум.</p>
         </div>
       </div>
+
+      <h3>Реклама премиум-пользователя</h3>
+      <label>
+        Аватарка ТГК
+        <input type="hidden" name="premium_channel_ad_avatar" id="premium_channel_ad_avatar" value="{{ premium_channel_ad_avatar_path or '' }}" />
+      </label>
+      <div class="gallery-upload-row">
+        <input type="file" id="premium_channel_ad_avatar_file" accept="image/*" />
+        <button type="button" class="btn" id="premium_channel_ad_avatar_upload_btn">Загрузить аватарку</button>
+        <span class="muted" id="premium_channel_ad_avatar_status"></span>
+      </div>
+      <div class="top-offset" id="premium_channel_ad_avatar_preview_wrap" {% if not premium_channel_ad_avatar_path %}hidden{% endif %}>
+        <img
+          src="{{ premium_channel_ad_avatar_path or '' }}"
+          alt="Аватарка ТГК"
+          id="premium_channel_ad_avatar_preview"
+          style="width: 92px; height: 92px; border-radius: 999px; object-fit: cover; border: 1px solid #d9e2ec; background: #fff;"
+          loading="lazy"
+        />
+      </div>
+      <label>
+        Краткое описание (до 200 символов)
+        <textarea name="premium_channel_ad_text" rows="3" maxlength="200" placeholder="Коротко о вашем ТГК">{{ premium_channel_ad_text or '' }}</textarea>
+      </label>
+      <label>
+        Ссылка на ТГК
+        <input type="text" name="premium_channel_ad_url" value="{{ premium_channel_ad_url or '' }}" maxlength="255" placeholder="@your_channel или https://t.me/your_channel" />
+      </label>
+      <p class="muted">Этот блок может случайно показываться на главной в рекламе ТГК.</p>
     {% endif %}
 
     <h3>Социальные сети</h3>
@@ -571,6 +604,85 @@
       setStatus(error && error.message ? error.message : "Ошибка сохранения аватара.", true);
     } finally {
       saveButton.disabled = false;
+    }
+  });
+})();
+</script>
+<script>
+(function () {
+  const colorInput = document.getElementById("premium_nick_color_input");
+  const colorPreview = document.getElementById("premium_nick_color_preview");
+  const applyButton = document.getElementById("premium_nick_color_ok");
+  const statusNode = document.getElementById("premium_nick_color_status");
+  if (!colorInput || !colorPreview) {
+    return;
+  }
+
+  function applyColor(showStatus) {
+    const colorValue = String(colorInput.value || "").trim();
+    if (!colorValue) return;
+    colorPreview.style.color = colorValue;
+    if (showStatus && statusNode) {
+      statusNode.textContent = "Цвет применён в предпросмотре.";
+    }
+  }
+
+  colorInput.addEventListener("input", function () {
+    applyColor(false);
+  });
+  colorInput.addEventListener("change", function () {
+    applyColor(false);
+  });
+
+  if (applyButton) {
+    applyButton.addEventListener("click", function () {
+      applyColor(true);
+    });
+  }
+})();
+</script>
+<script>
+(function () {
+  const hiddenInput = document.getElementById("premium_channel_ad_avatar");
+  const filesInput = document.getElementById("premium_channel_ad_avatar_file");
+  const uploadButton = document.getElementById("premium_channel_ad_avatar_upload_btn");
+  const statusNode = document.getElementById("premium_channel_ad_avatar_status");
+  const previewWrap = document.getElementById("premium_channel_ad_avatar_preview_wrap");
+  const previewImage = document.getElementById("premium_channel_ad_avatar_preview");
+  if (!hiddenInput || !filesInput || !uploadButton || !statusNode || !previewWrap || !previewImage) {
+    return;
+  }
+
+  uploadButton.addEventListener("click", async function () {
+    const file = filesInput.files && filesInput.files[0];
+    if (!file) {
+      statusNode.textContent = "Выберите изображение.";
+      return;
+    }
+
+    statusNode.textContent = "Загрузка...";
+    uploadButton.disabled = true;
+    try {
+      const formData = new FormData();
+      formData.append("image", file);
+      const response = await fetch("/media/upload-premium-channel-avatar", {
+        method: "POST",
+        body: formData,
+        credentials: "same-origin",
+      });
+      const payload = await response.json().catch(function () { return {}; });
+      if (!response.ok || !payload || !payload.ok || !payload.path) {
+        throw new Error((payload && payload.detail) || "Не удалось загрузить аватарку.");
+      }
+      hiddenInput.value = payload.path;
+      previewImage.src = payload.path + "?v=" + Date.now();
+      previewWrap.hidden = false;
+      filesInput.value = "";
+      statusNode.textContent = "Аватарка загружена.";
+    } catch (error) {
+      statusNode.textContent = "Ошибка: " + (error && error.message ? error.message : "не удалось загрузить файл");
+    } finally {
+      uploadButton.disabled = false;
     }
   });
 })();

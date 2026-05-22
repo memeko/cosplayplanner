@@ -59,9 +59,27 @@
 
 <section class="box top-offset">
   <h2>Реклама ТГК-канала</h2>
-  <div class="notes-block top-offset">
-    Тут могла бы быть ваша реклама : D
-  </div>
+  {% if premium_channel_ad %}
+    <div class="top-offset" style="display:flex; gap:0.9rem; align-items:flex-start;">
+      <img
+        src="{{ premium_channel_ad.avatar_path }}"
+        alt="Аватар канала"
+        loading="lazy"
+        style="width:76px; height:76px; border-radius:999px; object-fit:cover; border:1px solid #d9e2ec; background:#fff; flex:0 0 auto;"
+      />
+      <div>
+        <p class="meta">Реклама премиум-пользователя · {{ premium_channel_ad.author_alias }}</p>
+        <div class="notes-block">{{ premium_channel_ad.description }}</div>
+        <div class="actions-inline top-offset">
+          <a href="{{ premium_channel_ad.channel_url }}" target="_blank" rel="noreferrer" class="btn btn-accent btn-small">Посмотреть!</a>
+        </div>
+      </div>
+    </div>
+  {% else %}
+    <div class="notes-block top-offset">
+      Тут могла бы быть ваша реклама : D
+    </div>
+  {% endif %}
 </section>
 
 <section class="box top-offset">
