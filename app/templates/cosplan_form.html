@@ -76,9 +76,98 @@
     margin: 0.2rem 0 0;
     padding-left: 1.1rem;
   }
+  .storyboard-table-wrap {
+    overflow-x: auto;
+    margin-top: 0.6rem;
+  }
+  .storyboard-table {
+    width: 100%;
+    min-width: 920px;
+    border-collapse: collapse;
+  }
+  .storyboard-table th,
+  .storyboard-table td {
+    border-bottom: 1px solid #e4edf4;
+    padding: 0.45rem;
+    text-align: left;
+    vertical-align: top;
+  }
+  .storyboard-table td.storyboard-shot-cell {
+    width: 72px;
+    text-align: center;
+    vertical-align: middle;
+  }
+  .storyboard-reference-cell {
+    display: grid;
+    gap: 0.35rem;
+  }
+  .storyboard-reference-preview {
+    min-height: 42px;
+  }
+  .storyboard-reference-thumb {
+    width: 120px;
+    max-width: 100%;
+    border-radius: 10px;
+    border: 1px solid #d5e3ee;
+    background: #fff;
+    cursor: zoom-in;
+    display: block;
+  }
+  .storyboard-reference-empty {
+    color: #6b7280;
+    font-size: 0.88rem;
+  }
+  .storyboard-upload-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.45rem;
+  }
+  .storyboard-comment {
+    min-width: 220px;
+  }
+  .storyboard-modal {
+    position: fixed;
+    inset: 0;
+    z-index: 1200;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1rem;
+    background: rgba(10, 25, 47, 0.72);
+  }
+  .storyboard-modal[hidden] {
+    display: none;
+  }
+  .storyboard-modal-inner {
+    width: min(92vw, 1100px);
+    max-height: 90vh;
+    overflow: auto;
+    background: #f5f9fd;
+    border-radius: 14px;
+    padding: 0.8rem;
+    box-shadow: 0 16px 42px rgba(0, 0, 0, 0.24);
+  }
+  .storyboard-modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    margin-bottom: 0.6rem;
+  }
+  .storyboard-modal-image {
+    display: block;
+    width: auto;
+    max-width: 100%;
+    max-height: calc(90vh - 84px);
+    margin: 0 auto;
+    border-radius: 10px;
+    background: #fff;
+  }
   @media (max-width: 900px) {
     .project-character-row { grid-template-columns: 1fr; }
     .project-character-row button { width: 100%; }
+    .storyboard-comment {
+      min-width: 160px;
+    }
   }
 </style>
 
@@ -826,6 +915,72 @@
         <div class="photoset-calc-result muted" id="photoset_calc_result">Введите данные и нажмите «Рассчитать».</div>
       </div>
 
+      {% if can_use_premium_storyboard %}
+      <div class="photoset-calc-box" id="photoset_storyboard_box">
+        <h4>План раскадровки (премиум)</h4>
+        <p class="muted">
+          Нажмите «Сохранить результат калькулятора», чтобы собрать таблицу кадров.
+          Для каждой строки можно добавить референс и комментарий.
+        </p>
+        <div class="actions-inline wrap">
+          <button type="button" class="btn btn-small btn-accent" id="photoset_storyboard_from_calc_btn">Сохранить результат калькулятора</button>
+          <button type="button" class="btn btn-small" id="photoset_storyboard_add_row_btn">Добавить строку</button>
+          <span class="muted" id="photoset_storyboard_status"></span>
+        </div>
+        <div class="storyboard-table-wrap">
+          <table class="storyboard-table" id="photoset_storyboard_table">
+            <thead>
+              <tr>
+                <th>Отснято</th>
+                <th>Кто на фото</th>
+                <th>Референс фотографии</th>
+                <th>Комментарий</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="photoset_storyboard_rows">
+              {% for item in form.photoset_storyboard_rows_json %}
+              <tr class="storyboard-row">
+                <td class="storyboard-shot-cell">
+                  <input type="hidden" name="photoset_storyboard_row_id" value="{{ item.row_id }}" />
+                  <input type="checkbox" name="photoset_storyboard_done" value="{{ item.row_id }}" {% if item.done == '__YES__' %}checked{% endif %} />
+                </td>
+                <td>
+                  <input type="text" name="photoset_storyboard_who" value="{{ item.who }}" placeholder="Кто на фото" />
+                </td>
+                <td>
+                  <div class="storyboard-reference-cell">
+                    <input type="url" name="photoset_storyboard_reference_url" value="{{ item.reference_url }}" placeholder="https://... или /media/..." />
+                    <div class="storyboard-reference-preview">
+                      {% if item.reference_url %}
+                        <img src="{{ item.reference_url }}" alt="Референс кадра" loading="lazy" class="storyboard-reference-thumb" />
+                      {% else %}
+                        <span class="storyboard-reference-empty">Превью появится после ссылки/загрузки.</span>
+                      {% endif %}
+                    </div>
+                    <div class="storyboard-upload-row">
+                      <input type="file" class="storyboard-upload-input" accept="image/*" />
+                      <button type="button" class="btn btn-small storyboard-upload-btn">Загрузить</button>
+                      <span class="muted storyboard-upload-status"></span>
+                    </div>
+                  </div>
+                </td>
+                <td>
+                  <textarea name="photoset_storyboard_comment" rows="2" class="storyboard-comment" placeholder="Комментарий">{{ item.comment }}</textarea>
+                </td>
+                <td>
+                  <button type="button" class="btn btn-danger storyboard-remove-btn">Удалить</button>
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      {% else %}
+      <p class="muted top-offset">Сохранение раскадровки в таблицу доступно только премиум-пользователям.</p>
+      {% endif %}
+
       <div class="grid two-col">
         <label>
           Фотограф:
@@ -954,6 +1109,17 @@
     <a href="/cosplan" class="btn">Отмена</a>
   </div>
 </form>
+
+{% if can_use_premium_storyboard %}
+<div class="storyboard-modal" id="storyboard_image_modal" hidden>
+  <div class="storyboard-modal-inner">
+    <div class="storyboard-modal-actions">
+      <button type="button" class="btn" id="storyboard_modal_close_btn">Закрыть</button>
+    </div>
+    <img src="" alt="Референс кадра" id="storyboard_modal_image" class="storyboard-modal-image" />
+  </div>
+</div>
+{% endif %}
 
 <script>
   const wrapContentAfterHeading = ({ heading, summaryText, stopTags }) => {
@@ -1985,6 +2151,7 @@
     const runButton = document.getElementById("photoset_calc_run_btn");
     const resultNode = document.getElementById("photoset_calc_result");
     if (!totalInput || !rolesInput || !fillRolesButton || !runButton || !resultNode) return;
+    let lastDistribution = null;
 
     const parseUniqueRoles = (rawValue) => {
       const seen = new Set();
@@ -2167,6 +2334,7 @@
       const totalFrames = Number(totalInput.value || "0");
       const roles = parseUniqueRoles(rolesInput.value);
       const distribution = calculateDistribution(totalFrames, roles);
+      lastDistribution = distribution?.error ? null : distribution;
       renderDistribution(distribution);
     });
 
@@ -2174,6 +2342,234 @@
       const autoRoles = collectRolesFromProjectForm();
       rolesInput.value = autoRoles.join("\n");
     }
+
+    window.getPhotosetFramesDistribution = () => {
+      if (!lastDistribution) return null;
+      return JSON.parse(JSON.stringify(lastDistribution));
+    };
+  };
+
+  const setupPhotosetStoryboardTable = () => {
+    const rowsWrap = document.getElementById("photoset_storyboard_rows");
+    const addRowButton = document.getElementById("photoset_storyboard_add_row_btn");
+    const fromCalcButton = document.getElementById("photoset_storyboard_from_calc_btn");
+    const statusNode = document.getElementById("photoset_storyboard_status");
+    const modal = document.getElementById("storyboard_image_modal");
+    const modalImage = document.getElementById("storyboard_modal_image");
+    const modalCloseButton = document.getElementById("storyboard_modal_close_btn");
+    if (!rowsWrap || !addRowButton || !fromCalcButton) return;
+
+    const setStatus = (textValue) => {
+      if (!statusNode) return;
+      statusNode.textContent = textValue || "";
+    };
+
+    const isTrue = (value) => {
+      if (value === true || value === 1 || value === "1" || value === "__YES__") return true;
+      return String(value || "").trim().toLowerCase() === "true";
+    };
+
+    const openModal = (url) => {
+      if (!modal || !modalImage || !url) return;
+      modalImage.src = url;
+      modal.hidden = false;
+    };
+
+    const closeModal = () => {
+      if (!modal || !modalImage) return;
+      modal.hidden = true;
+      modalImage.src = "";
+    };
+
+    if (modalCloseButton) {
+      modalCloseButton.addEventListener("click", closeModal);
+    }
+    if (modal) {
+      modal.addEventListener("click", (event) => {
+        if (event.target === modal) {
+          closeModal();
+        }
+      });
+    }
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && modal && !modal.hidden) {
+        closeModal();
+      }
+    });
+
+    const updateReferencePreview = (row, urlValue) => {
+      const previewNode = row.querySelector(".storyboard-reference-preview");
+      if (!previewNode) return;
+      previewNode.innerHTML = "";
+      const trimmed = String(urlValue || "").trim();
+      if (!trimmed) {
+        const placeholder = document.createElement("span");
+        placeholder.className = "storyboard-reference-empty";
+        placeholder.textContent = "Превью появится после ссылки/загрузки.";
+        previewNode.appendChild(placeholder);
+        return;
+      }
+
+      const image = document.createElement("img");
+      image.src = trimmed;
+      image.alt = "Референс кадра";
+      image.loading = "lazy";
+      image.className = "storyboard-reference-thumb";
+      image.addEventListener("error", () => {
+        previewNode.innerHTML = "";
+        const invalidNode = document.createElement("span");
+        invalidNode.className = "storyboard-reference-empty";
+        invalidNode.textContent = "Не удалось загрузить изображение по ссылке.";
+        previewNode.appendChild(invalidNode);
+      });
+      image.addEventListener("click", () => openModal(trimmed));
+      previewNode.appendChild(image);
+    };
+
+    const bindStoryboardRow = (row) => {
+      const removeButton = row.querySelector(".storyboard-remove-btn");
+      if (removeButton) {
+        removeButton.addEventListener("click", () => {
+          row.remove();
+          setStatus("");
+        });
+      }
+
+      const urlInput = row.querySelector('input[name="photoset_storyboard_reference_url"]');
+      if (urlInput) {
+        urlInput.addEventListener("input", () => updateReferencePreview(row, urlInput.value));
+        urlInput.addEventListener("change", () => updateReferencePreview(row, urlInput.value));
+        updateReferencePreview(row, urlInput.value);
+      }
+
+      const uploadButton = row.querySelector(".storyboard-upload-btn");
+      if (uploadButton) {
+        uploadButton.addEventListener("click", async () => {
+          const uploadInput = row.querySelector(".storyboard-upload-input");
+          const uploadStatus = row.querySelector(".storyboard-upload-status");
+          const referenceInput = row.querySelector('input[name="photoset_storyboard_reference_url"]');
+          const selectedFile = uploadInput?.files?.[0];
+          if (!selectedFile) {
+            if (uploadStatus) uploadStatus.textContent = "Выберите файл.";
+            return;
+          }
+
+          if (uploadStatus) uploadStatus.textContent = "Загрузка...";
+          const formData = new FormData();
+          formData.append("image", selectedFile);
+
+          try {
+            const response = await fetch("/media/upload-photoset-storyboard-reference", {
+              method: "POST",
+              body: formData,
+              credentials: "same-origin",
+            });
+            const payload = await response.json();
+            if (!response.ok || !payload?.ok) {
+              throw new Error(payload?.detail || "Не удалось загрузить изображение.");
+            }
+            const savedUrl = payload.path || payload.url || "";
+            if (referenceInput) {
+              referenceInput.value = savedUrl;
+            }
+            updateReferencePreview(row, savedUrl);
+            if (uploadInput) uploadInput.value = "";
+            if (uploadStatus) uploadStatus.textContent = "Загружено";
+          } catch (error) {
+            if (uploadStatus) uploadStatus.textContent = `Ошибка: ${error.message || "не удалось загрузить файл"}`;
+          }
+        });
+      }
+    };
+
+    const buildStoryboardRow = (rowData = {}) => {
+      const rowId = rowData.row_id || `storyboard-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
+      const row = document.createElement("tr");
+      row.className = "storyboard-row";
+      row.innerHTML = `
+        <td class="storyboard-shot-cell">
+          <input type="hidden" name="photoset_storyboard_row_id" value="${rowId}" />
+          <input type="checkbox" name="photoset_storyboard_done" value="${rowId}" />
+        </td>
+        <td><input type="text" name="photoset_storyboard_who" placeholder="Кто на фото" /></td>
+        <td>
+          <div class="storyboard-reference-cell">
+            <input type="url" name="photoset_storyboard_reference_url" placeholder="https://... или /media/..." />
+            <div class="storyboard-reference-preview"></div>
+            <div class="storyboard-upload-row">
+              <input type="file" class="storyboard-upload-input" accept="image/*" />
+              <button type="button" class="btn btn-small storyboard-upload-btn">Загрузить</button>
+              <span class="muted storyboard-upload-status"></span>
+            </div>
+          </div>
+        </td>
+        <td><textarea name="photoset_storyboard_comment" rows="2" class="storyboard-comment" placeholder="Комментарий"></textarea></td>
+        <td><button type="button" class="btn btn-danger storyboard-remove-btn">Удалить</button></td>
+      `;
+      const doneInput = row.querySelector('input[name="photoset_storyboard_done"]');
+      const whoInput = row.querySelector('input[name="photoset_storyboard_who"]');
+      const referenceInput = row.querySelector('input[name="photoset_storyboard_reference_url"]');
+      const commentInput = row.querySelector('textarea[name="photoset_storyboard_comment"]');
+      if (doneInput) doneInput.checked = isTrue(rowData.done);
+      if (whoInput) whoInput.value = String(rowData.who || "");
+      if (referenceInput) referenceInput.value = String(rowData.reference_url || "");
+      if (commentInput) commentInput.value = String(rowData.comment || "");
+      bindStoryboardRow(row);
+      return row;
+    };
+
+    const buildRowsFromDistribution = (distribution) => {
+      const rows = [];
+      const appendRows = (whoValue, countValue) => {
+        const who = String(whoValue || "").trim();
+        const count = Math.max(0, Math.floor(Number(countValue) || 0));
+        if (!who || count <= 0) return;
+        for (let index = 0; index < count; index += 1) {
+          rows.push({ who, reference_url: "", comment: "", done: false });
+        }
+      };
+
+      const roles = Array.isArray(distribution?.roles) ? distribution.roles : [];
+      roles.forEach((role, index) => appendRows(role, distribution?.soloCounts?.[index]));
+
+      if (roles.length > 1) {
+        appendRows(roles.join(" + "), distribution?.allRolesCount);
+      }
+
+      (distribution?.pairCombos || []).forEach((combo, index) => {
+        appendRows(Array.isArray(combo) ? combo.join(" + ") : combo, distribution?.pairCounts?.[index]);
+      });
+      (distribution?.tripleCombos || []).forEach((combo, index) => {
+        appendRows(Array.isArray(combo) ? combo.join(" + ") : combo, distribution?.tripleCounts?.[index]);
+      });
+      return rows;
+    };
+
+    const fillFromCalculator = () => {
+      const distribution = typeof window.getPhotosetFramesDistribution === "function"
+        ? window.getPhotosetFramesDistribution()
+        : null;
+      if (!distribution) {
+        setStatus("Сначала выполните расчет в калькуляторе кадров.");
+        return;
+      }
+      const generatedRows = buildRowsFromDistribution(distribution);
+      if (!generatedRows.length) {
+        setStatus("По текущему расчету нет строк для сохранения.");
+        return;
+      }
+      rowsWrap.innerHTML = "";
+      generatedRows.forEach((item) => rowsWrap.appendChild(buildStoryboardRow(item)));
+      setStatus(`Сохранено строк: ${generatedRows.length}.`);
+    };
+
+    rowsWrap.querySelectorAll(".storyboard-row").forEach(bindStoryboardRow);
+
+    addRowButton.addEventListener("click", () => {
+      rowsWrap.appendChild(buildStoryboardRow({}));
+      setStatus("");
+    });
+    fromCalcButton.addEventListener("click", fillFromCalculator);
   };
 
   bindAliasSuggest({ inputId: "project_leader", listId: "project-leader-suggest", multi: false });
@@ -2184,6 +2580,7 @@
   setupSelfSewCostTables();
   setupChecklistControls();
   setupPhotosetFramesCalculator();
+  setupPhotosetStoryboardTable();
   syncPlanTypeFromProjectCheckbox();
   applyFormRules();
   applyFestivalCityFilter();

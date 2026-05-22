@@ -498,9 +498,13 @@ PIGEON_CHAT_LABEL_GROUP = "pigeon_chat_label"
 PROFILE_TELEGRAM_SECRET_CODE_GROUP = "profile_telegram_secret_code"
 PROFILE_ABOUT_MARKDOWN_GROUP = "profile_about_markdown"
 PROFILE_PHOTO_URL_GROUP = "profile_photo_url"
+PREMIUM_CHANNEL_AD_AVATAR_GROUP = "premium_channel_ad_avatar"
+PREMIUM_CHANNEL_AD_TEXT_GROUP = "premium_channel_ad_text"
+PREMIUM_CHANNEL_AD_URL_GROUP = "premium_channel_ad_url"
 PREMIUM_USER_ID_GROUP = "premium_user_id"
 PREMIUM_USER_ACCESS_GROUP = "premium_user_access"
 PREMIUM_NICK_COLOR_GROUP = "premium_nick_color"
+PREMIUM_CHANNEL_AD_TEXT_MAX_LENGTH = 200
 PREMIUM_DURATION_MONTH_1 = "month_1"
 PREMIUM_DURATION_MONTH_3 = "month_3"
 PREMIUM_DURATION_MONTH_6 = "month_6"
@@ -936,8 +940,12 @@ MAX_GALLERY_IMAGE_BYTES = 30 * 1024
 MAX_GALLERY_IMAGE_WIDTH = 512
 MAX_CHARACTER_REFERENCE_IMAGE_BYTES = 450 * 1024
 MAX_CHARACTER_REFERENCE_IMAGE_WIDTH = 900
+MAX_PHOTOSET_STORYBOARD_IMAGE_BYTES = 450 * 1024
+MAX_PHOTOSET_STORYBOARD_IMAGE_WIDTH = 600
 MAX_AVATAR_IMAGE_BYTES = 24 * 1024
 MAX_AVATAR_IMAGE_WIDTH = 256
+MAX_PREMIUM_CHANNEL_AD_AVATAR_BYTES = 42 * 1024
+MAX_PREMIUM_CHANNEL_AD_AVATAR_WIDTH = 320
 MAX_MASTER_BOARD_STATE_BYTES = 3 * 1024 * 1024
 MAX_MASTER_BOARD_OBJECTS = 3000
 MASTER_BOARD_DEFAULT_IMAGE_LAYOUT = [
@@ -1180,6 +1188,7 @@ def apply_schema_migrations() -> None:
             ("photoset_extra_price", "FLOAT"),
             ("photoset_comment", "TEXT"),
             ("photoset_props_checklist_json", "JSON NOT NULL DEFAULT '[]'"),
+            ("photoset_storyboard_rows_json", "JSON NOT NULL DEFAULT '[]'"),
             ("performance_track", "VARCHAR(255)"),
             ("performance_video_bg_url", "TEXT"),
             ("performance_script", "TEXT"),
@@ -1808,6 +1817,54 @@ async def media_upload_profile_image(
     }
 
 
+@app.post("/media/upload-premium-channel-avatar")
+async def media_upload_premium_channel_avatar(
+    request: Request,
+    image: UploadFile = File(...),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    user = current_user(request, db)
+    if not user:
+        raise HTTPException(status_code=401, detail="Требуется авторизация.")
+    if not user_has_premium_status(db, user):
+        raise HTTPException(status_code=403, detail="Загрузка доступна только премиум-пользователям.")
+
+    if not image.filename:
+        raise HTTPException(status_code=400, detail="Файл не передан.")
+    content_type = (image.content_type or "").lower()
+    if not content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="Нужен файл изображения.")
+
+    raw_bytes = await image.read(MAX_UPLOAD_INPUT_BYTES + 1)
+    if len(raw_bytes) > MAX_UPLOAD_INPUT_BYTES:
+        raise HTTPException(status_code=400, detail="Изображение слишком большое (до 20 МБ).")
+
+    try:
+        webp_bytes, width, height = compress_image_to_webp(
+            raw_bytes,
+            max_output_bytes=MAX_PREMIUM_CHANNEL_AD_AVATAR_BYTES,
+            max_width=MAX_PREMIUM_CHANNEL_AD_AVATAR_WIDTH,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    file_name = f"premium-ad-{user.id}-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:10]}.webp"
+    destination = media_storage_path() / file_name
+    destination.write_bytes(webp_bytes)
+
+    public_path = f"/media/{file_name}"
+    base_url = str(request.base_url).rstrip("/")
+    return {
+        "ok": True,
+        "url": f"{base_url}{public_path}",
+        "path": public_path,
+        "size_bytes": len(webp_bytes),
+        "width": width,
+        "height": height,
+        "format": "webp",
+    }
+
+
 @app.post("/media/upload-festival-ticket-file")
 async def media_upload_festival_ticket_file(
     request: Request,
@@ -1871,6 +1928,54 @@ async def media_upload_festival_ticket_file(
         "height": height,
         "format": file_ext.lstrip("."),
         "filename": Path(original_name).name,
+    }
+
+
+@app.post("/media/upload-photoset-storyboard-reference")
+async def media_upload_photoset_storyboard_reference(
+    request: Request,
+    image: UploadFile = File(...),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    user = current_user(request, db)
+    if not user:
+        raise HTTPException(status_code=401, detail="Требуется авторизация.")
+    if not user_has_premium_status(db, user):
+        raise HTTPException(status_code=403, detail="Функция доступна только премиум-пользователям.")
+
+    if not image.filename:
+        raise HTTPException(status_code=400, detail="Файл не передан.")
+    content_type = (image.content_type or "").lower()
+    if not content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="Нужен файл изображения.")
+
+    raw_bytes = await image.read(MAX_UPLOAD_INPUT_BYTES + 1)
+    if len(raw_bytes) > MAX_UPLOAD_INPUT_BYTES:
+        raise HTTPException(status_code=400, detail="Изображение слишком большое (до 20 МБ).")
+
+    try:
+        webp_bytes, width, height = compress_image_to_webp(
+            raw_bytes,
+            max_output_bytes=MAX_PHOTOSET_STORYBOARD_IMAGE_BYTES,
+            max_width=MAX_PHOTOSET_STORYBOARD_IMAGE_WIDTH,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    file_name = f"storyboard-{user.id}-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:10]}.webp"
+    destination = media_storage_path() / file_name
+    destination.write_bytes(webp_bytes)
+
+    public_path = f"/media/{file_name}"
+    base_url = str(request.base_url).rstrip("/")
+    return {
+        "ok": True,
+        "url": f"{base_url}{public_path}",
+        "path": public_path,
+        "size_bytes": len(webp_bytes),
+        "width": width,
+        "height": height,
+        "format": "webp",
     }
 
 
@@ -2182,18 +2287,11 @@ def is_primary_admin_user(user: User | None) -> bool:
 
 
 def user_is_special(user: User | None) -> bool:
-    if not user:
-        return False
-    if is_primary_admin_user(user):
-        return True
-    user_id = int(getattr(user, "id", 0) or 0)
-    if user_id and user_id in PREMIUM_USER_IDS_CACHE:
-        return True
-    return False
+    return is_primary_admin_user(user)
 
 
 def is_moderator_user(user: User | None) -> bool:
-    return user_is_special(user)
+    return is_primary_admin_user(user)
 
 
 def can_manage_festival_globally(user: User | None) -> bool:
@@ -2341,6 +2439,39 @@ def get_user_profile_social_values(db: Session, user_id: int) -> dict[str, str]:
     for field_key, _field_label, option_group in PROFILE_SOCIAL_OPTION_FIELDS:
         values[field_key] = str(get_user_option_value(db, int(user_id), option_group) or "").strip()
     return values
+
+
+def normalize_premium_channel_ad_avatar(value: str | None) -> str:
+    normalized_items = normalize_profile_photo_urls([str(value or "").strip()])
+    return normalized_items[0] if normalized_items else ""
+
+
+def normalize_premium_channel_ad_text(value: str | None) -> str:
+    normalized = normalize_text_line_breaks(str(value or "").strip())
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    return normalized
+
+
+def normalize_premium_channel_ad_url(value: str | None) -> str:
+    raw_value = str(value or "").strip()
+    if not raw_value:
+        return ""
+    normalized_target = normalize_telegram_target(raw_value)
+    normalized_url = build_telegram_channel_url(normalized_target, fallback="").strip()
+    if not normalized_url or normalized_url == SITE_URL:
+        return ""
+    url_kind = classify_external_url(normalized_url)
+    if url_kind != "telegram":
+        return ""
+    return normalized_url
+
+
+def get_premium_channel_ad_settings(db: Session, user_id: int) -> dict[str, str]:
+    return {
+        "avatar_path": normalize_premium_channel_ad_avatar(get_user_option_value(db, user_id, PREMIUM_CHANNEL_AD_AVATAR_GROUP)),
+        "text": normalize_premium_channel_ad_text(get_user_option_value(db, user_id, PREMIUM_CHANNEL_AD_TEXT_GROUP)),
+        "url": normalize_premium_channel_ad_url(get_user_option_value(db, user_id, PREMIUM_CHANNEL_AD_URL_GROUP)),
+    }
 
 
 def build_profile_social_url(field_key: str, value: str | None) -> str:
@@ -9192,6 +9323,101 @@ def format_checklist_for_form(items: list[Any]) -> list[dict[str, str]]:
     return formatted
 
 
+def normalize_photoset_storyboard_reference_url(raw_value: Any) -> str:
+    references = [
+        value
+        for value in parse_reference_values(str(raw_value or ""))
+        if not str(value or "").strip().startswith("iframe:")
+    ]
+    if not references:
+        return ""
+
+    selected = str(references[0]).strip()
+    if selected.startswith("/media/"):
+        file_name = selected.removeprefix("/media/").strip()
+        if not file_name:
+            return ""
+        try:
+            safe_media_filename(file_name)
+        except HTTPException:
+            return ""
+        return f"/media/{file_name}"
+
+    if looks_like_url(selected):
+        return selected
+    return ""
+
+
+def normalize_photoset_storyboard_rows(rows: Any) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    for raw_row in as_list(rows):
+        if not isinstance(raw_row, dict):
+            continue
+        who_value = str(raw_row.get("who") or raw_row.get("person") or "").strip()[:255]
+        reference_url = normalize_photoset_storyboard_reference_url(
+            raw_row.get("reference_url") or raw_row.get("reference") or raw_row.get("photo_url")
+        )
+        comment_value = str(raw_row.get("comment") or "").strip()
+        done_value = to_bool(raw_row.get("done"))
+        if not (who_value or reference_url or comment_value or done_value):
+            continue
+        normalized.append(
+            {
+                "who": who_value,
+                "reference_url": reference_url,
+                "comment": comment_value,
+                "done": done_value,
+            }
+        )
+    return normalized
+
+
+def parse_photoset_storyboard_rows_from_form(form: Any) -> list[dict[str, Any]]:
+    row_ids = [str(value).strip() for value in form.getlist("photoset_storyboard_row_id")]
+    done_ids = {str(value).strip() for value in form.getlist("photoset_storyboard_done") if str(value).strip()}
+    who_values = [str(value).strip() for value in form.getlist("photoset_storyboard_who")]
+    reference_values = [str(value).strip() for value in form.getlist("photoset_storyboard_reference_url")]
+    comment_values = [str(value).strip() for value in form.getlist("photoset_storyboard_comment")]
+    size = max(len(row_ids), len(who_values), len(reference_values), len(comment_values))
+    if size == 0:
+        return []
+
+    rows: list[dict[str, Any]] = []
+    for index in range(size):
+        row_id = row_ids[index] if index < len(row_ids) and row_ids[index] else f"storyboard-{index}"
+        who_value = who_values[index][:255] if index < len(who_values) else ""
+        reference_raw = reference_values[index] if index < len(reference_values) else ""
+        comment_value = comment_values[index] if index < len(comment_values) else ""
+        reference_url = normalize_photoset_storyboard_reference_url(reference_raw)
+        done_value = row_id in done_ids
+        if not (who_value or reference_url or comment_value or done_value):
+            continue
+        rows.append(
+            {
+                "who": who_value,
+                "reference_url": reference_url,
+                "comment": comment_value,
+                "done": done_value,
+            }
+        )
+    return rows
+
+
+def format_photoset_storyboard_rows_for_form(rows: Any) -> list[dict[str, str]]:
+    formatted: list[dict[str, str]] = []
+    for index, row in enumerate(normalize_photoset_storyboard_rows(rows)):
+        formatted.append(
+            {
+                "row_id": f"storyboard-{index}",
+                "who": str(row.get("who") or "").strip(),
+                "reference_url": str(row.get("reference_url") or "").strip(),
+                "comment": str(row.get("comment") or "").strip(),
+                "done": "__YES__" if to_bool(row.get("done")) else "__NO__",
+            }
+        )
+    return formatted
+
+
 def parse_master_price_rows_from_form(form: Any) -> list[dict[str, Any]]:
     row_ids = [str(value).strip() for value in form.getlist("price_row_id")]
     services = [str(value).strip() for value in form.getlist("price_service")]
@@ -10725,6 +10951,7 @@ def card_fields_for_sync() -> list[str]:
         "photoset_currency",
         "photoset_comment",
         "photoset_props_checklist_json",
+        "photoset_storyboard_rows_json",
         "performance_track",
         "performance_video_bg_url",
         "performance_script",
@@ -10837,6 +11064,7 @@ MOBILE_CARD_LIST_FIELDS = {
     "photographers_json",
     "studios_json",
     "photoset_props_checklist_json",
+    "photoset_storyboard_rows_json",
     "references_json",
     "pose_references_json",
     "unknown_prices_json",
@@ -11104,6 +11332,9 @@ def apply_mobile_card_payload(card: CosplanCard, payload: dict[str, Any]) -> Non
             continue
         setattr(card, field, value)
     card.status_percent = normalize_status_percent(card.status_percent)
+    card.photoset_storyboard_rows_json = normalize_photoset_storyboard_rows(
+        as_list(card.photoset_storyboard_rows_json)
+    )
     if not (card.character_name or "").strip():
         card.character_name = "Без имени"
 
@@ -11985,6 +12216,44 @@ def build_premium_user_rows(db: Session) -> list[dict[str, Any]]:
             }
         )
     return rows
+
+
+def build_home_premium_channel_ad(db: Session) -> dict[str, Any] | None:
+    access_entries = get_premium_access_entries(db, include_expired=False)
+    if not access_entries:
+        return None
+    premium_ids = [
+        int(item["user_id"])
+        for item in access_entries
+        if parse_positive_int(str(item.get("user_id", "")).strip())
+    ]
+    if not premium_ids:
+        return None
+
+    premium_users = db.execute(select(User).where(User.id.in_(premium_ids))).scalars().all()
+    if not premium_users:
+        return None
+
+    candidates: list[dict[str, Any]] = []
+    for premium_user in premium_users:
+        ad_settings = get_premium_channel_ad_settings(db, int(premium_user.id))
+        avatar_path = str(ad_settings.get("avatar_path") or "").strip()
+        description = str(ad_settings.get("text") or "").strip()
+        channel_url = str(ad_settings.get("url") or "").strip()
+        if not avatar_path or not description or not channel_url:
+            continue
+        candidates.append(
+            {
+                "user_id": int(premium_user.id),
+                "author_alias": f"@{preferred_user_alias(premium_user)}",
+                "avatar_path": avatar_path,
+                "description": description[:PREMIUM_CHANNEL_AD_TEXT_MAX_LENGTH],
+                "channel_url": channel_url,
+            }
+        )
+    if not candidates:
+        return None
+    return secrets.choice(candidates)
 
 
 def build_premium_alias_options(db: Session) -> list[str]:
@@ -13181,6 +13450,7 @@ def get_card_form_values(card: CosplanCard | None = None, *, actor_user_id: int 
             "photoset_currency": "RUB",
             "photoset_comment": "",
             "photoset_props_checklist_json": [],
+            "photoset_storyboard_rows_json": [],
             "photoset_props_checklist_input": "",
             "performance_track": "",
             "performance_video_bg_url": "",
@@ -13326,6 +13596,9 @@ def get_card_form_values(card: CosplanCard | None = None, *, actor_user_id: int 
         "photoset_currency": card.photoset_currency or "RUB",
         "photoset_comment": card.photoset_comment or "",
         "photoset_props_checklist_json": format_checklist_for_form(as_list(card.photoset_props_checklist_json)),
+        "photoset_storyboard_rows_json": format_photoset_storyboard_rows_for_form(
+            as_list(card.photoset_storyboard_rows_json)
+        ),
         "performance_track": card.performance_track or "",
         "performance_video_bg_url": card.performance_video_bg_url or "",
         "performance_script": card.performance_script or "",
@@ -14801,6 +15074,7 @@ def index(request: Request, db: Session = Depends(get_db)):
     if user:
         today = date.today()
         activity_leaderboard = build_home_activity_leaderboard(db, limit=10)
+        premium_channel_ad = build_home_premium_channel_ad(db)
         news_items = db.execute(
             select(HomeNews).order_by(HomeNews.created_at.desc(), HomeNews.id.desc()).limit(40)
         ).scalars().all()
@@ -14844,6 +15118,7 @@ def index(request: Request, db: Session = Depends(get_db)):
             unread_notifications=unread_notifications,
             news_items=news_items,
             activity_leaderboard=activity_leaderboard,
+            premium_channel_ad=premium_channel_ad,
             can_manage_news=is_moderator_user(user),
             mergeable_duplicate_notification_ids=mergeable_duplicate_notification_ids,
         )
@@ -15562,7 +15837,7 @@ async def mobile_sync_api(request: Request, db: Session = Depends(get_db)) -> di
 
 
 def can_view_admin_dashboard(user: User | None) -> bool:
-    return user_is_special(user)
+    return is_primary_admin_user(user)
 
 
 def build_admin_city_stats(db: Session) -> list[dict[str, Any]]:
@@ -16318,6 +16593,11 @@ def profile_page(request: Request, db: Session = Depends(get_db)):
     profile_social_values = get_user_profile_social_values(db, user.id)
     profile_about_markdown = get_user_option_value(db, user.id, PROFILE_ABOUT_MARKDOWN_GROUP)
     profile_photo_urls = get_user_profile_photo_urls(db, user.id)
+    premium_channel_ad_settings = (
+        get_premium_channel_ad_settings(db, user.id)
+        if can_customize_premium_nick_color
+        else {"avatar_path": "", "text": "", "url": ""}
+    )
 
     return template_response(
         request,
@@ -16334,6 +16614,9 @@ def profile_page(request: Request, db: Session = Depends(get_db)):
         profile_gallery_input="\n".join(profile_photo_urls),
         can_customize_premium_nick_color=can_customize_premium_nick_color,
         premium_nick_color=saved_premium_nick_color or "#38bdf8",
+        premium_channel_ad_avatar_path=str(premium_channel_ad_settings.get("avatar_path") or ""),
+        premium_channel_ad_text=str(premium_channel_ad_settings.get("text") or ""),
+        premium_channel_ad_url=str(premium_channel_ad_settings.get("url") or ""),
     )
 
 
@@ -16358,12 +16641,29 @@ async def profile_update(request: Request, db: Session = Depends(get_db)):
     can_customize_premium_nick_color = bool(getattr(user, "_is_premium_user", False))
     premium_nick_color_raw = str(form.get("premium_nick_color", "")).strip()
     premium_nick_color = normalize_premium_nick_color(premium_nick_color_raw)
+    premium_channel_ad_avatar_raw = str(form.get("premium_channel_ad_avatar", "")).strip()
+    premium_channel_ad_text_raw = normalize_text_line_breaks(str(form.get("premium_channel_ad_text", "")).strip())
+    premium_channel_ad_url_raw = str(form.get("premium_channel_ad_url", "")).strip()
     new_password = str(form.get("new_password", "")).strip()
     new_password_confirm = str(form.get("new_password_confirm", "")).strip()
 
     if can_customize_premium_nick_color and premium_nick_color_raw and not premium_nick_color:
         add_flash(request, "Укажите корректный HEX-цвет в формате #RRGGBB.", "error")
         return redirect("/profile")
+
+    premium_channel_ad_avatar = normalize_premium_channel_ad_avatar(premium_channel_ad_avatar_raw)
+    premium_channel_ad_text = normalize_premium_channel_ad_text(premium_channel_ad_text_raw)
+    premium_channel_ad_url = normalize_premium_channel_ad_url(premium_channel_ad_url_raw)
+    if can_customize_premium_nick_color:
+        if premium_channel_ad_avatar_raw and not premium_channel_ad_avatar:
+            add_flash(request, "Укажите корректный URL аватарки ТГК (https://... или /media/...).", "error")
+            return redirect("/profile")
+        if len(premium_channel_ad_text) > PREMIUM_CHANNEL_AD_TEXT_MAX_LENGTH:
+            add_flash(request, f"Краткое описание ТГК слишком длинное (до {PREMIUM_CHANNEL_AD_TEXT_MAX_LENGTH} символов).", "error")
+            return redirect("/profile")
+        if premium_channel_ad_url_raw and not premium_channel_ad_url:
+            add_flash(request, "Укажите корректную ссылку на Telegram-канал.", "error")
+            return redirect("/profile")
 
     profile_social_values: dict[str, str] = {}
     for field_key, field_label, _option_group in PROFILE_SOCIAL_OPTION_FIELDS:
@@ -16445,6 +16745,9 @@ async def profile_update(request: Request, db: Session = Depends(get_db)):
     replace_user_option_values(db, user.id, PROFILE_PHOTO_URL_GROUP, profile_photo_urls)
     if can_customize_premium_nick_color:
         set_user_option_value(db, user.id, PREMIUM_NICK_COLOR_GROUP, premium_nick_color)
+        set_user_option_value(db, user.id, PREMIUM_CHANNEL_AD_AVATAR_GROUP, premium_channel_ad_avatar)
+        set_user_option_value(db, user.id, PREMIUM_CHANNEL_AD_TEXT_GROUP, premium_channel_ad_text)
+        set_user_option_value(db, user.id, PREMIUM_CHANNEL_AD_URL_GROUP, premium_channel_ad_url)
     for field_key, _field_label, option_group in PROFILE_SOCIAL_OPTION_FIELDS:
         set_user_option_value(db, user.id, option_group, profile_social_values.get(field_key, ""))
 
@@ -16592,6 +16895,15 @@ def cosplan_list(
             for item in as_list(card.photoset_props_checklist_json):
                 if isinstance(item, dict):
                     searchable.append(str(item.get("text", "")))
+            for item in as_list(card.photoset_storyboard_rows_json):
+                if isinstance(item, dict):
+                    searchable.extend(
+                        [
+                            str(item.get("who", "")),
+                            str(item.get("reference_url", "")),
+                            str(item.get("comment", "")),
+                        ]
+                    )
             coproplayers = as_list(card.coproplayers_json) or as_list(card.coproplayer_nicks_json)
             searchable.extend(coproplayers)
             searchable.extend(
@@ -17359,6 +17671,7 @@ def cosplan_new(request: Request, db: Session = Depends(get_db)):
         editing=False,
         card_id=None,
         form=form_values,
+        can_use_premium_storyboard=user_has_premium_status(db, user),
         **card_options(db, user, current_card_id=None, related_cards_user_id=user.id),
     )
 
@@ -17570,6 +17883,7 @@ def cosplan_detail(card_id: int, request: Request, db: Session = Depends(get_db)
         costume_hardware_rows=as_list(card.costume_hardware_rows_json),
         craft_parts=as_list(card.craft_parts_json),
         photoset_props_checklist=format_checklist_for_form(as_list(card.photoset_props_checklist_json)),
+        photoset_storyboard_rows=normalize_photoset_storyboard_rows(as_list(card.photoset_storyboard_rows_json)),
         pinterest_embed_src=pinterest_embed_src,
         looks_like_url=looks_like_url,
         is_mp3_url=is_mp3_url,
@@ -17702,6 +18016,7 @@ def cosplan_edit(card_id: int, request: Request, db: Session = Depends(get_db)):
         editing=True,
         card_id=card.id,
         form=get_card_form_values(card, actor_user_id=user.id),
+        can_use_premium_storyboard=user_has_premium_status(db, user),
         **card_options(
             db,
             owner_for_options,
@@ -17977,6 +18292,12 @@ def save_card_from_form(form: Any, card: CosplanCard, user: User, db: Session) -
     card.photoset_currency = str(form.get("photoset_currency", "")).strip() or None
     card.photoset_comment = str(form.get("photoset_comment", "")).strip() or None
     card.photoset_props_checklist_json = parse_checklist_rows_from_form(form, "photoset_prop")
+    if user_has_premium_status(db, user):
+        card.photoset_storyboard_rows_json = parse_photoset_storyboard_rows_from_form(form)
+    else:
+        card.photoset_storyboard_rows_json = normalize_photoset_storyboard_rows(
+            as_list(card.photoset_storyboard_rows_json)
+        )
 
     card.performance_track = str(form.get("performance_track", "")).strip() or None
     card.performance_video_bg_url = str(form.get("performance_video_bg_url", "")).strip() or None

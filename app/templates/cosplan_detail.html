@@ -345,7 +345,7 @@
 {% endif %}
 
 {% set has_photoset_breakdown = card.photoset_photographer_price is not none or card.photoset_studio_price is not none or card.photoset_props_price is not none or card.photoset_extra_price is not none or 'photoset_photographer_price' in unknown_fields or 'photoset_studio_price' in unknown_fields or 'photoset_props_price' in unknown_fields or 'photoset_extra_price' in unknown_fields %}
-{% set has_photoset = photographers or studios or card.photoset_date or has_photoset_breakdown or card.photoset_price is not none or 'photoset_price' in unknown_fields or card.photoset_comment or photoset_props_checklist %}
+{% set has_photoset = photographers or studios or card.photoset_date or has_photoset_breakdown or card.photoset_price is not none or 'photoset_price' in unknown_fields or card.photoset_comment or photoset_props_checklist or photoset_storyboard_rows %}
 {% set has_coproplayers = coproplayer_people or coproplayers_display %}
 {% if has_photoset %}
 <section class="box">
@@ -373,6 +373,41 @@
         <li>{% if item.done == '__YES__' %}☑{% else %}☐{% endif %} {{ item.text }}</li>
       {% endfor %}
     </ul>
+  {% endif %}
+
+  {% if photoset_storyboard_rows %}
+    <h3>План раскадровки</h3>
+    <div class="table-wrap">
+      <table class="table">
+        <thead>
+          <tr>
+            <th>Отснято</th>
+            <th>Кто на фото</th>
+            <th>Референс фотографии</th>
+            <th>Комментарий</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in photoset_storyboard_rows %}
+            <tr>
+              <td>{% if row.done %}☑{% else %}☐{% endif %}</td>
+              <td>{{ row.who or "—" }}</td>
+              <td>
+                {% if row.reference_url %}
+                  <a href="{{ row.reference_url }}" target="_blank" rel="noreferrer">{{ row.reference_url }}</a>
+                  <div class="top-offset">
+                    <img src="{{ row.reference_url }}" alt="Референс кадра" loading="lazy" style="max-width: 150px; border-radius: 10px; border: 1px solid #d5e3ee;" />
+                  </div>
+                {% else %}
+                  —
+                {% endif %}
+              </td>
+              <td>{{ row.comment|render_markdown if row.comment else "—" }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
   {% endif %}
 </section>
 {% endif %}

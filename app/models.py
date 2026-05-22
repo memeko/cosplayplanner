@@ -355,6 +355,7 @@ class CosplanCard(Base):
     photoset_currency = Column(String(16), nullable=True)
     photoset_comment = Column(Text, nullable=True)
     photoset_props_checklist_json = Column(JSON, nullable=False, default=list)
+    photoset_storyboard_rows_json = Column(JSON, nullable=False, default=list)
     performance_track = Column(String(255), nullable=True)
     performance_video_bg_url = Column(Text, nullable=True)
     performance_script = Column(Text, nullable=True)
