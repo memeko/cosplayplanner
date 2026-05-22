@@ -492,13 +492,23 @@
         if (!root) {
           return;
         }
-        if (root instanceof Element && (root.matches(".nick-special") || root.matches("a.user-alias-link"))) {
+        if (
+          root instanceof Element
+          && (
+            root.matches(".nick-special")
+            || root.matches("a.user-alias-link")
+            || root.matches('a[href^="/users/"]')
+            || root.matches('a[href*="/users/"]')
+          )
+        ) {
           applyNickColor(root);
         }
         if (!(root instanceof Element) && !(root instanceof Document)) {
           return;
         }
-        root.querySelectorAll(".nick-special, a.user-alias-link").forEach(applyNickColor);
+        root
+          .querySelectorAll('.nick-special, a.user-alias-link, a[href^="/users/"], a[href*="/users/"]')
+          .forEach(applyNickColor);
       }
 
       document.addEventListener("DOMContentLoaded", function () {
