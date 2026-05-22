@@ -432,6 +432,91 @@
       }
     })();
   </script>
+  <script>
+    (function () {
+      const colorMap = {{ premium_nick_colors_by_alias|tojson }};
+      if (!colorMap || typeof colorMap !== "object") {
+        return;
+      }
+
+      function normalizeAliasValue(rawValue) {
+        let value = String(rawValue || "").trim();
+        if (!value) return "";
+        if (value.startsWith("@")) {
+          value = value.slice(1);
+        } else {
+          const atIndex = value.indexOf("@");
+          if (atIndex >= 0) {
+            value = value.slice(atIndex + 1);
+          }
+        }
+        value = value.replace(/[.,;:!?)\]"'»]+$/u, "").trim();
+        value = value.replace(/\s+/gu, " ");
+        return value.toLowerCase();
+      }
+
+      function aliasFromElement(node) {
+        if (!(node instanceof Element)) {
+          return "";
+        }
+        if (node instanceof HTMLAnchorElement) {
+          const href = String(node.getAttribute("href") || "");
+          const match = href.match(/\/users\/([^/?#]+)/u);
+          if (match && match[1]) {
+            try {
+              return normalizeAliasValue(decodeURIComponent(match[1]));
+            } catch (_) {
+              return normalizeAliasValue(match[1]);
+            }
+          }
+        }
+        return normalizeAliasValue(node.textContent || "");
+      }
+
+      function applyNickColor(node) {
+        if (!(node instanceof Element)) {
+          return;
+        }
+        const alias = aliasFromElement(node);
+        if (!alias) {
+          return;
+        }
+        const color = String(colorMap[alias] || "").trim();
+        if (!color) {
+          return;
+        }
+        node.style.color = color;
+      }
+
+      function applyNickColors(root) {
+        if (!root) {
+          return;
+        }
+        if (root instanceof Element && (root.matches(".nick-special") || root.matches("a.user-alias-link"))) {
+          applyNickColor(root);
+        }
+        if (!(root instanceof Element) && !(root instanceof Document)) {
+          return;
+        }
+        root.querySelectorAll(".nick-special, a.user-alias-link").forEach(applyNickColor);
+      }
+
+      document.addEventListener("DOMContentLoaded", function () {
+        applyNickColors(document);
+      });
+
+      if (typeof MutationObserver !== "undefined") {
+        const observer = new MutationObserver(function (mutations) {
+          mutations.forEach(function (mutation) {
+            mutation.addedNodes.forEach(function (node) {
+              applyNickColors(node);
+            });
+          });
+        });
+        observer.observe(document.body, { childList: true, subtree: true });
+      }
+    })();
+  </script>
   {% endif %}
   {% block scripts %}{% endblock %}
 </body>

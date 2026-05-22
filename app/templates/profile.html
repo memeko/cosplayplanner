@@ -98,6 +98,23 @@
       </label>
     </div>
 
+    {% if can_customize_premium_nick_color %}
+      <h3>Премиум-цвет ника</h3>
+      <div class="grid two-col">
+        <label>
+          Цвет отображения ника
+          <input type="color" name="premium_nick_color" value="{{ premium_nick_color }}" />
+        </label>
+        <div>
+          <p class="meta">Предпросмотр</p>
+          <p>
+            <span class="nick-special" style="color: {{ premium_nick_color }};">@{{ user.cosplay_nick or user.username }}</span>
+          </p>
+          <p class="muted">Цвет применяется к вашему нику по сайту, пока активен премиум.</p>
+        </div>
+      </div>
+    {% endif %}
+
     <h3>Социальные сети</h3>
     <div class="grid two-col">
       {% for field_key, field_label, _group in profile_social_fields %}

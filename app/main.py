@@ -500,6 +500,7 @@ PROFILE_ABOUT_MARKDOWN_GROUP = "profile_about_markdown"
 PROFILE_PHOTO_URL_GROUP = "profile_photo_url"
 PREMIUM_USER_ID_GROUP = "premium_user_id"
 PREMIUM_USER_ACCESS_GROUP = "premium_user_access"
+PREMIUM_NICK_COLOR_GROUP = "premium_nick_color"
 PREMIUM_DURATION_MONTH_1 = "month_1"
 PREMIUM_DURATION_MONTH_3 = "month_3"
 PREMIUM_DURATION_MONTH_6 = "month_6"
@@ -2094,6 +2095,7 @@ def nick_is_special(value: str | None) -> bool:
 
 
 PREMIUM_USER_IDS_CACHE: set[int] = set()
+PREMIUM_NICK_COLORS_BY_ALIAS_CACHE: dict[str, str] = {}
 
 
 def is_primary_admin_user(user: User | None) -> bool:
@@ -11691,6 +11693,20 @@ def normalize_premium_duration(value: str | None) -> str:
     return PREMIUM_DURATION_MONTH_1
 
 
+def normalize_premium_nick_color(value: str | None) -> str:
+    normalized = str(value or "").strip().lower()
+    if re.fullmatch(r"#[0-9a-f]{6}", normalized):
+        return normalized
+    return ""
+
+
+def premium_nick_color_for_alias(alias: str | None) -> str:
+    normalized = normalize_username(alias).casefold()
+    if not normalized:
+        return ""
+    return PREMIUM_NICK_COLORS_BY_ALIAS_CACHE.get(normalized, "")
+
+
 def encode_premium_access_value(user_id: int, expires_on: date | None) -> str:
     payload = {
         "user_id": int(user_id),
@@ -11815,12 +11831,48 @@ def premium_expires_label(expires_on: date | None) -> str:
 
 
 def refresh_premium_user_ids_cache(db: Session) -> None:
-    global PREMIUM_USER_IDS_CACHE
+    global PREMIUM_USER_IDS_CACHE, PREMIUM_NICK_COLORS_BY_ALIAS_CACHE
     PREMIUM_USER_IDS_CACHE = {
         int(item["user_id"])
         for item in get_premium_access_entries(db, include_expired=False)
         if parse_positive_int(str(item.get("user_id", "")).strip())
     }
+    PREMIUM_NICK_COLORS_BY_ALIAS_CACHE = {}
+    if not PREMIUM_USER_IDS_CACHE:
+        return
+
+    premium_users = db.execute(select(User).where(User.id.in_(PREMIUM_USER_IDS_CACHE))).scalars().all()
+    if not premium_users:
+        return
+    premium_user_ids = [int(item.id) for item in premium_users if item and item.id]
+    if not premium_user_ids:
+        return
+
+    color_rows = db.execute(
+        select(UserOption).where(
+            UserOption.user_id.in_(premium_user_ids),
+            UserOption.group == PREMIUM_NICK_COLOR_GROUP,
+        )
+    ).scalars().all()
+    color_by_user_id: dict[int, str] = {}
+    for row in color_rows:
+        user_id = parse_positive_int(str(getattr(row, "user_id", "")).strip())
+        if not user_id:
+            continue
+        color_value = normalize_premium_nick_color(getattr(row, "value", ""))
+        if not color_value:
+            continue
+        color_by_user_id.setdefault(int(user_id), color_value)
+
+    for premium_user in premium_users:
+        color_value = color_by_user_id.get(int(premium_user.id))
+        if not color_value:
+            continue
+        for alias in user_aliases(premium_user):
+            alias_key = normalize_username(alias).casefold()
+            if not alias_key:
+                continue
+            PREMIUM_NICK_COLORS_BY_ALIAS_CACHE.setdefault(alias_key, color_value)
 
 
 def build_premium_user_rows(db: Session) -> list[dict[str, Any]]:
@@ -12774,6 +12826,8 @@ def template_response(
         "project_name": PROJECT_NAME,
         "nick_is_special": nick_is_special,
         "user_is_special": user_is_special,
+        "premium_nick_color_for_alias": premium_nick_color_for_alias,
+        "premium_nick_colors_by_alias": PREMIUM_NICK_COLORS_BY_ALIAS_CACHE,
         "user_avatar_url": user_avatar_url,
         "user_profile_url_for_alias": user_profile_url_for_alias,
         "user_profile_url_for_user": user_profile_url_for_user,
@@ -16048,6 +16102,10 @@ def profile_page(request: Request, db: Session = Depends(get_db)):
     if not user:
         return redirect("/login")
 
+    can_customize_premium_nick_color = bool(getattr(user, "_is_premium_user", False))
+    saved_premium_nick_color = normalize_premium_nick_color(
+        get_user_option_value(db, user.id, PREMIUM_NICK_COLOR_GROUP)
+    )
     saved_bot_secret_code = get_secret_user_option_value(db, user.id, PROFILE_TELEGRAM_SECRET_CODE_GROUP)
     has_legacy_bot_secret_without_reveal = bool((user.telegram_secret_code_hash or "").strip() and not saved_bot_secret_code)
     profile_social_values = get_user_profile_social_values(db, user.id)
@@ -16067,6 +16125,8 @@ def profile_page(request: Request, db: Session = Depends(get_db)):
         profile_about_markdown=profile_about_markdown,
         profile_photo_urls=profile_photo_urls,
         profile_gallery_input="\n".join(profile_photo_urls),
+        can_customize_premium_nick_color=can_customize_premium_nick_color,
+        premium_nick_color=saved_premium_nick_color or "#38bdf8",
     )
 
 
@@ -16088,8 +16148,15 @@ async def profile_update(request: Request, db: Session = Depends(get_db)):
     telegram_secret_code = str(form.get("telegram_secret_code", "")).strip()
     profile_about_markdown = normalize_text_line_breaks(str(form.get("profile_about_markdown", "")).strip())
     profile_gallery_input = str(form.get("profile_gallery_input", ""))
+    can_customize_premium_nick_color = bool(getattr(user, "_is_premium_user", False))
+    premium_nick_color_raw = str(form.get("premium_nick_color", "")).strip()
+    premium_nick_color = normalize_premium_nick_color(premium_nick_color_raw)
     new_password = str(form.get("new_password", "")).strip()
     new_password_confirm = str(form.get("new_password_confirm", "")).strip()
+
+    if can_customize_premium_nick_color and premium_nick_color_raw and not premium_nick_color:
+        add_flash(request, "Укажите корректный HEX-цвет в формате #RRGGBB.", "error")
+        return redirect("/profile")
 
     profile_social_values: dict[str, str] = {}
     for field_key, field_label, _option_group in PROFILE_SOCIAL_OPTION_FIELDS:
@@ -16169,6 +16236,8 @@ async def profile_update(request: Request, db: Session = Depends(get_db)):
 
     set_user_option_value(db, user.id, PROFILE_ABOUT_MARKDOWN_GROUP, profile_about_markdown)
     replace_user_option_values(db, user.id, PROFILE_PHOTO_URL_GROUP, profile_photo_urls)
+    if can_customize_premium_nick_color:
+        set_user_option_value(db, user.id, PREMIUM_NICK_COLOR_GROUP, premium_nick_color)
     for field_key, _field_label, option_group in PROFILE_SOCIAL_OPTION_FIELDS:
         set_user_option_value(db, user.id, option_group, profile_social_values.get(field_key, ""))
 
