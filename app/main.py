@@ -74,6 +74,7 @@ from .models import (
     CommunityStudio,
     CommunityStudioComment,
     ContentPlanPost,
+    ContentChannelPost,
     CosplanCard,
     Festival,
     FestivalAnnouncement,
@@ -479,6 +480,8 @@ CONTENT_TELEGRAM_CHAT_GROUP = "content_telegram_chat"
 CONTENT_TELEGRAM_PACK_GROUP = "content_telegram_premium_pack_id"
 CONTENT_TELEGRAM_CHANNEL_GROUP = "content_telegram_channel"
 CONTENT_TELEGRAM_PREMIUM_EMOJI_GROUP = "content_telegram_premium_emoji"
+CONTENT_TELEGRAM_UPDATES_OFFSET_GROUP = "content_telegram_updates_offset"
+CONTENT_TELEGRAM_UPDATES_TOKEN_FINGERPRINT_GROUP = "content_telegram_updates_token_fingerprint"
 CONTENT_VK_TOKEN_GROUP = "content_vk_api_token"
 CONTENT_VK_GROUP_GROUP = "content_vk_group"
 CONTENT_PINTEREST_ACCESS_TOKEN_GROUP = "content_pinterest_access_token"
@@ -556,6 +559,22 @@ CONTENT_TELEGRAM_IMAGE_RETENTION_HOURS = max(
 CONTENT_TELEGRAM_LOOP_SLEEP_SECONDS = max(
     15,
     min(300, int(os.getenv("CONTENT_TELEGRAM_LOOP_SLEEP", "60"))),
+)
+CONTENT_TELEGRAM_CHANNEL_UPDATES_BATCH_LIMIT = max(
+    10,
+    min(100, int(os.getenv("CONTENT_TELEGRAM_CHANNEL_UPDATES_BATCH_LIMIT", "100"))),
+)
+CONTENT_TELEGRAM_CHANNEL_SYNC_BATCHES_PER_USER = max(
+    1,
+    min(10, int(os.getenv("CONTENT_TELEGRAM_CHANNEL_SYNC_BATCHES_PER_USER", "4"))),
+)
+CONTENT_TELEGRAM_CHANNEL_POST_RETENTION_DAYS = max(
+    7,
+    min(730, int(os.getenv("CONTENT_TELEGRAM_CHANNEL_POST_RETENTION_DAYS", "365"))),
+)
+CONTENT_TELEGRAM_CHANNEL_POSTS_MAX_PER_USER = max(
+    100,
+    min(10000, int(os.getenv("CONTENT_TELEGRAM_CHANNEL_POSTS_MAX_PER_USER", "3000"))),
 )
 THREADS_LIBRARY_UNAVAILABLE_TEXT = "Интеграция Threads сейчас временно недоступна на сервере. Попробуйте позже."
 THREADS_API_IMPORT_PATHS = ("threads_api.src.threads_api", "threads_api.threads_api", "threads_api")
@@ -1455,6 +1474,8 @@ def apply_schema_migrations() -> None:
             WorkShiftDay.__table__.create(bind=conn, checkfirst=True)
         if "content_plan_posts" not in existing_tables:
             ContentPlanPost.__table__.create(bind=conn, checkfirst=True)
+        if "content_channel_posts" not in existing_tables:
+            ContentChannelPost.__table__.create(bind=conn, checkfirst=True)
         if "title_entries" not in existing_tables:
             TitleEntry.__table__.create(bind=conn, checkfirst=True)
         if "password_reset_tokens" not in existing_tables:
@@ -6043,6 +6064,15 @@ def build_content_post_plain_message(post: ContentPlanPost, rubric_tag: str | No
     return append_rubric_tag_to_plain_message(fallback_message.strip(), rubric_tag)
 
 
+def build_content_external_channel_preview(text_value: str | None, *, limit: int = 30) -> str:
+    safe_limit = max(10, min(int(limit or 30), 120))
+    compact = " ".join(str(text_value or "").split()).strip()
+    if not compact:
+        compact = "Пост без текста"
+    preview = compact[:safe_limit].rstrip()
+    return (preview + "...") if preview else ""
+
+
 def first_content_post_external_link(post: ContentPlanPost) -> str:
     candidates = extract_urls_from_text(post.telegram_body_html or "") + extract_urls_from_text(post.description or "")
     for candidate in candidates:
@@ -6771,7 +6801,7 @@ def content_calendar_grid(
     matrix = calendar_builder.monthdayscalendar(year, month)
 
     day_colors: dict[int, list[str]] = defaultdict(list)
-    day_items: dict[int, list[dict[str, str]]] = defaultdict(list)
+    day_items: dict[int, list[dict[str, Any]]] = defaultdict(list)
     for row in content_rows:
         publish_date = row.get("date")
         if not isinstance(publish_date, date):
@@ -6782,6 +6812,8 @@ def content_calendar_grid(
         if color and color not in day_colors[publish_date.day]:
             day_colors[publish_date.day].append(color)
         title = str(row.get("title") or "").strip() or "Без названия"
+        display_title = str(row.get("display_title") or "").strip() or title
+        is_external_channel_post = bool(row.get("is_external_channel_post"))
         time_text = str(row.get("time") or "").strip()
         socials_text = str(row.get("socials_text") or "").strip()
         socials_label = socials_text if socials_text and socials_text != "—" else "другое"
@@ -6789,6 +6821,8 @@ def content_calendar_grid(
         day_items[publish_date.day].append(
             {
                 "title": title,
+                "display_title": display_title,
+                "is_external_channel_post": is_external_channel_post,
                 "socials": socials_label,
                 "time": time_text,
                 "schedule": schedule_label,
@@ -8230,6 +8264,261 @@ def start_telegram_worker() -> None:
         telegram_worker_thread.start()
 
 
+def parse_content_telegram_updates_offset(raw_value: str | None) -> int:
+    parsed = parse_positive_int(str(raw_value or "").strip())
+    return int(parsed or 0)
+
+
+def extract_content_telegram_channel_message_text(payload: dict[str, Any]) -> str:
+    text_value = str(payload.get("text") or payload.get("caption") or "").strip()
+    if text_value:
+        return text_value
+    if payload.get("photo"):
+        return "Пост с фото"
+    if payload.get("video"):
+        return "Пост с видео"
+    if payload.get("animation"):
+        return "Пост с анимацией"
+    if payload.get("document"):
+        return "Пост с документом"
+    if payload.get("audio"):
+        return "Пост с аудио"
+    if payload.get("voice"):
+        return "Пост с голосовым сообщением"
+    if payload.get("sticker"):
+        return "Пост со стикером"
+    if payload.get("poll"):
+        poll = payload.get("poll") if isinstance(payload.get("poll"), dict) else {}
+        question = str(poll.get("question") or "").strip()
+        return question or "Пост с опросом"
+    if payload.get("media_group_id"):
+        return "Пост с медиа"
+    return "Пост без текста"
+
+
+def sync_external_telegram_channel_posts_for_user(db: Session, user: User) -> bool:
+    user_id = parse_positive_int(str(getattr(user, "id", "")).strip())
+    if not user_id:
+        return False
+
+    bot_token = str(get_secret_user_option_value(db, user_id, CONTENT_TELEGRAM_TOKEN_GROUP) or "").strip()
+    if not bot_token:
+        return False
+    available_channels = get_content_telegram_channels(db, user_id)
+    if not available_channels:
+        return False
+
+    channels_by_chat_id = {
+        normalize_telegram_target(str(channel.get("chat_id") or "").strip()): channel
+        for channel in available_channels
+        if normalize_telegram_target(str(channel.get("chat_id") or "").strip())
+    }
+    if not channels_by_chat_id:
+        return False
+
+    token_fingerprint = hashlib.sha256(bot_token.encode("utf-8")).hexdigest()[:24]
+    stored_fingerprint = str(
+        get_user_option_value(db, user_id, CONTENT_TELEGRAM_UPDATES_TOKEN_FINGERPRINT_GROUP) or ""
+    ).strip()
+    has_changes = False
+    if token_fingerprint != stored_fingerprint:
+        set_user_option_value(db, user_id, CONTENT_TELEGRAM_UPDATES_TOKEN_FINGERPRINT_GROUP, token_fingerprint)
+        set_user_option_value(db, user_id, CONTENT_TELEGRAM_UPDATES_OFFSET_GROUP, "")
+        has_changes = True
+
+    next_offset = parse_content_telegram_updates_offset(
+        get_user_option_value(db, user_id, CONTENT_TELEGRAM_UPDATES_OFFSET_GROUP)
+    )
+    max_seen_update_id = next_offset - 1 if next_offset > 0 else -1
+    for _ in range(CONTENT_TELEGRAM_CHANNEL_SYNC_BATCHES_PER_USER):
+        request_payload: dict[str, Any] = {
+            "limit": CONTENT_TELEGRAM_CHANNEL_UPDATES_BATCH_LIMIT,
+            "timeout": 0,
+            "allowed_updates": ["channel_post", "edited_channel_post"],
+        }
+        if next_offset > 0:
+            request_payload["offset"] = next_offset
+        try:
+            payload = telegram_custom_request(
+                bot_token,
+                "getUpdates",
+                json_payload=request_payload,
+            )
+        except RuntimeError:
+            break
+
+        updates = payload.get("result")
+        if not isinstance(updates, list) or not updates:
+            break
+
+        for update in updates:
+            if not isinstance(update, dict):
+                continue
+            update_id_raw = update.get("update_id")
+            try:
+                update_id = int(update_id_raw)
+            except (TypeError, ValueError):
+                update_id = 0
+            if update_id > max_seen_update_id:
+                max_seen_update_id = update_id
+                next_offset = max_seen_update_id + 1
+
+            channel_post = update.get("channel_post")
+            if not isinstance(channel_post, dict):
+                channel_post = update.get("edited_channel_post")
+            if not isinstance(channel_post, dict):
+                continue
+
+            chat_payload = channel_post.get("chat") if isinstance(channel_post.get("chat"), dict) else {}
+            chat_id_from_event = normalize_telegram_target(str(chat_payload.get("id") or "").strip())
+            chat_username = ""
+            raw_username = str(chat_payload.get("username") or "").strip().lstrip("@")
+            if raw_username:
+                chat_username = normalize_telegram_target(f"@{raw_username}")
+
+            matched_channel = channels_by_chat_id.get(chat_id_from_event) or channels_by_chat_id.get(chat_username)
+            if not matched_channel:
+                continue
+
+            message_id = str(channel_post.get("message_id") or "").strip()
+            if not message_id:
+                continue
+
+            saved_chat_id = normalize_telegram_target(str(matched_channel.get("chat_id") or "").strip())
+            if not saved_chat_id:
+                saved_chat_id = chat_id_from_event or chat_username
+            if not saved_chat_id:
+                continue
+
+            timestamp_raw = channel_post.get("date")
+            try:
+                timestamp_value = int(timestamp_raw)
+            except (TypeError, ValueError):
+                timestamp_value = 0
+            published_at = (
+                datetime.utcfromtimestamp(timestamp_value)
+                if timestamp_value > 0
+                else datetime.utcnow()
+            )
+            chat_title = str(matched_channel.get("title") or chat_payload.get("title") or saved_chat_id).strip()[:255]
+            message_text = extract_content_telegram_channel_message_text(channel_post)
+
+            existing_row = db.execute(
+                select(ContentChannelPost).where(
+                    ContentChannelPost.user_id == user_id,
+                    ContentChannelPost.platform == "telegram",
+                    ContentChannelPost.chat_id == saved_chat_id,
+                    ContentChannelPost.message_id == message_id,
+                )
+            ).scalar_one_or_none()
+            if existing_row:
+                changed = False
+                if existing_row.chat_title != chat_title:
+                    existing_row.chat_title = chat_title
+                    changed = True
+                if (existing_row.message_text or "") != message_text:
+                    existing_row.message_text = message_text
+                    changed = True
+                if existing_row.published_at != published_at:
+                    existing_row.published_at = published_at
+                    changed = True
+                if changed:
+                    has_changes = True
+                continue
+
+            db.add(
+                ContentChannelPost(
+                    user_id=user_id,
+                    platform="telegram",
+                    chat_id=saved_chat_id,
+                    chat_title=chat_title,
+                    message_id=message_id,
+                    message_text=message_text,
+                    published_at=published_at,
+                )
+            )
+            has_changes = True
+
+        if len(updates) < CONTENT_TELEGRAM_CHANNEL_UPDATES_BATCH_LIMIT:
+            break
+
+    if max_seen_update_id >= 0:
+        next_offset_value = str(max_seen_update_id + 1)
+        current_offset_value = str(
+            get_user_option_value(db, user_id, CONTENT_TELEGRAM_UPDATES_OFFSET_GROUP) or ""
+        ).strip()
+        if next_offset_value != current_offset_value:
+            set_user_option_value(db, user_id, CONTENT_TELEGRAM_UPDATES_OFFSET_GROUP, next_offset_value)
+            has_changes = True
+
+    return has_changes
+
+
+def cleanup_external_telegram_channel_posts_for_user(db: Session, user_id: int) -> bool:
+    if user_id <= 0:
+        return False
+    has_changes = False
+    cutoff_dt = datetime.utcnow() - timedelta(days=CONTENT_TELEGRAM_CHANNEL_POST_RETENTION_DAYS)
+    outdated_rows = db.execute(
+        select(ContentChannelPost).where(
+            ContentChannelPost.user_id == user_id,
+            ContentChannelPost.platform == "telegram",
+            ContentChannelPost.published_at < cutoff_dt,
+        )
+    ).scalars().all()
+    for row in outdated_rows:
+        db.delete(row)
+        has_changes = True
+
+    all_rows = db.execute(
+        select(ContentChannelPost)
+        .where(
+            ContentChannelPost.user_id == user_id,
+            ContentChannelPost.platform == "telegram",
+        )
+        .order_by(ContentChannelPost.published_at.desc(), ContentChannelPost.id.desc())
+    ).scalars().all()
+    if len(all_rows) > CONTENT_TELEGRAM_CHANNEL_POSTS_MAX_PER_USER:
+        for row in all_rows[CONTENT_TELEGRAM_CHANNEL_POSTS_MAX_PER_USER:]:
+            db.delete(row)
+            has_changes = True
+    return has_changes
+
+
+def sync_external_telegram_channel_posts() -> None:
+    with SessionLocal() as db:
+        user_ids = [
+            int(item)
+            for item in db.execute(
+                select(func.distinct(UserOption.user_id)).where(
+                    UserOption.group == CONTENT_TELEGRAM_TOKEN_GROUP
+                )
+            ).scalars().all()
+            if item
+        ]
+        if not user_ids:
+            return
+
+        users = db.execute(select(User).where(User.id.in_(user_ids))).scalars().all()
+        if not users:
+            return
+
+        has_changes = False
+        for user in users:
+            try:
+                changed = sync_external_telegram_channel_posts_for_user(db, user)
+            except Exception:
+                changed = False
+            try:
+                changed = cleanup_external_telegram_channel_posts_for_user(db, int(user.id)) or changed
+            except Exception:
+                pass
+            has_changes = has_changes or changed
+
+        if has_changes:
+            db.commit()
+
+
 def cleanup_expired_content_telegram_media(db: Session) -> None:
     cutoff = datetime.utcnow() - timedelta(hours=CONTENT_TELEGRAM_IMAGE_RETENTION_HOURS)
     posts = db.execute(select(ContentPlanPost)).scalars().all()
@@ -8497,6 +8786,10 @@ def dispatch_birthday_pigeon_notifications(today_local: date | None = None) -> i
 
 def content_telegram_loop() -> None:
     while True:
+        try:
+            sync_external_telegram_channel_posts()
+        except Exception:
+            pass
         try:
             dispatch_scheduled_content_posts()
         except Exception:
@@ -16125,6 +16418,9 @@ def can_view_admin_dashboard(user: User | None) -> bool:
     return is_primary_admin_user(user)
 
 
+ADMIN_DASHBOARD_NOTIFICATIONS_PAGE_SIZE = 25
+
+
 def build_admin_city_stats(db: Session) -> list[dict[str, Any]]:
     raw_cities = db.execute(select(User.home_city)).scalars().all()
     city_counts: dict[str, int] = defaultdict(int)
@@ -16189,6 +16485,96 @@ def normalize_sqlite_date_key(value: Any) -> str:
     if not raw:
         return ""
     return raw[:10]
+
+
+def build_admin_notifications_page(
+    db: Session,
+    *,
+    page: int,
+    page_size: int = ADMIN_DASHBOARD_NOTIFICATIONS_PAGE_SIZE,
+) -> dict[str, Any]:
+    safe_page_size = max(5, min(int(page_size or ADMIN_DASHBOARD_NOTIFICATIONS_PAGE_SIZE), 100))
+    total_notifications = int(db.execute(select(func.count(FestivalNotification.id))).scalar() or 0)
+    total_pages = max(1, (total_notifications + safe_page_size - 1) // safe_page_size) if total_notifications else 1
+    current_page = max(1, int(page or 1))
+    if current_page > total_pages:
+        current_page = total_pages
+    page_start = (current_page - 1) * safe_page_size
+
+    notifications = db.execute(
+        select(FestivalNotification)
+        .order_by(FestivalNotification.created_at.desc(), FestivalNotification.id.desc())
+        .offset(page_start)
+        .limit(safe_page_size)
+    ).scalars().all()
+
+    user_ids: set[int] = set()
+    for note in notifications:
+        if note.user_id:
+            user_ids.add(int(note.user_id))
+        if note.from_user_id:
+            user_ids.add(int(note.from_user_id))
+
+    users_by_id: dict[int, User] = {}
+    if user_ids:
+        users = db.execute(select(User).where(User.id.in_(user_ids))).scalars().all()
+        users_by_id = {int(item.id): item for item in users}
+
+    def format_admin_datetime(value: datetime | None) -> str:
+        if not isinstance(value, datetime):
+            return "—"
+        if value.tzinfo is not None:
+            local_value = value.astimezone(SITE_TIMEZONE)
+        else:
+            local_value = value
+        return local_value.strftime("%d.%m.%Y %H:%M")
+
+    rows: list[dict[str, Any]] = []
+    for note in notifications:
+        recipient = users_by_id.get(int(note.user_id)) if note.user_id else None
+        sender = users_by_id.get(int(note.from_user_id)) if note.from_user_id else None
+        delivery_channels: list[str] = []
+        if note.telegram_sent_at:
+            delivery_channels.append("Telegram")
+        if note.vk_sent_at:
+            delivery_channels.append("VK")
+        rows.append(
+            {
+                "id": int(note.id),
+                "recipient_alias": (
+                    f"@{preferred_user_alias(recipient)}"
+                    if recipient
+                    else f"ID {int(note.user_id)}"
+                ),
+                "sender_alias": (
+                    f"@{preferred_user_alias(sender)}"
+                    if sender
+                    else "Система"
+                    if not note.from_user_id
+                    else f"ID {int(note.from_user_id)}"
+                ),
+                "message_preview": build_text_preview(note.message, limit=220) or "—",
+                "is_read": bool(note.is_read),
+                "read_label": "Прочитано" if note.is_read else "Не прочитано",
+                "delivery_label": ", ".join(delivery_channels) if delivery_channels else "Не доставлено",
+                "created_at_label": format_admin_datetime(note.created_at),
+            }
+        )
+
+    page_numbers = list(range(max(1, current_page - 2), min(total_pages, current_page + 2) + 1))
+    showing_from = page_start + 1 if rows else 0
+    showing_to = page_start + len(rows)
+    return {
+        "admin_notification_rows": rows,
+        "admin_notifications_total": total_notifications,
+        "admin_notifications_current_page": current_page,
+        "admin_notifications_total_pages": total_pages,
+        "admin_notifications_page_numbers": page_numbers,
+        "admin_notifications_has_prev_page": current_page > 1,
+        "admin_notifications_has_next_page": current_page < total_pages,
+        "admin_notifications_showing_from": showing_from,
+        "admin_notifications_showing_to": showing_to,
+    }
 
 
 def build_admin_dashboard_stats(db: Session) -> dict[str, Any]:
@@ -16760,7 +17146,11 @@ def build_admin_dashboard_stats(db: Session) -> dict[str, Any]:
 
 
 @app.get("/admin/dashboard", response_class=HTMLResponse)
-def admin_dashboard(request: Request, db: Session = Depends(get_db)):
+def admin_dashboard(
+    request: Request,
+    notifications_page: int = 1,
+    db: Session = Depends(get_db),
+):
     user = current_user(request, db)
     if not user:
         return redirect("/login")
@@ -16769,7 +17159,13 @@ def admin_dashboard(request: Request, db: Session = Depends(get_db)):
         return redirect("/profile")
 
     dashboard = build_admin_dashboard_stats(db)
+    notifications_block = build_admin_notifications_page(db, page=notifications_page)
     premium_user_rows = build_premium_user_rows(db)
+    notifications_pagination_params = [
+        (key, value)
+        for key, value in request.query_params.multi_items()
+        if key != "notifications_page"
+    ]
     return template_response(
         request,
         "admin_dashboard.html",
@@ -16781,7 +17177,9 @@ def admin_dashboard(request: Request, db: Session = Depends(get_db)):
         premium_user_rows=premium_user_rows,
         premium_alias_options=build_premium_alias_options(db),
         premium_duration_options=PREMIUM_DURATION_OPTIONS,
+        notifications_pagination_query=urlencode(notifications_pagination_params, doseq=True),
         **dashboard,
+        **notifications_block,
     )
 
 
@@ -21593,6 +21991,7 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
         )
     rubric_colors = rubric_color_map(rubric_options)
     content_rows: list[dict[str, Any]] = []
+    planned_telegram_message_keys: set[tuple[str, str]] = set()
     for post in content_posts:
         row_rubric = post.rubric or "Неизвестно"
         row_color = rubric_colors.get(row_rubric, CONTENT_RUBRIC_PALETTE[0])
@@ -21614,12 +22013,37 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
         partner_user_id = parse_positive_int(str(post.shared_partner_user_id or "").strip())
         partner_user = content_partner_users_by_id.get(partner_user_id) if partner_user_id else None
         partner_alias = preferred_user_alias(partner_user) if partner_user else ""
+
+        for message_entry in as_list(post.telegram_message_ids_json):
+            if not isinstance(message_entry, dict):
+                continue
+            message_chat_id = normalize_telegram_target(str(message_entry.get("chat_id") or "").strip())
+            message_id = str(message_entry.get("message_id") or "").strip()
+            if message_chat_id and message_id:
+                planned_telegram_message_keys.add((message_chat_id, message_id))
+
+        legacy_message_id = str(post.telegram_message_id or "").strip()
+        if legacy_message_id:
+            legacy_chat_ids = [
+                normalize_telegram_target(str(channel.get("chat_id") or "").strip())
+                for channel in row_telegram_channels
+            ]
+            if not legacy_chat_ids:
+                legacy_chat_ids = [
+                    normalize_telegram_target(str(channel_id or "").strip())
+                    for channel_id in as_list(post.telegram_channels_json)
+                ]
+            for legacy_chat_id in legacy_chat_ids:
+                if legacy_chat_id:
+                    planned_telegram_message_keys.add((legacy_chat_id, legacy_message_id))
+
         content_rows.append(
             {
                 "post_id": post.id,
                 "date": post.publish_date,
                 "time": post.publish_time or "",
                 "title": post.title or "Без названия",
+                "display_title": post.title or "Без названия",
                 "description": post.description or "",
                 "socials_text": ", ".join(normalize_content_social_values(as_list(post.socials_json))) or "—",
                 "rubric": row_rubric,
@@ -21630,6 +22054,7 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
                 "is_repost": bool(post.is_repost),
                 "manual_publish_only": content_post_manual_publish_only(post),
                 "copost_alias": f"@{partner_alias}" if partner_alias else "",
+                "is_external_channel_post": False,
                 "telegram_channels_text": ", ".join(
                     str(channel.get("title") or channel.get("chat_id") or "").strip()
                     for channel in row_telegram_channels
@@ -21653,6 +22078,52 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
             }
         )
 
+    def to_site_datetime(value: datetime | None) -> datetime | None:
+        if not isinstance(value, datetime):
+            return None
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=ZoneInfo("UTC"))
+        return value.astimezone(SITE_TIMEZONE)
+
+    content_external_rows: list[dict[str, Any]] = []
+    if content_owner:
+        active_telegram_channel_ids = {
+            normalize_telegram_target(str(channel_id or "").strip())
+            for channel_id in telegram_channels_by_id.keys()
+            if normalize_telegram_target(str(channel_id or "").strip())
+        }
+        external_channel_posts = db.execute(
+            select(ContentChannelPost)
+            .where(
+                ContentChannelPost.user_id == content_owner.id,
+                ContentChannelPost.platform == "telegram",
+            )
+            .order_by(ContentChannelPost.published_at, ContentChannelPost.id)
+        ).scalars().all()
+        for external_post in external_channel_posts:
+            external_chat_id = normalize_telegram_target(str(external_post.chat_id or "").strip())
+            external_message_id = str(external_post.message_id or "").strip()
+            if not external_chat_id or not external_message_id:
+                continue
+            if active_telegram_channel_ids and external_chat_id not in active_telegram_channel_ids:
+                continue
+            if (external_chat_id, external_message_id) in planned_telegram_message_keys:
+                continue
+            posted_at_local = to_site_datetime(external_post.published_at)
+            if not posted_at_local:
+                continue
+            content_external_rows.append(
+                {
+                    "date": posted_at_local.date(),
+                    "time": posted_at_local.strftime("%H:%M"),
+                    "title": str(external_post.message_text or "").strip() or "Пост без текста",
+                    "display_title": build_content_external_channel_preview(external_post.message_text, limit=30),
+                    "socials_text": "ТГ (канал)",
+                    "rubric_color": "#cbd5e1",
+                    "is_external_channel_post": True,
+                }
+            )
+
     content_recommendations: list[dict[str, Any]] = []
     if active_view == CALENDAR_VIEW_CONTENT and content_access_state.get("has_access"):
         content_recommendations = build_content_plan_recommendations(
@@ -21668,11 +22139,17 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
         if not isinstance(publish_date, date):
             continue
         content_by_month[(publish_date.year, publish_date.month)].append(row)
+    content_external_by_month: dict[tuple[int, int], list[dict[str, Any]]] = defaultdict(list)
+    for row in content_external_rows:
+        publish_date = row.get("date")
+        if not isinstance(publish_date, date):
+            continue
+        content_external_by_month[(publish_date.year, publish_date.month)].append(row)
 
     content_month_groups: list[dict[str, Any]] = []
     content_calendar_start_index = 0
     content_current_month_key = (today.year, today.month)
-    content_month_keys = set(content_by_month.keys())
+    content_month_keys = set(content_by_month.keys()) | set(content_external_by_month.keys())
     if content_month_keys:
         content_month_keys.add(content_current_month_key)
     for year_month in sorted(content_month_keys):
@@ -21682,11 +22159,15 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
             content_by_month.get(year_month, []),
             key=lambda item: (item.get("date"), item.get("time") or "", item.get("title") or ""),
         )
+        month_grid_rows = sorted(
+            month_rows + list(content_external_by_month.get(year_month, [])),
+            key=lambda item: (item.get("date"), item.get("time") or "", item.get("title") or ""),
+        )
         content_month_groups.append(
             {
                 "title": month_label_ru(month_date),
                 "rows": month_rows,
-                "grid_weeks": content_calendar_grid(year, month, month_rows),
+                "grid_weeks": content_calendar_grid(year, month, month_grid_rows),
             }
         )
         if year_month == content_current_month_key:
@@ -22450,7 +22931,17 @@ def my_calendar_content_telegram_disconnect(request: Request, db: Session = Depe
     set_secret_user_option_value(db, content_owner.id, CONTENT_TELEGRAM_TOKEN_GROUP, "")
     set_user_option_value(db, content_owner.id, CONTENT_TELEGRAM_CHAT_GROUP, "")
     set_user_option_value(db, content_owner.id, CONTENT_TELEGRAM_PACK_GROUP, "")
+    set_user_option_value(db, content_owner.id, CONTENT_TELEGRAM_UPDATES_OFFSET_GROUP, "")
+    set_user_option_value(db, content_owner.id, CONTENT_TELEGRAM_UPDATES_TOKEN_FINGERPRINT_GROUP, "")
     replace_user_option_values(db, content_owner.id, CONTENT_TELEGRAM_CHANNEL_GROUP, [])
+    channel_posts = db.execute(
+        select(ContentChannelPost).where(
+            ContentChannelPost.user_id == content_owner.id,
+            ContentChannelPost.platform == "telegram",
+        )
+    ).scalars().all()
+    for row in channel_posts:
+        db.delete(row)
     db.commit()
     add_flash(request, "Настройки Telegram-каналов удалены. Библиотека premium-эмодзи сохранена.", "info")
     return content_calendar_redirect(request, user, content_owner=content_owner)

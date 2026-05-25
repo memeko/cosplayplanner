@@ -993,7 +993,7 @@
                             <div class="calendar-cell-items content-cell-items">
                               {% for content_item in cell.content_items[:2] %}
                                 <div class="calendar-cell-entry" title="{{ content_item.title }} — {{ content_item.schedule }}">
-                                  <div class="calendar-cell-item">{{ content_item.title }}</div>
+                                  <div class="calendar-cell-item {% if content_item.is_external_channel_post %}calendar-cell-item-external{% endif %}">{{ content_item.display_title }}</div>
                                   <div class="calendar-cell-social">{{ content_item.schedule }}</div>
                                 </div>
                               {% endfor %}
@@ -1013,6 +1013,7 @@
             </table>
           </div>
 
+          {% if group.rows %}
           <ul class="calendar-list">
             {% for item in group.rows %}
               <li>
@@ -1094,6 +1095,9 @@
               </li>
             {% endfor %}
           </ul>
+          {% else %}
+          <p class="muted">Запланированных постов в этом месяце нет.</p>
+          {% endif %}
         </div>
       {% endfor %}
     </section>

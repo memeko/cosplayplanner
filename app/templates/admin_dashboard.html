@@ -22,6 +22,63 @@
 </section>
 {% endif %}
 
+<section class="box" id="admin-notifications">
+  <div class="admin-section-head">
+    <h2>Все оповещения</h2>
+    {% if admin_notifications_total %}
+    <p class="meta">Показано {{ admin_notifications_showing_from }}–{{ admin_notifications_showing_to }} из {{ admin_notifications_total }}</p>
+    {% else %}
+    <p class="meta">Пока оповещений нет.</p>
+    {% endif %}
+  </div>
+
+  {% if admin_notification_rows %}
+  <table class="table top-offset admin-notifications-table">
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>Получатель</th>
+        <th>Отправитель</th>
+        <th>Сообщение</th>
+        <th>Статус</th>
+        <th>Доставка</th>
+        <th>Создано</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in admin_notification_rows %}
+      <tr>
+        <td>{{ row.id }}</td>
+        <td>{{ row.recipient_alias }}</td>
+        <td>{{ row.sender_alias }}</td>
+        <td class="admin-notification-message">{{ row.message_preview|render_text }}</td>
+        <td>{{ row.read_label }}</td>
+        <td>{{ row.delivery_label }}</td>
+        <td>{{ row.created_at_label }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  {% if admin_notifications_total_pages > 1 %}
+  <div class="actions-inline wrap top-offset">
+    {% if admin_notifications_has_prev_page %}
+      <a class="btn" href="/admin/dashboard?{% if notifications_pagination_query %}{{ notifications_pagination_query }}&{% endif %}notifications_page={{ admin_notifications_current_page - 1 }}#admin-notifications">← Назад</a>
+    {% endif %}
+    {% for page_number in admin_notifications_page_numbers %}
+      <a class="btn {% if page_number == admin_notifications_current_page %}btn-accent{% endif %}" href="/admin/dashboard?{% if notifications_pagination_query %}{{ notifications_pagination_query }}&{% endif %}notifications_page={{ page_number }}#admin-notifications">
+        {{ page_number }}
+      </a>
+    {% endfor %}
+    {% if admin_notifications_has_next_page %}
+      <a class="btn" href="/admin/dashboard?{% if notifications_pagination_query %}{{ notifications_pagination_query }}&{% endif %}notifications_page={{ admin_notifications_current_page + 1 }}#admin-notifications">Вперёд →</a>
+    {% endif %}
+  </div>
+  <p class="meta top-offset">Страница {{ admin_notifications_current_page }} из {{ admin_notifications_total_pages }}</p>
+  {% endif %}
+  {% endif %}
+</section>
+
 <section class="box">
   <h2>Премиум-пользователи</h2>
   {% if can_manage_premium_users %}

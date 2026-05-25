@@ -2577,6 +2577,11 @@ textarea {
   border: 1px solid rgba(255, 255, 255, 0.76);
 }
 
+.calendar-cell-item-external {
+  font-style: italic;
+  opacity: 0.62;
+}
+
 .calendar-cell-more {
   font-size: 10px;
   line-height: 1.1;
@@ -3264,6 +3269,20 @@ textarea {
 .admin-alert-info {
   border-color: rgba(59, 130, 246, 0.42);
   background: linear-gradient(150deg, rgba(225, 240, 255, 0.8), rgba(225, 240, 255, 0.5));
+}
+
+.admin-notifications-table {
+  table-layout: fixed;
+}
+
+.admin-notifications-table th,
+.admin-notifications-table td {
+  word-break: break-word;
+}
+
+.admin-notification-message {
+  white-space: normal;
+  line-height: 1.4;
 }
 
 .admin-section-head {

@@ -212,6 +212,11 @@ class User(Base):
         cascade="all, delete-orphan",
         foreign_keys="ContentPlanPost.user_id",
     )
+    content_channel_posts = relationship(
+        "ContentChannelPost",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
     title_entries = relationship(
         "TitleEntry",
         back_populates="user",
@@ -673,6 +678,33 @@ class ContentPlanPost(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
     user = relationship("User", back_populates="content_plan_posts", foreign_keys=[user_id])
+
+
+class ContentChannelPost(Base):
+    __tablename__ = "content_channel_posts"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    platform = Column(String(32), nullable=False, default="telegram", index=True)
+    chat_id = Column(String(64), nullable=False, index=True)
+    chat_title = Column(String(255), nullable=True)
+    message_id = Column(String(64), nullable=False, index=True)
+    message_text = Column(Text, nullable=True)
+    published_at = Column(DateTime(timezone=True), nullable=False, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    user = relationship("User", back_populates="content_channel_posts")
+
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "platform",
+            "chat_id",
+            "message_id",
+            name="uq_content_channel_post_unique",
+        ),
+    )
 
 
 class Festival(Base):

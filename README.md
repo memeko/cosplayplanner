@@ -61,6 +61,15 @@ uvicorn app.main:app --reload
 - `GET /healthz` — liveness.
 - `GET /readyz` — readiness (проверка SQL-запроса к БД).
 
+## Mobile sync API (Android offline)
+
+- `GET /api/mobile/bootstrap` — выгрузка профиля, карточек и фестивалей для локальной БД приложения.
+- `POST /api/mobile/sync` — пакетная синхронизация оффлайн-изменений обратно на сервер.
+
+Для конфликтов версионирования API возвращает `status: "conflict"` + `suggested_hybrid_payload`, чтобы клиент мог показать diff и спросить пользователя перед перезаписью.
+
+Подробная схема клиента и потоков синхронизации: `ANDROID_MOBILE_OFFLINE_SPEC.md`.
+
 ## Переменные окружения
 
 См. `.env.example`.
