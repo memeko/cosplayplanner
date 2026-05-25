@@ -3280,6 +3280,23 @@ textarea {
   word-break: break-word;
 }
 
+.admin-notifications-filters {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
+  gap: 10px;
+  align-items: end;
+}
+
+.admin-notifications-check-col {
+  width: 42px;
+  text-align: center;
+}
+
+.admin-notifications-check {
+  width: 16px;
+  height: 16px;
+}
+
 .admin-notification-message {
   white-space: normal;
   line-height: 1.4;

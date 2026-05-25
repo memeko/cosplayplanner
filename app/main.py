@@ -16487,23 +16487,76 @@ def normalize_sqlite_date_key(value: Any) -> str:
     return raw[:10]
 
 
+def resolve_admin_notification_user_filter(
+    db: Session,
+    raw_value: str | None,
+    *,
+    allow_system_alias: bool = False,
+) -> dict[str, Any]:
+    raw_text = str(raw_value or "").strip()
+    if not raw_text:
+        return {"raw": "", "user_id": None, "system_only": False, "is_valid": True}
+
+    normalized_alias = normalize_username(raw_text)
+    if allow_system_alias and normalized_alias.casefold() in {"system", "система"}:
+        return {"raw": raw_text, "user_id": None, "system_only": True, "is_valid": True}
+
+    parsed_user_id = parse_positive_int(raw_text)
+    if parsed_user_id:
+        return {"raw": raw_text, "user_id": parsed_user_id, "system_only": False, "is_valid": True}
+
+    matched_user = resolve_user_by_alias(db, normalized_alias)
+    if matched_user:
+        return {"raw": raw_text, "user_id": int(matched_user.id), "system_only": False, "is_valid": True}
+
+    return {"raw": raw_text, "user_id": None, "system_only": False, "is_valid": False}
+
+
 def build_admin_notifications_page(
     db: Session,
     *,
     page: int,
+    recipient_filter: str = "",
+    sender_filter: str = "",
     page_size: int = ADMIN_DASHBOARD_NOTIFICATIONS_PAGE_SIZE,
 ) -> dict[str, Any]:
     safe_page_size = max(5, min(int(page_size or ADMIN_DASHBOARD_NOTIFICATIONS_PAGE_SIZE), 100))
-    total_notifications = int(db.execute(select(func.count(FestivalNotification.id))).scalar() or 0)
+    recipient_filter_state = resolve_admin_notification_user_filter(db, recipient_filter)
+    sender_filter_state = resolve_admin_notification_user_filter(
+        db,
+        sender_filter,
+        allow_system_alias=True,
+    )
+
+    filter_conditions: list[Any] = []
+    if recipient_filter_state["raw"]:
+        if recipient_filter_state["is_valid"] and recipient_filter_state["user_id"]:
+            filter_conditions.append(FestivalNotification.user_id == int(recipient_filter_state["user_id"]))
+        else:
+            filter_conditions.append(FestivalNotification.id == -1)
+    if sender_filter_state["raw"]:
+        if sender_filter_state["system_only"]:
+            filter_conditions.append(FestivalNotification.from_user_id.is_(None))
+        elif sender_filter_state["is_valid"] and sender_filter_state["user_id"]:
+            filter_conditions.append(FestivalNotification.from_user_id == int(sender_filter_state["user_id"]))
+        else:
+            filter_conditions.append(FestivalNotification.id == -1)
+
+    count_stmt = select(func.count(FestivalNotification.id))
+    for condition in filter_conditions:
+        count_stmt = count_stmt.where(condition)
+    total_notifications = int(db.execute(count_stmt).scalar() or 0)
     total_pages = max(1, (total_notifications + safe_page_size - 1) // safe_page_size) if total_notifications else 1
     current_page = max(1, int(page or 1))
     if current_page > total_pages:
         current_page = total_pages
     page_start = (current_page - 1) * safe_page_size
 
+    notifications_stmt = select(FestivalNotification)
+    for condition in filter_conditions:
+        notifications_stmt = notifications_stmt.where(condition)
     notifications = db.execute(
-        select(FestivalNotification)
-        .order_by(FestivalNotification.created_at.desc(), FestivalNotification.id.desc())
+        notifications_stmt.order_by(FestivalNotification.created_at.desc(), FestivalNotification.id.desc())
         .offset(page_start)
         .limit(safe_page_size)
     ).scalars().all()
@@ -16574,6 +16627,14 @@ def build_admin_notifications_page(
         "admin_notifications_has_next_page": current_page < total_pages,
         "admin_notifications_showing_from": showing_from,
         "admin_notifications_showing_to": showing_to,
+        "admin_notifications_filter_recipient": str(recipient_filter_state["raw"] or ""),
+        "admin_notifications_filter_sender": str(sender_filter_state["raw"] or ""),
+        "admin_notifications_filter_recipient_invalid": bool(
+            recipient_filter_state["raw"] and not recipient_filter_state["is_valid"]
+        ),
+        "admin_notifications_filter_sender_invalid": bool(
+            sender_filter_state["raw"] and not sender_filter_state["is_valid"]
+        ),
     }
 
 
@@ -17149,6 +17210,8 @@ def build_admin_dashboard_stats(db: Session) -> dict[str, Any]:
 def admin_dashboard(
     request: Request,
     notifications_page: int = 1,
+    notifications_recipient: str = "",
+    notifications_sender: str = "",
     db: Session = Depends(get_db),
 ):
     user = current_user(request, db)
@@ -17159,13 +17222,23 @@ def admin_dashboard(
         return redirect("/profile")
 
     dashboard = build_admin_dashboard_stats(db)
-    notifications_block = build_admin_notifications_page(db, page=notifications_page)
+    notifications_block = build_admin_notifications_page(
+        db,
+        page=notifications_page,
+        recipient_filter=notifications_recipient,
+        sender_filter=notifications_sender,
+    )
     premium_user_rows = build_premium_user_rows(db)
     notifications_pagination_params = [
         (key, value)
         for key, value in request.query_params.multi_items()
         if key != "notifications_page"
     ]
+    notifications_current_query = urlencode(list(request.query_params.multi_items()), doseq=True)
+    notifications_next_url = "/admin/dashboard"
+    if notifications_current_query:
+        notifications_next_url = f"{notifications_next_url}?{notifications_current_query}"
+    notifications_next_url = f"{notifications_next_url}#admin-notifications"
     return template_response(
         request,
         "admin_dashboard.html",
@@ -17178,9 +17251,57 @@ def admin_dashboard(
         premium_alias_options=build_premium_alias_options(db),
         premium_duration_options=PREMIUM_DURATION_OPTIONS,
         notifications_pagination_query=urlencode(notifications_pagination_params, doseq=True),
+        admin_notifications_next_url=notifications_next_url,
         **dashboard,
         **notifications_block,
     )
+
+
+@app.post("/admin/notifications/mark-read")
+async def admin_mark_notifications_read(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    if not can_view_admin_dashboard(user):
+        add_flash(request, "Доступ запрещён.", "error")
+        return redirect("/profile")
+
+    form = await request.form()
+    next_url = safe_redirect_target(str(form.get("next", "")).strip(), "/admin/dashboard")
+    notification_ids = parse_id_list(form.getlist("notification_ids"))
+    if not notification_ids:
+        add_flash(request, "Выберите хотя бы одно оповещение.", "error")
+        return redirect(next_url)
+
+    notifications = db.execute(
+        select(FestivalNotification).where(FestivalNotification.id.in_(notification_ids))
+    ).scalars().all()
+    if not notifications:
+        add_flash(request, "Выбранные оповещения не найдены.", "error")
+        return redirect(next_url)
+
+    updated_count = 0
+    for note in notifications:
+        if note.is_read:
+            continue
+        note.is_read = True
+        updated_count += 1
+
+    if updated_count > 0:
+        db.commit()
+        already_read_count = len(notifications) - updated_count
+        if already_read_count > 0:
+            add_flash(
+                request,
+                f"Отмечено как прочитано: {updated_count}. Уже были прочитаны: {already_read_count}.",
+                "success",
+            )
+        else:
+            add_flash(request, f"Отмечено как прочитано: {updated_count}.", "success")
+    else:
+        add_flash(request, "Выбранные оповещения уже были прочитаны.", "info")
+
+    return redirect(next_url)
 
 
 @app.post("/admin/premium-users/add")

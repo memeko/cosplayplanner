@@ -32,33 +32,79 @@
     {% endif %}
   </div>
 
+  <form method="get" action="/admin/dashboard#admin-notifications" class="admin-notifications-filters top-offset">
+    <label>
+      Фильтр по получателю
+      <input
+        type="text"
+        name="notifications_recipient"
+        value="{{ admin_notifications_filter_recipient }}"
+        placeholder="@nickname или ID"
+      />
+      {% if admin_notifications_filter_recipient_invalid %}
+      <span class="muted">Пользователь не найден.</span>
+      {% endif %}
+    </label>
+    <label>
+      Фильтр по отправителю
+      <input
+        type="text"
+        name="notifications_sender"
+        value="{{ admin_notifications_filter_sender }}"
+        placeholder="@nickname, ID или «система»"
+      />
+      {% if admin_notifications_filter_sender_invalid %}
+      <span class="muted">Пользователь не найден.</span>
+      {% endif %}
+    </label>
+    <div class="actions-inline wrap">
+      <button type="submit" class="btn btn-small btn-accent">Применить фильтр</button>
+      {% if admin_notifications_filter_recipient or admin_notifications_filter_sender %}
+      <a href="/admin/dashboard#admin-notifications" class="btn btn-small">Сбросить</a>
+      {% endif %}
+    </div>
+  </form>
+
   {% if admin_notification_rows %}
-  <table class="table top-offset admin-notifications-table">
-    <thead>
-      <tr>
-        <th>ID</th>
-        <th>Получатель</th>
-        <th>Отправитель</th>
-        <th>Сообщение</th>
-        <th>Статус</th>
-        <th>Доставка</th>
-        <th>Создано</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for row in admin_notification_rows %}
-      <tr>
-        <td>{{ row.id }}</td>
-        <td>{{ row.recipient_alias }}</td>
-        <td>{{ row.sender_alias }}</td>
-        <td class="admin-notification-message">{{ row.message_preview|render_text }}</td>
-        <td>{{ row.read_label }}</td>
-        <td>{{ row.delivery_label }}</td>
-        <td>{{ row.created_at_label }}</td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
+  <form method="post" action="/admin/notifications/mark-read" class="top-offset" id="admin-notifications-bulk-form">
+    <input type="hidden" name="next" value="{{ admin_notifications_next_url }}" />
+    <div class="actions-inline wrap">
+      <button type="submit" class="btn btn-small">Принудительно отметить как прочитано</button>
+      <span class="meta">Отметьте нужные строки и примените действие.</span>
+    </div>
+    <table class="table top-offset admin-notifications-table">
+      <thead>
+        <tr>
+          <th class="admin-notifications-check-col">
+            <input type="checkbox" id="admin-notifications-check-all" title="Выбрать все строки" />
+          </th>
+          <th>ID</th>
+          <th>Получатель</th>
+          <th>Отправитель</th>
+          <th>Сообщение</th>
+          <th>Статус</th>
+          <th>Доставка</th>
+          <th>Создано</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in admin_notification_rows %}
+        <tr>
+          <td class="admin-notifications-check-col">
+            <input type="checkbox" name="notification_ids" value="{{ row.id }}" class="admin-notifications-check" />
+          </td>
+          <td>{{ row.id }}</td>
+          <td>{{ row.recipient_alias }}</td>
+          <td>{{ row.sender_alias }}</td>
+          <td class="admin-notification-message">{{ row.message_preview|render_text }}</td>
+          <td>{{ row.read_label }}</td>
+          <td>{{ row.delivery_label }}</td>
+          <td>{{ row.created_at_label }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </form>
 
   {% if admin_notifications_total_pages > 1 %}
   <div class="actions-inline wrap top-offset">
@@ -300,4 +346,32 @@
     <a href="/profile" class="btn">Профиль</a>
   </div>
 </section>
+<script>
+  (() => {
+    const bulkForm = document.getElementById("admin-notifications-bulk-form");
+    if (!bulkForm) {
+      return;
+    }
+    const selectAllCheckbox = document.getElementById("admin-notifications-check-all");
+    const getItemCheckboxes = () => Array.from(bulkForm.querySelectorAll('input[name="notification_ids"]'));
+
+    if (selectAllCheckbox) {
+      selectAllCheckbox.addEventListener("change", () => {
+        const checked = selectAllCheckbox.checked;
+        for (const checkbox of getItemCheckboxes()) {
+          checkbox.checked = checked;
+        }
+      });
+    }
+
+    bulkForm.addEventListener("submit", (event) => {
+      const hasChecked = getItemCheckboxes().some((checkbox) => checkbox.checked);
+      if (hasChecked) {
+        return;
+      }
+      event.preventDefault();
+      window.alert("Выберите хотя бы одно оповещение.");
+    });
+  })();
+</script>
 {% endblock %}
