@@ -373,6 +373,81 @@
           <li>ID эмодзи удобно получать через бота <code>@Emoji_ID_Extractor_bot</code>.</li>
         </ol>
       </details>
+      <div class="actions-inline top-offset">
+        <a href="/my-calendar?{{ content_view_query }}&content_review_week=1#content-social-settings" class="btn btn-small">
+          Проверить публикации за 7 дней
+        </a>
+      </div>
+      {% if content_review_week_requested %}
+      <div class="notes-block top-offset">
+        <p class="muted">
+          Обзор Telegram-публикаций за период:
+          <strong>{{ content_telegram_weekly_review.period_label or "последние 7 дней" }}</strong>
+        </p>
+        {% if content_telegram_weekly_review.enabled %}
+          {% if content_telegram_weekly_review.synced_now %}
+            {% set sync_report = content_telegram_weekly_review.sync_report %}
+            <p class="muted top-offset">
+              Синхронизация: обработано апдейтов {{ sync_report.processed_updates or 0 }},
+              совпало по каналам {{ sync_report.matched_channel_updates or 0 }},
+              добавлено постов {{ sync_report.added_posts or 0 }},
+              обновлено {{ sync_report.updated_posts or 0 }}.
+            </p>
+            {% if sync_report.webhook_active %}
+              <p class="muted">У бота активен webhook. Для polling через getUpdates это часто вызывает конфликт 409.</p>
+            {% endif %}
+            {% if sync_report.error %}
+              <p class="muted">Ошибка синхронизации: {{ sync_report.error }}</p>
+            {% endif %}
+          {% endif %}
+          <p class="muted top-offset">
+            Найдено внешних постов в канале: <strong>{{ content_telegram_weekly_review.total_external_posts_week }}</strong>.
+            Опубликовано через планер: <strong>{{ content_telegram_weekly_review.total_planner_posts_week }}</strong>.
+          </p>
+          {% if content_telegram_weekly_review.channels %}
+          <table class="table top-offset">
+            <thead>
+              <tr>
+                <th>Канал</th>
+                <th>Постов за 7 дней</th>
+                <th>Последний пост</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for channel_row in content_telegram_weekly_review.channels %}
+              <tr>
+                <td>{{ channel_row.title }} <span class="muted">{{ channel_row.chat_id }}</span></td>
+                <td>{{ channel_row.posts_count }}</td>
+                <td>{{ channel_row.last_post_label }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+          {% endif %}
+          {% if content_telegram_weekly_review.posts %}
+          <ul class="notes-list top-offset">
+            {% for post_row in content_telegram_weekly_review.posts %}
+            <li>
+              <strong>{{ post_row.published_at_label }}</strong> · {{ post_row.chat_title }}:
+              {{ post_row.message_preview }}
+            </li>
+            {% endfor %}
+          </ul>
+          {% if content_telegram_weekly_review.total_external_posts_week > content_telegram_weekly_review.posts|length %}
+          <p class="muted top-offset">
+            Показаны первые {{ content_telegram_weekly_review.posts|length }} постов из {{ content_telegram_weekly_review.total_external_posts_week }}.
+          </p>
+          {% endif %}
+          {% else %}
+          <p class="muted top-offset">
+            Внешних постов за неделю не найдено. Если публикация была, проверьте webhook/конфликт polling и совпадение chat_id канала.
+          </p>
+          {% endif %}
+        {% else %}
+        <p class="muted top-offset">{{ content_telegram_weekly_review.error }}</p>
+        {% endif %}
+      </div>
+      {% endif %}
       {% if not content_can_manage_connections %}
         <div class="notes-block telegram-editor-note top-offset">
           Настройки Telegram-бота и каналов меняет только владелец этого контент-плана.

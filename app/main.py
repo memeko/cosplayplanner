@@ -8296,17 +8296,38 @@ def extract_content_telegram_channel_message_text(payload: dict[str, Any]) -> st
     return "Пост без текста"
 
 
-def sync_external_telegram_channel_posts_for_user(db: Session, user: User) -> bool:
+def sync_external_telegram_channel_posts_for_user_with_report(
+    db: Session,
+    user: User,
+    *,
+    include_diagnostics: bool = True,
+) -> dict[str, Any]:
+    report: dict[str, Any] = {
+        "changed": False,
+        "added_posts": 0,
+        "updated_posts": 0,
+        "processed_updates": 0,
+        "matched_channel_updates": 0,
+        "skipped_unmatched_channel_updates": 0,
+        "offset_before": 0,
+        "offset_after": 0,
+        "error": "",
+        "webhook_active": False,
+        "webhook_url": "",
+    }
     user_id = parse_positive_int(str(getattr(user, "id", "")).strip())
     if not user_id:
-        return False
+        report["error"] = "Некорректный пользователь."
+        return report
 
     bot_token = str(get_secret_user_option_value(db, user_id, CONTENT_TELEGRAM_TOKEN_GROUP) or "").strip()
     if not bot_token:
-        return False
+        report["error"] = "Не указан токен Telegram-бота."
+        return report
     available_channels = get_content_telegram_channels(db, user_id)
     if not available_channels:
-        return False
+        report["error"] = "Не настроены Telegram-каналы."
+        return report
 
     channels_by_chat_id = {
         normalize_telegram_target(str(channel.get("chat_id") or "").strip()): channel
@@ -8314,7 +8335,19 @@ def sync_external_telegram_channel_posts_for_user(db: Session, user: User) -> bo
         if normalize_telegram_target(str(channel.get("chat_id") or "").strip())
     }
     if not channels_by_chat_id:
-        return False
+        report["error"] = "Список Telegram-каналов содержит некорректные chat_id."
+        return report
+
+    if include_diagnostics:
+        try:
+            webhook_payload = telegram_custom_request(bot_token, "getWebhookInfo")
+            webhook_info = webhook_payload.get("result") if isinstance(webhook_payload.get("result"), dict) else {}
+            webhook_url = str(webhook_info.get("url") or "").strip()
+            report["webhook_url"] = webhook_url
+            report["webhook_active"] = bool(webhook_url)
+        except RuntimeError:
+            # Диагностика webhooks полезна, но не должна блокировать синхронизацию.
+            pass
 
     token_fingerprint = hashlib.sha256(bot_token.encode("utf-8")).hexdigest()[:24]
     stored_fingerprint = str(
@@ -8329,6 +8362,7 @@ def sync_external_telegram_channel_posts_for_user(db: Session, user: User) -> bo
     next_offset = parse_content_telegram_updates_offset(
         get_user_option_value(db, user_id, CONTENT_TELEGRAM_UPDATES_OFFSET_GROUP)
     )
+    report["offset_before"] = int(next_offset)
     max_seen_update_id = next_offset - 1 if next_offset > 0 else -1
     for _ in range(CONTENT_TELEGRAM_CHANNEL_SYNC_BATCHES_PER_USER):
         request_payload: dict[str, Any] = {
@@ -8344,7 +8378,8 @@ def sync_external_telegram_channel_posts_for_user(db: Session, user: User) -> bo
                 "getUpdates",
                 json_payload=request_payload,
             )
-        except RuntimeError:
+        except RuntimeError as exc:
+            report["error"] = str(exc)
             break
 
         updates = payload.get("result")
@@ -8354,6 +8389,7 @@ def sync_external_telegram_channel_posts_for_user(db: Session, user: User) -> bo
         for update in updates:
             if not isinstance(update, dict):
                 continue
+            report["processed_updates"] = int(report["processed_updates"]) + 1
             update_id_raw = update.get("update_id")
             try:
                 update_id = int(update_id_raw)
@@ -8378,7 +8414,9 @@ def sync_external_telegram_channel_posts_for_user(db: Session, user: User) -> bo
 
             matched_channel = channels_by_chat_id.get(chat_id_from_event) or channels_by_chat_id.get(chat_username)
             if not matched_channel:
+                report["skipped_unmatched_channel_updates"] = int(report["skipped_unmatched_channel_updates"]) + 1
                 continue
+            report["matched_channel_updates"] = int(report["matched_channel_updates"]) + 1
 
             message_id = str(channel_post.get("message_id") or "").strip()
             if not message_id:
@@ -8423,6 +8461,7 @@ def sync_external_telegram_channel_posts_for_user(db: Session, user: User) -> bo
                     existing_row.published_at = published_at
                     changed = True
                 if changed:
+                    report["updated_posts"] = int(report["updated_posts"]) + 1
                     has_changes = True
                 continue
 
@@ -8437,6 +8476,7 @@ def sync_external_telegram_channel_posts_for_user(db: Session, user: User) -> bo
                     published_at=published_at,
                 )
             )
+            report["added_posts"] = int(report["added_posts"]) + 1
             has_changes = True
 
         if len(updates) < CONTENT_TELEGRAM_CHANNEL_UPDATES_BATCH_LIMIT:
@@ -8451,7 +8491,23 @@ def sync_external_telegram_channel_posts_for_user(db: Session, user: User) -> bo
             set_user_option_value(db, user_id, CONTENT_TELEGRAM_UPDATES_OFFSET_GROUP, next_offset_value)
             has_changes = True
 
-    return has_changes
+    report["changed"] = bool(has_changes)
+    report["offset_after"] = (
+        max_seen_update_id + 1
+        if max_seen_update_id >= 0
+        else int(report["offset_before"])
+    )
+    return report
+
+
+def sync_external_telegram_channel_posts_for_user(db: Session, user: User) -> bool:
+    return bool(
+        sync_external_telegram_channel_posts_for_user_with_report(
+            db,
+            user,
+            include_diagnostics=False,
+        ).get("changed")
+    )
 
 
 def cleanup_external_telegram_channel_posts_for_user(db: Session, user_id: int) -> bool:
@@ -8483,6 +8539,139 @@ def cleanup_external_telegram_channel_posts_for_user(db: Session, user_id: int) 
             db.delete(row)
             has_changes = True
     return has_changes
+
+
+def build_content_telegram_weekly_review(
+    db: Session,
+    content_owner: User | None,
+    *,
+    sync_now: bool = False,
+) -> dict[str, Any]:
+    review: dict[str, Any] = {
+        "enabled": False,
+        "error": "",
+        "period_label": "",
+        "channels": [],
+        "posts": [],
+        "total_external_posts_week": 0,
+        "total_planner_posts_week": 0,
+        "sync_report": {},
+        "synced_now": False,
+    }
+    if not content_owner:
+        review["error"] = "Контент-план не выбран."
+        return review
+
+    user_id = parse_positive_int(str(getattr(content_owner, "id", "")).strip())
+    if not user_id:
+        review["error"] = "Не удалось определить владельца контент-плана."
+        return review
+
+    bot_token = str(get_secret_user_option_value(db, user_id, CONTENT_TELEGRAM_TOKEN_GROUP) or "").strip()
+    channels = get_content_telegram_channels(db, user_id)
+    if not bot_token:
+        review["error"] = "Telegram-бот не подключен: добавьте токен в настройках."
+        return review
+    if not channels:
+        review["error"] = "Не настроены Telegram-каналы для отслеживания."
+        return review
+
+    review["enabled"] = True
+    if sync_now:
+        sync_report = sync_external_telegram_channel_posts_for_user_with_report(db, content_owner)
+        cleanup_changed = cleanup_external_telegram_channel_posts_for_user(db, user_id)
+        if sync_report.get("changed") or cleanup_changed:
+            db.commit()
+        review["sync_report"] = sync_report
+        review["synced_now"] = True
+
+    period_end_local = datetime.now(SITE_TIMEZONE)
+    period_start_local = period_end_local - timedelta(days=7)
+    review["period_label"] = (
+        f"{period_start_local.strftime('%d.%m.%Y %H:%M')} — {period_end_local.strftime('%d.%m.%Y %H:%M')}"
+    )
+    period_start_utc = period_start_local.astimezone(ZoneInfo("UTC")).replace(tzinfo=None)
+
+    external_posts = db.execute(
+        select(ContentChannelPost)
+        .where(
+            ContentChannelPost.user_id == user_id,
+            ContentChannelPost.platform == "telegram",
+            ContentChannelPost.published_at >= period_start_utc,
+        )
+        .order_by(ContentChannelPost.published_at.desc(), ContentChannelPost.id.desc())
+    ).scalars().all()
+    review["total_external_posts_week"] = len(external_posts)
+    review["total_planner_posts_week"] = int(
+        db.execute(
+            select(func.count(ContentPlanPost.id)).where(
+                ContentPlanPost.user_id == user_id,
+                ContentPlanPost.telegram_published_at.is_not(None),
+                ContentPlanPost.telegram_published_at >= period_start_utc,
+            )
+        ).scalar()
+        or 0
+    )
+
+    configured_channels: dict[str, dict[str, str]] = {}
+    for channel in channels:
+        chat_id = normalize_telegram_target(str(channel.get("chat_id") or "").strip())
+        if not chat_id:
+            continue
+        configured_channels[chat_id] = {
+            "chat_id": chat_id,
+            "title": str(channel.get("title") or chat_id).strip()[:120] or chat_id,
+        }
+
+    channel_stats: dict[str, dict[str, Any]] = {
+        chat_id: {
+            "chat_id": chat_id,
+            "title": data["title"],
+            "posts_count": 0,
+            "last_post_at": None,
+            "last_post_label": "—",
+        }
+        for chat_id, data in configured_channels.items()
+    }
+
+    def to_site_datetime(value: datetime | None) -> datetime | None:
+        if not isinstance(value, datetime):
+            return None
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=ZoneInfo("UTC"))
+        return value.astimezone(SITE_TIMEZONE)
+
+    posts_rows: list[dict[str, Any]] = []
+    for row in external_posts:
+        row_chat_id = normalize_telegram_target(str(row.chat_id or "").strip())
+        row_local_dt = to_site_datetime(row.published_at)
+        row_local_label = row_local_dt.strftime("%d.%m.%Y %H:%M") if row_local_dt else "—"
+        row_title = str(row.chat_title or "").strip()
+        if not row_title and row_chat_id in configured_channels:
+            row_title = configured_channels[row_chat_id]["title"]
+        if not row_title:
+            row_title = row_chat_id or "Неизвестный канал"
+        row_text = str(row.message_text or "").strip() or "Пост без текста"
+        posts_rows.append(
+            {
+                "chat_title": row_title,
+                "chat_id": row_chat_id or "—",
+                "published_at_label": row_local_label,
+                "message_preview": build_content_external_channel_preview(row_text, limit=80),
+            }
+        )
+
+        if row_chat_id in channel_stats:
+            channel_stats[row_chat_id]["posts_count"] = int(channel_stats[row_chat_id]["posts_count"]) + 1
+            existing_last = normalize_datetime(channel_stats[row_chat_id].get("last_post_at"))
+            candidate_last = normalize_datetime(row.published_at)
+            if candidate_last and (existing_last is None or candidate_last > existing_last):
+                channel_stats[row_chat_id]["last_post_at"] = candidate_last
+                channel_stats[row_chat_id]["last_post_label"] = row_local_label
+
+    review["channels"] = sorted(channel_stats.values(), key=lambda item: str(item.get("title") or "").casefold())
+    review["posts"] = posts_rows[:80]
+    return review
 
 
 def sync_external_telegram_channel_posts() -> None:
@@ -21728,6 +21917,7 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
         return redirect("/login")
 
     active_view = normalize_calendar_view(request.query_params.get("view"))
+    content_review_week_requested = to_bool(request.query_params.get("content_review_week"))
     edit_post_id_raw = str(request.query_params.get("edit_post_id", "")).strip()
     try:
         edit_post_id = int(edit_post_id_raw) if edit_post_id_raw else None
@@ -22113,6 +22303,17 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
     rubric_colors = rubric_color_map(rubric_options)
     content_rows: list[dict[str, Any]] = []
     planned_telegram_message_keys: set[tuple[str, str]] = set()
+    content_telegram_weekly_review: dict[str, Any] = {
+        "enabled": False,
+        "error": "",
+        "period_label": "",
+        "channels": [],
+        "posts": [],
+        "total_external_posts_week": 0,
+        "total_planner_posts_week": 0,
+        "sync_report": {},
+        "synced_now": False,
+    }
     for post in content_posts:
         row_rubric = post.rubric or "Неизвестно"
         row_color = rubric_colors.get(row_rubric, CONTENT_RUBRIC_PALETTE[0])
@@ -22208,6 +22409,12 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
 
     content_external_rows: list[dict[str, Any]] = []
     if content_owner:
+        if active_view == CALENDAR_VIEW_CONTENT and content_review_week_requested:
+            content_telegram_weekly_review = build_content_telegram_weekly_review(
+                db,
+                content_owner,
+                sync_now=True,
+            )
         active_telegram_channel_ids = {
             normalize_telegram_target(str(channel_id or "").strip())
             for channel_id in telegram_channels_by_id.keys()
@@ -22362,6 +22569,8 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
             "groups_text": vk_settings.get("groups_masked_text", "") if content_can_manage_connections else "",
         },
         telegram_content_connected=bool(telegram_settings.get("bot_token") and telegram_channels),
+        content_review_week_requested=bool(content_review_week_requested),
+        content_telegram_weekly_review=content_telegram_weekly_review,
         vk_content_connected=bool(vk_groups),
         threads_content_connected=bool(threads_settings.get("publish_ready")),
         threads_content_account_connected=bool(threads_settings.get("connected")),
