@@ -23365,6 +23365,70 @@ def my_calendar_content_telegram_disconnect(request: Request, db: Session = Depe
     return content_calendar_redirect(request, user, content_owner=content_owner)
 
 
+@app.post("/my-calendar/content/telegram/disable-webhook")
+async def my_calendar_content_telegram_disable_webhook(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    access_redirect = ensure_content_plan_access(request, user, db)
+    if access_redirect:
+        return access_redirect
+
+    form = await request.form()
+    content_owner, owner_redirect = ensure_content_owner_for_action(request, user, db, form=form)
+    if owner_redirect or not content_owner:
+        return owner_redirect or content_calendar_redirect(request, user, form=form)
+    if not content_connections_editable(user, content_owner):
+        add_flash(request, "Настройки Telegram может менять только владелец контент-плана.", "error")
+        return content_calendar_redirect(request, user, form=form, content_owner=content_owner)
+
+    bot_token = str(get_secret_user_option_value(db, content_owner.id, CONTENT_TELEGRAM_TOKEN_GROUP) or "").strip()
+    if not bot_token:
+        add_flash(request, "Telegram-бот не подключен.", "error")
+        return content_calendar_redirect(request, user, form=form, content_owner=content_owner)
+
+    try:
+        telegram_custom_request(
+            bot_token,
+            "deleteWebhook",
+            json_payload={"drop_pending_updates": False},
+        )
+    except RuntimeError as exc:
+        add_flash(request, f"Не удалось отключить webhook: {exc}", "error")
+        return content_calendar_redirect(request, user, form=form, content_owner=content_owner)
+
+    # Сбрасываем offset, чтобы при первом опросе после webhook подхватить доступные апдейты за последние 24 часа.
+    previous_offset_value = str(
+        get_user_option_value(db, content_owner.id, CONTENT_TELEGRAM_UPDATES_OFFSET_GROUP) or ""
+    ).strip()
+    set_user_option_value(db, content_owner.id, CONTENT_TELEGRAM_UPDATES_OFFSET_GROUP, "")
+    sync_report = sync_external_telegram_channel_posts_for_user_with_report(db, content_owner)
+    cleanup_changed = cleanup_external_telegram_channel_posts_for_user(db, int(content_owner.id))
+    if sync_report.get("changed") or cleanup_changed or bool(previous_offset_value):
+        db.commit()
+
+    add_flash(
+        request,
+        (
+            "Webhook отключен. "
+            f"Синхронизация: добавлено {int(sync_report.get('added_posts') or 0)}, "
+            f"обновлено {int(sync_report.get('updated_posts') or 0)}."
+        ),
+        "success",
+    )
+
+    content_scope = get_content_scope_for_request(request, user, form=form)
+    query_params: dict[str, str] = {
+        "view": CALENDAR_VIEW_CONTENT,
+        "content_scope": content_scope,
+        "content_review_week": "1",
+    }
+    selected_owner_id = selected_content_owner_id_for_scope(user, content_owner, content_scope)
+    if selected_owner_id:
+        query_params["content_owner_id"] = str(selected_owner_id)
+    return redirect(f"/my-calendar?{urlencode(query_params)}#content-social-settings")
+
+
 @app.post("/my-calendar/content/vk/connect")
 async def my_calendar_content_vk_connect(request: Request, db: Session = Depends(get_db)):
     user = current_user(request, db)

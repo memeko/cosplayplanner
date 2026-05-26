@@ -395,6 +395,13 @@
             </p>
             {% if sync_report.webhook_active %}
               <p class="muted">У бота активен webhook. Для polling через getUpdates это часто вызывает конфликт 409.</p>
+              {% if content_can_manage_connections %}
+              <form method="post" action="/my-calendar/content/telegram/disable-webhook" class="top-offset" onsubmit="return confirm('Отключить webhook у этого бота и переключить на polling?');">
+                <input type="hidden" name="content_scope" value="{{ content_scope }}" />
+                {% if content_owner_id %}<input type="hidden" name="content_owner_id" value="{{ content_owner_id }}" />{% endif %}
+                <button type="submit" class="btn btn-small btn-accent">Отключить webhook и повторить синхронизацию</button>
+              </form>
+              {% endif %}
             {% endif %}
             {% if sync_report.error %}
               <p class="muted">Ошибка синхронизации: {{ sync_report.error }}</p>
