@@ -493,6 +493,7 @@ CONTENT_THREADS_USERNAME_GROUP = "content_threads_username"
 CONTENT_THREADS_PASSWORD_GROUP = "content_threads_password"
 CONTENT_REDNOTE_PROFILE_GROUP = "content_rednote_profile"
 CONTENT_RUBRIC_TAG_GROUP = "content_rubric_tag"
+CONTENT_RECOMMENDATION_DISMISSED_GROUP = "content_recommendation_dismissed"
 CONTENT_PLAN_ACCESS_VERIFIED_GROUP = "content_plan_brfox_subscription_verified_at"
 SMM_MANAGER_ROLE_GROUP = "profile_is_smm_manager"
 CONTENT_MANAGER_OWNER_GROUP = "content_manager_owner"
@@ -4236,6 +4237,31 @@ def normalize_content_recommendation_title_key(value: str | None) -> str:
     return re.sub(r"\s+", " ", str(value or "").strip()).casefold()
 
 
+def normalize_content_recommendation_type_key(value: str | None) -> str:
+    raw_value = str(value or "").strip().lower()
+    normalized = re.sub(r"[^a-z0-9_-]+", "-", raw_value).strip("-")
+    return normalized or "unknown"
+
+
+def build_content_recommendation_storage_key(
+    recommendation_type: str | None,
+    publish_date: date,
+    title: str | None,
+) -> str:
+    normalized_type = normalize_content_recommendation_type_key(recommendation_type)
+    normalized_title = normalize_content_recommendation_title_key(title)
+    payload = f"{normalized_type}|{publish_date.isoformat()}|{normalized_title}"
+    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:24]
+    return f"rk1:{normalized_type}:{publish_date.isoformat()}:{digest}"
+
+
+def normalize_content_recommendation_storage_key(value: str | None) -> str:
+    raw_value = str(value or "").strip().lower()
+    if re.fullmatch(r"rk1:[a-z0-9_-]{1,64}:\d{4}-\d{2}-\d{2}:[a-f0-9]{24}", raw_value):
+        return raw_value
+    return ""
+
+
 def content_post_title_keys_by_date(posts: list[ContentPlanPost]) -> set[tuple[date, str]]:
     keys: set[tuple[date, str]] = set()
     for post in posts:
@@ -4308,6 +4334,11 @@ def build_content_plan_recommendations(
     recommendations: list[dict[str, Any]] = []
     existing_keys = content_post_title_keys_by_date(content_posts)
     generated_keys: set[tuple[date, str]] = set()
+    dismissed_recommendation_keys = {
+        normalized_key
+        for value in get_user_option_values(db, content_owner.id, CONTENT_RECOMMENDATION_DISMISSED_GROUP)
+        if (normalized_key := normalize_content_recommendation_storage_key(value))
+    }
 
     def add_recommendation(
         recommendation_type: str,
@@ -4322,12 +4353,20 @@ def build_content_plan_recommendations(
         if not title_key:
             return False
         key = (publish_date, title_key)
+        recommendation_key = build_content_recommendation_storage_key(
+            recommendation_type,
+            publish_date,
+            title,
+        )
         if key in existing_keys or key in generated_keys:
+            return False
+        if recommendation_key in dismissed_recommendation_keys:
             return False
         generated_keys.add(key)
         recommendations.append(
             {
                 "type": recommendation_type,
+                "recommendation_key": recommendation_key,
                 "kind_label": CONTENT_RECOMMENDATION_KIND_LABELS.get(recommendation_type, "Рекомендация"),
                 "publish_date": publish_date,
                 "title": title,
@@ -22999,6 +23038,55 @@ async def my_calendar_content_recommendation_create(request: Request, db: Sessio
     if selected_owner_id:
         query_params["content_owner_id"] = str(selected_owner_id)
     return redirect(f"/my-calendar?{urlencode(query_params)}#content-form")
+
+
+@app.post("/my-calendar/content/recommendations/dismiss")
+async def my_calendar_content_recommendation_dismiss(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    access_redirect = ensure_content_plan_access(request, user, db)
+    if access_redirect:
+        return access_redirect
+
+    form = await request.form()
+    content_owner, owner_redirect = ensure_content_owner_for_action(request, user, db, form=form)
+    if owner_redirect or not content_owner:
+        return owner_redirect or content_calendar_redirect(request, user, form=form)
+
+    action_value = str(form.get("action_kind", "close")).strip().lower()
+    recommendation_key = normalize_content_recommendation_storage_key(str(form.get("recommendation_key", "")).strip())
+    if not recommendation_key:
+        recommendation_type = str(form.get("recommendation_type", "")).strip()
+        recommendation_title = str(form.get("title", "")).strip()
+        recommendation_date = parse_date(str(form.get("publish_date", "")).strip()) or date.today()
+        recommendation_key = build_content_recommendation_storage_key(
+            recommendation_type,
+            recommendation_date,
+            recommendation_title,
+        )
+
+    existing_keys = [
+        normalized_key
+        for value in get_user_option_values(db, content_owner.id, CONTENT_RECOMMENDATION_DISMISSED_GROUP)
+        if (normalized_key := normalize_content_recommendation_storage_key(value))
+    ]
+    if recommendation_key not in existing_keys:
+        existing_keys.append(recommendation_key)
+        # Храним ограниченный хвост ключей, чтобы не раздувать user_options.
+        replace_user_option_values(
+            db,
+            content_owner.id,
+            CONTENT_RECOMMENDATION_DISMISSED_GROUP,
+            existing_keys[-500:],
+        )
+        db.commit()
+
+    if action_value == "delete":
+        add_flash(request, "Рекомендация удалена из списка подсказок.", "info")
+    else:
+        add_flash(request, "Рекомендация закрыта.", "info")
+    return content_calendar_redirect(request, user, form=form, content_owner=content_owner)
 
 
 @app.post("/my-calendar/content/new")

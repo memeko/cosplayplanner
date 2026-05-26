@@ -699,16 +699,38 @@
           {% if recommendation.description %}
             <span class="muted">{{ recommendation.description }}</span>
           {% endif %}
-          <form method="post" action="/my-calendar/content/recommendations/create">
-            <input type="hidden" name="content_scope" value="{{ content_scope }}" />
-            {% if content_owner_id %}<input type="hidden" name="content_owner_id" value="{{ content_owner_id }}" />{% endif %}
-            <input type="hidden" name="title" value="{{ recommendation.title }}" />
-            <input type="hidden" name="description" value="{{ recommendation.description }}" />
-            <input type="hidden" name="rubric" value="{{ recommendation.rubric }}" />
-            <input type="hidden" name="publish_date" value="{{ recommendation.publish_date.isoformat() if recommendation.publish_date else '' }}" />
-            <textarea name="telegram_body_html" hidden>{{ recommendation.telegram_body_html }}</textarea>
-            <button type="submit" class="btn btn-small">Создать черновик</button>
-          </form>
+          <div class="actions-inline top-offset wrap">
+            <form method="post" action="/my-calendar/content/recommendations/create">
+              <input type="hidden" name="content_scope" value="{{ content_scope }}" />
+              {% if content_owner_id %}<input type="hidden" name="content_owner_id" value="{{ content_owner_id }}" />{% endif %}
+              <input type="hidden" name="title" value="{{ recommendation.title }}" />
+              <input type="hidden" name="description" value="{{ recommendation.description }}" />
+              <input type="hidden" name="rubric" value="{{ recommendation.rubric }}" />
+              <input type="hidden" name="publish_date" value="{{ recommendation.publish_date.isoformat() if recommendation.publish_date else '' }}" />
+              <textarea name="telegram_body_html" hidden>{{ recommendation.telegram_body_html }}</textarea>
+              <button type="submit" class="btn btn-small">Создать черновик</button>
+            </form>
+            <form method="post" action="/my-calendar/content/recommendations/dismiss">
+              <input type="hidden" name="content_scope" value="{{ content_scope }}" />
+              {% if content_owner_id %}<input type="hidden" name="content_owner_id" value="{{ content_owner_id }}" />{% endif %}
+              <input type="hidden" name="recommendation_key" value="{{ recommendation.recommendation_key }}" />
+              <input type="hidden" name="recommendation_type" value="{{ recommendation.type }}" />
+              <input type="hidden" name="title" value="{{ recommendation.title }}" />
+              <input type="hidden" name="publish_date" value="{{ recommendation.publish_date.isoformat() if recommendation.publish_date else '' }}" />
+              <input type="hidden" name="action_kind" value="close" />
+              <button type="submit" class="btn btn-small">Закрыть</button>
+            </form>
+            <form method="post" action="/my-calendar/content/recommendations/dismiss" onsubmit="return confirm('Удалить эту рекомендацию из списка подсказок?');">
+              <input type="hidden" name="content_scope" value="{{ content_scope }}" />
+              {% if content_owner_id %}<input type="hidden" name="content_owner_id" value="{{ content_owner_id }}" />{% endif %}
+              <input type="hidden" name="recommendation_key" value="{{ recommendation.recommendation_key }}" />
+              <input type="hidden" name="recommendation_type" value="{{ recommendation.type }}" />
+              <input type="hidden" name="title" value="{{ recommendation.title }}" />
+              <input type="hidden" name="publish_date" value="{{ recommendation.publish_date.isoformat() if recommendation.publish_date else '' }}" />
+              <input type="hidden" name="action_kind" value="delete" />
+              <button type="submit" class="btn btn-small btn-danger">Удалить</button>
+            </form>
+          </div>
         </li>
       {% endfor %}
     </ul>
