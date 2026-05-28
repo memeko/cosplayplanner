@@ -3098,6 +3098,30 @@ textarea {
   margin-top: 14px;
 }
 
+#content_ai_request_output,
+#content_ai_response_output {
+  font-family: "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+}
+
+.content-photo-editor-canvas-wrap {
+  border: 1px solid var(--line-strong);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.86);
+  padding: 10px;
+  overflow: auto;
+  box-shadow: var(--glass-highlight-soft);
+}
+
+.content-photo-editor-canvas-wrap canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: 72vh;
+  margin: 0 auto;
+  border-radius: 10px;
+  background: #ffffff;
+}
+
 .landing-hero {
   min-height: 50vh;
   display: grid;

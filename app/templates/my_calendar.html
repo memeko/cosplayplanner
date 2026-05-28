@@ -393,6 +393,14 @@
               добавлено постов {{ sync_report.added_posts or 0 }},
               обновлено {{ sync_report.updated_posts or 0 }}.
             </p>
+            {% if (sync_report.web_parser_attempted_channels or 0) > 0 %}
+              <p class="muted">
+                Веб-парсер t.me/s: каналов проверено {{ sync_report.web_parser_attempted_channels or 0 }},
+                успешно {{ sync_report.web_parser_synced_channels or 0 }},
+                добавлено постов {{ sync_report.web_parser_added_posts or 0 }},
+                обновлено {{ sync_report.web_parser_updated_posts or 0 }}.
+              </p>
+            {% endif %}
             {% if sync_report.webhook_active %}
               <p class="muted">У бота активен webhook. Для polling через getUpdates это часто вызывает конфликт 409.</p>
               {% if content_can_manage_connections %}
@@ -405,6 +413,12 @@
             {% endif %}
             {% if sync_report.error %}
               <p class="muted">Ошибка синхронизации: {{ sync_report.error }}</p>
+            {% endif %}
+            {% if sync_report.warning %}
+              <p class="muted">{{ sync_report.warning }}</p>
+            {% endif %}
+            {% if sync_report.web_parser_errors %}
+              <p class="muted">Веб-парсер: {{ sync_report.web_parser_errors[0] }}</p>
             {% endif %}
           {% endif %}
           <p class="muted top-offset">
@@ -689,6 +703,143 @@
         </div>
       {% endif %}
     </div>
+    </div>
+  </details>
+
+  <details class="box top-offset calendar-spoiler" id="content-ai-assistant">
+    <summary>ИИ-помощник</summary>
+    <div class="calendar-spoiler-body">
+      <p class="muted">
+        Генерация идей и текстов через Mistral API (модель: <strong>{{ content_ai_assistant_model }}</strong>).
+        Лимит: <strong id="content_ai_usage_label">{{ content_ai_assistant_used_today }}/{{ content_ai_assistant_daily_limit }}</strong> запросов сегодня.
+        Осталось: <strong id="content_ai_remaining_label">{{ content_ai_assistant_remaining_today }}</strong>.
+      </p>
+      <form id="content_ai_assistant_form" class="grid one-col top-offset" data-endpoint="/my-calendar/content/ai-assistant/query">
+        <input type="hidden" name="content_scope" value="{{ content_scope }}" />
+        {% if content_owner_id %}<input type="hidden" name="content_owner_id" value="{{ content_owner_id }}" />{% endif %}
+        <label>
+          Запрос к ИИ
+          <textarea id="content_ai_prompt_input" name="prompt" rows="4" maxlength="6000" placeholder="Например: Сгенерируй 7 идей постов для cosplay backstage с короткими описаниями"></textarea>
+        </label>
+        <div class="actions-inline">
+          <button type="submit" class="btn btn-accent" id="content_ai_generate_btn">Сгенерировать</button>
+          <button type="button" class="btn" id="content_ai_copy_response_btn">Копировать ответ</button>
+          <span class="muted" id="content_ai_status"></span>
+        </div>
+        <label>
+          Текст запроса
+          <textarea id="content_ai_request_output" rows="4" readonly placeholder="Здесь появится отправленный запрос"></textarea>
+        </label>
+        <label>
+          Ответ нейросети
+          <textarea id="content_ai_response_output" rows="10" readonly placeholder="Здесь появится ответ Mistral"></textarea>
+        </label>
+      </form>
+    </div>
+  </details>
+
+  <details class="box top-offset calendar-spoiler" id="content-photo-editor">
+    <summary>Редактор фотографий</summary>
+    <div class="calendar-spoiler-body">
+      <p class="muted">
+        Загрузите фото, выберите формат соцсети, при необходимости добавьте водяной знак,
+        настройте яркость/экспозицию/HSL и сохраните изображение в высоком качестве.
+      </p>
+      <div class="grid two-col top-offset">
+        <label>
+          Основное фото
+          <input type="file" id="content_photo_editor_source_input" accept="image/*" />
+        </label>
+        <label>
+          Водяной знак (PNG/SVG/WEBP/JPG)
+          <input type="file" id="content_photo_editor_watermark_input" accept="image/*" />
+        </label>
+      </div>
+      <div class="grid three-col top-offset">
+        <label>
+          Формат
+          <select id="content_photo_editor_preset">
+            <option value="inst_square">Instagram пост 1:1</option>
+            <option value="inst_portrait">Instagram пост 4:5</option>
+            <option value="story">Stories 9:16</option>
+            <option value="landscape">Лента 16:9</option>
+            <option value="pinterest">Pinterest 2:3</option>
+          </select>
+        </label>
+        <label>
+          Размер экспорта
+          <select id="content_photo_editor_export_scale">
+            <option value="1">Стандарт</option>
+            <option value="1.5">Высокий</option>
+            <option value="2" selected>Очень высокий</option>
+          </select>
+        </label>
+        <label>
+          JPEG качество
+          <input type="range" id="content_photo_editor_jpeg_quality" min="0.7" max="1" step="0.01" value="0.95" />
+        </label>
+      </div>
+      <div class="content-photo-editor-canvas-wrap top-offset">
+        <canvas id="content_photo_editor_canvas" width="1080" height="1080"></canvas>
+      </div>
+      <p class="muted">
+        Подсказка: перетаскивайте фото мышью, колесом мыши масштабируйте. Водяной знак можно перетаскивать отдельно.
+      </p>
+      <div class="grid three-col top-offset">
+        <label>
+          Яркость
+          <input type="range" id="content_photo_filter_brightness" min="-1" max="1" step="0.01" value="0" />
+        </label>
+        <label>
+          Экспозиция
+          <input type="range" id="content_photo_filter_exposure" min="-1" max="1" step="0.01" value="0" />
+        </label>
+        <label>
+          Оттенок (Hue)
+          <input type="range" id="content_photo_filter_hue" min="-1" max="1" step="0.01" value="0" />
+        </label>
+      </div>
+      <div class="grid three-col">
+        <label>
+          Насыщенность
+          <input type="range" id="content_photo_filter_saturation" min="-1" max="1" step="0.01" value="0" />
+        </label>
+        <label>
+          Светлота (HSL)
+          <input type="range" id="content_photo_filter_lightness" min="-1" max="1" step="0.01" value="0" />
+        </label>
+        <label>
+          Контраст
+          <input type="range" id="content_photo_filter_contrast" min="-1" max="1" step="0.01" value="0" />
+        </label>
+      </div>
+      <div class="grid three-col top-offset">
+        <label>
+          Непрозрачность водяного знака
+          <input type="range" id="content_photo_watermark_opacity" min="0.1" max="1" step="0.01" value="0.65" />
+        </label>
+        <label>
+          Размер водяного знака (% ширины)
+          <input type="range" id="content_photo_watermark_size" min="8" max="90" step="1" value="24" />
+        </label>
+        <label>
+          Позиция водяного знака
+          <select id="content_photo_watermark_position">
+            <option value="bottom-right">Справа снизу</option>
+            <option value="bottom-left">Слева снизу</option>
+            <option value="top-right">Справа сверху</option>
+            <option value="top-left">Слева сверху</option>
+            <option value="center">По центру</option>
+          </select>
+        </label>
+      </div>
+      <div class="actions-inline top-offset">
+        <button type="button" class="btn" id="content_photo_editor_apply_preset_btn">Применить формат</button>
+        <button type="button" class="btn" id="content_photo_editor_reset_btn">Сбросить правки</button>
+        <button type="button" class="btn btn-accent" id="content_photo_editor_download_jpeg_btn">Скачать JPG</button>
+        <button type="button" class="btn" id="content_photo_editor_download_png_btn">Скачать PNG</button>
+        <span class="muted" id="content_photo_editor_status"></span>
+      </div>
     </div>
   </details>
 
@@ -1244,6 +1395,7 @@
   {% endif %}
 {% endif %}
 
+<script src="https://cdn.jsdelivr.net/npm/fabric@5.3.0/dist/fabric.min.js"></script>
 <script>
   (function () {
     function escapeHtml(value) {
@@ -1706,6 +1858,377 @@
       };
       rubricSelect.addEventListener('change', syncRubricTag);
     }
+
+    function initializeContentAiAssistant() {
+      const form = document.getElementById('content_ai_assistant_form');
+      if (!form) return;
+      const promptInput = document.getElementById('content_ai_prompt_input');
+      const requestOutput = document.getElementById('content_ai_request_output');
+      const responseOutput = document.getElementById('content_ai_response_output');
+      const statusNode = document.getElementById('content_ai_status');
+      const generateButton = document.getElementById('content_ai_generate_btn');
+      const copyButton = document.getElementById('content_ai_copy_response_btn');
+      const usageLabel = document.getElementById('content_ai_usage_label');
+      const remainingLabel = document.getElementById('content_ai_remaining_label');
+      if (!promptInput || !requestOutput || !responseOutput || !generateButton || !copyButton) return;
+
+      const setStatus = (text, isError = false) => {
+        if (!statusNode) return;
+        statusNode.textContent = text || '';
+        statusNode.style.color = isError ? '#b91c1c' : '';
+      };
+
+      const updateUsage = (used, remaining, limit) => {
+        if (usageLabel && Number.isFinite(used) && Number.isFinite(limit)) {
+          usageLabel.textContent = `${used}/${limit}`;
+        }
+        if (remainingLabel && Number.isFinite(remaining)) {
+          remainingLabel.textContent = String(remaining);
+        }
+      };
+
+      form.addEventListener('submit', async function (event) {
+        event.preventDefault();
+        const prompt = String(promptInput.value || '').trim();
+        if (!prompt) {
+          setStatus('Введите запрос для ИИ-помощника.', true);
+          return;
+        }
+        setStatus('Генерируем ответ...');
+        generateButton.disabled = true;
+        const formData = new FormData(form);
+        formData.set('prompt', prompt);
+        try {
+          const response = await fetch(form.dataset.endpoint || '/my-calendar/content/ai-assistant/query', {
+            method: 'POST',
+            body: formData,
+            credentials: 'same-origin'
+          });
+          const payload = await response.json().catch(() => ({}));
+          requestOutput.value = String(payload.request_text || prompt);
+          responseOutput.value = String(payload.response_text || '');
+          if (typeof payload.used_today === 'number' && typeof payload.daily_limit === 'number') {
+            updateUsage(Number(payload.used_today), Number(payload.remaining_today || 0), Number(payload.daily_limit));
+          }
+          if (!response.ok || payload.ok === false) {
+            setStatus(String(payload.detail || 'Не удалось получить ответ от ИИ-помощника.'), true);
+            return;
+          }
+          setStatus('Готово. Можно копировать ответ.');
+        } catch (_error) {
+          setStatus('Сетевой сбой. Проверьте подключение и попробуйте снова.', true);
+        } finally {
+          generateButton.disabled = false;
+        }
+      });
+
+      copyButton.addEventListener('click', async function () {
+        const value = String(responseOutput.value || '').trim();
+        if (!value) {
+          setStatus('Пока нечего копировать.', true);
+          return;
+        }
+        try {
+          await navigator.clipboard.writeText(value);
+          setStatus('Ответ скопирован в буфер обмена.');
+        } catch (_error) {
+          responseOutput.focus();
+          responseOutput.select();
+          setStatus('Не удалось скопировать автоматически. Выделите текст и скопируйте вручную.', true);
+        }
+      });
+    }
+
+    function initializeContentPhotoEditor() {
+      const canvasElement = document.getElementById('content_photo_editor_canvas');
+      if (!canvasElement) return;
+      const statusNode = document.getElementById('content_photo_editor_status');
+      const sourceInput = document.getElementById('content_photo_editor_source_input');
+      const watermarkInput = document.getElementById('content_photo_editor_watermark_input');
+      const presetSelect = document.getElementById('content_photo_editor_preset');
+      const exportScaleSelect = document.getElementById('content_photo_editor_export_scale');
+      const jpegQualityInput = document.getElementById('content_photo_editor_jpeg_quality');
+      const applyPresetButton = document.getElementById('content_photo_editor_apply_preset_btn');
+      const resetButton = document.getElementById('content_photo_editor_reset_btn');
+      const downloadJpegButton = document.getElementById('content_photo_editor_download_jpeg_btn');
+      const downloadPngButton = document.getElementById('content_photo_editor_download_png_btn');
+      const brightnessInput = document.getElementById('content_photo_filter_brightness');
+      const exposureInput = document.getElementById('content_photo_filter_exposure');
+      const hueInput = document.getElementById('content_photo_filter_hue');
+      const saturationInput = document.getElementById('content_photo_filter_saturation');
+      const lightnessInput = document.getElementById('content_photo_filter_lightness');
+      const contrastInput = document.getElementById('content_photo_filter_contrast');
+      const watermarkOpacityInput = document.getElementById('content_photo_watermark_opacity');
+      const watermarkSizeInput = document.getElementById('content_photo_watermark_size');
+      const watermarkPositionInput = document.getElementById('content_photo_watermark_position');
+
+      const setStatus = (text, isError = false) => {
+        if (!statusNode) return;
+        statusNode.textContent = text || '';
+        statusNode.style.color = isError ? '#b91c1c' : '';
+      };
+
+      if (!window.fabric || !window.fabric.Canvas) {
+        setStatus('Fabric.js не загрузился. Обновите страницу и попробуйте снова.', true);
+        return;
+      }
+
+      const presetSizes = {
+        inst_square: { width: 1080, height: 1080 },
+        inst_portrait: { width: 1080, height: 1350 },
+        story: { width: 1080, height: 1920 },
+        landscape: { width: 1280, height: 720 },
+        pinterest: { width: 1000, height: 1500 }
+      };
+
+      const fabricApi = window.fabric;
+      const canvas = new fabricApi.Canvas('content_photo_editor_canvas', {
+        backgroundColor: '#ffffff',
+        preserveObjectStacking: true,
+        selection: false
+      });
+      let baseImage = null;
+      let watermarkImage = null;
+
+      const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
+
+      const applyPresetSize = () => {
+        const preset = presetSizes[String(presetSelect?.value || 'inst_square')] || presetSizes.inst_square;
+        canvas.setWidth(preset.width);
+        canvas.setHeight(preset.height);
+        if (baseImage) {
+          const scale = Math.max(
+            canvas.getWidth() / Math.max(1, Number(baseImage.width || 1)),
+            canvas.getHeight() / Math.max(1, Number(baseImage.height || 1))
+          );
+          baseImage.set({
+            originX: 'center',
+            originY: 'center',
+            left: canvas.getWidth() / 2,
+            top: canvas.getHeight() / 2,
+            scaleX: scale,
+            scaleY: scale
+          });
+          baseImage.setCoords();
+        }
+        applyWatermarkStyle();
+        canvas.renderAll();
+      };
+
+      const createFilters = () => {
+        const brightness = Number(brightnessInput?.value || 0);
+        const exposure = Number(exposureInput?.value || 0);
+        const hue = Number(hueInput?.value || 0);
+        const saturation = Number(saturationInput?.value || 0);
+        const lightness = Number(lightnessInput?.value || 0);
+        const contrast = Number(contrastInput?.value || 0);
+        const combinedBrightness = clamp(brightness + lightness, -1, 1);
+        const combinedContrast = clamp(contrast + exposure, -1, 1);
+        const filters = [];
+        if (Math.abs(combinedBrightness) > 0.001) {
+          filters.push(new fabricApi.Image.filters.Brightness({ brightness: combinedBrightness }));
+        }
+        if (Math.abs(combinedContrast) > 0.001) {
+          filters.push(new fabricApi.Image.filters.Contrast({ contrast: combinedContrast }));
+        }
+        if (Math.abs(saturation) > 0.001) {
+          filters.push(new fabricApi.Image.filters.Saturation({ saturation }));
+        }
+        if (Math.abs(hue) > 0.001) {
+          filters.push(new fabricApi.Image.filters.HueRotation({ rotation: hue }));
+        }
+        return filters;
+      };
+
+      const applyBaseFilters = () => {
+        if (!baseImage) return;
+        baseImage.filters = createFilters();
+        baseImage.applyFilters();
+        canvas.renderAll();
+      };
+
+      function applyWatermarkStyle() {
+        if (!watermarkImage) return;
+        const opacity = Number(watermarkOpacityInput?.value || 0.65);
+        const sizePercent = Number(watermarkSizeInput?.value || 24);
+        const targetWidth = canvas.getWidth() * clamp(sizePercent, 8, 90) / 100;
+        const sourceWidth = Math.max(1, Number(watermarkImage.width || 1));
+        const scale = targetWidth / sourceWidth;
+        const margin = Math.max(12, Math.round(canvas.getWidth() * 0.02));
+        let left = canvas.getWidth() - margin;
+        let top = canvas.getHeight() - margin;
+        let originX = 'right';
+        let originY = 'bottom';
+        const position = String(watermarkPositionInput?.value || 'bottom-right');
+        if (position === 'bottom-left') {
+          left = margin;
+          top = canvas.getHeight() - margin;
+          originX = 'left';
+          originY = 'bottom';
+        } else if (position === 'top-right') {
+          left = canvas.getWidth() - margin;
+          top = margin;
+          originX = 'right';
+          originY = 'top';
+        } else if (position === 'top-left') {
+          left = margin;
+          top = margin;
+          originX = 'left';
+          originY = 'top';
+        } else if (position === 'center') {
+          left = canvas.getWidth() / 2;
+          top = canvas.getHeight() / 2;
+          originX = 'center';
+          originY = 'center';
+        }
+        watermarkImage.set({
+          opacity: clamp(opacity, 0.1, 1),
+          scaleX: scale,
+          scaleY: scale,
+          left,
+          top,
+          originX,
+          originY
+        });
+        watermarkImage.setCoords();
+        canvas.renderAll();
+      }
+
+      const fileToDataUrl = (file) => new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result || ''));
+        reader.onerror = () => reject(new Error('Ошибка чтения файла'));
+        reader.readAsDataURL(file);
+      });
+
+      const loadImageToCanvas = async (file, isWatermark) => {
+        if (!file) return;
+        try {
+          const dataUrl = await fileToDataUrl(file);
+          fabricApi.Image.fromURL(dataUrl, function (image) {
+            if (!image) {
+              setStatus('Не удалось обработать изображение.', true);
+              return;
+            }
+            image.set({ objectCaching: false });
+            if (!isWatermark) {
+              if (baseImage) {
+                canvas.remove(baseImage);
+              }
+              baseImage = image;
+              baseImage.set({
+                lockRotation: true,
+                cornerStyle: 'circle',
+                transparentCorners: false
+              });
+              canvas.add(baseImage);
+              canvas.sendToBack(baseImage);
+              applyPresetSize();
+              applyBaseFilters();
+              setStatus('Фото загружено. Настройте кадр и фильтры.');
+              return;
+            }
+            if (watermarkImage) {
+              canvas.remove(watermarkImage);
+            }
+            watermarkImage = image;
+            watermarkImage.set({
+              lockRotation: true,
+              hasRotatingPoint: false,
+              cornerStyle: 'circle',
+              transparentCorners: false
+            });
+            canvas.add(watermarkImage);
+            canvas.bringToFront(watermarkImage);
+            applyWatermarkStyle();
+            setStatus('Водяной знак добавлен.');
+          });
+        } catch (_error) {
+          setStatus('Не удалось загрузить изображение.', true);
+        }
+      };
+
+      const resetAdjustments = () => {
+        [brightnessInput, exposureInput, hueInput, saturationInput, lightnessInput, contrastInput].forEach((input) => {
+          if (input) input.value = '0';
+        });
+        if (watermarkOpacityInput) watermarkOpacityInput.value = '0.65';
+        if (watermarkSizeInput) watermarkSizeInput.value = '24';
+        if (watermarkPositionInput) watermarkPositionInput.value = 'bottom-right';
+        applyBaseFilters();
+        applyWatermarkStyle();
+        setStatus('Настройки сброшены.');
+      };
+
+      const exportCanvas = (format) => {
+        if (!baseImage) {
+          setStatus('Сначала загрузите основное фото.', true);
+          return;
+        }
+        const multiplier = Number(exportScaleSelect?.value || 1) || 1;
+        const quality = clamp(Number(jpegQualityInput?.value || 0.95), 0.7, 1);
+        const dataUrl = canvas.toDataURL({
+          format: format === 'jpeg' ? 'jpeg' : 'png',
+          quality: format === 'jpeg' ? quality : 1,
+          multiplier
+        });
+        const link = document.createElement('a');
+        const extension = format === 'jpeg' ? 'jpg' : 'png';
+        link.href = dataUrl;
+        link.download = `content-photo-${Date.now()}.${extension}`;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        setStatus(`Файл ${extension.toUpperCase()} готов к сохранению.`);
+      };
+
+      sourceInput?.addEventListener('change', function () {
+        const file = (sourceInput.files || [])[0];
+        if (file) loadImageToCanvas(file, false);
+      });
+
+      watermarkInput?.addEventListener('change', function () {
+        const file = (watermarkInput.files || [])[0];
+        if (file) loadImageToCanvas(file, true);
+      });
+
+      [brightnessInput, exposureInput, hueInput, saturationInput, lightnessInput, contrastInput].forEach((input) => {
+        input?.addEventListener('input', applyBaseFilters);
+      });
+      [watermarkOpacityInput, watermarkSizeInput, watermarkPositionInput].forEach((input) => {
+        input?.addEventListener('input', applyWatermarkStyle);
+        input?.addEventListener('change', applyWatermarkStyle);
+      });
+
+      applyPresetButton?.addEventListener('click', applyPresetSize);
+      presetSelect?.addEventListener('change', applyPresetSize);
+      resetButton?.addEventListener('click', resetAdjustments);
+      downloadJpegButton?.addEventListener('click', function () {
+        exportCanvas('jpeg');
+      });
+      downloadPngButton?.addEventListener('click', function () {
+        exportCanvas('png');
+      });
+
+      canvas.on('mouse:wheel', function (opt) {
+        if (!baseImage) return;
+        const event = opt.e;
+        if (!event) return;
+        event.preventDefault();
+        const delta = Number(event.deltaY || 0);
+        const factor = delta < 0 ? 1.05 : 0.95;
+        const nextScale = clamp(Number(baseImage.scaleX || 1) * factor, 0.1, 10);
+        baseImage.scale(nextScale);
+        baseImage.setCoords();
+        canvas.renderAll();
+      });
+
+      applyPresetSize();
+      setStatus('Редактор готов. Загрузите фото.');
+    }
+
+    initializeContentAiAssistant();
+    initializeContentPhotoEditor();
 
     const mode = document.getElementById("shift_mode");
     const repeatKind = document.getElementById("shift_repeat_kind");

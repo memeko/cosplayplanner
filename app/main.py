@@ -495,6 +495,7 @@ CONTENT_REDNOTE_PROFILE_GROUP = "content_rednote_profile"
 CONTENT_RUBRIC_TAG_GROUP = "content_rubric_tag"
 CONTENT_RECOMMENDATION_DISMISSED_GROUP = "content_recommendation_dismissed"
 CONTENT_PLAN_ACCESS_VERIFIED_GROUP = "content_plan_brfox_subscription_verified_at"
+CONTENT_AI_ASSISTANT_USAGE_GROUP = "content_ai_assistant_usage"
 SMM_MANAGER_ROLE_GROUP = "profile_is_smm_manager"
 CONTENT_MANAGER_OWNER_GROUP = "content_manager_owner"
 CONTENT_MANAGER_USER_GROUP = "content_manager_user"
@@ -577,6 +578,21 @@ CONTENT_TELEGRAM_CHANNEL_POSTS_MAX_PER_USER = max(
     100,
     min(10000, int(os.getenv("CONTENT_TELEGRAM_CHANNEL_POSTS_MAX_PER_USER", "3000"))),
 )
+CONTENT_TELEGRAM_PUBLIC_SCRAPE_TIMEOUT_SECONDS = max(
+    5,
+    min(40, int(os.getenv("CONTENT_TELEGRAM_PUBLIC_SCRAPE_TIMEOUT_SECONDS", "12"))),
+)
+CONTENT_TELEGRAM_PUBLIC_SCRAPE_POST_LIMIT = max(
+    5,
+    min(120, int(os.getenv("CONTENT_TELEGRAM_PUBLIC_SCRAPE_POST_LIMIT", "40"))),
+)
+CONTENT_AI_ASSISTANT_DAILY_LIMIT = max(
+    1,
+    min(200, int(os.getenv("CONTENT_AI_ASSISTANT_DAILY_LIMIT", "25"))),
+)
+MISTRAL_API_BASE_URL = str(os.getenv("MISTRAL_API_BASE_URL", "https://api.mistral.ai")).strip().rstrip("/")
+MISTRAL_API_KEY = str(os.getenv("MISTRAL_API_KEY", "")).strip()
+MISTRAL_FREE_MODEL = str(os.getenv("MISTRAL_FREE_MODEL", "codestral-2508")).strip() or "codestral-2508"
 THREADS_LIBRARY_UNAVAILABLE_TEXT = "Интеграция Threads сейчас временно недоступна на сервере. Попробуйте позже."
 THREADS_API_IMPORT_PATHS = ("threads_api.src.threads_api", "threads_api.threads_api", "threads_api")
 threads_api_class_cache: Any | None = None
@@ -5965,6 +5981,147 @@ def ensure_content_plan_access(request: Request, user: User, db: Session) -> Red
     return content_calendar_redirect(request, user)
 
 
+def content_ai_assistant_today_key() -> str:
+    return datetime.now(SITE_TIMEZONE).date().isoformat()
+
+
+def parse_content_ai_assistant_usage_state(raw_value: str | None) -> dict[str, Any]:
+    default_state = {"date": "", "count": 0}
+    raw = str(raw_value or "").strip()
+    if not raw:
+        return default_state
+    try:
+        payload = json.loads(raw)
+    except ValueError:
+        return default_state
+    if not isinstance(payload, dict):
+        return default_state
+    date_value = str(payload.get("date") or "").strip()
+    try:
+        count_value = int(payload.get("count") or 0)
+    except (TypeError, ValueError):
+        count_value = 0
+    return {
+        "date": date_value,
+        "count": max(0, count_value),
+    }
+
+
+def get_content_ai_assistant_usage(db: Session, user_id: int) -> dict[str, int]:
+    today_key = content_ai_assistant_today_key()
+    state = parse_content_ai_assistant_usage_state(
+        get_user_option_value(db, user_id, CONTENT_AI_ASSISTANT_USAGE_GROUP)
+    )
+    used_today = int(state.get("count") or 0) if str(state.get("date") or "") == today_key else 0
+    used_today = min(max(0, used_today), CONTENT_AI_ASSISTANT_DAILY_LIMIT)
+    remaining_today = max(0, CONTENT_AI_ASSISTANT_DAILY_LIMIT - used_today)
+    return {
+        "used_today": used_today,
+        "remaining_today": remaining_today,
+        "daily_limit": CONTENT_AI_ASSISTANT_DAILY_LIMIT,
+    }
+
+
+def increment_content_ai_assistant_usage(db: Session, user_id: int) -> dict[str, int]:
+    usage = get_content_ai_assistant_usage(db, user_id)
+    used_today = int(usage.get("used_today") or 0)
+    if used_today >= CONTENT_AI_ASSISTANT_DAILY_LIMIT:
+        return usage
+    next_used_today = min(CONTENT_AI_ASSISTANT_DAILY_LIMIT, used_today + 1)
+    set_user_option_value(
+        db,
+        user_id,
+        CONTENT_AI_ASSISTANT_USAGE_GROUP,
+        json.dumps(
+            {"date": content_ai_assistant_today_key(), "count": next_used_today},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ),
+    )
+    return {
+        "used_today": next_used_today,
+        "remaining_today": max(0, CONTENT_AI_ASSISTANT_DAILY_LIMIT - next_used_today),
+        "daily_limit": CONTENT_AI_ASSISTANT_DAILY_LIMIT,
+    }
+
+
+def extract_mistral_chat_completion_text(payload: dict[str, Any]) -> str:
+    choices = payload.get("choices")
+    if not isinstance(choices, list) or not choices:
+        return ""
+    first_choice = choices[0] if isinstance(choices[0], dict) else {}
+    message = first_choice.get("message") if isinstance(first_choice.get("message"), dict) else {}
+    content = message.get("content")
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+                continue
+            if not isinstance(item, dict):
+                continue
+            text_value = str(item.get("text") or item.get("content") or "").strip()
+            if text_value:
+                parts.append(text_value)
+        return "\n".join(part for part in parts if part).strip()
+    return ""
+
+
+def request_mistral_chat_completion(prompt: str) -> str:
+    if not MISTRAL_API_KEY:
+        raise RuntimeError("API Mistral не настроен: задайте переменную окружения MISTRAL_API_KEY.")
+    request_payload = {
+        "model": MISTRAL_FREE_MODEL,
+        "messages": [
+            {"role": "system", "content": "Ты полезный ИИ-помощник для контент-плана косплеера."},
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": 0.4,
+    }
+    try:
+        response = requests.post(
+            f"{MISTRAL_API_BASE_URL}/v1/chat/completions",
+            timeout=max(20, HTTP_TIMEOUT_SECONDS * 4),
+            headers={
+                "Authorization": f"Bearer {MISTRAL_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json=request_payload,
+        )
+    except requests.RequestException as exc:
+        raise RuntimeError("Не удалось связаться с API Mistral.") from exc
+
+    if response.status_code >= 400:
+        message = ""
+        try:
+            error_payload = response.json()
+        except ValueError:
+            error_payload = {}
+        if isinstance(error_payload, dict):
+            if isinstance(error_payload.get("error"), dict):
+                message = str(
+                    error_payload["error"].get("message")
+                    or error_payload["error"].get("detail")
+                    or ""
+                ).strip()
+            if not message:
+                message = str(error_payload.get("message") or error_payload.get("detail") or "").strip()
+        if not message:
+            message = f"HTTP {response.status_code}"
+        raise RuntimeError(f"Mistral API вернул ошибку: {message}")
+
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise RuntimeError("Mistral API вернул некорректный JSON.") from exc
+    answer_text = extract_mistral_chat_completion_text(payload if isinstance(payload, dict) else {})
+    if not answer_text:
+        raise RuntimeError("Mistral API не вернул текст ответа.")
+    return answer_text
+
+
 def content_post_targets_telegram(post: ContentPlanPost) -> bool:
     return any(normalize_content_social_value(item).casefold() == "тг" for item in as_list(post.socials_json))
 
@@ -8335,151 +8492,178 @@ def extract_content_telegram_channel_message_text(payload: dict[str, Any]) -> st
     return "Пост без текста"
 
 
-def sync_external_telegram_channel_posts_for_user_with_report(
-    db: Session,
-    user: User,
-    *,
-    include_diagnostics: bool = True,
-) -> dict[str, Any]:
-    report: dict[str, Any] = {
-        "changed": False,
-        "added_posts": 0,
-        "updated_posts": 0,
-        "processed_updates": 0,
-        "matched_channel_updates": 0,
-        "skipped_unmatched_channel_updates": 0,
-        "offset_before": 0,
-        "offset_after": 0,
-        "error": "",
-        "webhook_active": False,
-        "webhook_url": "",
-    }
-    user_id = parse_positive_int(str(getattr(user, "id", "")).strip())
-    if not user_id:
-        report["error"] = "Некорректный пользователь."
-        return report
+def compact_plain_text_from_html_fragment(fragment: str | None) -> str:
+    value = str(fragment or "")
+    if not value:
+        return ""
+    value = re.sub(r"<br\s*/?>", "\n", value, flags=re.IGNORECASE)
+    value = re.sub(r"</p\s*>", "\n", value, flags=re.IGNORECASE)
+    value = re.sub(r"</div\s*>", "\n", value, flags=re.IGNORECASE)
+    value = re.sub(r"<[^>]+>", "", value)
+    value = html.unescape(value)
+    value = value.replace("\xa0", " ")
+    value = re.sub(r"[ \t\f\v]+", " ", value)
+    value = re.sub(r"\n\s*\n\s*\n+", "\n\n", value)
+    return value.strip()
 
-    bot_token = str(get_secret_user_option_value(db, user_id, CONTENT_TELEGRAM_TOKEN_GROUP) or "").strip()
-    if not bot_token:
-        report["error"] = "Не указан токен Telegram-бота."
-        return report
-    available_channels = get_content_telegram_channels(db, user_id)
-    if not available_channels:
-        report["error"] = "Не настроены Telegram-каналы."
-        return report
 
-    channels_by_chat_id = {
-        normalize_telegram_target(str(channel.get("chat_id") or "").strip()): channel
-        for channel in available_channels
-        if normalize_telegram_target(str(channel.get("chat_id") or "").strip())
-    }
-    if not channels_by_chat_id:
-        report["error"] = "Список Telegram-каналов содержит некорректные chat_id."
-        return report
+def extract_telegram_public_channel_slug(channel_value: str | None) -> str:
+    normalized_target = normalize_telegram_target(channel_value)
+    if looks_like_telegram_username(normalized_target):
+        return normalized_target[1:]
 
-    if include_diagnostics:
+    raw = str(channel_value or "").strip()
+    if not raw:
+        return ""
+    if raw.lower().startswith(("https://t.me/", "http://t.me/", "t.me/")):
         try:
-            webhook_payload = telegram_custom_request(bot_token, "getWebhookInfo")
-            webhook_info = webhook_payload.get("result") if isinstance(webhook_payload.get("result"), dict) else {}
-            webhook_url = str(webhook_info.get("url") or "").strip()
-            report["webhook_url"] = webhook_url
-            report["webhook_active"] = bool(webhook_url)
-        except RuntimeError:
-            # Диагностика webhooks полезна, но не должна блокировать синхронизацию.
-            pass
+            parsed = urlparse(build_external_url(raw))
+            path = str(parsed.path or "").strip("/")
+        except ValueError:
+            path = ""
+        if path.startswith("s/"):
+            path = path[2:]
+        if path:
+            slug = path.split("/", 1)[0]
+            if re.fullmatch(r"[A-Za-z0-9_]{3,}", slug):
+                return slug
+    if re.fullmatch(r"[A-Za-z0-9_]{3,}", raw):
+        return raw
+    return ""
 
-    token_fingerprint = hashlib.sha256(bot_token.encode("utf-8")).hexdigest()[:24]
-    stored_fingerprint = str(
-        get_user_option_value(db, user_id, CONTENT_TELEGRAM_UPDATES_TOKEN_FINGERPRINT_GROUP) or ""
-    ).strip()
-    has_changes = False
-    if token_fingerprint != stored_fingerprint:
-        set_user_option_value(db, user_id, CONTENT_TELEGRAM_UPDATES_TOKEN_FINGERPRINT_GROUP, token_fingerprint)
-        set_user_option_value(db, user_id, CONTENT_TELEGRAM_UPDATES_OFFSET_GROUP, "")
-        has_changes = True
 
-    next_offset = parse_content_telegram_updates_offset(
-        get_user_option_value(db, user_id, CONTENT_TELEGRAM_UPDATES_OFFSET_GROUP)
-    )
-    report["offset_before"] = int(next_offset)
-    max_seen_update_id = next_offset - 1 if next_offset > 0 else -1
-    for _ in range(CONTENT_TELEGRAM_CHANNEL_SYNC_BATCHES_PER_USER):
-        request_payload: dict[str, Any] = {
-            "limit": CONTENT_TELEGRAM_CHANNEL_UPDATES_BATCH_LIMIT,
-            "timeout": 0,
-            "allowed_updates": ["channel_post", "edited_channel_post"],
-        }
-        if next_offset > 0:
-            request_payload["offset"] = next_offset
-        try:
-            payload = telegram_custom_request(
-                bot_token,
-                "getUpdates",
-                json_payload=request_payload,
-            )
-        except RuntimeError as exc:
-            report["error"] = str(exc)
-            break
+def build_telegram_public_channel_feed_url(channel_slug: str) -> str:
+    normalized_slug = re.sub(r"[^A-Za-z0-9_]", "", str(channel_slug or ""))
+    if not normalized_slug:
+        return ""
+    return f"https://t.me/s/{normalized_slug}"
 
-        updates = payload.get("result")
-        if not isinstance(updates, list) or not updates:
-            break
 
-        for update in updates:
-            if not isinstance(update, dict):
-                continue
-            report["processed_updates"] = int(report["processed_updates"]) + 1
-            update_id_raw = update.get("update_id")
+def parse_telegram_public_channel_posts_from_html(html_text: str) -> list[dict[str, Any]]:
+    if not html_text:
+        return []
+    data_post_matches = list(re.finditer(r'data-post="([^"]+)"', html_text))
+    if not data_post_matches:
+        return []
+
+    parsed_posts: list[dict[str, Any]] = []
+    seen_post_ids: set[str] = set()
+    for index, match in enumerate(data_post_matches):
+        data_post = str(match.group(1) or "").strip()
+        if "/" not in data_post:
+            continue
+        _channel_name, message_id = data_post.split("/", 1)
+        message_id = str(message_id or "").strip()
+        if not message_id or message_id in seen_post_ids:
+            continue
+        seen_post_ids.add(message_id)
+
+        chunk_start = match.start()
+        chunk_end = data_post_matches[index + 1].start() if index + 1 < len(data_post_matches) else len(html_text)
+        chunk = html_text[chunk_start:chunk_end]
+
+        datetime_match = re.search(r'<time[^>]+datetime="([^"]+)"', chunk)
+        raw_datetime_value = str(datetime_match.group(1) or "").strip() if datetime_match else ""
+        published_at = datetime.utcnow()
+        if raw_datetime_value:
+            normalized_raw_datetime = raw_datetime_value.replace("Z", "+00:00")
             try:
-                update_id = int(update_id_raw)
-            except (TypeError, ValueError):
-                update_id = 0
-            if update_id > max_seen_update_id:
-                max_seen_update_id = update_id
-                next_offset = max_seen_update_id + 1
+                parsed_dt = datetime.fromisoformat(normalized_raw_datetime)
+                if parsed_dt.tzinfo is not None:
+                    parsed_dt = parsed_dt.astimezone(ZoneInfo("UTC")).replace(tzinfo=None)
+                published_at = parsed_dt
+            except ValueError:
+                pass
 
-            channel_post = update.get("channel_post")
-            if not isinstance(channel_post, dict):
-                channel_post = update.get("edited_channel_post")
-            if not isinstance(channel_post, dict):
-                continue
+        message_text = ""
+        text_match = re.search(
+            r'<div class="tgme_widget_message_text js-message_text"[^>]*>(.*?)</div>',
+            chunk,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        if text_match:
+            message_text = compact_plain_text_from_html_fragment(text_match.group(1))
+        if not message_text:
+            if "tgme_widget_message_video_player" in chunk:
+                message_text = "Пост с видео"
+            elif "tgme_widget_message_photo_wrap" in chunk:
+                message_text = "Пост с фото"
+            elif "tgme_widget_message_document" in chunk:
+                message_text = "Пост с документом"
+            elif "tgme_widget_message_poll" in chunk:
+                message_text = "Пост с опросом"
+            else:
+                message_text = "Пост без текста"
 
-            chat_payload = channel_post.get("chat") if isinstance(channel_post.get("chat"), dict) else {}
-            chat_id_from_event = normalize_telegram_target(str(chat_payload.get("id") or "").strip())
-            chat_username = ""
-            raw_username = str(chat_payload.get("username") or "").strip().lstrip("@")
-            if raw_username:
-                chat_username = normalize_telegram_target(f"@{raw_username}")
+        parsed_posts.append(
+            {
+                "message_id": message_id,
+                "published_at": published_at,
+                "message_text": message_text,
+            }
+        )
+    return parsed_posts
 
-            matched_channel = channels_by_chat_id.get(chat_id_from_event) or channels_by_chat_id.get(chat_username)
-            if not matched_channel:
-                report["skipped_unmatched_channel_updates"] = int(report["skipped_unmatched_channel_updates"]) + 1
-                continue
-            report["matched_channel_updates"] = int(report["matched_channel_updates"]) + 1
 
-            message_id = str(channel_post.get("message_id") or "").strip()
+def sync_public_telegram_channel_posts_for_user_with_report(
+    db: Session,
+    user_id: int,
+    channels_by_chat_id: dict[str, dict[str, str]],
+    report: dict[str, Any],
+) -> bool:
+    has_changes = False
+    report.setdefault("web_parser_attempted_channels", 0)
+    report.setdefault("web_parser_synced_channels", 0)
+    report.setdefault("web_parser_skipped_channels", 0)
+    report.setdefault("web_parser_added_posts", 0)
+    report.setdefault("web_parser_updated_posts", 0)
+    report.setdefault("web_parser_errors", [])
+
+    for chat_id, channel in channels_by_chat_id.items():
+        channel_slug = extract_telegram_public_channel_slug(chat_id)
+        if not channel_slug:
+            report["web_parser_skipped_channels"] = int(report.get("web_parser_skipped_channels", 0)) + 1
+            continue
+        feed_url = build_telegram_public_channel_feed_url(channel_slug)
+        if not feed_url:
+            report["web_parser_skipped_channels"] = int(report.get("web_parser_skipped_channels", 0)) + 1
+            continue
+
+        report["web_parser_attempted_channels"] = int(report.get("web_parser_attempted_channels", 0)) + 1
+        try:
+            response = requests.get(
+                feed_url,
+                timeout=CONTENT_TELEGRAM_PUBLIC_SCRAPE_TIMEOUT_SECONDS,
+                headers={"User-Agent": "Mozilla/5.0"},
+            )
+            response.raise_for_status()
+        except requests.RequestException as exc:
+            report.setdefault("web_parser_errors", []).append(f"{chat_id}: {exc}")
+            continue
+
+        page_posts = parse_telegram_public_channel_posts_from_html(response.text)
+        if not page_posts:
+            report.setdefault("web_parser_errors", []).append(
+                f"{chat_id}: не удалось разобрать посты из публичной страницы."
+            )
+            continue
+
+        page_posts = sorted(
+            page_posts,
+            key=lambda item: normalize_datetime(item.get("published_at")) or datetime.utcnow(),
+            reverse=True,
+        )[:CONTENT_TELEGRAM_PUBLIC_SCRAPE_POST_LIMIT]
+
+        saved_chat_id = normalize_telegram_target(chat_id) or f"@{channel_slug}"
+        chat_title = str(channel.get("title") or f"@{channel_slug}").strip()[:255] or f"@{channel_slug}"
+        report["web_parser_synced_channels"] = int(report.get("web_parser_synced_channels", 0)) + 1
+
+        for post in page_posts:
+            message_id = str(post.get("message_id") or "").strip()
             if not message_id:
                 continue
-
-            saved_chat_id = normalize_telegram_target(str(matched_channel.get("chat_id") or "").strip())
-            if not saved_chat_id:
-                saved_chat_id = chat_id_from_event or chat_username
-            if not saved_chat_id:
-                continue
-
-            timestamp_raw = channel_post.get("date")
-            try:
-                timestamp_value = int(timestamp_raw)
-            except (TypeError, ValueError):
-                timestamp_value = 0
-            published_at = (
-                datetime.utcfromtimestamp(timestamp_value)
-                if timestamp_value > 0
-                else datetime.utcnow()
-            )
-            chat_title = str(matched_channel.get("title") or chat_payload.get("title") or saved_chat_id).strip()[:255]
-            message_text = extract_content_telegram_channel_message_text(channel_post)
-
+            published_at = normalize_datetime(post.get("published_at")) or datetime.utcnow()
+            message_text = str(post.get("message_text") or "").strip() or "Пост без текста"
             existing_row = db.execute(
                 select(ContentChannelPost).where(
                     ContentChannelPost.user_id == user_id,
@@ -8496,11 +8680,11 @@ def sync_external_telegram_channel_posts_for_user_with_report(
                 if (existing_row.message_text or "") != message_text:
                     existing_row.message_text = message_text
                     changed = True
-                if existing_row.published_at != published_at:
+                if normalize_datetime(existing_row.published_at) != published_at:
                     existing_row.published_at = published_at
                     changed = True
                 if changed:
-                    report["updated_posts"] = int(report["updated_posts"]) + 1
+                    report["web_parser_updated_posts"] = int(report.get("web_parser_updated_posts", 0)) + 1
                     has_changes = True
                 continue
 
@@ -8515,20 +8699,225 @@ def sync_external_telegram_channel_posts_for_user_with_report(
                     published_at=published_at,
                 )
             )
-            report["added_posts"] = int(report["added_posts"]) + 1
+            report["web_parser_added_posts"] = int(report.get("web_parser_added_posts", 0)) + 1
             has_changes = True
+    return has_changes
 
-        if len(updates) < CONTENT_TELEGRAM_CHANNEL_UPDATES_BATCH_LIMIT:
-            break
 
-    if max_seen_update_id >= 0:
-        next_offset_value = str(max_seen_update_id + 1)
-        current_offset_value = str(
-            get_user_option_value(db, user_id, CONTENT_TELEGRAM_UPDATES_OFFSET_GROUP) or ""
+def sync_external_telegram_channel_posts_for_user_with_report(
+    db: Session,
+    user: User,
+    *,
+    include_diagnostics: bool = True,
+) -> dict[str, Any]:
+    report: dict[str, Any] = {
+        "changed": False,
+        "added_posts": 0,
+        "updated_posts": 0,
+        "processed_updates": 0,
+        "matched_channel_updates": 0,
+        "skipped_unmatched_channel_updates": 0,
+        "offset_before": 0,
+        "offset_after": 0,
+        "error": "",
+        "warning": "",
+        "webhook_active": False,
+        "webhook_url": "",
+        "web_parser_attempted_channels": 0,
+        "web_parser_synced_channels": 0,
+        "web_parser_skipped_channels": 0,
+        "web_parser_added_posts": 0,
+        "web_parser_updated_posts": 0,
+        "web_parser_errors": [],
+    }
+    user_id = parse_positive_int(str(getattr(user, "id", "")).strip())
+    if not user_id:
+        report["error"] = "Некорректный пользователь."
+        return report
+
+    available_channels = get_content_telegram_channels(db, user_id)
+    if not available_channels:
+        report["error"] = "Не настроены Telegram-каналы."
+        return report
+
+    channels_by_chat_id = {
+        normalize_telegram_target(str(channel.get("chat_id") or "").strip()): channel
+        for channel in available_channels
+        if normalize_telegram_target(str(channel.get("chat_id") or "").strip())
+    }
+    if not channels_by_chat_id:
+        report["error"] = "Список Telegram-каналов содержит некорректные chat_id."
+        return report
+
+    bot_token = str(get_secret_user_option_value(db, user_id, CONTENT_TELEGRAM_TOKEN_GROUP) or "").strip()
+    has_changes = False
+    next_offset = parse_content_telegram_updates_offset(
+        get_user_option_value(db, user_id, CONTENT_TELEGRAM_UPDATES_OFFSET_GROUP)
+    )
+    report["offset_before"] = int(next_offset)
+    max_seen_update_id = next_offset - 1 if next_offset > 0 else -1
+    if bot_token:
+        if include_diagnostics:
+            try:
+                webhook_payload = telegram_custom_request(bot_token, "getWebhookInfo")
+                webhook_info = webhook_payload.get("result") if isinstance(webhook_payload.get("result"), dict) else {}
+                webhook_url = str(webhook_info.get("url") or "").strip()
+                report["webhook_url"] = webhook_url
+                report["webhook_active"] = bool(webhook_url)
+            except RuntimeError:
+                # Диагностика webhooks полезна, но не должна блокировать синхронизацию.
+                pass
+
+        token_fingerprint = hashlib.sha256(bot_token.encode("utf-8")).hexdigest()[:24]
+        stored_fingerprint = str(
+            get_user_option_value(db, user_id, CONTENT_TELEGRAM_UPDATES_TOKEN_FINGERPRINT_GROUP) or ""
         ).strip()
-        if next_offset_value != current_offset_value:
-            set_user_option_value(db, user_id, CONTENT_TELEGRAM_UPDATES_OFFSET_GROUP, next_offset_value)
+        if token_fingerprint != stored_fingerprint:
+            set_user_option_value(db, user_id, CONTENT_TELEGRAM_UPDATES_TOKEN_FINGERPRINT_GROUP, token_fingerprint)
+            set_user_option_value(db, user_id, CONTENT_TELEGRAM_UPDATES_OFFSET_GROUP, "")
+            next_offset = 0
+            report["offset_before"] = 0
+            max_seen_update_id = -1
             has_changes = True
+
+        for _ in range(CONTENT_TELEGRAM_CHANNEL_SYNC_BATCHES_PER_USER):
+            request_payload: dict[str, Any] = {
+                "limit": CONTENT_TELEGRAM_CHANNEL_UPDATES_BATCH_LIMIT,
+                "timeout": 0,
+                "allowed_updates": ["channel_post", "edited_channel_post"],
+            }
+            if next_offset > 0:
+                request_payload["offset"] = next_offset
+            try:
+                payload = telegram_custom_request(
+                    bot_token,
+                    "getUpdates",
+                    json_payload=request_payload,
+                )
+            except RuntimeError as exc:
+                report["error"] = str(exc)
+                break
+
+            updates = payload.get("result")
+            if not isinstance(updates, list) or not updates:
+                break
+
+            for update in updates:
+                if not isinstance(update, dict):
+                    continue
+                report["processed_updates"] = int(report["processed_updates"]) + 1
+                update_id_raw = update.get("update_id")
+                try:
+                    update_id = int(update_id_raw)
+                except (TypeError, ValueError):
+                    update_id = 0
+                if update_id > max_seen_update_id:
+                    max_seen_update_id = update_id
+                    next_offset = max_seen_update_id + 1
+
+                channel_post = update.get("channel_post")
+                if not isinstance(channel_post, dict):
+                    channel_post = update.get("edited_channel_post")
+                if not isinstance(channel_post, dict):
+                    continue
+
+                chat_payload = channel_post.get("chat") if isinstance(channel_post.get("chat"), dict) else {}
+                chat_id_from_event = normalize_telegram_target(str(chat_payload.get("id") or "").strip())
+                chat_username = ""
+                raw_username = str(chat_payload.get("username") or "").strip().lstrip("@")
+                if raw_username:
+                    chat_username = normalize_telegram_target(f"@{raw_username}")
+
+                matched_channel = channels_by_chat_id.get(chat_id_from_event) or channels_by_chat_id.get(chat_username)
+                if not matched_channel:
+                    report["skipped_unmatched_channel_updates"] = int(report["skipped_unmatched_channel_updates"]) + 1
+                    continue
+                report["matched_channel_updates"] = int(report["matched_channel_updates"]) + 1
+
+                message_id = str(channel_post.get("message_id") or "").strip()
+                if not message_id:
+                    continue
+
+                saved_chat_id = normalize_telegram_target(str(matched_channel.get("chat_id") or "").strip())
+                if not saved_chat_id:
+                    saved_chat_id = chat_id_from_event or chat_username
+                if not saved_chat_id:
+                    continue
+
+                timestamp_raw = channel_post.get("date")
+                try:
+                    timestamp_value = int(timestamp_raw)
+                except (TypeError, ValueError):
+                    timestamp_value = 0
+                published_at = (
+                    datetime.utcfromtimestamp(timestamp_value)
+                    if timestamp_value > 0
+                    else datetime.utcnow()
+                )
+                chat_title = str(matched_channel.get("title") or chat_payload.get("title") or saved_chat_id).strip()[:255]
+                message_text = extract_content_telegram_channel_message_text(channel_post)
+
+                existing_row = db.execute(
+                    select(ContentChannelPost).where(
+                        ContentChannelPost.user_id == user_id,
+                        ContentChannelPost.platform == "telegram",
+                        ContentChannelPost.chat_id == saved_chat_id,
+                        ContentChannelPost.message_id == message_id,
+                    )
+                ).scalar_one_or_none()
+                if existing_row:
+                    changed = False
+                    if existing_row.chat_title != chat_title:
+                        existing_row.chat_title = chat_title
+                        changed = True
+                    if (existing_row.message_text or "") != message_text:
+                        existing_row.message_text = message_text
+                        changed = True
+                    if existing_row.published_at != published_at:
+                        existing_row.published_at = published_at
+                        changed = True
+                    if changed:
+                        report["updated_posts"] = int(report["updated_posts"]) + 1
+                        has_changes = True
+                    continue
+
+                db.add(
+                    ContentChannelPost(
+                        user_id=user_id,
+                        platform="telegram",
+                        chat_id=saved_chat_id,
+                        chat_title=chat_title,
+                        message_id=message_id,
+                        message_text=message_text,
+                        published_at=published_at,
+                    )
+                )
+                report["added_posts"] = int(report["added_posts"]) + 1
+                has_changes = True
+
+            if len(updates) < CONTENT_TELEGRAM_CHANNEL_UPDATES_BATCH_LIMIT:
+                break
+
+        if max_seen_update_id >= 0:
+            next_offset_value = str(max_seen_update_id + 1)
+            current_offset_value = str(
+                get_user_option_value(db, user_id, CONTENT_TELEGRAM_UPDATES_OFFSET_GROUP) or ""
+            ).strip()
+            if next_offset_value != current_offset_value:
+                set_user_option_value(db, user_id, CONTENT_TELEGRAM_UPDATES_OFFSET_GROUP, next_offset_value)
+                has_changes = True
+    else:
+        report["warning"] = "Токен Telegram-бота не указан. Используется только веб-парсер открытых каналов."
+
+    try:
+        has_changes = sync_public_telegram_channel_posts_for_user_with_report(
+            db,
+            user_id,
+            channels_by_chat_id,
+            report,
+        ) or has_changes
+    except Exception as exc:
+        report.setdefault("web_parser_errors", []).append(f"Ошибка веб-парсера: {exc}")
 
     report["changed"] = bool(has_changes)
     report["offset_after"] = (
@@ -8536,6 +8925,10 @@ def sync_external_telegram_channel_posts_for_user_with_report(
         if max_seen_update_id >= 0
         else int(report["offset_before"])
     )
+    if not bot_token and int(report.get("web_parser_attempted_channels") or 0) == 0 and not report.get("error"):
+        report["error"] = (
+            "Токен Telegram-бота не задан, а публичных каналов вида @channel для веб-парсинга не найдено."
+        )
     return report
 
 
@@ -8606,11 +8999,7 @@ def build_content_telegram_weekly_review(
         review["error"] = "Не удалось определить владельца контент-плана."
         return review
 
-    bot_token = str(get_secret_user_option_value(db, user_id, CONTENT_TELEGRAM_TOKEN_GROUP) or "").strip()
     channels = get_content_telegram_channels(db, user_id)
-    if not bot_token:
-        review["error"] = "Telegram-бот не подключен: добавьте токен в настройках."
-        return review
     if not channels:
         review["error"] = "Не настроены Telegram-каналы для отслеживания."
         return review
@@ -22220,6 +22609,7 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
     content_can_manage_connections = content_connections_editable(user, content_owner)
     content_can_manage_manager_access = content_manager_access_editable(user, content_owner)
     content_manager_users = get_content_managers(db, user.id) if content_can_manage_manager_access else []
+    content_ai_usage = get_content_ai_assistant_usage(db, user.id)
     content_action_query_params: dict[str, str] = {"content_scope": content_scope}
     if content_owner_id:
         content_action_query_params["content_owner_id"] = str(content_owner_id)
@@ -22628,6 +23018,10 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
             else "telegram"
         ),
         content_access_state=content_access_state,
+        content_ai_assistant_used_today=int(content_ai_usage.get("used_today") or 0),
+        content_ai_assistant_remaining_today=int(content_ai_usage.get("remaining_today") or 0),
+        content_ai_assistant_daily_limit=int(content_ai_usage.get("daily_limit") or CONTENT_AI_ASSISTANT_DAILY_LIMIT),
+        content_ai_assistant_model=MISTRAL_FREE_MODEL,
         month_weekday_labels=["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"],
     )
 
@@ -23087,6 +23481,71 @@ async def my_calendar_content_recommendation_dismiss(request: Request, db: Sessi
     else:
         add_flash(request, "Рекомендация закрыта.", "info")
     return content_calendar_redirect(request, user, form=form, content_owner=content_owner)
+
+
+@app.post("/my-calendar/content/ai-assistant/query")
+async def my_calendar_content_ai_assistant_query(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return JSONResponse(status_code=401, content={"detail": "Требуется авторизация."})
+    access_redirect = ensure_content_plan_access(request, user, db)
+    if access_redirect:
+        return JSONResponse(status_code=403, content={"detail": "Контент-план недоступен для этого пользователя."})
+
+    form = await request.form()
+    content_owner, owner_redirect = ensure_content_owner_for_action(request, user, db, form=form)
+    if owner_redirect or not content_owner:
+        return JSONResponse(status_code=400, content={"detail": "Контент-план не выбран."})
+
+    prompt = str(form.get("prompt", "")).strip()
+    if not prompt:
+        return JSONResponse(status_code=400, content={"detail": "Введите запрос для ИИ-помощника."})
+    if len(prompt) > 6000:
+        return JSONResponse(status_code=400, content={"detail": "Слишком длинный запрос (максимум 6000 символов)."})
+
+    usage_before = get_content_ai_assistant_usage(db, user.id)
+    if int(usage_before.get("remaining_today") or 0) <= 0:
+        return JSONResponse(
+            status_code=429,
+            content={
+                "detail": (
+                    "Дневной лимит исчерпан. "
+                    f"Доступно не более {CONTENT_AI_ASSISTANT_DAILY_LIMIT} запросов в сутки."
+                ),
+                "request_text": prompt,
+                "response_text": "",
+                "used_today": int(usage_before.get("used_today") or 0),
+                "remaining_today": int(usage_before.get("remaining_today") or 0),
+                "daily_limit": int(usage_before.get("daily_limit") or CONTENT_AI_ASSISTANT_DAILY_LIMIT),
+            },
+        )
+
+    usage_after = increment_content_ai_assistant_usage(db, user.id)
+    db.commit()
+    try:
+        response_text = request_mistral_chat_completion(prompt)
+    except RuntimeError as exc:
+        return JSONResponse(
+            status_code=502,
+            content={
+                "detail": str(exc),
+                "request_text": prompt,
+                "response_text": "",
+                "used_today": int(usage_after.get("used_today") or 0),
+                "remaining_today": int(usage_after.get("remaining_today") or 0),
+                "daily_limit": int(usage_after.get("daily_limit") or CONTENT_AI_ASSISTANT_DAILY_LIMIT),
+            },
+        )
+
+    return {
+        "ok": True,
+        "request_text": prompt,
+        "response_text": response_text,
+        "used_today": int(usage_after.get("used_today") or 0),
+        "remaining_today": int(usage_after.get("remaining_today") or 0),
+        "daily_limit": int(usage_after.get("daily_limit") or CONTENT_AI_ASSISTANT_DAILY_LIMIT),
+        "model": MISTRAL_FREE_MODEL,
+    }
 
 
 @app.post("/my-calendar/content/new")
