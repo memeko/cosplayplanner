@@ -308,6 +308,8 @@ body::after {
 .calendar-carousel {
   display: grid;
   gap: 14px;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .calendar-carousel-head {
@@ -315,6 +317,8 @@ body::after {
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
   gap: 12px;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .calendar-carousel-meta {
@@ -363,6 +367,11 @@ body::after {
 
 .calendar-carousel-panel[hidden] {
   display: none !important;
+}
+
+.calendar-carousel-panel {
+  min-width: 0;
+  max-width: 100%;
 }
 
 .calendar-carousel.is-single .calendar-carousel-counter {
@@ -2387,12 +2396,17 @@ textarea {
 
 .calendar-grid-wrap {
   overflow-x: auto;
+  overflow-y: hidden;
   margin-top: 8px;
+  min-width: 0;
+  max-width: 100%;
+  -webkit-overflow-scrolling: touch;
 }
 
 .calendar-grid {
   width: 100%;
   min-width: 520px;
+  max-width: 100%;
   border-collapse: collapse;
   table-layout: fixed;
   border-radius: 14px;
@@ -3672,8 +3686,37 @@ textarea {
     grid-template-columns: 42px minmax(0, 1fr) 42px;
   }
 
+  .calendar-grid-wrap {
+    overflow-x: hidden;
+  }
+
+  .calendar-grid {
+    min-width: 0;
+  }
+
+  .calendar-grid th {
+    padding: 4px 2px;
+    font-size: clamp(12px, 3.4vw, 14px);
+  }
+
   .calendar-grid-cell {
-    height: 84px;
+    height: 76px;
+    padding: 3px 4px;
+  }
+
+  .calendar-cell-items {
+    margin-top: 2px;
+    gap: 1px;
+  }
+
+  .calendar-cell-item {
+    font-size: 9px;
+    padding: 1px 3px;
+  }
+
+  .calendar-cell-social {
+    font-size: 8px;
+    padding: 1px 3px;
   }
 
   .site-footnote {
