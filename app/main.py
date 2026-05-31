@@ -17320,6 +17320,164 @@ def build_admin_dashboard_stats(db: Session) -> dict[str, Any]:
         db.execute(select(func.count(func.distinct(InProgressCard.user_id)))).scalar() or 0
     )
     users_with_festivals = int(db.execute(select(func.count(func.distinct(Festival.user_id)))).scalar() or 0)
+    festival_rows = db.execute(
+        select(
+            Festival.id,
+            Festival.source_announcement_id,
+            Festival.import_source,
+            Festival.import_external_id,
+            Festival.name,
+            Festival.city,
+            Festival.event_date,
+            Festival.is_going,
+        )
+    ).all()
+    festival_total_cards = len(festival_rows)
+    unique_festival_event_keys: set[str] = set()
+    going_cards_total = 0
+    going_festival_counts_by_event: dict[str, int] = defaultdict(int)
+    festival_event_labels_by_key: dict[str, str] = {}
+
+    def format_festival_event_label(name: str | None, city: str | None, event_day: date | None) -> str:
+        clean_name = str(name or "").strip() or "Без названия"
+        clean_city = str(city or "").strip()
+        details: list[str] = []
+        if clean_city:
+            details.append(clean_city)
+        if isinstance(event_day, date):
+            details.append(event_day.strftime("%d.%m.%Y"))
+        if not details:
+            return clean_name
+        return f"{clean_name} ({', '.join(details)})"
+
+    for (
+        festival_id,
+        source_announcement_id,
+        import_source,
+        import_external_id,
+        name,
+        city,
+        event_date,
+        is_going,
+    ) in festival_rows:
+        event_key = festival_duplicate_group_key(
+            source_announcement_id=int(source_announcement_id) if source_announcement_id else None,
+            import_source=str(import_source or "").strip() or None,
+            import_external_id=str(import_external_id or "").strip() or None,
+            name=str(name or "").strip() or None,
+            city=str(city or "").strip() or None,
+            event_date=event_date if isinstance(event_date, date) else None,
+        )
+        if not event_key:
+            event_key = f"festival:{int(festival_id)}"
+
+        unique_festival_event_keys.add(event_key)
+        label = format_festival_event_label(
+            str(name or "").strip() or None,
+            str(city or "").strip() or None,
+            event_date if isinstance(event_date, date) else None,
+        )
+        stored_label = festival_event_labels_by_key.get(event_key)
+        if not stored_label or len(label) > len(stored_label):
+            festival_event_labels_by_key[event_key] = label
+
+        if bool(is_going):
+            going_cards_total += 1
+            going_festival_counts_by_event[event_key] += 1
+
+    most_popular_going_festival_name = "—"
+    most_popular_going_festival_count = 0
+    if going_festival_counts_by_event:
+        most_popular_going_key, most_popular_going_festival_count = sorted(
+            going_festival_counts_by_event.items(),
+            key=lambda item: (
+                -int(item[1]),
+                festival_event_labels_by_key.get(item[0], "").casefold(),
+                item[0],
+            ),
+        )[0]
+        most_popular_going_festival_name = festival_event_labels_by_key.get(most_popular_going_key, "—")
+
+    cosplan_festival_mentions_by_key: dict[str, int] = defaultdict(int)
+    cosplan_festival_labels_by_key: dict[str, str] = {}
+    fandom_counts_by_key: dict[str, int] = defaultdict(int)
+    fandom_labels_by_key: dict[str, str] = {}
+    character_counts_by_key: dict[str, int] = defaultdict(int)
+    character_labels_by_key: dict[str, str] = {}
+    cosplan_rows = db.execute(
+        select(
+            CosplanCard.planned_festivals_json,
+            CosplanCard.fandom,
+            CosplanCard.character_name,
+        ).where(CosplanCard.is_shared_copy.is_(False))
+    ).all()
+    for raw_festival_values, raw_fandom, raw_character_name in cosplan_rows:
+        seen_festival_keys: set[str] = set()
+        for raw_value in as_list(raw_festival_values):
+            clean_value = str(raw_value or "").strip()
+            festival_name_key = normalize_event_name_key(clean_value)
+            if not festival_name_key or festival_name_key in seen_festival_keys:
+                continue
+            seen_festival_keys.add(festival_name_key)
+            cosplan_festival_mentions_by_key[festival_name_key] += 1
+            saved_label = cosplan_festival_labels_by_key.get(festival_name_key)
+            if not saved_label or len(clean_value) > len(saved_label):
+                cosplan_festival_labels_by_key[festival_name_key] = clean_value
+
+        clean_fandom = " ".join(str(raw_fandom or "").split()).strip()
+        if clean_fandom:
+            fandom_key = clean_fandom.casefold()
+            fandom_counts_by_key[fandom_key] += 1
+            stored_fandom_label = fandom_labels_by_key.get(fandom_key)
+            if not stored_fandom_label or len(clean_fandom) > len(stored_fandom_label):
+                fandom_labels_by_key[fandom_key] = clean_fandom
+
+        clean_character_name = " ".join(str(raw_character_name or "").split()).strip()
+        if clean_character_name:
+            character_key = clean_character_name.casefold()
+            character_counts_by_key[character_key] += 1
+            stored_character_label = character_labels_by_key.get(character_key)
+            if not stored_character_label or len(clean_character_name) > len(stored_character_label):
+                character_labels_by_key[character_key] = clean_character_name
+
+    most_popular_cosplan_festival_name = "—"
+    most_popular_cosplan_festival_count = 0
+    if cosplan_festival_mentions_by_key:
+        most_popular_cosplan_key, most_popular_cosplan_festival_count = sorted(
+            cosplan_festival_mentions_by_key.items(),
+            key=lambda item: (
+                -int(item[1]),
+                cosplan_festival_labels_by_key.get(item[0], "").casefold(),
+                item[0],
+            ),
+        )[0]
+        most_popular_cosplan_festival_name = cosplan_festival_labels_by_key.get(most_popular_cosplan_key, "—")
+
+    most_popular_fandom_name = "—"
+    most_popular_fandom_count = 0
+    if fandom_counts_by_key:
+        most_popular_fandom_key, most_popular_fandom_count = sorted(
+            fandom_counts_by_key.items(),
+            key=lambda item: (
+                -int(item[1]),
+                fandom_labels_by_key.get(item[0], "").casefold(),
+                item[0],
+            ),
+        )[0]
+        most_popular_fandom_name = fandom_labels_by_key.get(most_popular_fandom_key, "—")
+
+    most_popular_character_name = "—"
+    most_popular_character_count = 0
+    if character_counts_by_key:
+        most_popular_character_key, most_popular_character_count = sorted(
+            character_counts_by_key.items(),
+            key=lambda item: (
+                -int(item[1]),
+                character_labels_by_key.get(item[0], "").casefold(),
+                item[0],
+            ),
+        )[0]
+        most_popular_character_name = character_labels_by_key.get(most_popular_character_key, "—")
 
     new_users_rows = db.execute(
         select(User.id, User.created_at).where(User.created_at >= since_30_dt)
@@ -17756,6 +17914,58 @@ def build_admin_dashboard_stats(db: Session) -> dict[str, Any]:
                     f"С карточкой: {percentage(users_with_any_card, total_users)}%, "
                     f"в работе: {percentage(users_with_in_progress, total_users)}%, "
                     f"с фестивалями: {percentage(users_with_festivals, total_users)}%"
+                ),
+            },
+        ],
+        "festival_cards": [
+            {
+                "title": "Уникальные события",
+                "value": len(unique_festival_event_keys),
+                "hint": f"Всего фестивальных карточек: {festival_total_cards}",
+            },
+            {
+                "title": "Карточки с «Я иду»",
+                "value": going_cards_total,
+                "hint": (
+                    f"{percentage(going_cards_total, festival_total_cards)}% от всех фестивальных карточек"
+                ),
+            },
+            {
+                "title": "Самый популярный по «Я иду»",
+                "value": most_popular_going_festival_name,
+                "hint": (
+                    f"Отметок «Я иду»: {most_popular_going_festival_count}"
+                    if most_popular_going_festival_count > 0
+                    else "Пока нет отметок «Я иду»."
+                ),
+            },
+            {
+                "title": "Самый популярный в коспланах",
+                "value": most_popular_cosplan_festival_name,
+                "hint": (
+                    f"Указан в {most_popular_cosplan_festival_count} карточках косплана"
+                    if most_popular_cosplan_festival_count > 0
+                    else "Пока не указан в карточках косплана."
+                ),
+            },
+        ],
+        "cosplan_popularity_cards": [
+            {
+                "title": "Самый популярный фандом",
+                "value": most_popular_fandom_name,
+                "hint": (
+                    f"Встречается в {most_popular_fandom_count} карточках косплана"
+                    if most_popular_fandom_count > 0
+                    else "Пока в карточках не заполнен фандом."
+                ),
+            },
+            {
+                "title": "Самый популярный персонаж",
+                "value": most_popular_character_name,
+                "hint": (
+                    f"Встречается в {most_popular_character_count} карточках косплана"
+                    if most_popular_character_count > 0
+                    else "Пока в карточках нет персонажей."
                 ),
             },
         ],

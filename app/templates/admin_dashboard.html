@@ -219,6 +219,32 @@
 </section>
 
 <section class="box">
+  <h2>Фестивали</h2>
+  <div class="cards-grid admin-kpi-grid top-offset">
+    {% for item in festival_cards %}
+    <article class="card admin-kpi-card">
+      <p class="meta">{{ item.title }}</p>
+      <p class="admin-kpi-value">{{ item.value }}</p>
+      <p class="muted">{{ item.hint }}</p>
+    </article>
+    {% endfor %}
+  </div>
+</section>
+
+<section class="box">
+  <h2>Популярность косплана</h2>
+  <div class="cards-grid admin-kpi-grid top-offset">
+    {% for item in cosplan_popularity_cards %}
+    <article class="card admin-kpi-card">
+      <p class="meta">{{ item.title }}</p>
+      <p class="admin-kpi-value">{{ item.value }}</p>
+      <p class="muted">{{ item.hint }}</p>
+    </article>
+    {% endfor %}
+  </div>
+</section>
+
+<section class="box">
   <div class="admin-section-head">
     <h2>Воронка онбординга</h2>
     <div class="actions-inline">
