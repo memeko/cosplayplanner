@@ -1,0 +1,127 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="section-head">
+  <h1>Фотокосплей</h1>
+  <div class="actions-inline">
+    <a href="/photocosplay/requests/new" class="btn btn-accent">Подать заявку на конкурс</a>
+  </div>
+</section>
+
+{% if pending_requests %}
+<section class="box">
+  <h2>Заявки на модерацию</h2>
+  <div class="cards-grid top-offset">
+    {% for item in pending_requests %}
+      {% set requester = requesters_by_id.get(item.requester_user_id) %}
+      <article class="card">
+        <h3>{{ item.title }}</h3>
+        <p class="meta">
+          Автор:
+          {% if requester %}
+            <span class="{% if user_is_special(requester) %}nick-special{% endif %}">@{{ requester.cosplay_nick or requester.username }}</span>
+          {% else %}
+            @unknown
+          {% endif %}
+        </p>
+        <p class="meta">Прием: {{ item.submission_start_date.strftime('%d-%m-%Y') if item.submission_start_date else '—' }} — {{ item.submission_end_date.strftime('%d-%m-%Y') if item.submission_end_date else '—' }}</p>
+        <p class="meta">Результаты: {{ item.results_date.strftime('%d-%m-%Y') if item.results_date else '—' }}</p>
+        <p class="meta">Судейство: {{ photo_contest_judging_label(item.judging_format or 'open') }}</p>
+        <p class="meta">Фестиваль: {{ item.festival_name or 'Нет' }}</p>
+        {% if item.nominations_json %}
+          <div class="chips-wrap top-offset">
+            {% for nomination in item.nominations_json %}
+              <span class="chip">{{ nomination.title }} · {{ nomination.places }} мест</span>
+            {% endfor %}
+          </div>
+        {% endif %}
+        <div class="actions-inline top-offset">
+          <form method="post" action="/photocosplay/requests/{{ item.id }}/approve">
+            <button type="submit" class="btn btn-accent">Одобрить</button>
+          </form>
+          <form method="post" action="/photocosplay/requests/{{ item.id }}/reject" onsubmit="return confirm('Отклонить заявку?');">
+            <button type="submit" class="btn btn-danger">Отклонить</button>
+          </form>
+        </div>
+      </article>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
+{% if own_requests %}
+<section class="box">
+  <h2>Мои заявки</h2>
+  <table class="table top-offset">
+    <thead>
+      <tr>
+        <th>Название</th>
+        <th>Прием работ</th>
+        <th>Результаты</th>
+        <th>Статус</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for item in own_requests %}
+      <tr>
+        <td>{{ item.title }}</td>
+        <td>{{ item.submission_start_date.strftime('%d-%m-%Y') if item.submission_start_date else '—' }} — {{ item.submission_end_date.strftime('%d-%m-%Y') if item.submission_end_date else '—' }}</td>
+        <td>{{ item.results_date.strftime('%d-%m-%Y') if item.results_date else '—' }}</td>
+        <td>{{ photo_contest_request_status_label(item.status or 'pending') }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+
+<section class="box">
+  <h2>Фильтры</h2>
+  <form method="get" action="/photocosplay" class="grid three-col">
+    <label>
+      Статус
+      <select name="status">
+        <option value="open" {% if status_filter == 'open' %}selected{% endif %}>Открыт</option>
+        <option value="judging" {% if status_filter == 'judging' %}selected{% endif %}>Идет судейство</option>
+        <option value="finished" {% if status_filter == 'finished' %}selected{% endif %}>Завершен</option>
+        <option value="all" {% if status_filter == 'all' %}selected{% endif %}>Все</option>
+      </select>
+    </label>
+    <label class="inline-check top-offset">
+      <input type="checkbox" name="participating_only" value="1" {% if participating_only %}checked{% endif %} />
+      Участвую
+    </label>
+    <div class="actions-inline">
+      <button type="submit" class="btn">Применить</button>
+      <a href="/photocosplay" class="btn">Сброс</a>
+    </div>
+  </form>
+</section>
+
+{% if contests %}
+<div class="cards-grid">
+  {% for contest in contests %}
+    {% set status = status_by_contest_id.get(contest.id, 'open') %}
+    <article class="card">
+      <div class="row-between">
+        <h3>{{ contest.title }}</h3>
+        <span class="chip">{{ photo_contest_status_label(status) }}</span>
+      </div>
+      <p class="meta">Дедлайн приема: {{ contest.submission_end_date.strftime('%d-%m-%Y') if contest.submission_end_date else '—' }}</p>
+      <p class="meta">Результаты: {{ contest.results_date.strftime('%d-%m-%Y') if contest.results_date else '—' }}</p>
+      <p class="meta">Фестиваль: {{ contest.festival_name or 'Нет' }}</p>
+      <p class="meta">Судейство: {{ photo_contest_judging_label(contest.judging_format or 'open') }}</p>
+      {% if contest.id in user_entry_contest_ids %}
+        <span class="chip chip-authority top-offset">Участвую</span>
+      {% endif %}
+      <div class="actions-inline top-offset">
+        <a href="/photocosplay/{{ contest.id }}" class="btn">Подробнее</a>
+      </div>
+    </article>
+  {% endfor %}
+</div>
+{% else %}
+<section class="box">
+  <p class="muted">По текущим фильтрам конкурсы не найдены.</p>
+</section>
+{% endif %}
+{% endblock %}

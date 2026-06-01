@@ -1,0 +1,538 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="section-head">
+  <h1>{{ contest.title }}</h1>
+  <div class="actions-inline">
+    <a href="/photocosplay" class="btn">Назад к списку</a>
+    {% if can_manage %}
+      <a href="/photocosplay/{{ contest.id }}/edit" class="btn">Редактировать</a>
+    {% endif %}
+  </div>
+</section>
+
+<style>
+  .photo-work-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    gap: 0.65rem;
+  }
+  .photo-work-item {
+    border: 1px solid #d9e2ec;
+    border-radius: 12px;
+    padding: 0.45rem;
+    background: rgba(255, 255, 255, 0.66);
+  }
+  .photo-work-thumb {
+    width: 100%;
+    aspect-ratio: 3 / 4;
+    object-fit: cover;
+    border-radius: 10px;
+    border: 1px solid #d9d9d9;
+    cursor: pointer;
+    display: block;
+    background: #fff;
+  }
+  .photo-work-meta {
+    margin-top: 0.4rem;
+    font-size: 0.9rem;
+  }
+  .photo-work-vote {
+    margin-top: 0.35rem;
+  }
+  .photo-work-vote .inline-check {
+    margin: 0;
+  }
+  .photo-modal {
+    position: fixed;
+    inset: 0;
+    background: rgba(6, 9, 20, 0.78);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 1200;
+    padding: 1rem;
+  }
+  .photo-modal.open {
+    display: flex;
+  }
+  .photo-modal-card {
+    width: min(960px, 100%);
+    max-height: 92vh;
+    overflow: auto;
+    background: #fff;
+    border-radius: 14px;
+    padding: 0.9rem;
+  }
+  .photo-modal-image {
+    width: 100%;
+    max-height: 72vh;
+    object-fit: contain;
+    background: #f4f6fb;
+    border-radius: 10px;
+    border: 1px solid #d9e2ec;
+  }
+</style>
+
+<section class="box">
+  <div class="row-between">
+    <p class="meta">Статус: <strong>{{ contest_status_label }}</strong></p>
+    <span class="chip">{{ photo_contest_judging_label(contest.judging_format or 'open') }} судейство</span>
+  </div>
+  <p class="meta">Организатор: {% if creator_user %}<span class="{% if user_is_special(creator_user) %}nick-special{% endif %}">@{{ creator_user.cosplay_nick or creator_user.username }}</span>{% else %}@unknown{% endif %}</p>
+  <p class="meta">Прием работ: {{ contest.submission_start_date.strftime('%d-%m-%Y') if contest.submission_start_date else '—' }} — {{ contest.submission_end_date.strftime('%d-%m-%Y') if contest.submission_end_date else '—' }}</p>
+  <p class="meta">Дата результатов: {{ contest.results_date.strftime('%d-%m-%Y') if contest.results_date else '—' }}</p>
+  <p class="meta">Аффиляция с фестивалем: {{ contest.festival_name or 'Нет' }}</p>
+  <p class="meta">Макс. фото на участника: {{ contest.max_photos_per_participant or 1 }}</p>
+  <p class="meta">Видимость участников: {{ photo_contest_visibility_label(contest.participant_visibility or 'all') }}</p>
+  {% if contest.judging_format == 'closed' and contest.judges_json %}
+    <p class="meta">Судьи: {{ contest.judges_json|join(', ') }}</p>
+  {% endif %}
+  {% if contest.rules_markdown %}
+    <h3 class="top-offset">Правила и ограничения</h3>
+    <p class="notes-block">{{ contest.rules_markdown|render_markdown }}</p>
+  {% endif %}
+  {% if contest.prizes_markdown %}
+    <h3 class="top-offset">Призы</h3>
+    <p class="notes-block">{{ contest.prizes_markdown|render_markdown }}</p>
+  {% endif %}
+</section>
+
+{% if submission_open %}
+<section class="box">
+  <h2>Загрузка работы</h2>
+  <p class="muted">Фотографии загружаются без сжатия. Лимит: {{ contest.max_photos_per_participant or 1 }} фото.</p>
+  {% if my_entry %}
+    <p class="muted">У вас уже есть загруженная работа. Новая отправка заменит предыдущие фото.</p>
+  {% endif %}
+
+  <form method="post" action="/photocosplay/{{ contest.id }}/submit" enctype="multipart/form-data" class="grid one-col top-offset" id="contest-submit-form">
+    <label>
+      Номинация *
+      <select name="nomination_title" required>
+        <option value="">Выберите номинацию</option>
+        {% for nomination in nomination_rows %}
+          <option value="{{ nomination.title }}" {% if my_entry and my_entry.nomination_title == nomination.title %}selected{% endif %}>{{ nomination.title }}</option>
+        {% endfor %}
+      </select>
+    </label>
+
+    <label>
+      Фотографии *
+      <input type="file" name="photos" accept="image/*" multiple required />
+    </label>
+
+    <label>
+      Фандом
+      <input type="text" name="fandom" maxlength="255" value="{{ my_entry.fandom if my_entry and my_entry.fandom else '' }}" />
+    </label>
+
+    <div>
+      <div class="row-between">
+        <strong>Роли</strong>
+        <button type="button" class="btn" id="add-role-row">Добавить роль</button>
+      </div>
+      <div id="entry-role-rows" class="top-offset">
+        {% if my_entry and my_entry.roles_json %}
+          {% for row in my_entry.roles_json %}
+            <div class="photo-contest-entry-row grid three-col top-offset">
+              <label>
+                Ник с сайта или ручной ввод
+                <input type="text" name="entry_person" value="{{ row.person }}" maxlength="140" />
+              </label>
+              <label>
+                Роль
+                <select name="entry_role">
+                  {% for role_key, role_label in photo_contest_role_labels.items() %}
+                    <option value="{{ role_key }}" {% if row.role == role_key %}selected{% endif %}>{{ role_label }}</option>
+                  {% endfor %}
+                </select>
+              </label>
+              <button type="button" class="btn btn-danger remove-role-row">Удалить</button>
+            </div>
+          {% endfor %}
+        {% else %}
+          <div class="photo-contest-entry-row grid three-col top-offset">
+            <label>
+              Ник с сайта или ручной ввод
+              <input type="text" name="entry_person" maxlength="140" />
+            </label>
+            <label>
+              Роль
+              <select name="entry_role">
+                {% for role_key, role_label in photo_contest_role_labels.items() %}
+                  <option value="{{ role_key }}">{{ role_label }}</option>
+                {% endfor %}
+              </select>
+            </label>
+            <button type="button" class="btn btn-danger remove-role-row">Удалить</button>
+          </div>
+        {% endif %}
+      </div>
+    </div>
+
+    <div>
+      <div class="row-between">
+        <strong>Персонажи</strong>
+        <button type="button" class="btn" id="add-character-row">Добавить персонажа</button>
+      </div>
+      <div id="entry-character-rows" class="top-offset">
+        {% if my_entry and my_entry.characters_json %}
+          {% for character in my_entry.characters_json %}
+            <div class="actions-inline top-offset">
+              <input type="text" name="entry_character" value="{{ character }}" maxlength="255" />
+              <button type="button" class="btn btn-danger remove-character-row">Удалить</button>
+            </div>
+          {% endfor %}
+        {% else %}
+          <div class="actions-inline top-offset">
+            <input type="text" name="entry_character" maxlength="255" />
+            <button type="button" class="btn btn-danger remove-character-row">Удалить</button>
+          </div>
+        {% endif %}
+      </div>
+    </div>
+
+    <label class="inline-check">
+      <input type="checkbox" name="agree_rules" value="1" required />
+      Согласен(а) с правилами конкурса
+    </label>
+
+    <div class="actions-inline">
+      <button type="submit" class="btn btn-accent">Отправить работу</button>
+    </div>
+  </form>
+</section>
+{% endif %}
+
+{% if show_participants_block %}
+<section class="box">
+  <div class="row-between">
+    <h2>Участники</h2>
+    {% if can_vote %}
+      <span class="chip">Можно ставить отметки</span>
+    {% endif %}
+  </div>
+
+  {% if can_vote %}
+  <form method="post" action="/photocosplay/{{ contest.id }}/votes" class="top-offset">
+  {% endif %}
+
+  {% set ns = namespace(has_any_entries=false) %}
+  {% for nomination_title in ordered_nomination_titles %}
+    {% set nomination_entries = grouped_entries.get(nomination_title, []) %}
+    {% if nomination_entries %}
+      {% set ns.has_any_entries = true %}
+      <section class="box compact-box top-offset">
+        <h3>{{ nomination_title }}</h3>
+        {% for row in nomination_entries %}
+          {% set participant = row.participant %}
+          {% set entry = row.entry %}
+          {% set brief = row.brief %}
+          <article class="card top-offset">
+            <p class="meta">Участник: {% if participant %}<span class="{% if user_is_special(participant) %}nick-special{% endif %}">@{{ participant.cosplay_nick or participant.username }}</span>{% else %}@unknown{% endif %}</p>
+            {% if brief.cosplayers %}
+              <p class="meta">Косплеер: {{ brief.cosplayers|join(', ') }}</p>
+            {% endif %}
+            {% if brief.photographers %}
+              <p class="meta">Фотограф: {{ brief.photographers|join(', ') }}</p>
+            {% endif %}
+            {% if brief.other_roles %}
+              {% for extra in brief.other_roles %}
+                <p class="meta">{{ extra.label }}: {{ extra.people|join(', ') }}</p>
+              {% endfor %}
+            {% endif %}
+            {% if brief.characters %}
+              <p class="meta">Персонажи: {{ brief.characters|join(', ') }}</p>
+            {% endif %}
+            {% if brief.fandom %}
+              <p class="meta">Фандом: {{ brief.fandom }}</p>
+            {% endif %}
+
+            {% if row.photos %}
+              <div class="photo-work-grid top-offset">
+                {% for photo in row.photos %}
+                  <div class="photo-work-item">
+                    <img src="{{ photo.file_path }}" alt="Работа участника" class="photo-work-thumb" data-photo-open="{{ photo.id }}" loading="lazy" />
+                    <div class="photo-work-meta">Баллы: {{ vote_count_by_photo_id.get(photo.id, 0) }}</div>
+                    {% if can_vote %}
+                      <div class="photo-work-vote">
+                        <label class="inline-check">
+                          <input type="checkbox" name="photo_vote" value="{{ photo.id }}" {% if photo.id in user_voted_photo_ids %}checked{% endif %} />
+                          Отметить работу
+                        </label>
+                      </div>
+                    {% endif %}
+                  </div>
+                {% endfor %}
+              </div>
+            {% endif %}
+          </article>
+        {% endfor %}
+      </section>
+    {% endif %}
+  {% endfor %}
+
+  {% if not ns.has_any_entries %}
+    <p class="muted top-offset">Загруженных работ пока нет.</p>
+  {% endif %}
+
+  {% if can_vote %}
+    <div class="actions-inline top-offset">
+      <button type="submit" class="btn btn-accent">Сохранить отметки</button>
+    </div>
+  </form>
+  {% endif %}
+</section>
+{% endif %}
+
+{% if contest_status == 'finished' %}
+<section class="box">
+  <h2>Результаты</h2>
+  {% if result_rows %}
+    <table class="table top-offset">
+      <thead>
+        <tr>
+          <th>Номинация</th>
+          <th>Место</th>
+          <th>Автор</th>
+          <th>Баллы</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in result_rows %}
+          <tr>
+            <td>{{ row.nomination }}</td>
+            <td>{{ row.place }}</td>
+            <td>{{ row.participant_alias }}</td>
+            <td>{{ row.points }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p class="muted top-offset">Пока нет данных для таблицы результатов.</p>
+  {% endif %}
+</section>
+{% endif %}
+
+<div id="photo-modal" class="photo-modal" aria-hidden="true">
+  <div class="photo-modal-card">
+    <div class="row-between">
+      <strong id="photo-modal-nomination">Работа</strong>
+      <div class="actions-inline">
+        <button type="button" class="btn btn-small" id="photo-modal-prev">Назад</button>
+        <button type="button" class="btn btn-small" id="photo-modal-next">Вперед</button>
+        <button type="button" class="btn btn-small btn-danger" id="photo-modal-close">Закрыть</button>
+      </div>
+    </div>
+    <img id="photo-modal-image" src="" alt="Полная работа" class="photo-modal-image top-offset" />
+    <div id="photo-modal-info" class="notes-block top-offset"></div>
+  </div>
+</div>
+
+<script>
+  (function () {
+    const modalItems = {{ photo_modal_items_json | safe }};
+    const modal = document.getElementById("photo-modal");
+    const modalImage = document.getElementById("photo-modal-image");
+    const modalInfo = document.getElementById("photo-modal-info");
+    const modalTitle = document.getElementById("photo-modal-nomination");
+    const prevBtn = document.getElementById("photo-modal-prev");
+    const nextBtn = document.getElementById("photo-modal-next");
+    const closeBtn = document.getElementById("photo-modal-close");
+    if (!Array.isArray(modalItems) || !modal || !modalImage || !modalInfo || !modalTitle || !prevBtn || !nextBtn || !closeBtn) {
+      return;
+    }
+
+    const itemById = new Map();
+    modalItems.forEach((item, index) => {
+      itemById.set(String(item.photo_id), index);
+    });
+
+    let activeIndex = -1;
+
+    function asTextList(value) {
+      if (!Array.isArray(value) || !value.length) {
+        return "—";
+      }
+      return value.join(", ");
+    }
+
+    function renderInfo(item) {
+      const lines = [];
+      lines.push(`<strong>Баллы:</strong> ${item.points || 0}`);
+      lines.push(`<strong>Косплеер:</strong> ${asTextList(item.cosplayers)}`);
+      lines.push(`<strong>Фотограф:</strong> ${asTextList(item.photographers)}`);
+      if (Array.isArray(item.other_roles) && item.other_roles.length) {
+        item.other_roles.forEach((row) => {
+          const label = row && row.label ? row.label : "Другое";
+          const people = asTextList(row && row.people ? row.people : []);
+          lines.push(`<strong>${label}:</strong> ${people}`);
+        });
+      }
+      lines.push(`<strong>Персонажи:</strong> ${asTextList(item.characters)}`);
+      lines.push(`<strong>Фандом:</strong> ${item.fandom || "—"}`);
+      modalInfo.innerHTML = lines.join("<br>");
+    }
+
+    function openModalByIndex(index) {
+      if (index < 0 || index >= modalItems.length) {
+        return;
+      }
+      activeIndex = index;
+      const item = modalItems[index];
+      modalTitle.textContent = item.nomination || "Работа";
+      modalImage.src = item.path || "";
+      renderInfo(item);
+      modal.classList.add("open");
+      modal.setAttribute("aria-hidden", "false");
+    }
+
+    function closeModal() {
+      modal.classList.remove("open");
+      modal.setAttribute("aria-hidden", "true");
+      activeIndex = -1;
+    }
+
+    function shift(step) {
+      if (activeIndex < 0 || !modalItems.length) {
+        return;
+      }
+      let nextIndex = activeIndex + step;
+      if (nextIndex < 0) {
+        nextIndex = modalItems.length - 1;
+      }
+      if (nextIndex >= modalItems.length) {
+        nextIndex = 0;
+      }
+      openModalByIndex(nextIndex);
+    }
+
+    document.addEventListener("click", function (event) {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) {
+        return;
+      }
+      const openId = target.getAttribute("data-photo-open");
+      if (openId && itemById.has(openId)) {
+        openModalByIndex(itemById.get(openId));
+      }
+    });
+
+    prevBtn.addEventListener("click", function () { shift(-1); });
+    nextBtn.addEventListener("click", function () { shift(1); });
+    closeBtn.addEventListener("click", closeModal);
+    modal.addEventListener("click", function (event) {
+      if (event.target === modal) {
+        closeModal();
+      }
+    });
+    document.addEventListener("keydown", function (event) {
+      if (!modal.classList.contains("open")) {
+        return;
+      }
+      if (event.key === "Escape") {
+        closeModal();
+      } else if (event.key === "ArrowLeft") {
+        shift(-1);
+      } else if (event.key === "ArrowRight") {
+        shift(1);
+      }
+    });
+
+    const roleRowsWrap = document.getElementById("entry-role-rows");
+    const addRoleBtn = document.getElementById("add-role-row");
+    const characterRowsWrap = document.getElementById("entry-character-rows");
+    const addCharacterBtn = document.getElementById("add-character-row");
+
+    function roleRowTemplate() {
+      const roleOptions = {{ photo_contest_role_labels | tojson }};
+      const row = document.createElement("div");
+      row.className = "photo-contest-entry-row grid three-col top-offset";
+      const select = document.createElement("select");
+      select.name = "entry_role";
+      Object.keys(roleOptions).forEach((key) => {
+        const option = document.createElement("option");
+        option.value = key;
+        option.textContent = roleOptions[key];
+        select.appendChild(option);
+      });
+      const personLabel = document.createElement("label");
+      personLabel.textContent = "Ник с сайта или ручной ввод";
+      const personInput = document.createElement("input");
+      personInput.type = "text";
+      personInput.name = "entry_person";
+      personInput.maxLength = 140;
+      personLabel.appendChild(personInput);
+      const roleLabel = document.createElement("label");
+      roleLabel.textContent = "Роль";
+      roleLabel.appendChild(select);
+      const removeBtn = document.createElement("button");
+      removeBtn.type = "button";
+      removeBtn.className = "btn btn-danger remove-role-row";
+      removeBtn.textContent = "Удалить";
+      row.appendChild(personLabel);
+      row.appendChild(roleLabel);
+      row.appendChild(removeBtn);
+      return row;
+    }
+
+    function characterRowTemplate() {
+      const row = document.createElement("div");
+      row.className = "actions-inline top-offset";
+      row.innerHTML = '<input type="text" name="entry_character" maxlength="255" /> <button type="button" class="btn btn-danger remove-character-row">Удалить</button>';
+      return row;
+    }
+
+    if (roleRowsWrap && addRoleBtn) {
+      addRoleBtn.addEventListener("click", function () {
+        roleRowsWrap.appendChild(roleRowTemplate());
+      });
+      roleRowsWrap.addEventListener("click", function (event) {
+        const target = event.target;
+        if (!(target instanceof HTMLElement) || !target.classList.contains("remove-role-row")) {
+          return;
+        }
+        const row = target.closest(".photo-contest-entry-row");
+        if (!rowRowsCanRemove(roleRowsWrap, ".photo-contest-entry-row")) {
+          const personInput = row ? row.querySelector('input[name="entry_person"]') : null;
+          if (personInput instanceof HTMLInputElement) {
+            personInput.value = "";
+          }
+          return;
+        }
+        if (row) {
+          row.remove();
+        }
+      });
+    }
+
+    if (characterRowsWrap && addCharacterBtn) {
+      addCharacterBtn.addEventListener("click", function () {
+        characterRowsWrap.appendChild(characterRowTemplate());
+      });
+      characterRowsWrap.addEventListener("click", function (event) {
+        const target = event.target;
+        if (!(target instanceof HTMLElement) || !target.classList.contains("remove-character-row")) {
+          return;
+        }
+        const row = target.closest(".actions-inline");
+        if (!rowRowsCanRemove(characterRowsWrap, ".actions-inline")) {
+          const input = row ? row.querySelector('input[name="entry_character"]') : null;
+          if (input instanceof HTMLInputElement) {
+            input.value = "";
+          }
+          return;
+        }
+        if (row) {
+          row.remove();
+        }
+      });
+    }
+
+    function rowRowsCanRemove(container, selector) {
+      return container.querySelectorAll(selector).length > 1;
+    }
+  })();
+</script>
+{% endblock %}

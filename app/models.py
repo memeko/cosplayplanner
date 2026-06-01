@@ -231,6 +231,33 @@ class User(Base):
         "HomeNews",
         back_populates="author",
     )
+    photo_contest_requests = relationship(
+        "PhotoContestRequest",
+        back_populates="requester",
+        cascade="all, delete-orphan",
+        foreign_keys="PhotoContestRequest.requester_user_id",
+    )
+    photo_contest_requests_reviewed = relationship(
+        "PhotoContestRequest",
+        back_populates="reviewer",
+        foreign_keys="PhotoContestRequest.reviewed_by_user_id",
+    )
+    photo_contests = relationship(
+        "PhotoContest",
+        back_populates="creator",
+        cascade="all, delete-orphan",
+        foreign_keys="PhotoContest.creator_user_id",
+    )
+    photo_contest_entries = relationship(
+        "PhotoContestEntry",
+        back_populates="participant",
+        cascade="all, delete-orphan",
+    )
+    photo_contest_votes = relationship(
+        "PhotoContestVote",
+        back_populates="voter",
+        cascade="all, delete-orphan",
+    )
 
 
 class UserOption(Base):
@@ -828,6 +855,121 @@ class FestivalAnnouncement(Base):
 
     requester = relationship("User", back_populates="festival_announcements_requested", foreign_keys=[requester_user_id])
     reviewer = relationship("User", back_populates="festival_announcements_reviewed", foreign_keys=[reviewed_by_user_id])
+
+
+class PhotoContestRequest(Base):
+    __tablename__ = "photo_contest_requests"
+
+    id = Column(Integer, primary_key=True)
+    requester_user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    reviewed_by_user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    contest_id = Column(Integer, ForeignKey("photo_contests.id", ondelete="SET NULL"), nullable=True, index=True)
+    festival_id = Column(Integer, ForeignKey("festivals.id", ondelete="SET NULL"), nullable=True, index=True)
+
+    title = Column(String(255), nullable=False, index=True)
+    submission_start_date = Column(Date, nullable=True)
+    submission_end_date = Column(Date, nullable=True, index=True)
+    results_date = Column(Date, nullable=True, index=True)
+    nominations_json = Column(JSON, nullable=False, default=list)
+    festival_name = Column(String(255), nullable=True)
+    judging_format = Column(String(32), nullable=False, default="open", index=True)  # open | closed
+    judges_json = Column(JSON, nullable=False, default=list)
+    rules_markdown = Column(Text, nullable=True)
+    prizes_markdown = Column(Text, nullable=True)
+    max_photos_per_participant = Column(Integer, nullable=False, default=1)
+    participant_visibility = Column(String(32), nullable=False, default="all", index=True)  # all | winners
+    status = Column(String(16), nullable=False, default="pending", index=True)  # pending | approved | rejected
+    reviewed_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    requester = relationship("User", back_populates="photo_contest_requests", foreign_keys=[requester_user_id])
+    reviewer = relationship("User", back_populates="photo_contest_requests_reviewed", foreign_keys=[reviewed_by_user_id])
+
+
+class PhotoContest(Base):
+    __tablename__ = "photo_contests"
+
+    id = Column(Integer, primary_key=True)
+    creator_user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    approved_request_id = Column(Integer, ForeignKey("photo_contest_requests.id", ondelete="SET NULL"), nullable=True, unique=True, index=True)
+    festival_id = Column(Integer, ForeignKey("festivals.id", ondelete="SET NULL"), nullable=True, index=True)
+
+    title = Column(String(255), nullable=False, index=True)
+    submission_start_date = Column(Date, nullable=True)
+    submission_end_date = Column(Date, nullable=True, index=True)
+    results_date = Column(Date, nullable=True, index=True)
+    nominations_json = Column(JSON, nullable=False, default=list)
+    festival_name = Column(String(255), nullable=True)
+    judging_format = Column(String(32), nullable=False, default="open", index=True)  # open | closed
+    judges_json = Column(JSON, nullable=False, default=list)
+    rules_markdown = Column(Text, nullable=True)
+    prizes_markdown = Column(Text, nullable=True)
+    max_photos_per_participant = Column(Integer, nullable=False, default=1)
+    participant_visibility = Column(String(32), nullable=False, default="all", index=True)  # all | winners
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    creator = relationship("User", back_populates="photo_contests", foreign_keys=[creator_user_id])
+    entries = relationship("PhotoContestEntry", back_populates="contest", cascade="all, delete-orphan")
+    photos = relationship("PhotoContestEntryPhoto", back_populates="contest", cascade="all, delete-orphan")
+    votes = relationship("PhotoContestVote", back_populates="contest", cascade="all, delete-orphan")
+
+
+class PhotoContestEntry(Base):
+    __tablename__ = "photo_contest_entries"
+
+    id = Column(Integer, primary_key=True)
+    contest_id = Column(Integer, ForeignKey("photo_contests.id", ondelete="CASCADE"), nullable=False, index=True)
+    participant_user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    nomination_title = Column(String(255), nullable=True, index=True)
+    fandom = Column(String(255), nullable=True)
+    characters_json = Column(JSON, nullable=False, default=list)
+    roles_json = Column(JSON, nullable=False, default=list)
+    agreed_to_rules = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    contest = relationship("PhotoContest", back_populates="entries")
+    participant = relationship("User", back_populates="photo_contest_entries")
+    photos = relationship("PhotoContestEntryPhoto", back_populates="entry", cascade="all, delete-orphan")
+
+    __table_args__ = (
+        UniqueConstraint("contest_id", "participant_user_id", name="uq_photo_contest_entry_participant"),
+    )
+
+
+class PhotoContestEntryPhoto(Base):
+    __tablename__ = "photo_contest_entry_photos"
+
+    id = Column(Integer, primary_key=True)
+    contest_id = Column(Integer, ForeignKey("photo_contests.id", ondelete="CASCADE"), nullable=False, index=True)
+    entry_id = Column(Integer, ForeignKey("photo_contest_entries.id", ondelete="CASCADE"), nullable=False, index=True)
+    file_path = Column(String(255), nullable=False)
+    sort_order = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    contest = relationship("PhotoContest", back_populates="photos")
+    entry = relationship("PhotoContestEntry", back_populates="photos")
+    votes = relationship("PhotoContestVote", back_populates="photo", cascade="all, delete-orphan")
+
+
+class PhotoContestVote(Base):
+    __tablename__ = "photo_contest_votes"
+
+    id = Column(Integer, primary_key=True)
+    contest_id = Column(Integer, ForeignKey("photo_contests.id", ondelete="CASCADE"), nullable=False, index=True)
+    photo_id = Column(Integer, ForeignKey("photo_contest_entry_photos.id", ondelete="CASCADE"), nullable=False, index=True)
+    voter_user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    contest = relationship("PhotoContest", back_populates="votes")
+    photo = relationship("PhotoContestEntryPhoto", back_populates="votes")
+    voter = relationship("User", back_populates="photo_contest_votes")
+
+    __table_args__ = (
+        UniqueConstraint("contest_id", "photo_id", "voter_user_id", name="uq_photo_contest_vote"),
+    )
 
 
 class CommunityArticle(Base):

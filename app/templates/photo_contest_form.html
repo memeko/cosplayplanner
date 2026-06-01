@@ -1,0 +1,184 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="section-head">
+  <h1>{{ form_title }}</h1>
+  <a href="{{ cancel_url }}" class="btn">Назад</a>
+</section>
+
+<style>
+  .photo-contest-nomination-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1.4fr) minmax(120px, 0.6fr) auto;
+    gap: 0.65rem;
+    align-items: end;
+    margin-top: 0.65rem;
+  }
+  @media (max-width: 760px) {
+    .photo-contest-nomination-row {
+      grid-template-columns: 1fr;
+    }
+  }
+</style>
+
+<form method="post" action="{{ form_action }}" class="grid one-col big-form" id="photo-contest-form">
+  <section class="box">
+    <label>
+      Название конкурса *
+      <input type="text" name="title" value="{{ form.title }}" maxlength="255" required />
+    </label>
+
+    <div class="grid three-col">
+      <label>
+        Начало приема работ *
+        <input type="date" name="submission_start_date" value="{{ form.submission_start_date }}" required />
+      </label>
+      <label>
+        Конец приема работ *
+        <input type="date" name="submission_end_date" value="{{ form.submission_end_date }}" required />
+      </label>
+      <label>
+        Дата оглашения результатов *
+        <input type="date" name="results_date" value="{{ form.results_date }}" required />
+      </label>
+    </div>
+
+    <div class="top-offset">
+      <div class="row-between">
+        <strong>Номинации</strong>
+        <button type="button" class="btn" id="add-nomination-row">Добавить номинацию</button>
+      </div>
+      <p class="muted top-offset">Для каждой номинации укажите число призовых мест.</p>
+      <div id="nomination-rows">
+        {% for row in form.nominations_rows %}
+          <div class="photo-contest-nomination-row">
+            <label>
+              Номинация
+              <input type="text" name="nomination_title" value="{{ row.title }}" maxlength="255" required />
+            </label>
+            <label>
+              Призовых мест
+              <input type="number" name="nomination_places" value="{{ row.places }}" min="1" max="10" required />
+            </label>
+            <button type="button" class="btn btn-danger remove-nomination-row">Удалить</button>
+          </div>
+        {% endfor %}
+      </div>
+    </div>
+
+    <label class="top-offset">
+      Аффиляция с фестивалем
+      <select name="festival_id">
+        <option value="">Нет</option>
+        {% for festival in festival_options %}
+          <option value="{{ festival.id }}" {% if form.festival_id and (form.festival_id|string) == (festival.id|string) %}selected{% endif %}>{{ festival.name }}{% if festival.event_date %} ({{ festival.event_date.strftime('%d-%m-%Y') }}){% endif %}</option>
+        {% endfor %}
+      </select>
+    </label>
+
+    <label class="top-offset">
+      Формат судейства
+      <select name="judging_format" id="judging-format-select">
+        <option value="{{ photo_contest_judging_open }}" {% if form.judging_format == photo_contest_judging_open %}selected{% endif %}>Открытый</option>
+        <option value="{{ photo_contest_judging_closed }}" {% if form.judging_format == photo_contest_judging_closed %}selected{% endif %}>Закрытый</option>
+      </select>
+    </label>
+
+    <label id="judges-input-wrap" class="top-offset">
+      Ники судей (через запятую)
+      <input type="text" name="judges_input" value="{{ form.judges_input }}" placeholder="judge_nick_1, judge_nick_2" />
+    </label>
+
+    <label class="top-offset">
+      Правила и ограничения (Markdown)
+      <textarea name="rules_markdown" rows="8" placeholder="Правила участия, запреты, формат работ...">{{ form.rules_markdown }}</textarea>
+    </label>
+
+    <label>
+      Призы (Markdown)
+      <textarea name="prizes_markdown" rows="6" placeholder="Описание призов и условий получения...">{{ form.prizes_markdown }}</textarea>
+    </label>
+
+    <label>
+      Максимальное количество фотографий участника *
+      <input type="number" name="max_photos_per_participant" min="1" max="30" value="{{ form.max_photos_per_participant }}" required />
+    </label>
+
+    <label>
+      Видимость участников
+      <select name="participant_visibility">
+        <option value="{{ photo_contest_visibility_all }}" {% if form.participant_visibility == photo_contest_visibility_all %}selected{% endif %}>Показать всех участников</option>
+        <option value="{{ photo_contest_visibility_winners }}" {% if form.participant_visibility == photo_contest_visibility_winners %}selected{% endif %}>Показать победителей</option>
+      </select>
+    </label>
+  </section>
+
+  <div class="actions-inline">
+    <button type="submit" class="btn btn-accent">{{ submit_label }}</button>
+    <a href="{{ cancel_url }}" class="btn">Отмена</a>
+  </div>
+</form>
+
+<script>
+  (function () {
+    const rowsWrap = document.getElementById("nomination-rows");
+    const addBtn = document.getElementById("add-nomination-row");
+    const judgesWrap = document.getElementById("judges-input-wrap");
+    const judgingSelect = document.getElementById("judging-format-select");
+    if (!rowsWrap || !addBtn || !judgesWrap || !judgingSelect) {
+      return;
+    }
+
+    function updateJudgesVisibility() {
+      const isClosed = judgingSelect.value === "{{ photo_contest_judging_closed }}";
+      judgesWrap.style.display = isClosed ? "block" : "none";
+    }
+
+    function rowTemplate() {
+      const row = document.createElement("div");
+      row.className = "photo-contest-nomination-row";
+      row.innerHTML = [
+        '<label>Номинация<input type="text" name="nomination_title" maxlength="255" required /></label>',
+        '<label>Призовых мест<input type="number" name="nomination_places" value="1" min="1" max="10" required /></label>',
+        '<button type="button" class="btn btn-danger remove-nomination-row">Удалить</button>'
+      ].join("");
+      return row;
+    }
+
+    function removeRow(button) {
+      const allRows = rowsWrap.querySelectorAll(".photo-contest-nomination-row");
+      if (allRows.length <= 1) {
+        const firstInput = allRows[0] ? allRows[0].querySelector('input[name="nomination_title"]') : null;
+        if (firstInput) {
+          firstInput.value = "";
+        }
+        const firstPlaces = allRows[0] ? allRows[0].querySelector('input[name="nomination_places"]') : null;
+        if (firstPlaces) {
+          firstPlaces.value = "1";
+        }
+        return;
+      }
+      const parent = button.closest(".photo-contest-nomination-row");
+      if (parent) {
+        parent.remove();
+      }
+    }
+
+    addBtn.addEventListener("click", function () {
+      rowsWrap.appendChild(rowTemplate());
+    });
+
+    rowsWrap.addEventListener("click", function (event) {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) {
+        return;
+      }
+      if (target.classList.contains("remove-nomination-row")) {
+        removeRow(target);
+      }
+    });
+
+    judgingSelect.addEventListener("change", updateJudgesVisibility);
+    updateJudgesVisibility();
+  })();
+</script>
+{% endblock %}

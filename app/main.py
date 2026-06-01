@@ -88,6 +88,11 @@ from .models import (
     ProjectSearchComment,
     PersonalCalendarEvent,
     PasswordResetToken,
+    PhotoContest,
+    PhotoContestEntry,
+    PhotoContestEntryPhoto,
+    PhotoContestRequest,
+    PhotoContestVote,
     RehearsalCard,
     RehearsalEntry,
     TitleEntry,
@@ -904,6 +909,48 @@ ANNOUNCEMENT_STATUS_PENDING = "pending"
 ANNOUNCEMENT_STATUS_APPROVED = "approved"
 ANNOUNCEMENT_STATUS_REJECTED = "rejected"
 
+PHOTO_CONTEST_REQUEST_STATUS_PENDING = "pending"
+PHOTO_CONTEST_REQUEST_STATUS_APPROVED = "approved"
+PHOTO_CONTEST_REQUEST_STATUS_REJECTED = "rejected"
+PHOTO_CONTEST_JUDGING_OPEN = "open"
+PHOTO_CONTEST_JUDGING_CLOSED = "closed"
+PHOTO_CONTEST_JUDGING_OPTIONS = {
+    PHOTO_CONTEST_JUDGING_OPEN,
+    PHOTO_CONTEST_JUDGING_CLOSED,
+}
+PHOTO_CONTEST_VISIBILITY_ALL = "all"
+PHOTO_CONTEST_VISIBILITY_WINNERS = "winners"
+PHOTO_CONTEST_VISIBILITY_OPTIONS = {
+    PHOTO_CONTEST_VISIBILITY_ALL,
+    PHOTO_CONTEST_VISIBILITY_WINNERS,
+}
+PHOTO_CONTEST_STATUS_OPEN = "open"
+PHOTO_CONTEST_STATUS_JUDGING = "judging"
+PHOTO_CONTEST_STATUS_FINISHED = "finished"
+PHOTO_CONTEST_ROLE_COSPLAYER = "cosplayer"
+PHOTO_CONTEST_ROLE_PHOTOGRAPHER = "photographer"
+PHOTO_CONTEST_ROLE_MUA = "mua"
+PHOTO_CONTEST_ROLE_RETOUCH = "retouch"
+PHOTO_CONTEST_ROLE_OTHER = "other"
+PHOTO_CONTEST_ROLE_LABELS = {
+    PHOTO_CONTEST_ROLE_COSPLAYER: "Косплеер",
+    PHOTO_CONTEST_ROLE_PHOTOGRAPHER: "Фотограф",
+    PHOTO_CONTEST_ROLE_MUA: "Визажист / гример",
+    PHOTO_CONTEST_ROLE_RETOUCH: "Ретушь",
+    PHOTO_CONTEST_ROLE_OTHER: "Другое",
+}
+PHOTO_CONTEST_ROLE_OPTIONS = [
+    PHOTO_CONTEST_ROLE_COSPLAYER,
+    PHOTO_CONTEST_ROLE_PHOTOGRAPHER,
+    PHOTO_CONTEST_ROLE_MUA,
+    PHOTO_CONTEST_ROLE_RETOUCH,
+    PHOTO_CONTEST_ROLE_OTHER,
+]
+PHOTO_CONTEST_MAX_PHOTOS_PER_PARTICIPANT_LIMIT = 30
+PHOTO_CONTEST_MAX_NOMINATIONS = 20
+PHOTO_CONTEST_MAX_JUDGES = 50
+PHOTO_CONTEST_MAX_PHOTO_FILE_BYTES = 20 * 1024 * 1024
+
 MASTER_ORDER_STATUS_PENDING = "pending"
 MASTER_ORDER_STATUS_ACCEPTED = "accepted"
 MASTER_ORDER_STATUS_REJECTED = "rejected"
@@ -1503,6 +1550,16 @@ def apply_schema_migrations() -> None:
             InProgressMasterComment.__table__.create(bind=conn, checkfirst=True)
         if "in_progress_master_boards" not in existing_tables:
             InProgressMasterBoard.__table__.create(bind=conn, checkfirst=True)
+        if "photo_contest_requests" not in existing_tables:
+            PhotoContestRequest.__table__.create(bind=conn, checkfirst=True)
+        if "photo_contests" not in existing_tables:
+            PhotoContest.__table__.create(bind=conn, checkfirst=True)
+        if "photo_contest_entries" not in existing_tables:
+            PhotoContestEntry.__table__.create(bind=conn, checkfirst=True)
+        if "photo_contest_entry_photos" not in existing_tables:
+            PhotoContestEntryPhoto.__table__.create(bind=conn, checkfirst=True)
+        if "photo_contest_votes" not in existing_tables:
+            PhotoContestVote.__table__.create(bind=conn, checkfirst=True)
 
         community_masters_added_allow_site_orders = False
 
@@ -1692,6 +1749,7 @@ async def restrict_smm_manager_scope(request: Request, call_next):
         or path.startswith("/pigeons")
         or path.startswith("/notifications/pigeon")
         or path.startswith("/festivals")
+        or path.startswith("/photocosplay")
         or path.startswith("/users/")
         or path.startswith("/media/")
     ):
@@ -31970,4 +32028,1228 @@ def festivals_export_ics(request: Request, db: Session = Depends(get_db)):
         body,
         media_type="text/calendar; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+def photo_contest_request_status_label(status: str) -> str:
+    mapping = {
+        PHOTO_CONTEST_REQUEST_STATUS_PENDING: "На модерации",
+        PHOTO_CONTEST_REQUEST_STATUS_APPROVED: "Одобрено",
+        PHOTO_CONTEST_REQUEST_STATUS_REJECTED: "Отклонено",
+    }
+    return mapping.get(status, status)
+
+
+def photo_contest_status_label(status: str) -> str:
+    mapping = {
+        PHOTO_CONTEST_STATUS_OPEN: "Открыт",
+        PHOTO_CONTEST_STATUS_JUDGING: "Идет судейство",
+        PHOTO_CONTEST_STATUS_FINISHED: "Завершен",
+    }
+    return mapping.get(status, status)
+
+
+def photo_contest_judging_label(format_key: str) -> str:
+    mapping = {
+        PHOTO_CONTEST_JUDGING_OPEN: "Открытый",
+        PHOTO_CONTEST_JUDGING_CLOSED: "Закрытый",
+    }
+    return mapping.get(format_key, format_key)
+
+
+def photo_contest_visibility_label(value: str) -> str:
+    mapping = {
+        PHOTO_CONTEST_VISIBILITY_ALL: "Показать всех участников",
+        PHOTO_CONTEST_VISIBILITY_WINNERS: "Показать победителей",
+    }
+    return mapping.get(value, value)
+
+
+def normalize_photo_contest_judging_format(raw_value: Any) -> str:
+    normalized = str(raw_value or "").strip().lower()
+    if normalized in PHOTO_CONTEST_JUDGING_OPTIONS:
+        return normalized
+    return PHOTO_CONTEST_JUDGING_OPEN
+
+
+def normalize_photo_contest_visibility(raw_value: Any) -> str:
+    normalized = str(raw_value or "").strip().lower()
+    if normalized in PHOTO_CONTEST_VISIBILITY_OPTIONS:
+        return normalized
+    return PHOTO_CONTEST_VISIBILITY_ALL
+
+
+def normalize_photo_contest_role_key(raw_value: Any) -> str:
+    normalized = str(raw_value or "").strip().lower()
+    if normalized in PHOTO_CONTEST_ROLE_LABELS:
+        return normalized
+    return PHOTO_CONTEST_ROLE_OTHER
+
+
+def normalize_photo_contest_character_values(raw_values: Any) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for raw_value in as_list(raw_values):
+        value = str(raw_value or "").strip()
+        if not value:
+            continue
+        value = re.sub(r"\s+", " ", value)[:255]
+        key = value.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(value)
+    return result
+
+
+def normalize_photo_contest_roles(raw_roles: Any) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, int | None]] = set()
+    for raw_row in as_list(raw_roles):
+        if not isinstance(raw_row, dict):
+            continue
+        role_key = normalize_photo_contest_role_key(raw_row.get("role"))
+        person_value = str(raw_row.get("person") or "").strip()
+        if not person_value:
+            continue
+        person_value = re.sub(r"\s+", " ", person_value)[:140]
+        user_id = parse_positive_int(str(raw_row.get("user_id", "")).strip())
+        key = (role_key, person_value.casefold(), user_id if user_id else None)
+        if key in seen:
+            continue
+        seen.add(key)
+        rows.append(
+            {
+                "role": role_key,
+                "person": person_value,
+                "user_id": int(user_id) if user_id else None,
+            }
+        )
+    return rows[:100]
+
+
+def normalize_photo_contest_nomination_rows(raw_rows: Any) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for raw_row in as_list(raw_rows):
+        if isinstance(raw_row, dict):
+            raw_title = raw_row.get("title")
+            raw_places = raw_row.get("places")
+        else:
+            raw_title = raw_row
+            raw_places = 1
+        title = canonical_nomination_title(raw_title)[:255]
+        key = normalize_nomination_title_key(title)
+        if not key or key in seen:
+            continue
+        places = parse_positive_int(str(raw_places or "").strip()) or 1
+        places = max(1, min(10, places))
+        seen.add(key)
+        normalized.append({"title": title, "places": places})
+        if len(normalized) >= PHOTO_CONTEST_MAX_NOMINATIONS:
+            break
+    return normalized
+
+
+def parse_photo_contest_nominations_from_form(form: Any) -> list[dict[str, Any]]:
+    titles = [str(value or "").strip() for value in form.getlist("nomination_title")]
+    places_values = [str(value or "").strip() for value in form.getlist("nomination_places")]
+    size = max(len(titles), len(places_values))
+    rows: list[dict[str, Any]] = []
+    for index in range(size):
+        title = titles[index] if index < len(titles) else ""
+        places = places_values[index] if index < len(places_values) else ""
+        if not title and not places:
+            continue
+        rows.append({"title": title, "places": places})
+    return normalize_photo_contest_nomination_rows(rows)
+
+
+def normalize_photo_contest_judges(raw_values: Any, alias_to_username: dict[str, str]) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw in as_list(raw_values):
+        for chunk in split_csv(str(raw or "")):
+            username = resolve_alias_to_username(chunk, alias_to_username)
+            key = normalize_username(username).casefold()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            normalized.append(username)
+            if len(normalized) >= PHOTO_CONTEST_MAX_JUDGES:
+                return normalized
+    return normalized
+
+
+def normalize_photo_contest_dates(
+    submission_start: date | None,
+    submission_end: date | None,
+    results_date: date | None,
+) -> tuple[date | None, date | None, date | None]:
+    start_value = submission_start
+    end_value = submission_end
+    results_value = results_date
+
+    if not start_value and end_value:
+        start_value = end_value
+    if not end_value and start_value:
+        end_value = start_value
+    if start_value and end_value and end_value < start_value:
+        end_value = start_value
+    if end_value and results_value and results_value < end_value:
+        results_value = end_value
+    return start_value, end_value, results_value
+
+
+def photo_contest_status_key(contest: PhotoContest | PhotoContestRequest, today: date | None = None) -> str:
+    today_value = today or date.today()
+    _start, end_value, results_value = normalize_photo_contest_dates(
+        contest.submission_start_date,
+        contest.submission_end_date,
+        contest.results_date,
+    )
+    if results_value and today_value >= results_value:
+        return PHOTO_CONTEST_STATUS_FINISHED
+    if end_value and today_value > end_value:
+        return PHOTO_CONTEST_STATUS_JUDGING
+    return PHOTO_CONTEST_STATUS_OPEN
+
+
+def photo_contest_submission_period_active(contest: PhotoContest, today: date | None = None) -> bool:
+    today_value = today or date.today()
+    start_value, end_value, _results_value = normalize_photo_contest_dates(
+        contest.submission_start_date,
+        contest.submission_end_date,
+        contest.results_date,
+    )
+    if start_value and today_value < start_value:
+        return False
+    if end_value and today_value > end_value:
+        return False
+    return bool(start_value or end_value)
+
+
+def photo_contest_can_manage(user: User | None, contest: PhotoContest | None) -> bool:
+    if not user or not contest:
+        return False
+    if user_is_special(user):
+        return True
+    return contest.creator_user_id == user.id
+
+
+def photo_contest_user_aliases_casefold(user: User) -> set[str]:
+    aliases = {
+        normalize_username(user.username).casefold(),
+        normalize_username(user.cosplay_nick).casefold(),
+    }
+    return {value for value in aliases if value}
+
+
+def photo_contest_is_user_judge(contest: PhotoContest, user: User | None) -> bool:
+    if not user:
+        return False
+    if user_is_special(user):
+        return True
+    judge_keys = {
+        normalize_username(value).casefold()
+        for value in as_list(contest.judges_json)
+        if normalize_username(value)
+    }
+    if not judge_keys:
+        return False
+    return bool(photo_contest_user_aliases_casefold(user) & judge_keys)
+
+
+def photo_contest_can_vote(contest: PhotoContest, user: User | None, today: date | None = None) -> bool:
+    if not user or photo_contest_status_key(contest, today=today) != PHOTO_CONTEST_STATUS_JUDGING:
+        return False
+    if normalize_photo_contest_judging_format(contest.judging_format) == PHOTO_CONTEST_JUDGING_OPEN:
+        return True
+    return photo_contest_is_user_judge(contest, user)
+
+
+def photo_contest_form_values(item: PhotoContest | PhotoContestRequest | None = None) -> dict[str, Any]:
+    nomination_rows = normalize_photo_contest_nomination_rows(getattr(item, "nominations_json", [])) if item else []
+    if not nomination_rows:
+        nomination_rows = [{"title": "", "places": 1}]
+
+    if not item:
+        return {
+            "title": "",
+            "submission_start_date": "",
+            "submission_end_date": "",
+            "results_date": "",
+            "nominations_rows": nomination_rows,
+            "festival_id": "",
+            "festival_name": "",
+            "judging_format": PHOTO_CONTEST_JUDGING_OPEN,
+            "judges_input": "",
+            "rules_markdown": "",
+            "prizes_markdown": "",
+            "max_photos_per_participant": 3,
+            "participant_visibility": PHOTO_CONTEST_VISIBILITY_ALL,
+        }
+
+    return {
+        "title": str(item.title or ""),
+        "submission_start_date": item.submission_start_date.isoformat() if item.submission_start_date else "",
+        "submission_end_date": item.submission_end_date.isoformat() if item.submission_end_date else "",
+        "results_date": item.results_date.isoformat() if item.results_date else "",
+        "nominations_rows": nomination_rows,
+        "festival_id": str(getattr(item, "festival_id", "") or ""),
+        "festival_name": str(getattr(item, "festival_name", "") or ""),
+        "judging_format": normalize_photo_contest_judging_format(getattr(item, "judging_format", "")),
+        "judges_input": ", ".join(as_list(getattr(item, "judges_json", []))),
+        "rules_markdown": str(getattr(item, "rules_markdown", "") or ""),
+        "prizes_markdown": str(getattr(item, "prizes_markdown", "") or ""),
+        "max_photos_per_participant": int(getattr(item, "max_photos_per_participant", 1) or 1),
+        "participant_visibility": normalize_photo_contest_visibility(getattr(item, "participant_visibility", "")),
+    }
+
+
+def photo_contest_entry_brief(
+    entry: PhotoContestEntry,
+    users_by_id: dict[int, User],
+) -> dict[str, Any]:
+    role_rows = normalize_photo_contest_roles(entry.roles_json)
+    role_values: dict[str, list[str]] = {
+        PHOTO_CONTEST_ROLE_COSPLAYER: [],
+        PHOTO_CONTEST_ROLE_PHOTOGRAPHER: [],
+        PHOTO_CONTEST_ROLE_MUA: [],
+        PHOTO_CONTEST_ROLE_RETOUCH: [],
+        PHOTO_CONTEST_ROLE_OTHER: [],
+    }
+    for row in role_rows:
+        role_key = normalize_photo_contest_role_key(row.get("role"))
+        person_label = str(row.get("person") or "").strip()
+        user_id = parse_positive_int(str(row.get("user_id", "")).strip())
+        target_user = users_by_id.get(int(user_id)) if user_id else None
+        if target_user:
+            person_label = f"@{preferred_user_alias(target_user)}"
+        if not person_label:
+            continue
+        role_values.setdefault(role_key, []).append(person_label)
+
+    for role_key, people in role_values.items():
+        role_values[role_key] = merge_unique(people)
+
+    return {
+        "cosplayers": role_values.get(PHOTO_CONTEST_ROLE_COSPLAYER, []),
+        "photographers": role_values.get(PHOTO_CONTEST_ROLE_PHOTOGRAPHER, []),
+        "other_roles": [
+            {
+                "label": PHOTO_CONTEST_ROLE_LABELS.get(role_key, role_key),
+                "people": people,
+            }
+            for role_key, people in role_values.items()
+            if role_key not in {PHOTO_CONTEST_ROLE_COSPLAYER, PHOTO_CONTEST_ROLE_PHOTOGRAPHER} and people
+        ],
+        "characters": normalize_photo_contest_character_values(entry.characters_json),
+        "fandom": str(entry.fandom or "").strip(),
+    }
+
+
+def parse_photo_contest_roles_from_form(
+    form: Any,
+    *,
+    alias_to_username: dict[str, str],
+    users_by_username: dict[str, User],
+) -> list[dict[str, Any]]:
+    role_values = [str(value or "").strip() for value in form.getlist("entry_role")]
+    person_values = [str(value or "").strip() for value in form.getlist("entry_person")]
+    size = max(len(role_values), len(person_values))
+    rows: list[dict[str, Any]] = []
+    for index in range(size):
+        raw_role = role_values[index] if index < len(role_values) else ""
+        raw_person = person_values[index] if index < len(person_values) else ""
+        if not raw_role and not raw_person:
+            continue
+        role_key = normalize_photo_contest_role_key(raw_role)
+        resolved_username = resolve_alias_to_username(raw_person, alias_to_username)
+        target_user = users_by_username.get(resolved_username.casefold()) if resolved_username else None
+        person_value = re.sub(r"\s+", " ", raw_person).strip()[:140]
+        user_id: int | None = None
+        if target_user:
+            person_value = normalize_username(preferred_user_alias(target_user))
+            user_id = int(target_user.id)
+        if not person_value:
+            continue
+        rows.append({"role": role_key, "person": person_value, "user_id": user_id})
+    return normalize_photo_contest_roles(rows)
+
+
+def remove_media_file_by_path(path_value: str | None) -> None:
+    normalized = normalize_local_media_reference(path_value or "")
+    if not normalized or not normalized.startswith("/media/"):
+        return
+    file_name = normalized.removeprefix("/media/").strip()
+    if not file_name:
+        return
+    try:
+        safe_name = safe_media_filename(file_name)
+    except HTTPException:
+        return
+    file_path = media_storage_path() / safe_name
+    try:
+        file_path.unlink(missing_ok=True)
+    except OSError:
+        return
+
+
+async def save_photo_contest_original_image(upload: UploadFile) -> tuple[str, str]:
+    if not upload.filename:
+        return "", "Файл изображения не передан."
+    content_type = str(upload.content_type or "").strip().lower()
+    if not content_type.startswith("image/"):
+        return "", "Загружать можно только изображения."
+
+    raw_bytes = await upload.read(PHOTO_CONTEST_MAX_PHOTO_FILE_BYTES + 1)
+    if not raw_bytes:
+        return "", "Один из файлов пуст."
+    if len(raw_bytes) > PHOTO_CONTEST_MAX_PHOTO_FILE_BYTES:
+        return "", "Один из файлов слишком большой (до 20 МБ)."
+
+    extension_map = {
+        "JPEG": ".jpg",
+        "JPG": ".jpg",
+        "PNG": ".png",
+        "WEBP": ".webp",
+        "GIF": ".gif",
+        "BMP": ".bmp",
+        "TIFF": ".tiff",
+    }
+    try:
+        with Image.open(io.BytesIO(raw_bytes)) as image:
+            source_format = (image.format or "").upper()
+            if source_format not in extension_map:
+                return "", "Поддерживаются JPG, PNG, WEBP, GIF, BMP и TIFF."
+    except UnidentifiedImageError:
+        return "", "Не удалось распознать один из файлов как изображение."
+    except OSError:
+        return "", "Не удалось прочитать один из файлов."
+
+    original_ext = Path(str(upload.filename or "")).suffix.lower()
+    allowed_ext = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tif", ".tiff"}
+    file_ext = original_ext if original_ext in allowed_ext else extension_map.get(source_format, ".img")
+    file_name = f"photo-contest-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:14]}{file_ext}"
+    destination = media_storage_path() / file_name
+    destination.write_bytes(raw_bytes)
+    return f"/media/{file_name}", ""
+
+
+async def save_photo_contest_images(files: list[UploadFile], max_count: int) -> tuple[list[str], str]:
+    actual_files = [item for item in files if item and str(getattr(item, "filename", "")).strip()]
+    if not actual_files:
+        return [], "Загрузите хотя бы одну фотографию."
+    if len(actual_files) > max_count:
+        return [], f"Можно загрузить не более {max_count} фото."
+
+    saved_paths: list[str] = []
+    for upload in actual_files:
+        saved_path, error_text = await save_photo_contest_original_image(upload)
+        if error_text:
+            for path_value in saved_paths:
+                remove_media_file_by_path(path_value)
+            return [], error_text
+        saved_paths.append(saved_path)
+    return saved_paths, ""
+
+
+def parse_photo_contest_payload_from_form(
+    form: Any,
+    *,
+    alias_to_username: dict[str, str],
+    festivals_by_id: dict[int, Festival],
+) -> tuple[dict[str, Any] | None, str]:
+    title = str(form.get("title", "")).strip()
+    if not title:
+        return None, "Название конкурса обязательно."
+    if len(title) > 255:
+        return None, "Название конкурса должно быть до 255 символов."
+
+    submission_start = parse_date(str(form.get("submission_start_date", "")).strip())
+    submission_end = parse_date(str(form.get("submission_end_date", "")).strip())
+    results_date = parse_date(str(form.get("results_date", "")).strip())
+    if not submission_start or not submission_end:
+        return None, "Укажите период начала и конца приема работ."
+    if not results_date:
+        return None, "Укажите дату оглашения результатов."
+    submission_start, submission_end, results_date = normalize_photo_contest_dates(
+        submission_start,
+        submission_end,
+        results_date,
+    )
+    if not submission_start or not submission_end or not results_date:
+        return None, "Не удалось корректно обработать даты конкурса."
+
+    nomination_rows = parse_photo_contest_nominations_from_form(form)
+    if not nomination_rows:
+        return None, "Добавьте хотя бы одну номинацию."
+
+    judging_format = normalize_photo_contest_judging_format(form.get("judging_format"))
+    judges = normalize_photo_contest_judges(
+        merge_unique(
+            form.getlist("judges"),
+            split_csv(str(form.get("judges_input", "")).strip()),
+        ),
+        alias_to_username,
+    )
+    if judging_format == PHOTO_CONTEST_JUDGING_CLOSED and not judges:
+        return None, "Для закрытого судейства укажите хотя бы одного судью."
+
+    max_photos_per_participant = parse_positive_int(str(form.get("max_photos_per_participant", "")).strip())
+    if not max_photos_per_participant:
+        return None, "Максимальное количество фотографий участника должно быть больше нуля."
+    if max_photos_per_participant > PHOTO_CONTEST_MAX_PHOTOS_PER_PARTICIPANT_LIMIT:
+        return (
+            None,
+            f"Максимум фотографий на участника: {PHOTO_CONTEST_MAX_PHOTOS_PER_PARTICIPANT_LIMIT}.",
+        )
+
+    festival_id = parse_positive_int(str(form.get("festival_id", "")).strip())
+    festival_name = ""
+    normalized_festival_id: int | None = None
+    if festival_id:
+        festival = festivals_by_id.get(int(festival_id))
+        if festival:
+            normalized_festival_id = int(festival.id)
+            festival_name = str(festival.name or "").strip()
+
+    payload = {
+        "title": title,
+        "submission_start_date": submission_start,
+        "submission_end_date": submission_end,
+        "results_date": results_date,
+        "nominations_json": nomination_rows,
+        "festival_id": normalized_festival_id,
+        "festival_name": festival_name or None,
+        "judging_format": judging_format,
+        "judges_json": judges,
+        "rules_markdown": normalize_text_line_breaks(str(form.get("rules_markdown", "")).strip())[:20000] or None,
+        "prizes_markdown": normalize_text_line_breaks(str(form.get("prizes_markdown", "")).strip())[:20000] or None,
+        "max_photos_per_participant": int(max_photos_per_participant),
+        "participant_visibility": normalize_photo_contest_visibility(form.get("participant_visibility")),
+    }
+    return payload, ""
+
+
+def apply_photo_contest_payload(target: PhotoContest | PhotoContestRequest, payload: dict[str, Any]) -> None:
+    target.title = str(payload["title"])
+    target.submission_start_date = payload["submission_start_date"]
+    target.submission_end_date = payload["submission_end_date"]
+    target.results_date = payload["results_date"]
+    target.nominations_json = payload["nominations_json"]
+    target.festival_id = payload["festival_id"]
+    target.festival_name = payload["festival_name"]
+    target.judging_format = payload["judging_format"]
+    target.judges_json = payload["judges_json"]
+    target.rules_markdown = payload["rules_markdown"]
+    target.prizes_markdown = payload["prizes_markdown"]
+    target.max_photos_per_participant = int(payload["max_photos_per_participant"])
+    target.participant_visibility = payload["participant_visibility"]
+
+
+def photo_contest_winning_rows(
+    contest: PhotoContest,
+    *,
+    entries: list[PhotoContestEntry],
+    photos: list[PhotoContestEntryPhoto],
+    users_by_id: dict[int, User],
+    vote_count_by_photo_id: dict[int, int],
+) -> tuple[list[dict[str, Any]], set[int]]:
+    entry_by_id = {int(item.id): item for item in entries if item and item.id}
+    photos_by_nomination: dict[str, list[PhotoContestEntryPhoto]] = defaultdict(list)
+    nomination_titles_by_key: dict[str, str] = {}
+
+    for photo in photos:
+        entry = entry_by_id.get(int(photo.entry_id))
+        if not entry:
+            continue
+        nomination_title = canonical_nomination_title(entry.nomination_title) or "Без номинации"
+        nomination_key = normalize_nomination_title_key(nomination_title) or nomination_title.casefold()
+        nomination_titles_by_key.setdefault(nomination_key, nomination_title)
+        photos_by_nomination[nomination_key].append(photo)
+
+    ordered_nominations = normalize_photo_contest_nomination_rows(contest.nominations_json)
+    known_nomination_keys = {normalize_nomination_title_key(item["title"]) for item in ordered_nominations}
+    for key, title in nomination_titles_by_key.items():
+        if key in known_nomination_keys:
+            continue
+        ordered_nominations.append({"title": title, "places": 3})
+
+    result_rows: list[dict[str, Any]] = []
+    winning_photo_ids: set[int] = set()
+    for nomination in ordered_nominations:
+        nomination_title = str(nomination.get("title") or "").strip()
+        nomination_key = normalize_nomination_title_key(nomination_title)
+        if not nomination_key:
+            continue
+        places_count = parse_positive_int(str(nomination.get("places", "")).strip()) or 1
+        candidate_photos = photos_by_nomination.get(nomination_key, [])
+        candidate_photos = sorted(
+            candidate_photos,
+            key=lambda item: (
+                -(vote_count_by_photo_id.get(int(item.id), 0)),
+                int(item.id),
+            ),
+        )
+        if not candidate_photos:
+            continue
+        for place_index, photo in enumerate(candidate_photos[:places_count], start=1):
+            entry = entry_by_id.get(int(photo.entry_id))
+            if not entry:
+                continue
+            participant = users_by_id.get(int(entry.participant_user_id))
+            participant_alias = f"@{preferred_user_alias(participant)}" if participant else "@unknown"
+            points = int(vote_count_by_photo_id.get(int(photo.id), 0))
+            result_rows.append(
+                {
+                    "nomination": nomination_title,
+                    "place": place_index,
+                    "participant_alias": participant_alias,
+                    "points": points,
+                    "photo_path": str(photo.file_path or "").strip(),
+                    "photo_id": int(photo.id),
+                }
+            )
+            winning_photo_ids.add(int(photo.id))
+    return result_rows, winning_photo_ids
+
+
+@app.get("/photocosplay", response_class=HTMLResponse)
+def photo_contest_list(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    status_filter = str(request.query_params.get("status", PHOTO_CONTEST_STATUS_OPEN)).strip().lower()
+    allowed_statuses = {
+        PHOTO_CONTEST_STATUS_OPEN,
+        PHOTO_CONTEST_STATUS_JUDGING,
+        PHOTO_CONTEST_STATUS_FINISHED,
+        "all",
+    }
+    if status_filter not in allowed_statuses:
+        status_filter = PHOTO_CONTEST_STATUS_OPEN
+    participating_only = to_bool(request.query_params.get("participating_only", ""))
+
+    contests = db.execute(
+        select(PhotoContest).order_by(
+            PhotoContest.submission_end_date.is_(None),
+            PhotoContest.submission_end_date,
+            PhotoContest.created_at.desc(),
+            PhotoContest.id.desc(),
+        )
+    ).scalars().all()
+
+    user_entry_contest_ids = {
+        int(item)
+        for item in db.execute(
+            select(PhotoContestEntry.contest_id).where(PhotoContestEntry.participant_user_id == user.id)
+        ).scalars().all()
+        if item
+    }
+
+    status_by_contest_id: dict[int, str] = {}
+    filtered_contests: list[PhotoContest] = []
+    for contest in contests:
+        contest_status = photo_contest_status_key(contest)
+        status_by_contest_id[int(contest.id)] = contest_status
+        if status_filter != "all" and contest_status != status_filter:
+            continue
+        if participating_only and int(contest.id) not in user_entry_contest_ids:
+            continue
+        filtered_contests.append(contest)
+
+    pending_requests: list[PhotoContestRequest] = []
+    if is_moderator_user(user):
+        pending_requests = db.execute(
+            select(PhotoContestRequest)
+            .where(PhotoContestRequest.status == PHOTO_CONTEST_REQUEST_STATUS_PENDING)
+            .order_by(PhotoContestRequest.created_at.desc(), PhotoContestRequest.id.desc())
+        ).scalars().all()
+
+    own_requests = db.execute(
+        select(PhotoContestRequest)
+        .where(PhotoContestRequest.requester_user_id == user.id)
+        .order_by(PhotoContestRequest.created_at.desc(), PhotoContestRequest.id.desc())
+        .limit(30)
+    ).scalars().all()
+
+    requester_ids = {
+        int(item.requester_user_id)
+        for item in pending_requests + own_requests
+        if item.requester_user_id
+    }
+    requesters_by_id: dict[int, User] = {}
+    if requester_ids:
+        requesters = db.execute(select(User).where(User.id.in_(requester_ids))).scalars().all()
+        requesters_by_id = {int(item.id): item for item in requesters if item and item.id}
+
+    return template_response(
+        request,
+        "photo_contest_list.html",
+        user=user,
+        active_tab="photocosplay",
+        contests=filtered_contests,
+        status_filter=status_filter,
+        participating_only=participating_only,
+        status_by_contest_id=status_by_contest_id,
+        user_entry_contest_ids=user_entry_contest_ids,
+        pending_requests=pending_requests,
+        own_requests=own_requests,
+        requesters_by_id=requesters_by_id,
+        photo_contest_status_label=photo_contest_status_label,
+        photo_contest_request_status_label=photo_contest_request_status_label,
+        photo_contest_judging_label=photo_contest_judging_label,
+    )
+
+
+@app.get("/photocosplay/requests/new", response_class=HTMLResponse)
+def photo_contest_request_new(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    festivals = db.execute(
+        select(Festival)
+        .where(Festival.user_id == user.id)
+        .order_by(Festival.event_date.is_(None), Festival.event_date, Festival.name)
+    ).scalars().all()
+
+    return template_response(
+        request,
+        "photo_contest_form.html",
+        user=user,
+        active_tab="photocosplay",
+        editing=False,
+        mode="request",
+        form=photo_contest_form_values(),
+        festival_options=festivals,
+        form_action="/photocosplay/requests/new",
+        form_title="Заявка на фотокосплей-конкурс",
+        submit_label="Отправить заявку",
+        cancel_url="/photocosplay",
+        role_labels=PHOTO_CONTEST_ROLE_LABELS,
+        photo_contest_judging_open=PHOTO_CONTEST_JUDGING_OPEN,
+        photo_contest_judging_closed=PHOTO_CONTEST_JUDGING_CLOSED,
+        photo_contest_visibility_all=PHOTO_CONTEST_VISIBILITY_ALL,
+        photo_contest_visibility_winners=PHOTO_CONTEST_VISIBILITY_WINNERS,
+    )
+
+
+@app.post("/photocosplay/requests/new")
+async def photo_contest_request_create(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    form = await request.form()
+    festivals = db.execute(select(Festival).where(Festival.user_id == user.id)).scalars().all()
+    festivals_by_id = {int(item.id): item for item in festivals if item and item.id}
+    alias_to_username, _users_by_username, _alias_options = build_user_alias_lookup(db)
+    payload, error_text = parse_photo_contest_payload_from_form(
+        form,
+        alias_to_username=alias_to_username,
+        festivals_by_id=festivals_by_id,
+    )
+    if error_text or not payload:
+        add_flash(request, error_text or "Не удалось создать заявку.", "error")
+        return redirect("/photocosplay/requests/new")
+
+    contest_request = PhotoContestRequest(
+        requester_user_id=user.id,
+        status=PHOTO_CONTEST_REQUEST_STATUS_PENDING,
+    )
+    apply_photo_contest_payload(contest_request, payload)
+    db.add(contest_request)
+    db.commit()
+
+    add_flash(request, "Заявка отправлена на модерацию.", "success")
+    return redirect("/photocosplay")
+
+
+@app.post("/photocosplay/requests/{request_id}/approve")
+def photo_contest_request_approve(request_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    if not is_moderator_user(user):
+        add_flash(request, "Одобрять заявки может только @brfox_cosplay.", "error")
+        return redirect("/photocosplay")
+
+    contest_request = db.get(PhotoContestRequest, request_id)
+    if not contest_request:
+        add_flash(request, "Заявка не найдена.", "error")
+        return redirect("/photocosplay")
+    if contest_request.status != PHOTO_CONTEST_REQUEST_STATUS_PENDING:
+        add_flash(request, "Эта заявка уже обработана.", "error")
+        return redirect("/photocosplay")
+
+    contest = PhotoContest(
+        creator_user_id=int(contest_request.requester_user_id),
+        approved_request_id=int(contest_request.id),
+    )
+    apply_photo_contest_payload(
+        contest,
+        {
+            "title": contest_request.title,
+            "submission_start_date": contest_request.submission_start_date,
+            "submission_end_date": contest_request.submission_end_date,
+            "results_date": contest_request.results_date,
+            "nominations_json": normalize_photo_contest_nomination_rows(contest_request.nominations_json),
+            "festival_id": contest_request.festival_id,
+            "festival_name": contest_request.festival_name,
+            "judging_format": normalize_photo_contest_judging_format(contest_request.judging_format),
+            "judges_json": as_list(contest_request.judges_json),
+            "rules_markdown": contest_request.rules_markdown,
+            "prizes_markdown": contest_request.prizes_markdown,
+            "max_photos_per_participant": max(1, int(contest_request.max_photos_per_participant or 1)),
+            "participant_visibility": normalize_photo_contest_visibility(contest_request.participant_visibility),
+        },
+    )
+    db.add(contest)
+    db.flush()
+
+    contest_request.status = PHOTO_CONTEST_REQUEST_STATUS_APPROVED
+    contest_request.reviewed_by_user_id = user.id
+    contest_request.reviewed_at = datetime.utcnow()
+    contest_request.contest_id = int(contest.id)
+
+    if contest_request.requester_user_id != user.id:
+        enqueue_notification_if_missing(
+            db,
+            user_id=int(contest_request.requester_user_id),
+            from_user_id=user.id,
+            source_card_id=None,
+            message=f"Заявка на фотокосплей-конкурс одобрена: «{contest.title}».",
+        )
+
+    db.commit()
+    add_flash(request, "Заявка одобрена, карточка конкурса опубликована.", "success")
+    return redirect("/photocosplay")
+
+
+@app.post("/photocosplay/requests/{request_id}/reject")
+def photo_contest_request_reject(request_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    if not is_moderator_user(user):
+        add_flash(request, "Отклонять заявки может только @brfox_cosplay.", "error")
+        return redirect("/photocosplay")
+
+    contest_request = db.get(PhotoContestRequest, request_id)
+    if not contest_request:
+        add_flash(request, "Заявка не найдена.", "error")
+        return redirect("/photocosplay")
+    if contest_request.status != PHOTO_CONTEST_REQUEST_STATUS_PENDING:
+        add_flash(request, "Эта заявка уже обработана.", "error")
+        return redirect("/photocosplay")
+
+    contest_request.status = PHOTO_CONTEST_REQUEST_STATUS_REJECTED
+    contest_request.reviewed_by_user_id = user.id
+    contest_request.reviewed_at = datetime.utcnow()
+    if contest_request.requester_user_id != user.id:
+        enqueue_notification_if_missing(
+            db,
+            user_id=int(contest_request.requester_user_id),
+            from_user_id=user.id,
+            source_card_id=None,
+            message=f"Заявка на фотокосплей-конкурс отклонена: «{contest_request.title}».",
+        )
+    db.commit()
+    add_flash(request, "Заявка отклонена.", "info")
+    return redirect("/photocosplay")
+
+
+@app.get("/photocosplay/{contest_id}/edit", response_class=HTMLResponse)
+def photo_contest_edit(contest_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    contest = db.get(PhotoContest, contest_id)
+    if not contest:
+        add_flash(request, "Конкурс не найден.", "error")
+        return redirect("/photocosplay")
+    if not photo_contest_can_manage(user, contest):
+        add_flash(request, "Недостаточно прав для редактирования конкурса.", "error")
+        return redirect(f"/photocosplay/{contest_id}")
+
+    festival_owner_user_id = int(contest.creator_user_id)
+    festivals = db.execute(select(Festival).where(Festival.user_id == festival_owner_user_id)).scalars().all()
+    return template_response(
+        request,
+        "photo_contest_form.html",
+        user=user,
+        active_tab="photocosplay",
+        editing=True,
+        mode="contest",
+        form=photo_contest_form_values(contest),
+        festival_options=festivals,
+        form_action=f"/photocosplay/{contest.id}/edit",
+        form_title="Редактирование фотокосплей-конкурса",
+        submit_label="Сохранить изменения",
+        cancel_url=f"/photocosplay/{contest.id}",
+        role_labels=PHOTO_CONTEST_ROLE_LABELS,
+        photo_contest_judging_open=PHOTO_CONTEST_JUDGING_OPEN,
+        photo_contest_judging_closed=PHOTO_CONTEST_JUDGING_CLOSED,
+        photo_contest_visibility_all=PHOTO_CONTEST_VISIBILITY_ALL,
+        photo_contest_visibility_winners=PHOTO_CONTEST_VISIBILITY_WINNERS,
+    )
+
+
+@app.post("/photocosplay/{contest_id}/edit")
+async def photo_contest_update(contest_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    contest = db.get(PhotoContest, contest_id)
+    if not contest:
+        add_flash(request, "Конкурс не найден.", "error")
+        return redirect("/photocosplay")
+    if not photo_contest_can_manage(user, contest):
+        add_flash(request, "Недостаточно прав для редактирования конкурса.", "error")
+        return redirect(f"/photocosplay/{contest_id}")
+
+    form = await request.form()
+    festival_owner_user_id = int(contest.creator_user_id)
+    festivals = db.execute(select(Festival).where(Festival.user_id == festival_owner_user_id)).scalars().all()
+    festivals_by_id = {int(item.id): item for item in festivals if item and item.id}
+    alias_to_username, _users_by_username, _alias_options = build_user_alias_lookup(db)
+    payload, error_text = parse_photo_contest_payload_from_form(
+        form,
+        alias_to_username=alias_to_username,
+        festivals_by_id=festivals_by_id,
+    )
+    if error_text or not payload:
+        add_flash(request, error_text or "Не удалось обновить конкурс.", "error")
+        return redirect(f"/photocosplay/{contest_id}/edit")
+
+    apply_photo_contest_payload(contest, payload)
+    db.commit()
+    add_flash(request, "Конкурс обновлен.", "success")
+    return redirect(f"/photocosplay/{contest_id}")
+
+
+@app.post("/photocosplay/{contest_id}/submit")
+async def photo_contest_submit_work(contest_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    contest = db.get(PhotoContest, contest_id)
+    if not contest:
+        add_flash(request, "Конкурс не найден.", "error")
+        return redirect("/photocosplay")
+
+    if not photo_contest_submission_period_active(contest):
+        add_flash(request, "Прием работ сейчас закрыт.", "error")
+        return redirect(f"/photocosplay/{contest_id}")
+
+    form = await request.form()
+    if not to_bool(form.get("agree_rules")):
+        add_flash(request, "Нужно согласиться с правилами конкурса.", "error")
+        return redirect(f"/photocosplay/{contest_id}")
+
+    nomination_rows = normalize_photo_contest_nomination_rows(contest.nominations_json)
+    nomination_titles = [item["title"] for item in nomination_rows]
+    selected_nomination = canonical_nomination_title(form.get("nomination_title"), known_titles=nomination_titles)
+    if not selected_nomination:
+        add_flash(request, "Выберите номинацию.", "error")
+        return redirect(f"/photocosplay/{contest_id}")
+
+    alias_to_username, users_by_username, _alias_options = build_user_alias_lookup(db)
+    roles = parse_photo_contest_roles_from_form(
+        form,
+        alias_to_username=alias_to_username,
+        users_by_username=users_by_username,
+    )
+    if not roles:
+        add_flash(request, "Заполните хотя бы одну роль в таблице.", "error")
+        return redirect(f"/photocosplay/{contest_id}")
+
+    characters = normalize_photo_contest_character_values(form.getlist("entry_character"))
+    fandom = str(form.get("fandom", "")).strip()[:255]
+
+    files = [
+        item
+        for item in form.getlist("photos")
+        if hasattr(item, "filename") and hasattr(item, "read")
+    ]
+    saved_paths, save_error = await save_photo_contest_images(
+        files,
+        max(1, int(contest.max_photos_per_participant or 1)),
+    )
+    if save_error:
+        add_flash(request, save_error, "error")
+        return redirect(f"/photocosplay/{contest_id}")
+
+    entry = db.execute(
+        select(PhotoContestEntry).where(
+            PhotoContestEntry.contest_id == contest.id,
+            PhotoContestEntry.participant_user_id == user.id,
+        )
+    ).scalar_one_or_none()
+    if not entry:
+        entry = PhotoContestEntry(
+            contest_id=int(contest.id),
+            participant_user_id=user.id,
+        )
+        db.add(entry)
+        db.flush()
+    else:
+        for old_photo in list(entry.photos):
+            remove_media_file_by_path(str(old_photo.file_path or ""))
+            db.delete(old_photo)
+        db.flush()
+
+    entry.nomination_title = selected_nomination
+    entry.fandom = fandom or None
+    entry.characters_json = characters
+    entry.roles_json = roles
+    entry.agreed_to_rules = True
+
+    for index, file_path in enumerate(saved_paths):
+        db.add(
+            PhotoContestEntryPhoto(
+                contest_id=int(contest.id),
+                entry_id=int(entry.id),
+                file_path=file_path,
+                sort_order=index,
+            )
+        )
+
+    db.commit()
+    add_flash(request, "Работа загружена.", "success")
+    return redirect(f"/photocosplay/{contest_id}")
+
+
+@app.post("/photocosplay/{contest_id}/votes")
+async def photo_contest_save_votes(contest_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    contest = db.get(PhotoContest, contest_id)
+    if not contest:
+        add_flash(request, "Конкурс не найден.", "error")
+        return redirect("/photocosplay")
+    if not photo_contest_can_vote(contest, user):
+        add_flash(request, "Сейчас вы не можете выставлять оценки в этом конкурсе.", "error")
+        return redirect(f"/photocosplay/{contest_id}")
+
+    form = await request.form()
+    selected_ids: set[int] = set()
+    for raw_value in form.getlist("photo_vote"):
+        parsed = parse_positive_int(str(raw_value).strip())
+        if parsed:
+            selected_ids.add(int(parsed))
+
+    contest_photo_ids = {
+        int(item)
+        for item in db.execute(
+            select(PhotoContestEntryPhoto.id).where(PhotoContestEntryPhoto.contest_id == contest.id)
+        ).scalars().all()
+        if item
+    }
+    selected_ids &= contest_photo_ids
+
+    existing_votes = db.execute(
+        select(PhotoContestVote).where(
+            PhotoContestVote.contest_id == contest.id,
+            PhotoContestVote.voter_user_id == user.id,
+        )
+    ).scalars().all()
+    existing_by_photo_id = {int(item.photo_id): item for item in existing_votes if item.photo_id}
+
+    for photo_id, vote in existing_by_photo_id.items():
+        if photo_id not in selected_ids:
+            db.delete(vote)
+
+    for photo_id in selected_ids:
+        if photo_id in existing_by_photo_id:
+            continue
+        db.add(
+            PhotoContestVote(
+                contest_id=int(contest.id),
+                photo_id=int(photo_id),
+                voter_user_id=user.id,
+            )
+        )
+
+    db.commit()
+    add_flash(request, "Оценки сохранены.", "success")
+    return redirect(f"/photocosplay/{contest_id}")
+
+
+@app.get("/photocosplay/{contest_id}", response_class=HTMLResponse)
+def photo_contest_detail(contest_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    contest = db.get(PhotoContest, contest_id)
+    if not contest:
+        add_flash(request, "Конкурс не найден.", "error")
+        return redirect("/photocosplay")
+
+    entries = db.execute(
+        select(PhotoContestEntry)
+        .where(PhotoContestEntry.contest_id == contest.id)
+        .order_by(PhotoContestEntry.created_at.asc(), PhotoContestEntry.id.asc())
+    ).scalars().all()
+    photos = db.execute(
+        select(PhotoContestEntryPhoto)
+        .where(PhotoContestEntryPhoto.contest_id == contest.id)
+        .order_by(PhotoContestEntryPhoto.sort_order.asc(), PhotoContestEntryPhoto.id.asc())
+    ).scalars().all()
+    entry_by_id = {int(item.id): item for item in entries if item and item.id}
+    photos_by_entry_id: dict[int, list[PhotoContestEntryPhoto]] = defaultdict(list)
+    for photo in photos:
+        photos_by_entry_id[int(photo.entry_id)].append(photo)
+
+    participant_ids = {
+        int(item.participant_user_id)
+        for item in entries
+        if item.participant_user_id
+    }
+    participant_ids.add(int(contest.creator_user_id))
+    users_by_id: dict[int, User] = {}
+    if participant_ids:
+        related_users = db.execute(select(User).where(User.id.in_(participant_ids))).scalars().all()
+        users_by_id = {int(item.id): item for item in related_users if item and item.id}
+
+    vote_rows = db.execute(
+        select(PhotoContestVote.photo_id, func.count(PhotoContestVote.id))
+        .where(PhotoContestVote.contest_id == contest.id)
+        .group_by(PhotoContestVote.photo_id)
+    ).all()
+    vote_count_by_photo_id = {int(photo_id): int(vote_count or 0) for photo_id, vote_count in vote_rows if photo_id}
+    user_voted_photo_ids = {
+        int(item)
+        for item in db.execute(
+            select(PhotoContestVote.photo_id).where(
+                PhotoContestVote.contest_id == contest.id,
+                PhotoContestVote.voter_user_id == user.id,
+            )
+        ).scalars().all()
+        if item
+    }
+
+    result_rows, winning_photo_ids = photo_contest_winning_rows(
+        contest,
+        entries=entries,
+        photos=photos,
+        users_by_id=users_by_id,
+        vote_count_by_photo_id=vote_count_by_photo_id,
+    )
+
+    entry_briefs_by_id = {
+        int(entry.id): photo_contest_entry_brief(entry, users_by_id)
+        for entry in entries
+        if entry and entry.id
+    }
+
+    grouped_entries: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for entry in entries:
+        nomination_title = canonical_nomination_title(entry.nomination_title) or "Без номинации"
+        brief = entry_briefs_by_id.get(int(entry.id), {})
+        entry_photos = photos_by_entry_id.get(int(entry.id), [])
+        grouped_entries[nomination_title].append(
+            {
+                "entry": entry,
+                "participant": users_by_id.get(int(entry.participant_user_id)),
+                "brief": brief,
+                "photos": entry_photos,
+            }
+        )
+
+    ordered_nomination_titles = [
+        item["title"]
+        for item in normalize_photo_contest_nomination_rows(contest.nominations_json)
+        if item.get("title")
+    ]
+    for nomination_title in sorted(grouped_entries.keys(), key=lambda value: value.casefold()):
+        if nomination_title not in ordered_nomination_titles:
+            ordered_nomination_titles.append(nomination_title)
+
+    contest_status = photo_contest_status_key(contest)
+    can_manage = photo_contest_can_manage(user, contest)
+    can_vote = photo_contest_can_vote(contest, user)
+    submission_open = photo_contest_submission_period_active(contest)
+    creator_user = users_by_id.get(int(contest.creator_user_id))
+    my_entry = next((item for item in entries if int(item.participant_user_id) == user.id), None)
+
+    visible_grouped_entries: dict[str, list[dict[str, Any]]] = {}
+    for nomination_title in ordered_nomination_titles:
+        rows = grouped_entries.get(nomination_title, [])
+        if not rows:
+            continue
+        if normalize_photo_contest_visibility(contest.participant_visibility) == PHOTO_CONTEST_VISIBILITY_WINNERS:
+            if contest_status != PHOTO_CONTEST_STATUS_FINISHED:
+                continue
+            filtered_rows: list[dict[str, Any]] = []
+            for row in rows:
+                row_photos = [photo for photo in row["photos"] if int(photo.id) in winning_photo_ids]
+                if not row_photos:
+                    continue
+                copied = dict(row)
+                copied["photos"] = row_photos
+                filtered_rows.append(copied)
+            if not filtered_rows:
+                continue
+            visible_grouped_entries[nomination_title] = filtered_rows
+            continue
+        visible_grouped_entries[nomination_title] = rows
+
+    show_participants_block = contest_status in {PHOTO_CONTEST_STATUS_JUDGING, PHOTO_CONTEST_STATUS_FINISHED}
+    if normalize_photo_contest_visibility(contest.participant_visibility) == PHOTO_CONTEST_VISIBILITY_WINNERS:
+        show_participants_block = contest_status == PHOTO_CONTEST_STATUS_FINISHED
+
+    photo_modal_items: list[dict[str, Any]] = []
+    for nomination_title in ordered_nomination_titles:
+        for row in visible_grouped_entries.get(nomination_title, []):
+            brief = row.get("brief") or {}
+            for photo in row.get("photos", []):
+                photo_modal_items.append(
+                    {
+                        "photo_id": int(photo.id),
+                        "path": str(photo.file_path or ""),
+                        "nomination": nomination_title,
+                        "cosplayers": brief.get("cosplayers", []),
+                        "photographers": brief.get("photographers", []),
+                        "other_roles": brief.get("other_roles", []),
+                        "characters": brief.get("characters", []),
+                        "fandom": brief.get("fandom", ""),
+                        "points": int(vote_count_by_photo_id.get(int(photo.id), 0)),
+                    }
+                )
+
+    return template_response(
+        request,
+        "photo_contest_detail.html",
+        user=user,
+        active_tab="photocosplay",
+        contest=contest,
+        contest_status=contest_status,
+        contest_status_label=photo_contest_status_label(contest_status),
+        can_manage=can_manage,
+        can_vote=can_vote,
+        submission_open=submission_open,
+        show_participants_block=show_participants_block,
+        creator_user=creator_user,
+        my_entry=my_entry,
+        grouped_entries=visible_grouped_entries,
+        ordered_nomination_titles=ordered_nomination_titles,
+        vote_count_by_photo_id=vote_count_by_photo_id,
+        user_voted_photo_ids=user_voted_photo_ids,
+        result_rows=result_rows,
+        photo_modal_items_json=json.dumps(photo_modal_items, ensure_ascii=False),
+        photo_contest_judging_label=photo_contest_judging_label,
+        photo_contest_visibility_label=photo_contest_visibility_label,
+        photo_contest_role_labels=PHOTO_CONTEST_ROLE_LABELS,
+        nomination_rows=normalize_photo_contest_nomination_rows(contest.nominations_json),
     )
