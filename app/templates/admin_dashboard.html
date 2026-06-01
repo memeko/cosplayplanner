@@ -232,15 +232,61 @@
 </section>
 
 <section class="box">
-  <h2>Популярность косплана</h2>
-  <div class="cards-grid admin-kpi-grid top-offset">
-    {% for item in cosplan_popularity_cards %}
-    <article class="card admin-kpi-card">
-      <p class="meta">{{ item.title }}</p>
-      <p class="admin-kpi-value">{{ item.value }}</p>
-      <p class="muted">{{ item.hint }}</p>
+  <div class="admin-section-head">
+    <h2>Популярность косплана (топ-10)</h2>
+    <p class="meta">Нестрогое объединение: частичные совпадения и опечатки.</p>
+  </div>
+  <div class="grid two-col top-offset">
+    <article class="card">
+      <h3>Фандомы</h3>
+      {% if cosplan_top_fandom_rows %}
+      <table class="table top-offset">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Фандом</th>
+            <th>Карточек</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in cosplan_top_fandom_rows %}
+          <tr>
+            <td>{{ row.rank }}</td>
+            <td>{{ row.label }}</td>
+            <td>{{ row.count }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <p class="muted top-offset">Пока нет данных по фандомам.</p>
+      {% endif %}
     </article>
-    {% endfor %}
+    <article class="card">
+      <h3>Персонажи</h3>
+      {% if cosplan_top_character_rows %}
+      <table class="table top-offset">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Персонаж</th>
+            <th>Карточек</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in cosplan_top_character_rows %}
+          <tr>
+            <td>{{ row.rank }}</td>
+            <td>{{ row.label }}</td>
+            <td>{{ row.count }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <p class="muted top-offset">Пока нет данных по персонажам.</p>
+      {% endif %}
+    </article>
   </div>
 </section>
 

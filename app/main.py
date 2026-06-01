@@ -17400,10 +17400,144 @@ def build_admin_dashboard_stats(db: Session) -> dict[str, Any]:
 
     cosplan_festival_mentions_by_key: dict[str, int] = defaultdict(int)
     cosplan_festival_labels_by_key: dict[str, str] = {}
-    fandom_counts_by_key: dict[str, int] = defaultdict(int)
-    fandom_labels_by_key: dict[str, str] = {}
-    character_counts_by_key: dict[str, int] = defaultdict(int)
-    character_labels_by_key: dict[str, str] = {}
+    fandom_raw_values: list[str] = []
+    character_raw_values: list[str] = []
+
+    def normalize_popularity_text(value: Any) -> str:
+        raw = str(value or "").strip().casefold().replace("ё", "е")
+        if not raw:
+            return ""
+        return " ".join(re.findall(r"[0-9a-zа-я]+", raw))
+
+    def popularity_text_match_score(left: str, right: str) -> int:
+        left_text = normalize_popularity_text(left)
+        right_text = normalize_popularity_text(right)
+        if not left_text or not right_text:
+            return 0
+        if left_text == right_text:
+            return 1000
+
+        left_compact = left_text.replace(" ", "")
+        right_compact = right_text.replace(" ", "")
+        if left_compact and right_compact and left_compact == right_compact:
+            return 980
+
+        shorter, longer = (
+            (left_compact, right_compact)
+            if len(left_compact) <= len(right_compact)
+            else (right_compact, left_compact)
+        )
+        if shorter and len(shorter) >= 5 and shorter in longer:
+            return 940
+
+        left_tokens = {token for token in left_text.split(" ") if token}
+        right_tokens = {token for token in right_text.split(" ") if token}
+        if left_tokens and right_tokens:
+            overlap = left_tokens & right_tokens
+            if overlap:
+                if left_tokens <= right_tokens or right_tokens <= left_tokens:
+                    if max(len(token) for token in overlap) >= 3:
+                        return 920
+                min_tokens = min(len(left_tokens), len(right_tokens))
+                if min_tokens >= 2 and (len(overlap) / min_tokens) >= 0.67:
+                    return 860
+
+        fuzzy_ratio = max(
+            SequenceMatcher(None, left_text, right_text).ratio(),
+            SequenceMatcher(None, left_compact, right_compact).ratio(),
+        )
+        if fuzzy_ratio >= 0.91:
+            return 840
+        if min(len(left_compact), len(right_compact)) >= 7 and fuzzy_ratio >= 0.84:
+            return 800
+        return 0
+
+    def build_popularity_top_rows(raw_values: list[str], *, limit: int = 10) -> list[dict[str, Any]]:
+        counts_by_key: dict[str, int] = defaultdict(int)
+        labels_by_key: dict[str, str] = {}
+        for raw_item in raw_values:
+            clean_item = " ".join(str(raw_item or "").split()).strip()
+            if not clean_item:
+                continue
+            normalized_key = normalize_popularity_text(clean_item)
+            if not normalized_key:
+                continue
+            counts_by_key[normalized_key] += 1
+            saved_label = labels_by_key.get(normalized_key)
+            if not saved_label or len(clean_item) > len(saved_label):
+                labels_by_key[normalized_key] = clean_item
+
+        if not counts_by_key:
+            return []
+
+        entries = [
+            {
+                "key": key,
+                "label": labels_by_key.get(key, key),
+                "count": int(value),
+            }
+            for key, value in counts_by_key.items()
+            if value > 0
+        ]
+        if not entries:
+            return []
+
+        parent = list(range(len(entries)))
+
+        def find_parent(index: int) -> int:
+            while parent[index] != index:
+                parent[index] = parent[parent[index]]
+                index = parent[index]
+            return index
+
+        def union(index_a: int, index_b: int) -> None:
+            root_a = find_parent(index_a)
+            root_b = find_parent(index_b)
+            if root_a == root_b:
+                return
+            if root_a < root_b:
+                parent[root_b] = root_a
+            else:
+                parent[root_a] = root_b
+
+        for left_index in range(len(entries)):
+            for right_index in range(left_index + 1, len(entries)):
+                score = popularity_text_match_score(
+                    str(entries[left_index]["key"]),
+                    str(entries[right_index]["key"]),
+                )
+                if score >= 800:
+                    union(left_index, right_index)
+
+        grouped_indexes: dict[int, list[int]] = defaultdict(list)
+        for index in range(len(entries)):
+            grouped_indexes[find_parent(index)].append(index)
+
+        rows: list[dict[str, Any]] = []
+        for indexes in grouped_indexes.values():
+            group_items = [entries[index] for index in indexes]
+            total_count = sum(int(item["count"]) for item in group_items)
+            best_item = sorted(
+                group_items,
+                key=lambda item: (
+                    -int(item["count"]),
+                    -len(str(item["label"])),
+                    str(item["label"]).casefold(),
+                ),
+            )[0]
+            rows.append(
+                {
+                    "label": str(best_item["label"]),
+                    "count": total_count,
+                    "variants": len(group_items),
+                }
+            )
+
+        rows.sort(key=lambda item: (-int(item["count"]), str(item["label"]).casefold()))
+        for position, row in enumerate(rows, start=1):
+            row["rank"] = position
+        return rows[: max(1, int(limit or 10))]
+
     cosplan_rows = db.execute(
         select(
             CosplanCard.planned_festivals_json,
@@ -17426,19 +17560,11 @@ def build_admin_dashboard_stats(db: Session) -> dict[str, Any]:
 
         clean_fandom = " ".join(str(raw_fandom or "").split()).strip()
         if clean_fandom:
-            fandom_key = clean_fandom.casefold()
-            fandom_counts_by_key[fandom_key] += 1
-            stored_fandom_label = fandom_labels_by_key.get(fandom_key)
-            if not stored_fandom_label or len(clean_fandom) > len(stored_fandom_label):
-                fandom_labels_by_key[fandom_key] = clean_fandom
+            fandom_raw_values.append(clean_fandom)
 
         clean_character_name = " ".join(str(raw_character_name or "").split()).strip()
         if clean_character_name:
-            character_key = clean_character_name.casefold()
-            character_counts_by_key[character_key] += 1
-            stored_character_label = character_labels_by_key.get(character_key)
-            if not stored_character_label or len(clean_character_name) > len(stored_character_label):
-                character_labels_by_key[character_key] = clean_character_name
+            character_raw_values.append(clean_character_name)
 
     most_popular_cosplan_festival_name = "—"
     most_popular_cosplan_festival_count = 0
@@ -17452,32 +17578,8 @@ def build_admin_dashboard_stats(db: Session) -> dict[str, Any]:
             ),
         )[0]
         most_popular_cosplan_festival_name = cosplan_festival_labels_by_key.get(most_popular_cosplan_key, "—")
-
-    most_popular_fandom_name = "—"
-    most_popular_fandom_count = 0
-    if fandom_counts_by_key:
-        most_popular_fandom_key, most_popular_fandom_count = sorted(
-            fandom_counts_by_key.items(),
-            key=lambda item: (
-                -int(item[1]),
-                fandom_labels_by_key.get(item[0], "").casefold(),
-                item[0],
-            ),
-        )[0]
-        most_popular_fandom_name = fandom_labels_by_key.get(most_popular_fandom_key, "—")
-
-    most_popular_character_name = "—"
-    most_popular_character_count = 0
-    if character_counts_by_key:
-        most_popular_character_key, most_popular_character_count = sorted(
-            character_counts_by_key.items(),
-            key=lambda item: (
-                -int(item[1]),
-                character_labels_by_key.get(item[0], "").casefold(),
-                item[0],
-            ),
-        )[0]
-        most_popular_character_name = character_labels_by_key.get(most_popular_character_key, "—")
+    cosplan_top_fandom_rows = build_popularity_top_rows(fandom_raw_values, limit=10)
+    cosplan_top_character_rows = build_popularity_top_rows(character_raw_values, limit=10)
 
     new_users_rows = db.execute(
         select(User.id, User.created_at).where(User.created_at >= since_30_dt)
@@ -17949,26 +18051,8 @@ def build_admin_dashboard_stats(db: Session) -> dict[str, Any]:
                 ),
             },
         ],
-        "cosplan_popularity_cards": [
-            {
-                "title": "Самый популярный фандом",
-                "value": most_popular_fandom_name,
-                "hint": (
-                    f"Встречается в {most_popular_fandom_count} карточках косплана"
-                    if most_popular_fandom_count > 0
-                    else "Пока в карточках не заполнен фандом."
-                ),
-            },
-            {
-                "title": "Самый популярный персонаж",
-                "value": most_popular_character_name,
-                "hint": (
-                    f"Встречается в {most_popular_character_count} карточках косплана"
-                    if most_popular_character_count > 0
-                    else "Пока в карточках нет персонажей."
-                ),
-            },
-        ],
+        "cosplan_top_fandom_rows": cosplan_top_fandom_rows,
+        "cosplan_top_character_rows": cosplan_top_character_rows,
         "onboarding_steps": onboarding_steps,
         "ops_cards": [
             {
