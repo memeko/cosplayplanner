@@ -2956,6 +2956,49 @@ def shared_coproplayer_count(db: Session, card: CosplanCard | None) -> int:
     return len(aliases) + 1
 
 
+def build_shared_coproplayer_count_map(db: Session, cards: list[CosplanCard]) -> dict[int, int]:
+    visible_cards = [card for card in cards if card and card.id]
+    if not visible_cards:
+        return {}
+
+    source_ids = {
+        int(card.source_card_id or card.id)
+        for card in visible_cards
+        if int(card.source_card_id or card.id or 0) > 0
+    }
+    if not source_ids:
+        return {}
+
+    source_rows = db.execute(
+        select(CosplanCard.id, CosplanCard.user_id).where(CosplanCard.id.in_(source_ids))
+    ).all()
+    participant_ids_by_source_id: dict[int, set[int]] = defaultdict(set)
+    for source_id, user_id in source_rows:
+        if source_id and user_id:
+            participant_ids_by_source_id[int(source_id)].add(int(user_id))
+
+    shared_rows = db.execute(
+        select(CosplanCard.source_card_id, CosplanCard.user_id).where(
+            CosplanCard.source_card_id.in_(source_ids),
+            CosplanCard.is_shared_copy.is_(True),
+        )
+    ).all()
+    for source_id, user_id in shared_rows:
+        if source_id and user_id:
+            participant_ids_by_source_id[int(source_id)].add(int(user_id))
+
+    result: dict[int, int] = {}
+    for card in visible_cards:
+        source_id = int(card.source_card_id or card.id)
+        participant_count = len(participant_ids_by_source_id.get(source_id, set()))
+        if participant_count > 0:
+            result[int(card.id)] = participant_count
+        else:
+            aliases = [str(value).strip() for value in card_coproplayer_aliases(card) if str(value).strip()]
+            result[int(card.id)] = len(aliases) + 1
+    return result
+
+
 def shared_coproplayer_emoji(count: int) -> str:
     if count <= 0:
         return ""
@@ -10226,6 +10269,7 @@ def parse_project_character_rows_from_form(
         return []
 
     rows: list[dict[str, str]] = []
+    seen_rows: set[tuple[str, str]] = set()
     for index in range(size):
         row_id = row_ids[index] if index < len(row_ids) and row_ids[index] else f"project-char-{index}"
         character_name = names[index][:255] if index < len(names) else ""
@@ -10233,6 +10277,10 @@ def parse_project_character_rows_from_form(
         cosplayer_username = resolve_alias_to_username(raw_cosplayer, alias_to_username)[:255]
         if not (character_name or cosplayer_username):
             continue
+        row_key = (character_name.casefold(), cosplayer_username.casefold())
+        if row_key in seen_rows:
+            continue
+        seen_rows.add(row_key)
         rows.append(
             {
                 "row_id": row_id,
@@ -18764,14 +18812,28 @@ def cosplan_list(
                     stat["upcoming_date"] = entry.entry_date
 
     editable_card_links: dict[int, int] = {}
-    shared_coproplayer_counts: dict[int, int] = {}
+    source_ids = {
+        int(card.source_card_id)
+        for card in cards
+        if card.is_shared_copy and int(card.source_card_id or 0) > 0
+    }
+    source_cards_by_id = {
+        int(source_card.id): source_card
+        for source_card in db.execute(
+            select(CosplanCard).where(CosplanCard.id.in_(source_ids))
+        ).scalars().all()
+    } if source_ids else {}
+    shared_coproplayer_counts = build_shared_coproplayer_count_map(db, cards)
     shared_coproplayer_emojis: dict[int, str] = {}
     for visible_card in cards:
-        source_card = resolve_source_card(db, visible_card)
+        source_card = (
+            source_cards_by_id.get(int(visible_card.source_card_id or 0))
+            if visible_card.is_shared_copy and visible_card.source_card_id
+            else visible_card
+        )
         if source_card and can_edit_card(user, source_card):
             editable_card_links[visible_card.id] = source_card.id
-        coproplayer_count = shared_coproplayer_count(db, visible_card)
-        shared_coproplayer_counts[visible_card.id] = coproplayer_count
+        coproplayer_count = shared_coproplayer_counts.get(visible_card.id, 0)
         shared_coproplayer_emojis[visible_card.id] = shared_coproplayer_emoji(coproplayer_count)
 
     current_view = view if view in {"cards", "list"} else "cards"
