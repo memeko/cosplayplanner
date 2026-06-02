@@ -113,6 +113,9 @@
                 <span>{{ card.fandom or "—" }}</span>
                 <span>{{ card.project_deadline.strftime('%d-%m-%Y') if card.project_deadline else "—" }}</span>
               </div>
+              {% if card.au_text %}
+                <p class="meta">AU: {{ card.au_text|preview_text(50) }}</p>
+              {% endif %}
               {% if (card.plan_type or '') == 'project' %}
                 <span class="chip chip-shared-project">
                   Общая карточка проекта{% if shared_emoji %} · {{ shared_emoji }}{% if shared_count > 0 %} ({{ shared_count }}){% endif %}{% endif %}
@@ -199,6 +202,9 @@
             {% endif %}
           </h3>
           <p class="meta">Фандом: {{ card.fandom or "—" }}</p>
+          {% if card.au_text %}
+            <p class="meta">AU: {{ card.au_text|preview_text(50) }}</p>
+          {% endif %}
           <div class="master-status-inline" role="img" aria-label="Готовность {{ status_value }}%">
             <span class="master-status-inline-track">
               <span class="master-status-inline-fill" style="width: {{ status_value }}%;"></span>
