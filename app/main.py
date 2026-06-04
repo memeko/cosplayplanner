@@ -30521,6 +30521,20 @@ def import_cosplay2_events_for_user(db: Session, user: User, parsed_events: list
 
 
 def count_distinct_imported_festivals(db: Session) -> int:
+    external_id_total = int(
+        db.execute(
+            text(
+                """
+                SELECT COUNT(DISTINCT COALESCE(import_source, '') || '|' || COALESCE(import_external_id, ''))
+                FROM festivals
+                WHERE import_source IS NOT NULL
+                  AND import_external_id IS NOT NULL
+                  AND import_external_id != ''
+                """
+            )
+        ).scalar()
+        or 0
+    )
     imported_rows = db.execute(
         select(
             Festival.import_source,
@@ -30528,7 +30542,10 @@ def count_distinct_imported_festivals(db: Session) -> int:
             Festival.name,
             Festival.city,
             Festival.event_date,
-        ).where(Festival.import_source.is_not(None))
+        ).where(
+            Festival.import_source.is_not(None),
+            or_(Festival.import_external_id.is_(None), Festival.import_external_id == ""),
+        )
     ).all()
     unique_keys: set[tuple[str, str, str, str, str]] = set()
     for import_source, import_external_id, name, city, event_date in imported_rows:
@@ -30546,7 +30563,7 @@ def count_distinct_imported_festivals(db: Session) -> int:
                 event_date.isoformat() if isinstance(event_date, date) else "",
             )
         )
-    return len(unique_keys)
+    return external_id_total + len(unique_keys)
 
 
 def auto_import_external_sources_if_needed() -> None:
@@ -30757,35 +30774,134 @@ def festivals_list(request: Request, db: Session = Depends(get_db)):
     requested_page = parse_positive_int(str(request.query_params.get("page", "")).strip()) or 1
     festival_page_size = 12
 
-    festivals = db.execute(
-        select(Festival).where(Festival.user_id == user.id).order_by(Festival.event_date.is_(None), Festival.event_date, Festival.name)
-    ).scalars().all()
-
     today = date.today()
-    active_festivals = [
-        festival
-        for festival in festivals
-        if festival_is_active(festival, today)
-    ]
-
     alias_to_username, users_by_username, alias_options = build_user_alias_lookup(db)
-    festival_coproplayers_display: dict[int, list[str]] = {}
     festival_nomination_items_by_id: dict[int, list[dict[str, str]]] = {}
+    festival_name_match_scores: dict[int, int] = {}
+    active_condition = or_(
+        Festival.event_date.is_(None),
+        Festival.event_end_date >= today,
+        and_(Festival.event_end_date.is_(None), Festival.event_date >= today),
+        and_(Festival.event_end_date < Festival.event_date, Festival.event_date >= today),
+    )
+    fast_festival_query = not any([q, city_filter, nomination_filter, coproplayer_filter])
+    filtered: list[Festival] = []
+    active_festivals: list[Festival] = []
+    if fast_festival_query:
+        fast_conditions = [Festival.user_id == user.id, active_condition]
+        if festival_tab == "my" or only_going:
+            fast_conditions.append(Festival.is_going.is_(True))
+        filtered_total = int(db.execute(select(func.count(Festival.id)).where(*fast_conditions)).scalar() or 0)
+    else:
+        festivals = db.execute(
+            select(Festival)
+            .where(Festival.user_id == user.id)
+            .order_by(Festival.event_date.is_(None), Festival.event_date, Festival.name)
+        ).scalars().all()
+        active_festivals = [
+            festival
+            for festival in festivals
+            if festival_is_active(festival, today)
+        ]
+
+        for festival in active_festivals:
+            raw_coproplayers = as_list(festival.going_coproplayers_json)
+            nomination_items = festival_nomination_items(festival)
+            festival_nomination_items_by_id[festival.id] = nomination_items
+
+            if festival_tab == "my" and not festival.is_going:
+                continue
+
+            if only_going and not festival.is_going:
+                continue
+
+            name_match_score = festival_name_search_score(q, festival.name) if q else 0
+            if q and name_match_score <= 0:
+                continue
+
+            if city_filter_values and not city_matches_any(city_filter_values, festival.city):
+                continue
+
+            nominations = [item["title"] for item in nomination_items]
+            if nomination_filter_key and not any(
+                nomination_filter_key in normalize_nomination_title_key(value)
+                for value in nominations
+            ):
+                continue
+
+            coproplayer_search_targets = merge_unique(
+                raw_coproplayers,
+                [
+                    value.lstrip("@")
+                    for value in format_coproplayer_names(raw_coproplayers, alias_to_username, users_by_username)
+                ] if coproplayer_filter else [],
+            )
+            if coproplayer_filter and not any(
+                coproplayer_filter.casefold() in value.casefold() for value in coproplayer_search_targets
+            ):
+                continue
+
+            if q:
+                festival_name_match_scores[festival.id] = name_match_score
+            filtered.append(festival)
+
+        if q:
+            filtered.sort(
+                key=lambda item: (
+                    -festival_name_match_scores.get(item.id, 0),
+                    item.event_date is None,
+                    item.event_date or date.max,
+                    (item.name or "").casefold(),
+                )
+            )
+        filtered_total = len(filtered)
+    festival_total_pages = max(1, (filtered_total + festival_page_size - 1) // festival_page_size) if filtered_total else 1
+    festival_current_page = max(1, min(int(requested_page), festival_total_pages))
+    festival_page_start = (festival_current_page - 1) * festival_page_size
+    if fast_festival_query:
+        paginated_festivals = db.execute(
+            select(Festival)
+            .where(*fast_conditions)
+            .order_by(Festival.event_date.is_(None), Festival.event_date, Festival.name)
+            .offset(festival_page_start)
+            .limit(festival_page_size)
+        ).scalars().all()
+    else:
+        paginated_festivals = filtered[festival_page_start:festival_page_start + festival_page_size]
+    festival_page_numbers = list(range(max(1, festival_current_page - 2), min(festival_total_pages, festival_current_page + 2) + 1))
+    festival_pagination_params: dict[str, Any] = {}
+    if festival_tab == "my":
+        festival_pagination_params["festival_tab"] = festival_tab
+    if q:
+        festival_pagination_params["q"] = q
+    if city_filter:
+        festival_pagination_params["city"] = city_filter
+    if nomination_filter:
+        festival_pagination_params["nomination"] = nomination_filter
+    if coproplayer_filter:
+        festival_pagination_params["coproplayer"] = coproplayer_filter
+    if only_going:
+        festival_pagination_params["only_going"] = "1"
+    festival_pagination_query = urlencode(festival_pagination_params)
+
+    festival_coproplayers_display: dict[int, list[str]] = {}
     festival_planned_nominations_by_id: dict[int, list[str]] = {}
     festival_packlist_by_id: dict[int, list[dict[str, Any]]] = {}
     festival_ticket_files_by_id: dict[int, list[dict[str, str]]] = {}
     festival_ticket_outbound_by_id: dict[int, dict[str, str]] = {}
     festival_ticket_return_by_id: dict[int, dict[str, str]] = {}
     festival_timing_by_id: dict[int, dict[str, str]] = {}
-    festival_name_match_scores: dict[int, int] = {}
-
-    filtered: list[Festival] = []
-    for festival in active_festivals:
+    for festival in paginated_festivals:
         raw_coproplayers = as_list(festival.going_coproplayers_json)
-        display_coproplayers = format_coproplayer_names(raw_coproplayers, alias_to_username, users_by_username)
-        festival_coproplayers_display[festival.id] = display_coproplayers
-        nomination_items = festival_nomination_items(festival)
-        festival_nomination_items_by_id[festival.id] = nomination_items
+        festival_nomination_items_by_id[festival.id] = festival_nomination_items_by_id.get(
+            festival.id,
+            festival_nomination_items(festival),
+        )
+        festival_coproplayers_display[festival.id] = format_coproplayer_names(
+            raw_coproplayers,
+            alias_to_username,
+            users_by_username,
+        )
         festival_planned_nominations_by_id[festival.id] = festival_selected_nomination_titles(festival)
         festival_packlist_by_id[festival.id] = normalize_festival_packlist_items(as_list(festival.packlist_json))
         festival_ticket_files_by_id[festival.id] = [
@@ -30810,69 +30926,6 @@ def festivals_list(request: Request, db: Session = Depends(get_db)):
             "block_start_time": parse_time_hhmm(str(festival.timing_block_start_time or "")) or "",
         }
 
-        if festival_tab == "my" and not festival.is_going:
-            continue
-
-        if only_going and not festival.is_going:
-            continue
-
-        name_match_score = festival_name_search_score(q, festival.name) if q else 0
-        if q and name_match_score <= 0:
-            continue
-
-        if city_filter_values and not city_matches_any(city_filter_values, festival.city):
-            continue
-
-        nominations = [item["title"] for item in nomination_items]
-        if nomination_filter_key and not any(
-            nomination_filter_key in normalize_nomination_title_key(value)
-            for value in nominations
-        ):
-            continue
-
-        coproplayer_search_targets = merge_unique(
-            raw_coproplayers,
-            [value.lstrip("@") for value in display_coproplayers],
-        )
-        if coproplayer_filter and not any(
-            coproplayer_filter.casefold() in value.casefold() for value in coproplayer_search_targets
-        ):
-            continue
-
-        if q:
-            festival_name_match_scores[festival.id] = name_match_score
-        filtered.append(festival)
-
-    if q:
-        filtered.sort(
-            key=lambda item: (
-                -festival_name_match_scores.get(item.id, 0),
-                item.event_date is None,
-                item.event_date or date.max,
-                (item.name or "").casefold(),
-            )
-        )
-    filtered_total = len(filtered)
-    festival_total_pages = max(1, (filtered_total + festival_page_size - 1) // festival_page_size) if filtered_total else 1
-    festival_current_page = max(1, min(int(requested_page), festival_total_pages))
-    festival_page_start = (festival_current_page - 1) * festival_page_size
-    paginated_festivals = filtered[festival_page_start:festival_page_start + festival_page_size]
-    festival_page_numbers = list(range(max(1, festival_current_page - 2), min(festival_total_pages, festival_current_page + 2) + 1))
-    festival_pagination_params: dict[str, Any] = {}
-    if festival_tab == "my":
-        festival_pagination_params["festival_tab"] = festival_tab
-    if q:
-        festival_pagination_params["q"] = q
-    if city_filter:
-        festival_pagination_params["city"] = city_filter
-    if nomination_filter:
-        festival_pagination_params["nomination"] = nomination_filter
-    if coproplayer_filter:
-        festival_pagination_params["coproplayer"] = coproplayer_filter
-    if only_going:
-        festival_pagination_params["only_going"] = "1"
-    festival_pagination_query = urlencode(festival_pagination_params)
-
     home_city_value = user.home_city or ""
     home_city_values = split_city_values(home_city_value)
     nearest_city_keys = nearest_big_city_keys_for_home_cities(home_city_values)
@@ -30882,14 +30935,14 @@ def festivals_list(request: Request, db: Session = Depends(get_db)):
     if home_city_values:
         home_city_festival_ids = {
             festival.id
-            for festival in filtered
+            for festival in paginated_festivals
             if city_matches_any(home_city_values, festival.city)
         }
     nearest_city_festival_ids: set[int] = set()
     if nearest_city_keys:
         nearest_city_festival_ids = {
             festival.id
-            for festival in filtered
+            for festival in paginated_festivals
             if festival.id not in home_city_festival_ids
             and any(city_matches(city_key, festival.city) for city_key in nearest_city_keys)
         }
@@ -30914,55 +30967,85 @@ def festivals_list(request: Request, db: Session = Depends(get_db)):
         if name
     }
 
+    show_summary = festival_tab == "all" and not any([q, city_filter, nomination_filter, coproplayer_filter, only_going])
+
     month_limit = date.today() + timedelta(days=30)
     summary_rows: list[dict[str, Any]] = []
-    for festival in active_festivals:
-        is_home_city = city_matches_any(home_city_values, festival.city)
-        is_nearest_city = (not is_home_city) and any(
-            city_matches(city_key, festival.city) for city_key in nearest_city_keys
-        )
-        festival_end_date = festival_range_end(festival)
-        if (
-            festival.event_date
-            and festival_end_date
-            and festival_end_date >= today
-            and festival.event_date <= month_limit
-        ):
-            summary_rows.append(
-                {
-                    "kind": "Событие",
-                    "festival": festival,
-                    "date": festival.event_date if festival.event_date >= today else today,
-                    "is_home_city": is_home_city,
-                    "is_nearest_city": is_nearest_city,
-                }
+    if show_summary:
+        summary_festivals = active_festivals
+        if fast_festival_query:
+            summary_festivals = db.execute(
+                select(Festival)
+                .where(
+                    Festival.user_id == user.id,
+                    active_condition,
+                    or_(
+                        and_(Festival.event_date.is_not(None), Festival.event_date <= month_limit),
+                        and_(Festival.submission_deadline.is_not(None), Festival.submission_deadline >= today, Festival.submission_deadline <= month_limit),
+                    ),
+                )
+                .order_by(Festival.event_date.is_(None), Festival.event_date, Festival.name)
+            ).scalars().all()
+        for festival in summary_festivals:
+            is_home_city = city_matches_any(home_city_values, festival.city)
+            is_nearest_city = (not is_home_city) and any(
+                city_matches(city_key, festival.city) for city_key in nearest_city_keys
             )
-        if festival.submission_deadline and today <= festival.submission_deadline <= month_limit:
-            summary_rows.append(
-                {
-                    "kind": "Дедлайн подачи",
-                    "festival": festival,
-                    "date": festival.submission_deadline,
-                    "is_home_city": is_home_city,
-                    "is_nearest_city": is_nearest_city,
-                }
-            )
+            festival_end_date = festival_range_end(festival)
+            if (
+                festival.event_date
+                and festival_end_date
+                and festival_end_date >= today
+                and festival.event_date <= month_limit
+            ):
+                summary_rows.append(
+                    {
+                        "kind": "Событие",
+                        "festival": festival,
+                        "date": festival.event_date if festival.event_date >= today else today,
+                        "is_home_city": is_home_city,
+                        "is_nearest_city": is_nearest_city,
+                    }
+                )
+            if festival.submission_deadline and today <= festival.submission_deadline <= month_limit:
+                summary_rows.append(
+                    {
+                        "kind": "Дедлайн подачи",
+                        "festival": festival,
+                        "date": festival.submission_deadline,
+                        "is_home_city": is_home_city,
+                        "is_nearest_city": is_nearest_city,
+                    }
+                )
 
-    summary_rows.sort(key=lambda item: item["date"])
+        summary_rows.sort(key=lambda item: item["date"])
 
-    city_options = merge_unique([festival.city for festival in active_festivals if festival.city])
+    if fast_festival_query:
+        city_options = merge_unique([
+            row[0]
+            for row in db.execute(
+                select(Festival.city)
+                .where(Festival.user_id == user.id, active_condition, Festival.city.is_not(None), Festival.city != "")
+                .distinct()
+                .order_by(Festival.city.asc())
+                .limit(500)
+            ).all()
+            if row[0]
+        ])
+        option_festivals = paginated_festivals
+    else:
+        city_options = merge_unique([festival.city for festival in active_festivals if festival.city])
+        option_festivals = active_festivals
     nomination_options = merge_unique_nomination_titles(
         DEFAULT_NOMINATIONS,
-        [item["title"] for festival in active_festivals for item in festival_nomination_items(festival)],
+        [item["title"] for festival in option_festivals for item in festival_nomination_items(festival)],
         get_options(db, user.id, "nomination"),
     )
     coproplayer_options = merge_unique(
-        [value for festival in active_festivals for value in as_list(festival.going_coproplayers_json)],
+        [value for festival in option_festivals for value in as_list(festival.going_coproplayers_json)],
         alias_options,
         get_options(db, user.id, "coproplayer"),
     )
-
-    show_summary = festival_tab == "all" and not any([q, city_filter, nomination_filter, coproplayer_filter, only_going])
 
     moderator_announcements: list[FestivalAnnouncement] = []
     if is_moderator_user(user):
@@ -30978,7 +31061,13 @@ def festivals_list(request: Request, db: Session = Depends(get_db)):
         .order_by(FestivalAnnouncement.created_at.desc(), FestivalAnnouncement.id.desc())
         .limit(25)
     ).scalars().all()
-    total_planned_festivals = len(active_festivals)
+    total_planned_festivals = int(
+        filtered_total
+        if fast_festival_query and not (festival_tab == "my" or only_going)
+        else len(active_festivals)
+    )
+    if fast_festival_query and (festival_tab == "my" or only_going):
+        total_planned_festivals = int(db.execute(select(func.count(Festival.id)).where(Festival.user_id == user.id, active_condition)).scalar() or 0)
     imported_festival_total = count_distinct_imported_festivals(db)
     approved_announcement_total = int(
         db.execute(
