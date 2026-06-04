@@ -6,6 +6,7 @@ COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app ./app
+COPY app.py ./app.py
 COPY PROJECT_NAME.txt ./PROJECT_NAME.txt
 
 ENV PYTHONUNBUFFERED=1
