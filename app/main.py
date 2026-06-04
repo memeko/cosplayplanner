@@ -1316,6 +1316,7 @@ def apply_schema_migrations() -> None:
             ("team_rows_json", "JSON NOT NULL DEFAULT '[]'"),
             ("halls_json", "JSON NOT NULL DEFAULT '[]'"),
             ("stage_rows_json", "JSON NOT NULL DEFAULT '[]'"),
+            ("nomination_prize_rows_json", "JSON NOT NULL DEFAULT '[]'"),
             ("accreditation_rows_json", "JSON NOT NULL DEFAULT '[]'"),
             ("contractor_payment_rows_json", "JSON NOT NULL DEFAULT '[]'"),
             ("ticket_rows_json", "JSON NOT NULL DEFAULT '[]'"),
@@ -13213,7 +13214,12 @@ def current_user(request: Request, db: Session) -> User | None:
     user = db.get(User, int(user_id))
     if user:
         setattr(user, "_is_smm_manager", to_bool(get_user_option_value(db, user.id, SMM_MANAGER_ROLE_GROUP)))
-        setattr(user, "_is_event_organizer", to_bool(get_user_option_value(db, user.id, EVENT_ORGANIZER_ROLE_GROUP)))
+        is_event_organizer = to_bool(get_user_option_value(db, user.id, EVENT_ORGANIZER_ROLE_GROUP))
+        if not is_event_organizer and user_is_mentioned_in_event_management(db, user):
+            set_user_option_value(db, user.id, EVENT_ORGANIZER_ROLE_GROUP, "1")
+            db.commit()
+            is_event_organizer = True
+        setattr(user, "_is_event_organizer", is_event_organizer)
         setattr(user, "_is_premium_user", int(user.id) in PREMIUM_USER_IDS_CACHE)
     return user
 
@@ -31402,6 +31408,38 @@ def user_can_access_event_management_event(user: User | None, event: EventManage
     return bool(event_team_member_aliases(event).intersection(alias for alias in user_aliases if alias))
 
 
+def user_is_mentioned_in_event_management(db: Session, user: User | None) -> bool:
+    if not user:
+        return False
+    events = db.execute(select(EventManagementEvent)).scalars().all()
+    return any(user_can_access_event_management_event(user, event) for event in events)
+
+
+def grant_event_organizer_role_for_event_team(db: Session, event: EventManagementEvent) -> None:
+    user_ids: set[int] = set()
+    for raw_user_id in (event.creator_user_id, event.leader_user_id):
+        parsed_user_id = parse_positive_int(str(raw_user_id or "").strip())
+        if parsed_user_id:
+            user_ids.add(int(parsed_user_id))
+
+    for row in as_list(event.team_rows_json):
+        if not isinstance(row, dict):
+            continue
+        parsed_user_id = parse_positive_int(str(row.get("user_id") or "").strip())
+        if parsed_user_id:
+            user_ids.add(int(parsed_user_id))
+            continue
+        participant_user = resolve_user_from_alias_or_id(db, str(row.get("participant") or "").strip())
+        if participant_user:
+            row["user_id"] = int(participant_user.id)
+            row["participant"] = f"@{preferred_user_alias(participant_user)}"
+            user_ids.add(int(participant_user.id))
+
+    for target_user_id in user_ids:
+        if not to_bool(get_user_option_value(db, target_user_id, EVENT_ORGANIZER_ROLE_GROUP)):
+            set_user_option_value(db, target_user_id, EVENT_ORGANIZER_ROLE_GROUP, "1")
+
+
 def ensure_creator_in_event_team(event: EventManagementEvent, creator: User) -> None:
     rows = [row for row in as_list(event.team_rows_json) if isinstance(row, dict)]
     if f"id:{int(creator.id)}" in event_team_member_aliases(event):
@@ -31433,6 +31471,7 @@ def event_management_form_values(event: EventManagementEvent | None = None) -> d
             "team_rows": [],
             "halls": [],
             "stage_rows": [],
+            "nomination_prize_rows": [],
             "accreditation_rows": [],
             "contractor_payment_rows": [],
             "ticket_rows": [],
@@ -31454,6 +31493,7 @@ def event_management_form_values(event: EventManagementEvent | None = None) -> d
         "team_rows": as_list(event.team_rows_json),
         "halls": as_list(event.halls_json),
         "stage_rows": as_list(event.stage_rows_json),
+        "nomination_prize_rows": as_list(event.nomination_prize_rows_json),
         "accreditation_rows": as_list(event.accreditation_rows_json),
         "contractor_payment_rows": as_list(event.contractor_payment_rows_json),
         "ticket_rows": as_list(event.ticket_rows_json),
@@ -31548,15 +31588,26 @@ def parse_event_management_payload(form: Any, db: Session, user: User) -> tuple[
             })
 
     stage_rows = parse_event_rows(form, "stage", ["number", "nick", "transcription", "host_note", "light", "sound"])
+    nomination_prize_rows = parse_event_rows(form, "nomination_prize", ["nomination", "places", "prizes", "curator"])
+    for row in nomination_prize_rows:
+        row["places"] = parse_positive_int(str(row.get("places") or "").strip()) or ""
 
     accreditation_rows = []
-    acc_rows = parse_event_rows(form, "acc", ["number", "nick", "status"])
+    acc_nicks = form_list(form, "acc_nick")
+    acc_statuses = form_list(form, "acc_status")
     announcement_flags = set(form.getlist("acc_announcement"))
     prize_flags = set(form.getlist("acc_prize"))
-    for index, row in enumerate(acc_rows):
-        row["announcement"] = str(index) in announcement_flags
-        row["prize"] = str(index) in prize_flags
-        if row.get("number") or row.get("nick") or row.get("status") != "other" or row["announcement"] or row["prize"]:
+    for index in range(max(len(acc_nicks), len(acc_statuses), 0)):
+        nick = acc_nicks[index] if index < len(acc_nicks) else ""
+        status = acc_statuses[index] if index < len(acc_statuses) else "other"
+        row = {
+            "number": len(accreditation_rows) + 1,
+            "nick": nick,
+            "status": status or "other",
+            "announcement": str(index) in announcement_flags,
+            "prize": str(index) in prize_flags,
+        }
+        if nick or row["status"] != "other" or row["announcement"] or row["prize"]:
             accreditation_rows.append(row)
 
     contractor_rows = []
@@ -31601,6 +31652,7 @@ def parse_event_management_payload(form: Any, db: Session, user: User) -> tuple[
         "team_rows_json": team_rows,
         "halls_json": halls,
         "stage_rows_json": stage_rows,
+        "nomination_prize_rows_json": nomination_prize_rows,
         "accreditation_rows_json": accreditation_rows,
         "contractor_payment_rows_json": contractor_rows,
         "ticket_rows_json": ticket_rows,
@@ -31672,6 +31724,7 @@ async def event_management_create(request: Request, db: Session = Depends(get_db
     if floor_plan_path:
         event.floor_plan_path = floor_plan_path
     ensure_creator_in_event_team(event, user)
+    grant_event_organizer_role_for_event_team(db, event)
     db.add(event)
     db.commit()
     add_flash(request, "Событие создано.", "success")
@@ -31716,6 +31769,7 @@ async def event_management_update(event_id: int, request: Request, db: Session =
         event.floor_plan_path = floor_plan_path
     creator = db.get(User, int(event.creator_user_id)) or user
     ensure_creator_in_event_team(event, creator)
+    grant_event_organizer_role_for_event_team(db, event)
     db.commit()
     add_flash(request, "Событие сохранено.", "success")
     return redirect(f"/event-management/{event_id}")

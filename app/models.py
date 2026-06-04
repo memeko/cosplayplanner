@@ -804,6 +804,7 @@ class EventManagementEvent(Base):
     team_rows_json = Column(JSON, nullable=False, default=list)
     halls_json = Column(JSON, nullable=False, default=list)
     stage_rows_json = Column(JSON, nullable=False, default=list)
+    nomination_prize_rows_json = Column(JSON, nullable=False, default=list)
     accreditation_rows_json = Column(JSON, nullable=False, default=list)
     contractor_payment_rows_json = Column(JSON, nullable=False, default=list)
     ticket_rows_json = Column(JSON, nullable=False, default=list)

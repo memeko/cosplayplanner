@@ -131,7 +131,12 @@
   <section class="box">
     <div class="row-between">
       <h2>Дефиле и программа основной сцены</h2>
-      <button type="button" class="btn btn-small" data-add-row="stage-body">Добавить строку</button>
+      <div class="actions-inline">
+        {% if editing %}
+          <a href="/event-management/{{ event_id }}/stage.pdf" class="btn btn-small">Экспорт PDF</a>
+        {% endif %}
+        <button type="button" class="btn btn-small" data-add-row="stage-body">Добавить строку</button>
+      </div>
     </div>
     <div class="event-table-wrap">
       <table class="table event-table">
@@ -154,6 +159,28 @@
 
   <section class="box">
     <div class="row-between">
+      <h2>Номинации и призы</h2>
+      <button type="button" class="btn btn-small" data-add-row="nomination-prize-body">Добавить строку</button>
+    </div>
+    <div class="event-table-wrap">
+      <table class="table event-table">
+        <thead><tr><th>Номинация</th><th>Количество мест</th><th>Призы</th><th>Куратор</th></tr></thead>
+        <tbody id="nomination-prize-body">
+          {% for row in form.nomination_prize_rows + [{}] %}
+          <tr>
+            <td><input type="text" name="nomination_prize_nomination" value="{{ row.nomination or '' }}" /></td>
+            <td><input type="number" min="1" name="nomination_prize_places" value="{{ row.places or '' }}" /></td>
+            <td><textarea name="nomination_prize_prizes" rows="2">{{ row.prizes or '' }}</textarea></td>
+            <td><input type="text" name="nomination_prize_curator" value="{{ row.curator or '' }}" list="event-user-aliases" /></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="box">
+    <div class="row-between">
       <h2>Список аккредитации</h2>
       <button type="button" class="btn btn-small" data-add-row="acc-body">Добавить строку</button>
     </div>
@@ -163,7 +190,7 @@
         <tbody id="acc-body">
           {% for row in form.accreditation_rows + [{}] %}
           <tr>
-            <td><input type="text" name="acc_number" value="{{ row.number or '' }}" /></td>
+            <td class="meta" data-acc-number>{{ loop.index }}</td>
             <td><input type="text" name="acc_nick" value="{{ row.nick or '' }}" /></td>
             <td>
               <select name="acc_status">
@@ -212,6 +239,10 @@
         </tbody>
       </table>
     </div>
+    {% set contractor_total = form.contractor_payment_rows|sum(attribute='amount') %}
+    <p class="meta top-offset">
+      Итого выплат подрядчикам: <strong><span id="contractor-total">{{ contractor_total }}</span> ₽</strong>
+    </p>
     <div class="row-between top-offset">
       <h3>Билеты</h3>
       <button type="button" class="btn btn-small" data-add-row="ticket-body">Добавить строку</button>
@@ -321,6 +352,25 @@
       });
     });
   }
+  function refreshAccreditationNumbers() {
+    var accBody = document.getElementById("acc-body");
+    if (!accBody) return;
+    Array.from(accBody.querySelectorAll("[data-acc-number]")).forEach(function (cell, index) {
+      cell.textContent = String(index + 1);
+    });
+  }
+  function updateContractorTotal() {
+    var totalNode = document.getElementById("contractor-total");
+    if (!totalNode) return;
+    var total = 0;
+    document.querySelectorAll('input[name="contractor_amount"]').forEach(function (input) {
+      var value = Number(String(input.value || "0").replace(",", "."));
+      if (Number.isFinite(value)) {
+        total += value;
+      }
+    });
+    totalNode.textContent = total.toLocaleString("ru-RU", { maximumFractionDigits: 2 });
+  }
   document.querySelectorAll("[data-add-row]").forEach(function (button) {
     button.addEventListener("click", function () {
       var container = document.getElementById(button.dataset.addRow);
@@ -331,8 +381,17 @@
       clone.querySelectorAll("input, textarea, select").forEach(clearControl);
       container.appendChild(clone);
       refreshCheckboxIndexes(container);
+      refreshAccreditationNumbers();
+      updateContractorTotal();
     });
   });
+  document.addEventListener("input", function (event) {
+    if (event.target && event.target.matches('input[name="contractor_amount"]')) {
+      updateContractorTotal();
+    }
+  });
+  refreshAccreditationNumbers();
+  updateContractorTotal();
   var hallsWrap = document.getElementById("halls-wrap");
   var addHallBtn = document.getElementById("add-hall-btn");
   if (hallsWrap && addHallBtn) {
