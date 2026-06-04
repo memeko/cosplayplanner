@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% block content %}
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/jkanban@1.3.1/dist/jkanban.min.css" />
 <section class="section-head">
   <h1>{{ "Событие: " ~ form.festival_name if editing else "Новое событие" }}</h1>
   <div class="actions-inline">
@@ -16,8 +17,29 @@
   .event-table textarea { min-width: 180px; }
   .event-hall-card { border: 1px solid #d9e2ec; border-radius: 8px; padding: 0.75rem; background: rgba(255,255,255,0.55); }
   .event-hall-card + .event-hall-card { margin-top: 0.75rem; }
-  .event-work-board { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 0.75rem; }
-  .event-work-column { border: 1px solid #d9e2ec; border-radius: 8px; padding: 0.75rem; background: rgba(255,255,255,0.55); }
+  .event-kanban-toolbar { align-items: end; }
+  .event-kanban-wrap { overflow-x: auto; padding-bottom: 0.35rem; }
+  #event-kanban { min-height: 260px; }
+  #event-kanban .kanban-container { gap: 0.75rem; }
+  #event-kanban .kanban-board {
+    border: 1px solid #d9e2ec;
+    border-radius: 8px;
+    background: rgba(255,255,255,0.68);
+    min-width: 260px;
+  }
+  #event-kanban .kanban-title-board { font-size: 0.98rem; font-weight: 700; }
+  #event-kanban .kanban-item {
+    border-radius: 8px;
+    box-shadow: none;
+    border: 1px solid #d9e2ec;
+    padding: 0;
+  }
+  .event-kanban-item { display: grid; gap: 0.35rem; padding: 0.65rem; }
+  .event-kanban-item-title { font-weight: 700; color: #0f172a; }
+  .event-kanban-item-meta { color: #64748b; font-size: 0.88rem; }
+  .event-kanban-item-actions { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
+  .event-kanban-delete { border: 0; background: transparent; color: #b91c1c; cursor: pointer; font: inherit; padding: 0; }
+  .event-kanban-done .event-kanban-item-title { color: #64748b; text-decoration: line-through; }
 </style>
 
 <form method="post" enctype="multipart/form-data" action="{{ '/event-management/' ~ event_id if editing else '/event-management/new' }}" class="grid one-col big-form" id="event-management-form">
@@ -294,22 +316,27 @@
   <section class="box">
     <div class="row-between">
       <h2>Рабочий блок</h2>
-      <button type="button" class="btn btn-small" data-add-row="task-body">Добавить задачу</button>
     </div>
-    <div class="event-table-wrap">
-      <table class="table event-table">
-        <thead><tr><th>Зона ответственности</th><th>Задача</th><th>Ответственный</th><th>Готово</th></tr></thead>
-        <tbody id="task-body">
-          {% for row in form.work_tasks + [{}] %}
-          <tr>
-            <td><input type="text" name="task_column" value="{{ row.column or '' }}" list="team-zone-options" /></td>
-            <td><input type="text" name="task_title" value="{{ row.title or '' }}" /></td>
-            <td><input type="text" name="task_assignee" value="{{ row.assignee or '' }}" list="event-user-aliases" /></td>
-            <td><input type="checkbox" name="task_done" value="{{ loop.index0 }}" {% if row.done %}checked{% endif %} /></td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
+    <input type="hidden" name="work_tasks_json" id="work_tasks_json" value="{{ form.work_tasks|tojson|forceescape }}" />
+    <div class="grid three-col event-kanban-toolbar">
+      <label>
+        Зона ответственности
+        <select id="kanban-new-column"></select>
+      </label>
+      <label>
+        Задача
+        <input type="text" id="kanban-new-title" />
+      </label>
+      <label>
+        Ответственный
+        <input type="text" id="kanban-new-assignee" list="event-user-aliases" />
+      </label>
+    </div>
+    <div class="actions-inline top-offset">
+      <button type="button" class="btn btn-small" id="kanban-add-task">Добавить задачу</button>
+    </div>
+    <div class="event-kanban-wrap top-offset">
+      <div id="event-kanban"></div>
     </div>
   </section>
 
@@ -336,8 +363,145 @@
 </form>
 {% endif %}
 
+<script src="https://cdn.jsdelivr.net/npm/jkanban@1.3.1/dist/jkanban.min.js"></script>
 <script>
 (function () {
+  var initialWorkTasks = {{ form.work_tasks|tojson }};
+  var kanban = null;
+  var kanbanTasks = [];
+  var kanbanIdSeq = 1;
+
+  function escapeHtml(value) {
+    return String(value || "").replace(/[&<>"']/g, function (char) {
+      return {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[char];
+    });
+  }
+  function normalizeColumn(value) {
+    return String(value || "").trim() || "Общее";
+  }
+  function normalizeTask(rawTask) {
+    var task = rawTask || {};
+    return {
+      id: String(task.id || ("task-" + (kanbanIdSeq++))),
+      column: normalizeColumn(task.column),
+      title: String(task.title || "").trim(),
+      assignee: String(task.assignee || "").trim(),
+      done: Boolean(task.done)
+    };
+  }
+  function uniqueValues(values) {
+    var seen = {};
+    var result = [];
+    values.forEach(function (value) {
+      var normalized = normalizeColumn(value);
+      var key = normalized.toLocaleLowerCase("ru-RU");
+      if (!seen[key]) {
+        seen[key] = true;
+        result.push(normalized);
+      }
+    });
+    return result;
+  }
+  function teamResponsibilityColumns() {
+    var columns = [];
+    document.querySelectorAll('textarea[name="team_responsibility"]').forEach(function (textarea) {
+      String(textarea.value || "").split(/\n+/).forEach(function (line) {
+        var cleaned = line.trim();
+        if (cleaned) columns.push(cleaned);
+      });
+    });
+    kanbanTasks.forEach(function (task) {
+      columns.push(task.column);
+    });
+    columns.push("Общее");
+    return uniqueValues(columns);
+  }
+  function taskTemplate(task) {
+    var doneClass = task.done ? " event-kanban-done" : "";
+    var assignee = task.assignee ? '<div class="event-kanban-item-meta">Ответственный: ' + escapeHtml(task.assignee) + '</div>' : "";
+    return '<div class="event-kanban-item' + doneClass + '" data-task-id="' + escapeHtml(task.id) + '">' +
+      '<div class="event-kanban-item-title">' + escapeHtml(task.title || "Без названия") + '</div>' +
+      assignee +
+      '<div class="event-kanban-item-actions">' +
+      '<label class="inline-check"><input type="checkbox" data-kanban-done ' + (task.done ? "checked" : "") + ' /> Готово</label>' +
+      '<button type="button" class="event-kanban-delete" data-kanban-delete>Удалить</button>' +
+      '</div>' +
+      '</div>';
+  }
+  function serializeKanbanTasks() {
+    if (kanban) {
+      document.querySelectorAll("#event-kanban .kanban-item").forEach(function (itemNode) {
+        var taskId = itemNode.dataset.eid || "";
+        var task = kanbanTasks.find(function (candidate) { return candidate.id === taskId; });
+        if (!task) return;
+        var boardId = kanban.getParentBoardID(itemNode);
+        task.column = normalizeColumn(boardId);
+        var doneInput = itemNode.querySelector("[data-kanban-done]");
+        task.done = Boolean(doneInput && doneInput.checked);
+      });
+    }
+    var hidden = document.getElementById("work_tasks_json");
+    if (hidden) {
+      hidden.value = JSON.stringify(kanbanTasks.filter(function (task) {
+        return task.title || task.assignee || task.column || task.done;
+      }));
+    }
+  }
+  function rebuildKanban() {
+    var wrap = document.getElementById("event-kanban");
+    var columnSelect = document.getElementById("kanban-new-column");
+    if (!wrap || typeof jKanban === "undefined") return;
+    serializeKanbanTasks();
+    var columns = teamResponsibilityColumns();
+    if (columnSelect) {
+      var selectedValue = columnSelect.value;
+      columnSelect.innerHTML = "";
+      columns.forEach(function (column) {
+        var option = document.createElement("option");
+        option.value = column;
+        option.textContent = column;
+        columnSelect.appendChild(option);
+      });
+      if (selectedValue && columns.indexOf(selectedValue) !== -1) {
+        columnSelect.value = selectedValue;
+      }
+    }
+    wrap.innerHTML = "";
+    kanban = new jKanban({
+      element: "#event-kanban",
+      gutter: "12px",
+      widthBoard: "260px",
+      boards: columns.map(function (column) {
+        return {
+          id: column,
+          title: column,
+          item: kanbanTasks
+            .filter(function (task) { return normalizeColumn(task.column) === column; })
+            .map(function (task) { return { id: task.id, title: taskTemplate(task) }; })
+        };
+      }),
+      dropEl: function () {
+        serializeKanbanTasks();
+      }
+    });
+  }
+  function addKanbanTask() {
+    var titleInput = document.getElementById("kanban-new-title");
+    var assigneeInput = document.getElementById("kanban-new-assignee");
+    var columnSelect = document.getElementById("kanban-new-column");
+    var title = titleInput ? titleInput.value.trim() : "";
+    if (!title) return;
+    kanbanTasks.push(normalizeTask({
+      column: columnSelect ? columnSelect.value : "Общее",
+      title: title,
+      assignee: assigneeInput ? assigneeInput.value.trim() : "",
+      done: false
+    }));
+    if (titleInput) titleInput.value = "";
+    if (assigneeInput) assigneeInput.value = "";
+    rebuildKanban();
+  }
+
   function clearControl(control) {
     if (control.type === "checkbox") {
       control.checked = false;
@@ -389,6 +553,9 @@
     if (event.target && event.target.matches('input[name="contractor_amount"]')) {
       updateContractorTotal();
     }
+    if (event.target && event.target.matches('textarea[name="team_responsibility"]')) {
+      rebuildKanban();
+    }
   });
   refreshAccreditationNumbers();
   updateContractorTotal();
@@ -415,6 +582,7 @@
     });
   }
   document.getElementById("event-management-form").addEventListener("submit", function () {
+    serializeKanbanTasks();
     document.querySelectorAll("[data-hall-card]").forEach(function (card) {
       var starts = [];
       var ends = [];
@@ -429,6 +597,27 @@
       card.querySelector('input[name="hall_schedule_title"]').value = JSON.stringify(titles);
     });
   });
+  document.addEventListener("click", function (event) {
+    var deleteButton = event.target.closest("[data-kanban-delete]");
+    if (deleteButton) {
+      var taskNode = deleteButton.closest("[data-task-id]");
+      var taskId = taskNode ? taskNode.dataset.taskId : "";
+      kanbanTasks = kanbanTasks.filter(function (task) { return task.id !== taskId; });
+      rebuildKanban();
+      return;
+    }
+    if (event.target && event.target.id === "kanban-add-task") {
+      addKanbanTask();
+    }
+  });
+  document.addEventListener("change", function (event) {
+    if (event.target && event.target.matches("[data-kanban-done]")) {
+      serializeKanbanTasks();
+      rebuildKanban();
+    }
+  });
+  kanbanTasks = (Array.isArray(initialWorkTasks) ? initialWorkTasks : []).map(normalizeTask);
+  rebuildKanban();
 })();
 </script>
 {% endblock %}

@@ -31634,10 +31634,29 @@ def parse_event_management_payload(form: Any, db: Session, user: User) -> tuple[
     announcements = [{"body": row.get("body", "")} for row in parse_event_rows(form, "announcement", ["body"])]
     mail_templates = parse_event_rows(form, "mail_template", ["title", "body"])
 
-    task_rows = parse_event_rows(form, "task", ["column", "title", "assignee"])
-    task_done = set(form.getlist("task_done"))
-    for index, row in enumerate(task_rows):
-        row["done"] = str(index) in task_done
+    task_rows: list[dict[str, Any]] = []
+    raw_work_tasks_json = str(form.get("work_tasks_json", "") or "").strip()
+    if raw_work_tasks_json:
+        try:
+            parsed_work_tasks = json.loads(raw_work_tasks_json)
+        except (TypeError, ValueError):
+            parsed_work_tasks = []
+        for row in as_list(parsed_work_tasks):
+            if not isinstance(row, dict):
+                continue
+            normalized_row = {
+                "column": normalize_text_line_breaks(str(row.get("column") or "").strip()),
+                "title": normalize_text_line_breaks(str(row.get("title") or "").strip()),
+                "assignee": normalize_text_line_breaks(str(row.get("assignee") or "").strip()),
+                "done": to_bool(row.get("done")),
+            }
+            if normalized_row["column"] or normalized_row["title"] or normalized_row["assignee"] or normalized_row["done"]:
+                task_rows.append(normalized_row)
+    else:
+        task_rows = parse_event_rows(form, "task", ["column", "title", "assignee"])
+        task_done = set(form.getlist("task_done"))
+        for index, row in enumerate(task_rows):
+            row["done"] = str(index) in task_done
 
     return {
         "festival_id": festival_id,
