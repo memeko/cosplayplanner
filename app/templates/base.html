@@ -86,6 +86,9 @@
               <a href="/community" class="header-menu-link {% if active_tab == 'community' %}active{% endif %}">Сообщество</a>
               <a href="/my-calendar" class="header-menu-link {% if active_tab == 'calendars' %}active{% endif %}">Календари</a>
               <a href="/festivals" class="header-menu-link {% if active_tab == 'festivals' %}active{% endif %}">Фестивали</a>
+              {% if is_event_organizer_user(user) %}
+                <a href="/event-management" class="header-menu-link {% if active_tab == 'event-management' %}active{% endif %}">Ивент-менеджмент</a>
+              {% endif %}
               <a href="/photocosplay" class="header-menu-link {% if active_tab == 'photocosplay' %}active{% endif %}">Фотокосплей</a>
             {% endif %}
             {% if user_is_special(user) %}

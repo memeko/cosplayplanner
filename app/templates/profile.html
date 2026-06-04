@@ -199,6 +199,12 @@
       {% endfor %}
     </div>
 
+    <h3>Роли и модули</h3>
+    <label class="inline-check">
+      <input type="checkbox" name="is_event_organizer" value="1" {% if is_event_organizer %}checked{% endif %} />
+      Организатор мероприятий
+    </label>
+
     <h3>О себе</h3>
     <label>
       Поддерживается markdown

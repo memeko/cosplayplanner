@@ -70,6 +70,12 @@ class User(Base):
         cascade="all, delete-orphan",
     )
     festivals = relationship("Festival", back_populates="user", cascade="all, delete-orphan")
+    event_management_events = relationship(
+        "EventManagementEvent",
+        back_populates="creator",
+        cascade="all, delete-orphan",
+        foreign_keys="EventManagementEvent.creator_user_id",
+    )
     project_search_posts = relationship("ProjectSearchPost", back_populates="user", cascade="all, delete-orphan")
     project_search_comments = relationship(
         "ProjectSearchComment",
@@ -776,6 +782,41 @@ class Festival(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
     user = relationship("User", back_populates="festivals")
+
+
+class EventManagementEvent(Base):
+    __tablename__ = "event_management_events"
+
+    id = Column(Integer, primary_key=True)
+    creator_user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    festival_id = Column(Integer, ForeignKey("festivals.id", ondelete="SET NULL"), nullable=True, index=True)
+
+    festival_name = Column(String(255), nullable=False, index=True)
+    event_start_date = Column(Date, nullable=True, index=True)
+    event_end_date = Column(Date, nullable=True, index=True)
+    arrival_at = Column(DateTime(timezone=True), nullable=True)
+    departure_at = Column(DateTime(timezone=True), nullable=True)
+    address = Column(Text, nullable=True)
+    leader_user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    leader_name = Column(String(255), nullable=True)
+    floor_plan_path = Column(String(255), nullable=True)
+
+    team_rows_json = Column(JSON, nullable=False, default=list)
+    halls_json = Column(JSON, nullable=False, default=list)
+    stage_rows_json = Column(JSON, nullable=False, default=list)
+    accreditation_rows_json = Column(JSON, nullable=False, default=list)
+    contractor_payment_rows_json = Column(JSON, nullable=False, default=list)
+    ticket_rows_json = Column(JSON, nullable=False, default=list)
+    announcements_json = Column(JSON, nullable=False, default=list)
+    mail_template_rows_json = Column(JSON, nullable=False, default=list)
+    work_tasks_json = Column(JSON, nullable=False, default=list)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    creator = relationship("User", back_populates="event_management_events", foreign_keys=[creator_user_id])
+    leader = relationship("User", foreign_keys=[leader_user_id])
+    festival = relationship("Festival")
 
 
 class ProjectSearchPost(Base):

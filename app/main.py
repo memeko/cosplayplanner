@@ -76,6 +76,7 @@ from .models import (
     ContentPlanPost,
     ContentChannelPost,
     CosplanCard,
+    EventManagementEvent,
     Festival,
     FestivalAnnouncement,
     FestivalNotification,
@@ -502,6 +503,7 @@ CONTENT_RECOMMENDATION_DISMISSED_GROUP = "content_recommendation_dismissed"
 CONTENT_PLAN_ACCESS_VERIFIED_GROUP = "content_plan_brfox_subscription_verified_at"
 CONTENT_AI_ASSISTANT_USAGE_GROUP = "content_ai_assistant_usage"
 SMM_MANAGER_ROLE_GROUP = "profile_is_smm_manager"
+EVENT_ORGANIZER_ROLE_GROUP = "profile_is_event_organizer"
 CONTENT_MANAGER_OWNER_GROUP = "content_manager_owner"
 CONTENT_MANAGER_USER_GROUP = "content_manager_user"
 PIGEON_CHAT_LABEL_GROUP = "pigeon_chat_label"
@@ -1298,6 +1300,31 @@ def apply_schema_migrations() -> None:
             ("vk_sent_at", "DATETIME"),
             ("created_at", "DATETIME DEFAULT CURRENT_TIMESTAMP"),
         ],
+        "event_management_events": [
+            ("id", "INTEGER PRIMARY KEY"),
+            ("creator_user_id", "INTEGER NOT NULL"),
+            ("festival_id", "INTEGER"),
+            ("festival_name", "VARCHAR(255) NOT NULL"),
+            ("event_start_date", "DATE"),
+            ("event_end_date", "DATE"),
+            ("arrival_at", "DATETIME"),
+            ("departure_at", "DATETIME"),
+            ("address", "TEXT"),
+            ("leader_user_id", "INTEGER"),
+            ("leader_name", "VARCHAR(255)"),
+            ("floor_plan_path", "VARCHAR(255)"),
+            ("team_rows_json", "JSON NOT NULL DEFAULT '[]'"),
+            ("halls_json", "JSON NOT NULL DEFAULT '[]'"),
+            ("stage_rows_json", "JSON NOT NULL DEFAULT '[]'"),
+            ("accreditation_rows_json", "JSON NOT NULL DEFAULT '[]'"),
+            ("contractor_payment_rows_json", "JSON NOT NULL DEFAULT '[]'"),
+            ("ticket_rows_json", "JSON NOT NULL DEFAULT '[]'"),
+            ("announcements_json", "JSON NOT NULL DEFAULT '[]'"),
+            ("mail_template_rows_json", "JSON NOT NULL DEFAULT '[]'"),
+            ("work_tasks_json", "JSON NOT NULL DEFAULT '[]'"),
+            ("created_at", "DATETIME DEFAULT CURRENT_TIMESTAMP"),
+            ("updated_at", "DATETIME DEFAULT CURRENT_TIMESTAMP"),
+        ],
         "project_search_posts": [
             ("status", "VARCHAR(32) NOT NULL DEFAULT 'active'"),
             ("city", "VARCHAR(255)"),
@@ -1478,6 +1505,8 @@ def apply_schema_migrations() -> None:
         # Ensure table exists (create via SQLAlchemy metadata when possible).
         if "festival_notifications" not in existing_tables:
             FestivalNotification.__table__.create(bind=conn, checkfirst=True)
+        if "event_management_events" not in existing_tables:
+            EventManagementEvent.__table__.create(bind=conn, checkfirst=True)
         if "card_comments" not in existing_tables:
             CardComment.__table__.create(bind=conn, checkfirst=True)
         if "project_search_posts" not in existing_tables:
@@ -2412,6 +2441,10 @@ def can_edit_festival_icon(user: User | None) -> bool:
 
 def is_smm_manager_user(user: User | None) -> bool:
     return bool(getattr(user, "_is_smm_manager", False)) if user else False
+
+
+def is_event_organizer_user(user: User | None) -> bool:
+    return bool(getattr(user, "_is_event_organizer", False)) if user else False
 
 
 def can_edit_master_card(user: User | None, master: CommunityMaster | None) -> bool:
@@ -13180,6 +13213,7 @@ def current_user(request: Request, db: Session) -> User | None:
     user = db.get(User, int(user_id))
     if user:
         setattr(user, "_is_smm_manager", to_bool(get_user_option_value(db, user.id, SMM_MANAGER_ROLE_GROUP)))
+        setattr(user, "_is_event_organizer", to_bool(get_user_option_value(db, user.id, EVENT_ORGANIZER_ROLE_GROUP)))
         setattr(user, "_is_premium_user", int(user.id) in PREMIUM_USER_IDS_CACHE)
     return user
 
@@ -14485,6 +14519,7 @@ def template_response(
         "user_profile_url_for_alias": user_profile_url_for_alias,
         "user_profile_url_for_user": user_profile_url_for_user,
         "is_smm_manager_user": is_smm_manager_user,
+        "is_event_organizer_user": is_event_organizer_user,
         "notification_conflict_subject": conflict_subject_from_message,
         "external_contact_buttons": external_contact_buttons,
         "build_external_url": build_external_url,
@@ -18466,6 +18501,7 @@ def profile_page(request: Request, db: Session = Depends(get_db)):
         premium_channel_ad_avatar_path=str(premium_channel_ad_settings.get("avatar_path") or ""),
         premium_channel_ad_text=str(premium_channel_ad_settings.get("text") or ""),
         premium_channel_ad_url=str(premium_channel_ad_settings.get("url") or ""),
+        is_event_organizer=to_bool(get_user_option_value(db, user.id, EVENT_ORGANIZER_ROLE_GROUP)),
     )
 
 
@@ -18487,6 +18523,7 @@ async def profile_update(request: Request, db: Session = Depends(get_db)):
     telegram_secret_code = str(form.get("telegram_secret_code", "")).strip()
     profile_about_markdown = normalize_text_line_breaks(str(form.get("profile_about_markdown", "")).strip())
     profile_gallery_input = str(form.get("profile_gallery_input", ""))
+    is_event_organizer = to_bool(form.get("is_event_organizer"))
     can_customize_premium_nick_color = bool(getattr(user, "_is_premium_user", False))
     premium_nick_color_raw = str(form.get("premium_nick_color", "")).strip()
     premium_nick_color = normalize_premium_nick_color(premium_nick_color_raw)
@@ -18591,6 +18628,7 @@ async def profile_update(request: Request, db: Session = Depends(get_db)):
         )
 
     set_user_option_value(db, user.id, PROFILE_ABOUT_MARKDOWN_GROUP, profile_about_markdown)
+    set_user_option_value(db, user.id, EVENT_ORGANIZER_ROLE_GROUP, "1" if is_event_organizer else "")
     replace_user_option_values(db, user.id, PROFILE_PHOTO_URL_GROUP, profile_photo_urls)
     if can_customize_premium_nick_color:
         set_user_option_value(db, user.id, PREMIUM_NICK_COLOR_GROUP, premium_nick_color)
@@ -31284,6 +31322,486 @@ async def festivals_notification_merge_duplicate(notification_id: int, request: 
         "success",
     )
     return redirect(next_url)
+
+
+EVENT_ACCREDITATION_STATUS_OPTIONS: tuple[tuple[str, str], ...] = (
+    ("press", "Пресса"),
+    ("photographer", "Фотограф"),
+    ("market", "Маркет"),
+    ("special_guest", "Спецгость"),
+    ("lecturer", "Лектор"),
+    ("partner", "Партнёр"),
+    ("stand", "Стенд"),
+    ("other", "Другое"),
+)
+
+
+def require_event_organizer(request: Request, db: Session) -> User | RedirectResponse:
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    if not is_event_organizer_user(user):
+        add_flash(request, "Раздел доступен после включения роли «Организатор мероприятий» в профиле.", "error")
+        return redirect("/profile")
+    return user
+
+
+def parse_datetime_local(raw_value: str | None) -> datetime | None:
+    raw = str(raw_value or "").strip()
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+
+
+def datetime_local_value(value: datetime | None) -> str:
+    return value.strftime("%Y-%m-%dT%H:%M") if value else ""
+
+
+def form_list(form: Any, name: str) -> list[str]:
+    return [str(value or "").strip() for value in form.getlist(name)]
+
+
+def resolve_user_from_alias_or_id(db: Session, raw_value: str | None) -> User | None:
+    raw = str(raw_value or "").strip()
+    user_id = parse_positive_int(raw)
+    if user_id:
+        return db.get(User, int(user_id))
+    alias = normalize_username(raw.lstrip("@"))
+    if not alias:
+        return None
+    alias_to_username, users_by_username, _ = build_user_alias_lookup(db)
+    canonical = resolve_alias_to_username(alias, alias_to_username)
+    return users_by_username.get(canonical.casefold())
+
+
+def event_team_member_aliases(event: EventManagementEvent) -> set[str]:
+    aliases: set[str] = set()
+    for row in as_list(event.team_rows_json):
+        if not isinstance(row, dict):
+            continue
+        value = normalize_username(str(row.get("participant") or "").strip().lstrip("@"))
+        if value:
+            aliases.add(value.casefold())
+        user_id = parse_positive_int(str(row.get("user_id", "")).strip())
+        if user_id:
+            aliases.add(f"id:{user_id}")
+    return aliases
+
+
+def user_can_access_event_management_event(user: User | None, event: EventManagementEvent | None) -> bool:
+    if not user or not event:
+        return False
+    user_aliases = {
+        normalize_username(user.username).casefold(),
+        normalize_username(user.cosplay_nick).casefold(),
+        f"id:{int(user.id)}",
+    }
+    return bool(event_team_member_aliases(event).intersection(alias for alias in user_aliases if alias))
+
+
+def ensure_creator_in_event_team(event: EventManagementEvent, creator: User) -> None:
+    rows = [row for row in as_list(event.team_rows_json) if isinstance(row, dict)]
+    if f"id:{int(creator.id)}" in event_team_member_aliases(event):
+        event.team_rows_json = rows
+        return
+    rows.insert(0, {
+        "participant": f"@{preferred_user_alias(creator)}",
+        "user_id": int(creator.id),
+        "role": "Создатель карточки",
+        "responsibility": "",
+        "contact": "",
+    })
+    event.team_rows_json = rows
+
+
+def event_management_form_values(event: EventManagementEvent | None = None) -> dict[str, Any]:
+    if not event:
+        return {
+            "festival_id": "",
+            "festival_name": "",
+            "event_start_date": "",
+            "event_end_date": "",
+            "arrival_at": "",
+            "departure_at": "",
+            "address": "",
+            "leader_user_id": "",
+            "leader_name": "",
+            "floor_plan_path": "",
+            "team_rows": [],
+            "halls": [],
+            "stage_rows": [],
+            "accreditation_rows": [],
+            "contractor_payment_rows": [],
+            "ticket_rows": [],
+            "announcements": [],
+            "mail_template_rows": [],
+            "work_tasks": [],
+        }
+    return {
+        "festival_id": str(event.festival_id or ""),
+        "festival_name": event.festival_name or "",
+        "event_start_date": event.event_start_date.isoformat() if event.event_start_date else "",
+        "event_end_date": event.event_end_date.isoformat() if event.event_end_date else "",
+        "arrival_at": datetime_local_value(event.arrival_at),
+        "departure_at": datetime_local_value(event.departure_at),
+        "address": event.address or "",
+        "leader_user_id": str(event.leader_user_id or ""),
+        "leader_name": event.leader_name or "",
+        "floor_plan_path": event.floor_plan_path or "",
+        "team_rows": as_list(event.team_rows_json),
+        "halls": as_list(event.halls_json),
+        "stage_rows": as_list(event.stage_rows_json),
+        "accreditation_rows": as_list(event.accreditation_rows_json),
+        "contractor_payment_rows": as_list(event.contractor_payment_rows_json),
+        "ticket_rows": as_list(event.ticket_rows_json),
+        "announcements": as_list(event.announcements_json),
+        "mail_template_rows": as_list(event.mail_template_rows_json),
+        "work_tasks": as_list(event.work_tasks_json),
+    }
+
+
+async def save_event_floor_plan_from_form(form: Any) -> str:
+    upload = form.get("floor_plan_file")
+    if not upload or not getattr(upload, "filename", "") or not hasattr(upload, "read"):
+        return ""
+    ext = Path(str(upload.filename or "")).suffix.lower()
+    if ext not in {".jpg", ".jpeg", ".png", ".webp", ".pdf"}:
+        raise ValueError("Схема площадки должна быть JPG, PNG, WEBP или PDF.")
+    raw = await upload.read()
+    if len(raw) > MAX_UPLOAD_INPUT_BYTES:
+        raise ValueError("Файл схемы слишком большой.")
+    file_name = f"event-floor-plan-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:14]}{ext}"
+    (media_storage_path() / file_name).write_bytes(raw)
+    return f"/media/{file_name}"
+
+
+def parse_event_rows(form: Any, prefix: str, fields: list[str]) -> list[dict[str, Any]]:
+    values_by_field = {field: form_list(form, f"{prefix}_{field}") for field in fields}
+    total = max([len(values) for values in values_by_field.values()] or [0])
+    rows = []
+    for index in range(total):
+        row = {
+            field: normalize_text_line_breaks(values_by_field[field][index] if index < len(values_by_field[field]) else "")
+            for field in fields
+        }
+        if any(str(value or "").strip() for value in row.values()):
+            rows.append(row)
+    return rows
+
+
+def parse_event_management_payload(form: Any, db: Session, user: User) -> tuple[dict[str, Any], str]:
+    festival_id = parse_positive_int(str(form.get("festival_id", "")).strip())
+    festival_name = str(form.get("festival_name", "")).strip()
+    if festival_id:
+        festival = db.get(Festival, int(festival_id))
+        if festival:
+            festival_name = festival.name or festival_name
+    if not festival_name:
+        return {}, "Название фестиваля обязательно."
+
+    leader_user = resolve_user_from_alias_or_id(db, str(form.get("leader_user_id", "")).strip()) or user
+
+    team_rows = []
+    team_raw_rows = parse_event_rows(form, "team", ["participant", "role", "responsibility", "contact"])
+    for row in team_raw_rows:
+        participant_user = resolve_user_from_alias_or_id(db, row.get("participant"))
+        team_rows.append({
+            "participant": f"@{preferred_user_alias(participant_user)}" if participant_user else row.get("participant", ""),
+            "user_id": int(participant_user.id) if participant_user else None,
+            "role": row.get("role", ""),
+            "responsibility": row.get("responsibility", ""),
+            "contact": row.get("contact", ""),
+        })
+
+    halls = []
+    hall_names = form_list(form, "hall_name")
+    hall_curators = form_list(form, "hall_curator")
+    hall_starts = form.getlist("hall_schedule_start")
+    hall_ends = form.getlist("hall_schedule_end")
+    hall_titles = form.getlist("hall_schedule_title")
+    for index, hall_name in enumerate(hall_names):
+        curator = hall_curators[index] if index < len(hall_curators) else ""
+        try:
+            starts = json.loads(hall_starts[index]) if index < len(hall_starts) and hall_starts[index] else []
+            ends = json.loads(hall_ends[index]) if index < len(hall_ends) and hall_ends[index] else []
+            titles = json.loads(hall_titles[index]) if index < len(hall_titles) and hall_titles[index] else []
+        except (TypeError, ValueError):
+            starts, ends, titles = [], [], []
+        schedule = []
+        for row_index in range(max(len(starts), len(ends), len(titles), 0)):
+            schedule_row = {
+                "start": str(starts[row_index] if row_index < len(starts) else "").strip(),
+                "end": str(ends[row_index] if row_index < len(ends) else "").strip(),
+                "title": str(titles[row_index] if row_index < len(titles) else "").strip(),
+            }
+            if any(schedule_row.values()):
+                schedule.append(schedule_row)
+        if hall_name or curator or schedule:
+            curator_user = resolve_user_from_alias_or_id(db, curator)
+            halls.append({
+                "name": hall_name,
+                "curator": f"@{preferred_user_alias(curator_user)}" if curator_user else curator,
+                "schedule": schedule,
+            })
+
+    stage_rows = parse_event_rows(form, "stage", ["number", "nick", "transcription", "host_note", "light", "sound"])
+
+    accreditation_rows = []
+    acc_rows = parse_event_rows(form, "acc", ["number", "nick", "status"])
+    announcement_flags = set(form.getlist("acc_announcement"))
+    prize_flags = set(form.getlist("acc_prize"))
+    for index, row in enumerate(acc_rows):
+        row["announcement"] = str(index) in announcement_flags
+        row["prize"] = str(index) in prize_flags
+        if row.get("number") or row.get("nick") or row.get("status") != "other" or row["announcement"] or row["prize"]:
+            accreditation_rows.append(row)
+
+    contractor_rows = []
+    contractor_rows_raw = parse_event_rows(form, "contractor", ["contractor", "goal", "amount", "deadline", "comment"])
+    contractor_done = set(form.getlist("contractor_done"))
+    for index, row in enumerate(contractor_rows_raw):
+        row["amount"] = parse_float(row.get("amount")) or 0
+        row["done"] = str(index) in contractor_done
+        contractor_rows.append(row)
+
+    ticket_rows = []
+    ticket_rows_raw = parse_event_rows(form, "ticket", ["category", "total", "sold", "price", "commission"])
+    for row in ticket_rows_raw:
+        sold = parse_float(row.get("sold")) or 0
+        price = parse_float(row.get("price")) or 0
+        commission = parse_float(row.get("commission")) or 0
+        row["total"] = parse_positive_int(str(row.get("total") or "")) or 0
+        row["sold"] = sold
+        row["price"] = price
+        row["commission"] = commission
+        row["sum"] = round(sold * price * (1 - max(0, min(100, commission)) / 100), 2)
+        ticket_rows.append(row)
+
+    announcements = [{"body": row.get("body", "")} for row in parse_event_rows(form, "announcement", ["body"])]
+    mail_templates = parse_event_rows(form, "mail_template", ["title", "body"])
+
+    task_rows = parse_event_rows(form, "task", ["column", "title", "assignee"])
+    task_done = set(form.getlist("task_done"))
+    for index, row in enumerate(task_rows):
+        row["done"] = str(index) in task_done
+
+    return {
+        "festival_id": festival_id,
+        "festival_name": festival_name,
+        "event_start_date": parse_date(str(form.get("event_start_date", "")).strip()),
+        "event_end_date": parse_date(str(form.get("event_end_date", "")).strip()),
+        "arrival_at": parse_datetime_local(str(form.get("arrival_at", "")).strip()),
+        "departure_at": parse_datetime_local(str(form.get("departure_at", "")).strip()),
+        "address": normalize_text_line_breaks(str(form.get("address", "")).strip()),
+        "leader_user_id": int(leader_user.id) if leader_user else None,
+        "leader_name": f"@{preferred_user_alias(leader_user)}" if leader_user else "",
+        "team_rows_json": team_rows,
+        "halls_json": halls,
+        "stage_rows_json": stage_rows,
+        "accreditation_rows_json": accreditation_rows,
+        "contractor_payment_rows_json": contractor_rows,
+        "ticket_rows_json": ticket_rows,
+        "announcements_json": announcements,
+        "mail_template_rows_json": mail_templates,
+        "work_tasks_json": task_rows,
+    }, ""
+
+
+def apply_event_management_payload(event: EventManagementEvent, payload: dict[str, Any]) -> None:
+    for key, value in payload.items():
+        setattr(event, key, value)
+
+
+def event_management_context(db: Session, event: EventManagementEvent | None = None) -> dict[str, Any]:
+    return {
+        "festival_options": db.execute(select(Festival).order_by(Festival.name.asc())).scalars().all(),
+        "user_options": db.execute(select(User).order_by(User.username.asc())).scalars().all(),
+        "accreditation_status_options": EVENT_ACCREDITATION_STATUS_OPTIONS,
+        "team_zone_options": merge_unique([
+            str(row.get("responsibility") or "").strip()
+            for row in as_list(event.team_rows_json if event else [])
+            if isinstance(row, dict)
+        ]),
+    }
+
+
+@app.get("/event-management", response_class=HTMLResponse)
+def event_management_list(request: Request, db: Session = Depends(get_db)):
+    user_or_redirect = require_event_organizer(request, db)
+    if isinstance(user_or_redirect, RedirectResponse):
+        return user_or_redirect
+    user = user_or_redirect
+    all_events = db.execute(select(EventManagementEvent).order_by(EventManagementEvent.updated_at.desc())).scalars().all()
+    events = [event for event in all_events if user_can_access_event_management_event(user, event)]
+    return template_response(request, "event_management_list.html", user=user, active_tab="event-management", events=events)
+
+
+@app.get("/event-management/new", response_class=HTMLResponse)
+def event_management_new(request: Request, db: Session = Depends(get_db)):
+    user_or_redirect = require_event_organizer(request, db)
+    if isinstance(user_or_redirect, RedirectResponse):
+        return user_or_redirect
+    user = user_or_redirect
+    form = event_management_form_values()
+    form["leader_user_id"] = str(user.id)
+    form["team_rows"] = [{"participant": f"@{preferred_user_alias(user)}", "user_id": user.id, "role": "Руководитель", "responsibility": "", "contact": ""}]
+    return template_response(request, "event_management_form.html", user=user, active_tab="event-management", editing=False, event_id=None, form=form, **event_management_context(db))
+
+
+@app.post("/event-management/new")
+async def event_management_create(request: Request, db: Session = Depends(get_db)):
+    user_or_redirect = require_event_organizer(request, db)
+    if isinstance(user_or_redirect, RedirectResponse):
+        return user_or_redirect
+    user = user_or_redirect
+    form = await request.form()
+    payload, error = parse_event_management_payload(form, db, user)
+    if error:
+        add_flash(request, error, "error")
+        return redirect("/event-management/new")
+    try:
+        floor_plan_path = await save_event_floor_plan_from_form(form)
+    except ValueError as exc:
+        add_flash(request, str(exc), "error")
+        return redirect("/event-management/new")
+    event = EventManagementEvent(creator_user_id=user.id, festival_name=payload["festival_name"])
+    apply_event_management_payload(event, payload)
+    if floor_plan_path:
+        event.floor_plan_path = floor_plan_path
+    ensure_creator_in_event_team(event, user)
+    db.add(event)
+    db.commit()
+    add_flash(request, "Событие создано.", "success")
+    return redirect("/event-management")
+
+
+@app.get("/event-management/{event_id}", response_class=HTMLResponse)
+def event_management_edit(event_id: int, request: Request, db: Session = Depends(get_db)):
+    user_or_redirect = require_event_organizer(request, db)
+    if isinstance(user_or_redirect, RedirectResponse):
+        return user_or_redirect
+    user = user_or_redirect
+    event = db.get(EventManagementEvent, event_id)
+    if not user_can_access_event_management_event(user, event):
+        add_flash(request, "Карточка события недоступна.", "error")
+        return redirect("/event-management")
+    return template_response(request, "event_management_form.html", user=user, active_tab="event-management", editing=True, event_id=event.id, form=event_management_form_values(event), **event_management_context(db, event))
+
+
+@app.post("/event-management/{event_id}")
+async def event_management_update(event_id: int, request: Request, db: Session = Depends(get_db)):
+    user_or_redirect = require_event_organizer(request, db)
+    if isinstance(user_or_redirect, RedirectResponse):
+        return user_or_redirect
+    user = user_or_redirect
+    event = db.get(EventManagementEvent, event_id)
+    if not user_can_access_event_management_event(user, event):
+        add_flash(request, "Карточка события недоступна.", "error")
+        return redirect("/event-management")
+    form = await request.form()
+    payload, error = parse_event_management_payload(form, db, user)
+    if error:
+        add_flash(request, error, "error")
+        return redirect(f"/event-management/{event_id}")
+    try:
+        floor_plan_path = await save_event_floor_plan_from_form(form)
+    except ValueError as exc:
+        add_flash(request, str(exc), "error")
+        return redirect(f"/event-management/{event_id}")
+    apply_event_management_payload(event, payload)
+    if floor_plan_path:
+        event.floor_plan_path = floor_plan_path
+    creator = db.get(User, int(event.creator_user_id)) or user
+    ensure_creator_in_event_team(event, creator)
+    db.commit()
+    add_flash(request, "Событие сохранено.", "success")
+    return redirect(f"/event-management/{event_id}")
+
+
+@app.post("/event-management/{event_id}/delete")
+def event_management_delete(event_id: int, request: Request, db: Session = Depends(get_db)):
+    user_or_redirect = require_event_organizer(request, db)
+    if isinstance(user_or_redirect, RedirectResponse):
+        return user_or_redirect
+    user = user_or_redirect
+    event = db.get(EventManagementEvent, event_id)
+    if not event or int(event.creator_user_id) != int(user.id):
+        add_flash(request, "Удалить карточку может только создатель.", "error")
+        return redirect("/event-management")
+    db.delete(event)
+    db.commit()
+    add_flash(request, "Событие удалено.", "info")
+    return redirect("/event-management")
+
+
+def build_event_stage_pdf(event: EventManagementEvent) -> bytes:
+    page_width = STORYBOARD_PDF_PAGE_WIDTH
+    page_height = STORYBOARD_PDF_PAGE_HEIGHT
+    margin = 48
+    fonts = load_storyboard_pdf_fonts()
+    measure = ImageDraw.Draw(Image.new("RGB", (64, 64), "white"))
+    line_height = storyboard_pdf_line_height(measure, fonts["small"])
+    columns = [("№", 58), ("Ник", 185), ("Транскрипция", 175), ("Ведущему", 230), ("Свет", 210), ("Звук", 220)]
+    pages: list[Image.Image] = []
+    page = Image.new("RGB", (page_width, page_height), "white")
+    draw = ImageDraw.Draw(page)
+    y = 0
+
+    def new_page() -> None:
+        nonlocal page, draw, y
+        page = Image.new("RGB", (page_width, page_height), "white")
+        draw = ImageDraw.Draw(page)
+        pages.append(page)
+        draw.text((margin, margin - 8), f"Основная сцена: {event.festival_name or 'событие'}", fill="#0f172a", font=fonts["title"])
+        draw.text((margin, margin + 38), f"Экспорт: {datetime.now(SITE_TIMEZONE).strftime('%d-%m-%Y %H:%M')}", fill="#334155", font=fonts["subtitle"])
+        y = margin + 88
+        x = margin
+        for title_text, width in columns:
+            draw.rectangle((x, y, x + width, y + 42), fill="#e8eff7", outline="#94a3b8")
+            draw.text((x + 7, y + 10), title_text, fill="#0f172a", font=fonts["small"])
+            x += width
+        y += 42
+
+    new_page()
+    for row in as_list(event.stage_rows_json):
+        if not isinstance(row, dict):
+            continue
+        values = [row.get("number"), row.get("nick"), row.get("transcription"), row.get("host_note"), row.get("light"), row.get("sound")]
+        wrapped = [storyboard_pdf_wrap_text(draw, str(value or ""), fonts["small"], width - 14) or ["—"] for value, (_title, width) in zip(values, columns)]
+        row_height = max(42, max(len(lines) for lines in wrapped) * line_height + 14)
+        if y + row_height > page_height - margin:
+            new_page()
+        x = margin
+        for lines, (_title, width) in zip(wrapped, columns):
+            draw.rectangle((x, y, x + width, y + row_height), outline="#94a3b8")
+            text_y = y + 7
+            for line in lines:
+                draw.text((x + 7, text_y), line, fill="#0f172a", font=fonts["small"])
+                text_y += line_height
+            x += width
+        y += row_height
+    output = io.BytesIO()
+    pages[0].save(output, format="PDF", save_all=True, append_images=pages[1:], resolution=150.0)
+    return output.getvalue()
+
+
+@app.get("/event-management/{event_id}/stage.pdf")
+def event_management_stage_pdf(event_id: int, request: Request, db: Session = Depends(get_db)):
+    user_or_redirect = require_event_organizer(request, db)
+    if isinstance(user_or_redirect, RedirectResponse):
+        return user_or_redirect
+    user = user_or_redirect
+    event = db.get(EventManagementEvent, event_id)
+    if not user_can_access_event_management_event(user, event):
+        add_flash(request, "Карточка события недоступна.", "error")
+        return redirect("/event-management")
+    pdf_bytes = build_event_stage_pdf(event)
+    safe_name = re.sub(r"[^A-Za-z0-9_-]+", "-", event.festival_name or f"event-{event.id}").strip("-")
+    filename = f"event-stage-{safe_name or event.id}-{date.today().isoformat()}.pdf"
+    return StreamingResponse(iter([pdf_bytes]), media_type="application/pdf", headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
 
 @app.get("/festivals/announcements/new", response_class=HTMLResponse)

@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="section-head">
+  <h1>Ивент-менеджмент</h1>
+  <div class="actions-inline">
+    <a href="/event-management/new" class="btn btn-accent">Создать новое событие</a>
+  </div>
+</section>
+
+{% if events %}
+<div class="cards-grid">
+  {% for event in events %}
+  <article class="card">
+    <div class="row-between">
+      <h3><a href="/event-management/{{ event.id }}" class="card-title-link">{{ event.festival_name }}</a></h3>
+      <span class="chip">Команда: {{ event.team_rows_json|length }}</span>
+    </div>
+    <p class="meta">
+      Дата:
+      {% if event.event_start_date %}
+        {{ event.event_start_date.strftime('%d-%m-%Y') }}
+        {% if event.event_end_date and event.event_end_date != event.event_start_date %}
+          — {{ event.event_end_date.strftime('%d-%m-%Y') }}
+        {% endif %}
+      {% else %}
+        —
+      {% endif %}
+    </p>
+    <p class="meta">Руководитель: {{ event.leader_name or "—" }}</p>
+    <p class="meta">Адрес: {{ event.address|preview_text(120) if event.address else "—" }}</p>
+    <div class="actions-inline">
+      <a href="/event-management/{{ event.id }}" class="btn">Открыть</a>
+      <a href="/event-management/{{ event.id }}/stage.pdf" class="btn">PDF основной сцены</a>
+    </div>
+  </article>
+  {% endfor %}
+</div>
+{% else %}
+<section class="box">
+  <p class="muted">Событий пока нет. Создайте первую карточку для фестивальной команды.</p>
+  <div class="actions-inline top-offset">
+    <a href="/event-management/new" class="btn btn-accent">Создать новое событие</a>
+  </div>
+</section>
+{% endif %}
+{% endblock %}

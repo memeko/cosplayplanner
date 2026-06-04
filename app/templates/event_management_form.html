@@ -1,0 +1,375 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="section-head">
+  <h1>{{ "Событие: " ~ form.festival_name if editing else "Новое событие" }}</h1>
+  <div class="actions-inline">
+    <a href="/event-management" class="btn">Назад</a>
+    {% if editing %}
+      <a href="/event-management/{{ event_id }}/stage.pdf" class="btn">PDF основной сцены</a>
+    {% endif %}
+  </div>
+</section>
+
+<style>
+  .event-table-wrap { overflow-x: auto; }
+  .event-table { min-width: 860px; }
+  .event-table textarea { min-width: 180px; }
+  .event-hall-card { border: 1px solid #d9e2ec; border-radius: 8px; padding: 0.75rem; background: rgba(255,255,255,0.55); }
+  .event-hall-card + .event-hall-card { margin-top: 0.75rem; }
+  .event-work-board { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 0.75rem; }
+  .event-work-column { border: 1px solid #d9e2ec; border-radius: 8px; padding: 0.75rem; background: rgba(255,255,255,0.55); }
+</style>
+
+<form method="post" enctype="multipart/form-data" action="{{ '/event-management/' ~ event_id if editing else '/event-management/new' }}" class="grid one-col big-form" id="event-management-form">
+  <section class="box">
+    <h2>Основное</h2>
+    <div class="grid two-col">
+      <label>
+        Название фестиваля из списка
+        <select name="festival_id">
+          <option value="">Написать вручную</option>
+          {% for festival in festival_options %}
+            <option value="{{ festival.id }}" {% if form.festival_id|string == festival.id|string %}selected{% endif %}>{{ festival.name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>
+        Название фестиваля вручную
+        <input type="text" name="festival_name" value="{{ form.festival_name }}" required />
+      </label>
+      <label>
+        Дата начала
+        <input type="date" name="event_start_date" value="{{ form.event_start_date }}" />
+      </label>
+      <label>
+        Дата окончания
+        <input type="date" name="event_end_date" value="{{ form.event_end_date }}" />
+      </label>
+      <label>
+        Дата и время заезда
+        <input type="datetime-local" name="arrival_at" value="{{ form.arrival_at }}" />
+      </label>
+      <label>
+        Дата и время выезда
+        <input type="datetime-local" name="departure_at" value="{{ form.departure_at }}" />
+      </label>
+      <label>
+        Руководитель
+        <select name="leader_user_id">
+          {% for item in user_options %}
+            <option value="{{ item.id }}" {% if form.leader_user_id|string == item.id|string %}selected{% endif %}>@{{ item.cosplay_nick or item.username }}</option>
+          {% endfor %}
+        </select>
+      </label>
+    </div>
+    <label>
+      Адрес
+      <textarea name="address" rows="4">{{ form.address }}</textarea>
+    </label>
+  </section>
+
+  <section class="box">
+    <div class="row-between">
+      <h2>Команда</h2>
+      <button type="button" class="btn btn-small" data-add-row="team-body">Добавить строку</button>
+    </div>
+    <div class="event-table-wrap">
+      <table class="table event-table">
+        <thead><tr><th>Участник</th><th>Роль</th><th>Зона ответственности</th><th>Контакт</th></tr></thead>
+        <tbody id="team-body">
+          {% for row in form.team_rows + [{}] %}
+          <tr>
+            <td><input type="text" name="team_participant" value="{{ row.participant or '' }}" list="event-user-aliases" /></td>
+            <td><input type="text" name="team_role" value="{{ row.role or '' }}" /></td>
+            <td><textarea name="team_responsibility" rows="2">{{ row.responsibility or '' }}</textarea></td>
+            <td><input type="text" name="team_contact" value="{{ row.contact or '' }}" /></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="box">
+    <div class="row-between">
+      <h2>Программа</h2>
+      <button type="button" class="btn btn-small" id="add-hall-btn">Добавить зал</button>
+    </div>
+    <div id="halls-wrap">
+      {% for hall in form.halls + [{}] %}
+      <div class="event-hall-card" data-hall-card>
+        <div class="grid two-col">
+          <label>Название зала<input type="text" name="hall_name" value="{{ hall.name or '' }}" /></label>
+          <label>Ответственный куратор<input type="text" name="hall_curator" value="{{ hall.curator or '' }}" list="event-user-aliases" /></label>
+        </div>
+        <input type="hidden" name="hall_schedule_start" value="{{ (hall.schedule or [])|map(attribute='start')|list|tojson|forceescape }}" />
+        <input type="hidden" name="hall_schedule_end" value="{{ (hall.schedule or [])|map(attribute='end')|list|tojson|forceescape }}" />
+        <input type="hidden" name="hall_schedule_title" value="{{ (hall.schedule or [])|map(attribute='title')|list|tojson|forceescape }}" />
+        <div class="row-between top-offset">
+          <h3>Расписание зала</h3>
+          <button type="button" class="btn btn-small" data-add-schedule-row>Добавить блок</button>
+        </div>
+        <div class="event-table-wrap">
+          <table class="table event-table" data-schedule-table>
+            <thead><tr><th>Время начала</th><th>Время окончания</th><th>Название блока</th></tr></thead>
+            <tbody>
+              {% for schedule_row in (hall.schedule or []) + [{}] %}
+              <tr>
+                <td><input type="time" data-schedule-start value="{{ schedule_row.start or '' }}" /></td>
+                <td><input type="time" data-schedule-end value="{{ schedule_row.end or '' }}" /></td>
+                <td><input type="text" data-schedule-title value="{{ schedule_row.title or '' }}" /></td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+  </section>
+
+  <section class="box">
+    <div class="row-between">
+      <h2>Дефиле и программа основной сцены</h2>
+      <button type="button" class="btn btn-small" data-add-row="stage-body">Добавить строку</button>
+    </div>
+    <div class="event-table-wrap">
+      <table class="table event-table">
+        <thead><tr><th>Номер</th><th>Ник</th><th>Транскрипция</th><th>Заметки ведущему</th><th>Светосценарий</th><th>Звук</th></tr></thead>
+        <tbody id="stage-body">
+          {% for row in form.stage_rows + [{}] %}
+          <tr>
+            <td><input type="text" name="stage_number" value="{{ row.number or '' }}" /></td>
+            <td><input type="text" name="stage_nick" value="{{ row.nick or '' }}" /></td>
+            <td><input type="text" name="stage_transcription" value="{{ row.transcription or '' }}" /></td>
+            <td><textarea name="stage_host_note" rows="2">{{ row.host_note or '' }}</textarea></td>
+            <td><textarea name="stage_light" rows="2">{{ row.light or '' }}</textarea></td>
+            <td><textarea name="stage_sound" rows="2">{{ row.sound or '' }}</textarea></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="box">
+    <div class="row-between">
+      <h2>Список аккредитации</h2>
+      <button type="button" class="btn btn-small" data-add-row="acc-body">Добавить строку</button>
+    </div>
+    <div class="event-table-wrap">
+      <table class="table event-table">
+        <thead><tr><th>Номер</th><th>Ник</th><th>Статус</th><th>Анонс</th><th>Выдаёт приз</th></tr></thead>
+        <tbody id="acc-body">
+          {% for row in form.accreditation_rows + [{}] %}
+          <tr>
+            <td><input type="text" name="acc_number" value="{{ row.number or '' }}" /></td>
+            <td><input type="text" name="acc_nick" value="{{ row.nick or '' }}" /></td>
+            <td>
+              <select name="acc_status">
+                {% for value, label in accreditation_status_options %}
+                  <option value="{{ value }}" {% if (row.status or 'other') == value %}selected{% endif %}>{{ label }}</option>
+                {% endfor %}
+              </select>
+            </td>
+            <td><input type="checkbox" name="acc_announcement" value="{{ loop.index0 }}" {% if row.announcement %}checked{% endif %} /></td>
+            <td><input type="checkbox" name="acc_prize" value="{{ loop.index0 }}" {% if row.prize %}checked{% endif %} /></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="box">
+    <h2>Площадка</h2>
+    {% if form.floor_plan_path %}
+      <p><a href="{{ form.floor_plan_path }}" target="_blank" rel="noreferrer">Открыть текущую схему площадки</a></p>
+    {% endif %}
+    <label>Схема площадки<input type="file" name="floor_plan_file" accept=".jpg,.jpeg,.png,.webp,.pdf,image/*,application/pdf" /></label>
+  </section>
+
+  <section class="box">
+    <h2>Финансы</h2>
+    <div class="row-between">
+      <h3>Выплаты подрядчикам</h3>
+      <button type="button" class="btn btn-small" data-add-row="contractor-body">Добавить строку</button>
+    </div>
+    <div class="event-table-wrap">
+      <table class="table event-table">
+        <thead><tr><th>Контрагент</th><th>Цель</th><th>Сумма</th><th>Дедлайн</th><th>Комментарий</th><th>Исполнение</th></tr></thead>
+        <tbody id="contractor-body">
+          {% for row in form.contractor_payment_rows + [{}] %}
+          <tr>
+            <td><input type="text" name="contractor_contractor" value="{{ row.contractor or '' }}" /></td>
+            <td><input type="text" name="contractor_goal" value="{{ row.goal or '' }}" /></td>
+            <td><input type="number" step="0.01" name="contractor_amount" value="{{ row.amount or '' }}" /></td>
+            <td><input type="date" name="contractor_deadline" value="{{ row.deadline or '' }}" /></td>
+            <td><textarea name="contractor_comment" rows="2">{{ row.comment or '' }}</textarea></td>
+            <td><input type="checkbox" name="contractor_done" value="{{ loop.index0 }}" {% if row.done %}checked{% endif %} /></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <div class="row-between top-offset">
+      <h3>Билеты</h3>
+      <button type="button" class="btn btn-small" data-add-row="ticket-body">Добавить строку</button>
+    </div>
+    <div class="event-table-wrap">
+      <table class="table event-table">
+        <thead><tr><th>Категория</th><th>Всего</th><th>Продано</th><th>Цена</th><th>Комиссия %</th><th>Итого</th></tr></thead>
+        <tbody id="ticket-body">
+          {% for row in form.ticket_rows + [{}] %}
+          <tr>
+            <td><input type="text" name="ticket_category" value="{{ row.category or '' }}" /></td>
+            <td><input type="number" name="ticket_total" value="{{ row.total or '' }}" /></td>
+            <td><input type="number" step="0.01" name="ticket_sold" value="{{ row.sold or '' }}" /></td>
+            <td><input type="number" step="0.01" name="ticket_price" value="{{ row.price or '' }}" /></td>
+            <td><input type="number" step="0.01" name="ticket_commission" value="{{ row.commission or '' }}" /></td>
+            <td class="meta">{{ row.sum or 0 }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="box">
+    <h2>Объявления</h2>
+    <div class="row-between">
+      <h3>Для команды</h3>
+      <button type="button" class="btn btn-small" data-add-row="announcement-body">Добавить объявление</button>
+    </div>
+    <div id="announcement-body">
+      {% for row in form.announcements + [{}] %}
+        <label data-repeat-row>Текст объявления<textarea name="announcement_body" rows="3">{{ row.body or '' }}</textarea></label>
+      {% endfor %}
+    </div>
+    <div class="row-between top-offset">
+      <h3>Шаблоны писем участникам</h3>
+      <button type="button" class="btn btn-small" data-add-row="mail-template-body">Добавить шаблон</button>
+    </div>
+    <div id="mail-template-body">
+      {% for row in form.mail_template_rows + [{}] %}
+      <div class="grid two-col" data-repeat-row>
+        <label>Название шаблона<input type="text" name="mail_template_title" value="{{ row.title or '' }}" /></label>
+        <label>Текст<textarea name="mail_template_body" rows="3">{{ row.body or '' }}</textarea></label>
+      </div>
+      {% endfor %}
+    </div>
+  </section>
+
+  <section class="box">
+    <div class="row-between">
+      <h2>Рабочий блок</h2>
+      <button type="button" class="btn btn-small" data-add-row="task-body">Добавить задачу</button>
+    </div>
+    <div class="event-table-wrap">
+      <table class="table event-table">
+        <thead><tr><th>Зона ответственности</th><th>Задача</th><th>Ответственный</th><th>Готово</th></tr></thead>
+        <tbody id="task-body">
+          {% for row in form.work_tasks + [{}] %}
+          <tr>
+            <td><input type="text" name="task_column" value="{{ row.column or '' }}" list="team-zone-options" /></td>
+            <td><input type="text" name="task_title" value="{{ row.title or '' }}" /></td>
+            <td><input type="text" name="task_assignee" value="{{ row.assignee or '' }}" list="event-user-aliases" /></td>
+            <td><input type="checkbox" name="task_done" value="{{ loop.index0 }}" {% if row.done %}checked{% endif %} /></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <datalist id="event-user-aliases">
+    {% for item in user_options %}
+      <option value="@{{ item.cosplay_nick or item.username }}"></option>
+    {% endfor %}
+  </datalist>
+  <datalist id="team-zone-options">
+    {% for value in team_zone_options %}
+      <option value="{{ value }}"></option>
+    {% endfor %}
+  </datalist>
+
+  <div class="actions-inline">
+    <button type="submit" class="btn btn-accent">Сохранить</button>
+    <a href="/event-management" class="btn">Отмена</a>
+  </div>
+</form>
+
+{% if editing %}
+<form method="post" action="/event-management/{{ event_id }}/delete" onsubmit="return confirm('Удалить событие?');" class="top-offset">
+  <button type="submit" class="btn btn-danger">Удалить событие</button>
+</form>
+{% endif %}
+
+<script>
+(function () {
+  function clearControl(control) {
+    if (control.type === "checkbox") {
+      control.checked = false;
+    } else {
+      control.value = "";
+    }
+  }
+  function refreshCheckboxIndexes(container) {
+    Array.from(container.querySelectorAll("tr")).forEach(function (row, index) {
+      row.querySelectorAll('input[type="checkbox"]').forEach(function (input) {
+        input.value = String(index);
+      });
+    });
+  }
+  document.querySelectorAll("[data-add-row]").forEach(function (button) {
+    button.addEventListener("click", function () {
+      var container = document.getElementById(button.dataset.addRow);
+      if (!container) return;
+      var source = container.querySelector("tr:last-child") || container.querySelector("[data-repeat-row]:last-child");
+      if (!source) return;
+      var clone = source.cloneNode(true);
+      clone.querySelectorAll("input, textarea, select").forEach(clearControl);
+      container.appendChild(clone);
+      refreshCheckboxIndexes(container);
+    });
+  });
+  var hallsWrap = document.getElementById("halls-wrap");
+  var addHallBtn = document.getElementById("add-hall-btn");
+  if (hallsWrap && addHallBtn) {
+    addHallBtn.addEventListener("click", function () {
+      var source = hallsWrap.querySelector("[data-hall-card]:last-child");
+      if (!source) return;
+      var clone = source.cloneNode(true);
+      clone.querySelectorAll("input, textarea, select").forEach(clearControl);
+      hallsWrap.appendChild(clone);
+    });
+    hallsWrap.addEventListener("click", function (event) {
+      var button = event.target.closest("[data-add-schedule-row]");
+      if (!button) return;
+      var card = button.closest("[data-hall-card]");
+      var body = card && card.querySelector("[data-schedule-table] tbody");
+      var source = body && body.querySelector("tr:last-child");
+      if (!source) return;
+      var clone = source.cloneNode(true);
+      clone.querySelectorAll("input").forEach(clearControl);
+      body.appendChild(clone);
+    });
+  }
+  document.getElementById("event-management-form").addEventListener("submit", function () {
+    document.querySelectorAll("[data-hall-card]").forEach(function (card) {
+      var starts = [];
+      var ends = [];
+      var titles = [];
+      card.querySelectorAll("[data-schedule-table] tbody tr").forEach(function (row) {
+        starts.push((row.querySelector("[data-schedule-start]") || {}).value || "");
+        ends.push((row.querySelector("[data-schedule-end]") || {}).value || "");
+        titles.push((row.querySelector("[data-schedule-title]") || {}).value || "");
+      });
+      card.querySelector('input[name="hall_schedule_start"]').value = JSON.stringify(starts);
+      card.querySelector('input[name="hall_schedule_end"]').value = JSON.stringify(ends);
+      card.querySelector('input[name="hall_schedule_title"]').value = JSON.stringify(titles);
+    });
+  });
+})();
+</script>
+{% endblock %}
