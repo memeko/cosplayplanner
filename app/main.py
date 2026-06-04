@@ -1313,6 +1313,19 @@ def apply_schema_migrations() -> None:
             ("leader_user_id", "INTEGER"),
             ("leader_name", "VARCHAR(255)"),
             ("floor_plan_path", "VARCHAR(255)"),
+            ("venue_total_area_m2", "FLOAT"),
+            ("venue_main_stage_width_m", "FLOAT"),
+            ("venue_main_stage_length_m", "FLOAT"),
+            ("venue_small_stage_width_m", "FLOAT"),
+            ("venue_small_stage_length_m", "FLOAT"),
+            ("venue_sound_equipment_json", "JSON NOT NULL DEFAULT '[]'"),
+            ("venue_light_equipment_json", "JSON NOT NULL DEFAULT '[]'"),
+            ("venue_wardrobe", "TEXT"),
+            ("venue_dressing_rooms", "TEXT"),
+            ("venue_medical_point", "TEXT"),
+            ("venue_security", "TEXT"),
+            ("venue_admin_name", "VARCHAR(255)"),
+            ("venue_admin_contact", "VARCHAR(255)"),
             ("team_rows_json", "JSON NOT NULL DEFAULT '[]'"),
             ("halls_json", "JSON NOT NULL DEFAULT '[]'"),
             ("stage_rows_json", "JSON NOT NULL DEFAULT '[]'"),
@@ -30741,6 +30754,8 @@ def festivals_list(request: Request, db: Session = Depends(get_db)):
     coproplayer_filter = request.query_params.get("coproplayer", "").strip()
     nomination_filter_key = normalize_nomination_title_key(nomination_filter)
     only_going = to_bool(request.query_params.get("only_going", ""))
+    requested_page = parse_positive_int(str(request.query_params.get("page", "")).strip()) or 1
+    festival_page_size = 12
 
     festivals = db.execute(
         select(Festival).where(Festival.user_id == user.id).order_by(Festival.event_date.is_(None), Festival.event_date, Festival.name)
@@ -30837,6 +30852,26 @@ def festivals_list(request: Request, db: Session = Depends(get_db)):
                 (item.name or "").casefold(),
             )
         )
+    filtered_total = len(filtered)
+    festival_total_pages = max(1, (filtered_total + festival_page_size - 1) // festival_page_size) if filtered_total else 1
+    festival_current_page = max(1, min(int(requested_page), festival_total_pages))
+    festival_page_start = (festival_current_page - 1) * festival_page_size
+    paginated_festivals = filtered[festival_page_start:festival_page_start + festival_page_size]
+    festival_page_numbers = list(range(max(1, festival_current_page - 2), min(festival_total_pages, festival_current_page + 2) + 1))
+    festival_pagination_params: dict[str, Any] = {}
+    if festival_tab == "my":
+        festival_pagination_params["festival_tab"] = festival_tab
+    if q:
+        festival_pagination_params["q"] = q
+    if city_filter:
+        festival_pagination_params["city"] = city_filter
+    if nomination_filter:
+        festival_pagination_params["nomination"] = nomination_filter
+    if coproplayer_filter:
+        festival_pagination_params["coproplayer"] = coproplayer_filter
+    if only_going:
+        festival_pagination_params["only_going"] = "1"
+    festival_pagination_query = urlencode(festival_pagination_params)
 
     home_city_value = user.home_city or ""
     home_city_values = split_city_values(home_city_value)
@@ -30969,7 +31004,15 @@ def festivals_list(request: Request, db: Session = Depends(get_db)):
         "festivals_list.html",
         user=user,
         active_tab="festivals",
-        festivals=filtered,
+        festivals=paginated_festivals,
+        filtered_festivals_total=filtered_total,
+        festival_page_size=festival_page_size,
+        festival_current_page=festival_current_page,
+        festival_total_pages=festival_total_pages,
+        festival_page_numbers=festival_page_numbers,
+        festival_has_prev_page=festival_current_page > 1,
+        festival_has_next_page=festival_current_page < festival_total_pages,
+        festival_pagination_query=festival_pagination_query,
         planned_festival_names=planned_festival_names,
         shared_planned_festival_names=shared_planned_festival_names,
         q=q,
@@ -31468,6 +31511,19 @@ def event_management_form_values(event: EventManagementEvent | None = None) -> d
             "leader_user_id": "",
             "leader_name": "",
             "floor_plan_path": "",
+            "venue_total_area_m2": "",
+            "venue_main_stage_width_m": "",
+            "venue_main_stage_length_m": "",
+            "venue_small_stage_width_m": "",
+            "venue_small_stage_length_m": "",
+            "venue_sound_equipment": [],
+            "venue_light_equipment": [],
+            "venue_wardrobe": "",
+            "venue_dressing_rooms": "",
+            "venue_medical_point": "",
+            "venue_security": "",
+            "venue_admin_name": "",
+            "venue_admin_contact": "",
             "team_rows": [],
             "halls": [],
             "stage_rows": [],
@@ -31490,6 +31546,19 @@ def event_management_form_values(event: EventManagementEvent | None = None) -> d
         "leader_user_id": str(event.leader_user_id or ""),
         "leader_name": event.leader_name or "",
         "floor_plan_path": event.floor_plan_path or "",
+        "venue_total_area_m2": "" if event.venue_total_area_m2 is None else str(event.venue_total_area_m2),
+        "venue_main_stage_width_m": "" if event.venue_main_stage_width_m is None else str(event.venue_main_stage_width_m),
+        "venue_main_stage_length_m": "" if event.venue_main_stage_length_m is None else str(event.venue_main_stage_length_m),
+        "venue_small_stage_width_m": "" if event.venue_small_stage_width_m is None else str(event.venue_small_stage_width_m),
+        "venue_small_stage_length_m": "" if event.venue_small_stage_length_m is None else str(event.venue_small_stage_length_m),
+        "venue_sound_equipment": as_list(event.venue_sound_equipment_json),
+        "venue_light_equipment": as_list(event.venue_light_equipment_json),
+        "venue_wardrobe": event.venue_wardrobe or "",
+        "venue_dressing_rooms": event.venue_dressing_rooms or "",
+        "venue_medical_point": event.venue_medical_point or "",
+        "venue_security": event.venue_security or "",
+        "venue_admin_name": event.venue_admin_name or "",
+        "venue_admin_contact": event.venue_admin_contact or "",
         "team_rows": as_list(event.team_rows_json),
         "halls": as_list(event.halls_json),
         "stage_rows": as_list(event.stage_rows_json),
@@ -31633,6 +31702,16 @@ def parse_event_management_payload(form: Any, db: Session, user: User) -> tuple[
 
     announcements = [{"body": row.get("body", "")} for row in parse_event_rows(form, "announcement", ["body"])]
     mail_templates = parse_event_rows(form, "mail_template", ["title", "body"])
+    venue_sound_equipment = [
+        normalize_text_line_breaks(value)
+        for value in form_list(form, "venue_sound_equipment")
+        if str(value or "").strip()
+    ]
+    venue_light_equipment = [
+        normalize_text_line_breaks(value)
+        for value in form_list(form, "venue_light_equipment")
+        if str(value or "").strip()
+    ]
 
     task_rows: list[dict[str, Any]] = []
     raw_work_tasks_json = str(form.get("work_tasks_json", "") or "").strip()
@@ -31668,6 +31747,19 @@ def parse_event_management_payload(form: Any, db: Session, user: User) -> tuple[
         "address": normalize_text_line_breaks(str(form.get("address", "")).strip()),
         "leader_user_id": int(leader_user.id) if leader_user else None,
         "leader_name": f"@{preferred_user_alias(leader_user)}" if leader_user else "",
+        "venue_total_area_m2": parse_float(str(form.get("venue_total_area_m2", "")).strip()),
+        "venue_main_stage_width_m": parse_float(str(form.get("venue_main_stage_width_m", "")).strip()),
+        "venue_main_stage_length_m": parse_float(str(form.get("venue_main_stage_length_m", "")).strip()),
+        "venue_small_stage_width_m": parse_float(str(form.get("venue_small_stage_width_m", "")).strip()),
+        "venue_small_stage_length_m": parse_float(str(form.get("venue_small_stage_length_m", "")).strip()),
+        "venue_sound_equipment_json": venue_sound_equipment,
+        "venue_light_equipment_json": venue_light_equipment,
+        "venue_wardrobe": normalize_text_line_breaks(str(form.get("venue_wardrobe", "")).strip()),
+        "venue_dressing_rooms": normalize_text_line_breaks(str(form.get("venue_dressing_rooms", "")).strip()),
+        "venue_medical_point": normalize_text_line_breaks(str(form.get("venue_medical_point", "")).strip()),
+        "venue_security": normalize_text_line_breaks(str(form.get("venue_security", "")).strip()),
+        "venue_admin_name": normalize_text_line_breaks(str(form.get("venue_admin_name", "")).strip()),
+        "venue_admin_contact": normalize_text_line_breaks(str(form.get("venue_admin_contact", "")).strip()),
         "team_rows_json": team_rows,
         "halls_json": halls,
         "stage_rows_json": stage_rows,

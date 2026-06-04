@@ -80,6 +80,57 @@
   .festival-ticket-files li + li {
     margin-top: 0.2rem;
   }
+  .festival-pagination {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+  }
+  .festival-pagination .actions-inline {
+    justify-content: flex-end;
+  }
+  .festival-pagination .btn {
+    min-width: 2.75rem;
+    white-space: nowrap;
+  }
+  @media (max-width: 640px) {
+    .festival-pagination {
+      align-items: stretch;
+    }
+    .festival-pagination .meta {
+      width: 100%;
+    }
+    .festival-pagination .actions-inline {
+      display: flex;
+      flex-wrap: nowrap;
+      justify-content: flex-start;
+      overflow-x: auto;
+      padding-bottom: 0.15rem;
+      -webkit-overflow-scrolling: touch;
+      scrollbar-width: thin;
+    }
+    .festival-pagination .actions-inline .btn {
+      width: auto;
+      flex: 0 0 auto;
+    }
+    .festival-list-card .row-between {
+      align-items: flex-start;
+      flex-direction: column;
+      gap: 0.65rem;
+    }
+    .festival-list-card .row-between > .actions-inline {
+      width: 100%;
+      justify-content: flex-start;
+    }
+    .festival-list-card .going-toggle-form {
+      width: 100%;
+    }
+    .festival-list-card .going-toggle-form .inline-check {
+      width: 100%;
+      justify-content: flex-start;
+    }
+  }
 </style>
 
 {% if user_home_city %}
@@ -278,6 +329,27 @@
 {% endif %}
 
 {% if festivals %}
+<section class="box compact-box festival-pagination">
+  <p class="meta">
+    Найдено карточек: <strong>{{ filtered_festivals_total }}</strong>.
+    Страница {{ festival_current_page }} из {{ festival_total_pages }}.
+  </p>
+  {% if festival_total_pages > 1 %}
+  <div class="actions-inline wrap">
+    {% if festival_has_prev_page %}
+      <a class="btn" href="/festivals?{% if festival_pagination_query %}{{ festival_pagination_query }}&{% endif %}page={{ festival_current_page - 1 }}">Назад</a>
+    {% endif %}
+    {% for page_number in festival_page_numbers %}
+      <a class="btn {% if page_number == festival_current_page %}btn-accent{% endif %}" href="/festivals?{% if festival_pagination_query %}{{ festival_pagination_query }}&{% endif %}page={{ page_number }}">
+        {{ page_number }}
+      </a>
+    {% endfor %}
+    {% if festival_has_next_page %}
+      <a class="btn" href="/festivals?{% if festival_pagination_query %}{{ festival_pagination_query }}&{% endif %}page={{ festival_current_page + 1 }}">Вперёд</a>
+    {% endif %}
+  </div>
+  {% endif %}
+</section>
 <div class="cards-grid">
   {% for festival in festivals %}
   {% set is_planned = (festival.name|lower) in planned_festival_names %}
@@ -445,6 +517,24 @@
   </article>
   {% endfor %}
 </div>
+{% if festival_total_pages > 1 %}
+<section class="box compact-box festival-pagination">
+  <p class="meta">Страница {{ festival_current_page }} из {{ festival_total_pages }}</p>
+  <div class="actions-inline wrap">
+    {% if festival_has_prev_page %}
+      <a class="btn" href="/festivals?{% if festival_pagination_query %}{{ festival_pagination_query }}&{% endif %}page={{ festival_current_page - 1 }}">Назад</a>
+    {% endif %}
+    {% for page_number in festival_page_numbers %}
+      <a class="btn {% if page_number == festival_current_page %}btn-accent{% endif %}" href="/festivals?{% if festival_pagination_query %}{{ festival_pagination_query }}&{% endif %}page={{ page_number }}">
+        {{ page_number }}
+      </a>
+    {% endfor %}
+    {% if festival_has_next_page %}
+      <a class="btn" href="/festivals?{% if festival_pagination_query %}{{ festival_pagination_query }}&{% endif %}page={{ festival_current_page + 1 }}">Вперёд</a>
+    {% endif %}
+  </div>
+</section>
+{% endif %}
 {% else %}
 <section class="box">
   {% if festival_tab == "my" %}
