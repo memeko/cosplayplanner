@@ -38,6 +38,10 @@
   .event-kanban-item-title { font-weight: 700; color: #0f172a; }
   .event-kanban-item-meta { color: #64748b; font-size: 0.88rem; }
   .event-kanban-item-actions { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
+  .event-kanban-done-control,
+  .event-kanban-done-control input {
+    cursor: pointer;
+  }
   .event-kanban-delete { border: 0; background: transparent; color: #b91c1c; cursor: pointer; font: inherit; padding: 0; }
   .event-kanban-done .event-kanban-item-title { color: #64748b; text-decoration: line-through; }
   .event-tabs {
@@ -621,6 +625,8 @@
   var kanban = null;
   var kanbanTasks = [];
   var kanbanIdSeq = 1;
+  var eventKanbanDefaultColumn = "Без распределения";
+  var eventKanbanBaseColumns = [eventKanbanDefaultColumn, "Аутсорс", "Общее"];
 
   function escapeHtml(value) {
     return String(value || "").replace(/[&<>"']/g, function (char) {
@@ -628,7 +634,7 @@
     });
   }
   function normalizeColumn(value) {
-    return String(value || "").trim() || "Общее";
+    return String(value || "").trim() || eventKanbanDefaultColumn;
   }
   function normalizeTask(rawTask) {
     var task = rawTask || {};
@@ -664,7 +670,9 @@
     kanbanTasks.forEach(function (task) {
       columns.push(task.column);
     });
-    columns.push("Общее");
+    eventKanbanBaseColumns.forEach(function (column) {
+      columns.push(column);
+    });
     return uniqueValues(columns);
   }
   function teamMemberOptions() {
@@ -703,7 +711,7 @@
       '<div class="event-kanban-item-title">' + escapeHtml(task.title || "Без названия") + '</div>' +
       assignee +
       '<div class="event-kanban-item-actions">' +
-      '<label class="inline-check"><input type="checkbox" data-kanban-done ' + (task.done ? "checked" : "") + ' /> Готово</label>' +
+      '<label class="inline-check event-kanban-done-control"><input type="checkbox" data-kanban-done ' + (task.done ? "checked" : "") + ' /> Готово</label>' +
       '<button type="button" class="event-kanban-delete" data-kanban-delete>Удалить</button>' +
       '</div>' +
       '</div>';
@@ -736,6 +744,21 @@
     task.done = Boolean(doneInput.checked);
     taskNode.classList.toggle("event-kanban-done", task.done);
     serializeKanbanTasks();
+  }
+  function applyKanbanTaskDone(checkbox, done) {
+    checkbox.checked = Boolean(done);
+    setKanbanTaskDone(checkbox);
+  }
+  function handleKanbanDoneClick(target) {
+    var checkbox = target.matches("[data-kanban-done]") ? target : target.querySelector("[data-kanban-done]");
+    if (!checkbox) return;
+    var taskNode = checkbox.closest("[data-task-id]");
+    var taskId = taskNode ? taskNode.dataset.taskId : "";
+    var task = kanbanTasks.find(function (candidate) { return candidate.id === taskId; });
+    var nextDone = !(task && task.done);
+    window.setTimeout(function () {
+      applyKanbanTaskDone(checkbox, nextDone);
+    }, 0);
   }
   function rebuildKanban() {
     var wrap = document.getElementById("event-kanban");
@@ -1037,6 +1060,13 @@
     });
   });
   document.addEventListener("click", function (event) {
+    var doneControl = event.target.closest(".event-kanban-done-control");
+    if (doneControl) {
+      event.preventDefault();
+      event.stopPropagation();
+      handleKanbanDoneClick(event.target.matches("[data-kanban-done]") ? event.target : doneControl);
+      return;
+    }
     var tabButton = event.target.closest("[data-event-tab]");
     if (tabButton) {
       activateEventTab(tabButton.dataset.eventTab);
@@ -1067,6 +1097,13 @@
     if (event.target && event.target.id === "kanban-add-task") {
       addKanbanTask();
     }
+  });
+  ["mousedown", "mouseup", "touchstart", "touchend", "pointerdown", "pointerup"].forEach(function (eventName) {
+    document.addEventListener(eventName, function (event) {
+      if (event.target.closest(".event-kanban-done-control")) {
+        event.stopPropagation();
+      }
+    }, true);
   });
   document.addEventListener("change", function (event) {
     if (event.target && event.target.matches("[data-kanban-done]")) {
