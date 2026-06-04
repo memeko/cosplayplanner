@@ -1333,8 +1333,11 @@ def apply_schema_migrations() -> None:
             ("accreditation_rows_json", "JSON NOT NULL DEFAULT '[]'"),
             ("contractor_payment_rows_json", "JSON NOT NULL DEFAULT '[]'"),
             ("ticket_rows_json", "JSON NOT NULL DEFAULT '[]'"),
+            ("ticket_promo_rows_json", "JSON NOT NULL DEFAULT '[]'"),
+            ("nomination_application_count", "INTEGER"),
             ("announcements_json", "JSON NOT NULL DEFAULT '[]'"),
             ("mail_template_rows_json", "JSON NOT NULL DEFAULT '[]'"),
+            ("promo_materials_json", "JSON NOT NULL DEFAULT '[]'"),
             ("work_tasks_json", "JSON NOT NULL DEFAULT '[]'"),
             ("created_at", "DATETIME DEFAULT CURRENT_TIMESTAMP"),
             ("updated_at", "DATETIME DEFAULT CURRENT_TIMESTAMP"),
@@ -31498,6 +31501,22 @@ def datetime_local_value(value: datetime | None) -> str:
     return value.strftime("%Y-%m-%dT%H:%M") if value else ""
 
 
+def event_management_return_url(event_id: int | None, form: Any, *, fallback: str = "/event-management") -> str:
+    raw_tab = str(form.get("active_event_tab", "") or "").strip()
+    allowed_tabs = {
+        "main", "team", "program", "stage", "prizes", "accreditation",
+        "venue", "finance", "announcements", "work",
+    }
+    tab = raw_tab if raw_tab in allowed_tabs else "main"
+    scroll_y = parse_positive_int(str(form.get("event_scroll_y", "") or "").strip()) or 0
+    if event_id:
+        base_url = f"/event-management/{int(event_id)}"
+    else:
+        base_url = fallback
+    query = urlencode({"event_tab": tab, "scroll_y": str(scroll_y)})
+    return f"{base_url}?{query}"
+
+
 def form_list(form: Any, name: str) -> list[str]:
     return [str(value or "").strip() for value in form.getlist(name)]
 
@@ -31620,8 +31639,12 @@ def event_management_form_values(event: EventManagementEvent | None = None) -> d
             "accreditation_rows": [],
             "contractor_payment_rows": [],
             "ticket_rows": [],
+            "ticket_promo_rows": [],
+            "nomination_application_count": "",
             "announcements": [],
             "mail_template_rows": [],
+            "promo_materials": [],
+            "promo_materials_input": "",
             "work_tasks": [],
         }
     return {
@@ -31655,8 +31678,12 @@ def event_management_form_values(event: EventManagementEvent | None = None) -> d
         "accreditation_rows": as_list(event.accreditation_rows_json),
         "contractor_payment_rows": as_list(event.contractor_payment_rows_json),
         "ticket_rows": as_list(event.ticket_rows_json),
+        "ticket_promo_rows": as_list(event.ticket_promo_rows_json),
+        "nomination_application_count": "" if event.nomination_application_count is None else str(event.nomination_application_count),
         "announcements": as_list(event.announcements_json),
         "mail_template_rows": as_list(event.mail_template_rows_json),
+        "promo_materials": as_list(event.promo_materials_json),
+        "promo_materials_input": "\n".join(item["path"] for item in normalize_event_promo_materials(event.promo_materials_json)),
         "work_tasks": as_list(event.work_tasks_json),
     }
 
@@ -31674,6 +31701,78 @@ async def save_event_floor_plan_from_form(form: Any) -> str:
     file_name = f"event-floor-plan-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:14]}{ext}"
     (media_storage_path() / file_name).write_bytes(raw)
     return f"/media/{file_name}"
+
+
+def event_promo_material_label(value: Any) -> str:
+    if isinstance(value, dict):
+        raw_label = str(value.get("label") or "").strip()
+        if raw_label:
+            return raw_label
+        raw_path = str(value.get("path") or value.get("url") or "").strip()
+    else:
+        raw_path = str(value or "").strip()
+    return Path(raw_path).name or raw_path
+
+
+def normalize_event_promo_materials(raw_items: Any) -> list[dict[str, str]]:
+    materials: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for raw_item in as_list(raw_items):
+        if isinstance(raw_item, dict):
+            path_value = str(raw_item.get("path") or raw_item.get("url") or "").strip()
+            label_value = str(raw_item.get("label") or "").strip()
+        else:
+            path_value = str(raw_item or "").strip()
+            label_value = ""
+        normalized_path = normalize_local_media_reference(path_value) or path_value
+        if not normalized_path or normalized_path in seen:
+            continue
+        seen.add(normalized_path)
+        materials.append({"path": normalized_path, "label": label_value or event_promo_material_label(normalized_path)})
+    return materials
+
+
+async def save_event_promo_materials_from_form(form: Any) -> list[dict[str, str]]:
+    saved: list[dict[str, str]] = []
+    for upload in form.getlist("promo_material_files"):
+        if not upload or not getattr(upload, "filename", "") or not hasattr(upload, "read"):
+            continue
+        original_name = str(upload.filename or "").strip()
+        ext = Path(original_name).suffix.lower()
+        content_type = str(getattr(upload, "content_type", "") or "").lower()
+        if ext not in {".jpg", ".jpeg", ".png", ".webp", ".gif", ".pdf"}:
+            if content_type == "application/pdf":
+                ext = ".pdf"
+            elif content_type.startswith("image/"):
+                ext = ".img"
+            else:
+                raise ValueError("Промо-материалы должны быть изображениями или PDF.")
+        raw = await upload.read(MAX_UPLOAD_INPUT_BYTES + 1)
+        if len(raw) > MAX_UPLOAD_INPUT_BYTES:
+            raise ValueError("Файл промо-материала слишком большой.")
+        if not raw:
+            continue
+        if ext != ".pdf":
+            try:
+                with Image.open(io.BytesIO(raw)) as image:
+                    source_format = (image.format or "").upper()
+                    if source_format not in {"JPEG", "JPG", "PNG", "WEBP", "GIF"}:
+                        raise ValueError("Промо-материалы должны быть изображениями или PDF.")
+                    ext = {
+                        "JPEG": ".jpg",
+                        "JPG": ".jpg",
+                        "PNG": ".png",
+                        "WEBP": ".webp",
+                        "GIF": ".gif",
+                    }.get(source_format, ".img")
+            except UnidentifiedImageError as exc:
+                raise ValueError("Не удалось прочитать промо-изображение.") from exc
+            except OSError as exc:
+                raise ValueError("Не удалось прочитать промо-изображение.") from exc
+        file_name = f"event-promo-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:14]}{ext}"
+        (media_storage_path() / file_name).write_bytes(raw)
+        saved.append({"path": f"/media/{file_name}", "label": original_name})
+    return saved
 
 
 def parse_event_rows(form: Any, prefix: str, fields: list[str]) -> list[dict[str, Any]]:
@@ -31701,6 +31800,14 @@ def parse_event_management_payload(form: Any, db: Session, user: User) -> tuple[
         return {}, "Название фестиваля обязательно."
 
     leader_user = resolve_user_from_alias_or_id(db, str(form.get("leader_user_id", "")).strip()) or user
+    event_start_date = parse_date(str(form.get("event_start_date", "")).strip())
+    event_end_date = parse_date(str(form.get("event_end_date", "")).strip())
+    arrival_at = parse_datetime_local(str(form.get("arrival_at", "")).strip())
+    departure_at = parse_datetime_local(str(form.get("departure_at", "")).strip())
+    if event_start_date and event_end_date and event_end_date <= event_start_date:
+        return {}, "Дата окончания должна быть строго позже даты начала."
+    if event_start_date and arrival_at and arrival_at.date() > event_start_date:
+        return {}, "Дата заезда должна быть раньше даты начала или совпадать с ней."
 
     team_rows = []
     team_raw_rows = parse_event_rows(form, "team", ["participant", "role", "responsibility", "contact"])
@@ -31713,6 +31820,11 @@ def parse_event_management_payload(form: Any, db: Session, user: User) -> tuple[
             "responsibility": row.get("responsibility", ""),
             "contact": row.get("contact", ""),
         })
+    team_assignee_labels = {
+        str(row.get("participant") or "").strip().casefold()
+        for row in team_rows
+        if str(row.get("participant") or "").strip()
+    }
 
     halls = []
     hall_names = form_list(form, "hall_name")
@@ -31746,14 +31858,18 @@ def parse_event_management_payload(form: Any, db: Session, user: User) -> tuple[
             })
 
     stage_rows = parse_event_rows(form, "stage", ["number", "nick", "transcription", "host_note", "light", "sound"])
+    for row in stage_rows:
+        row["number"] = parse_positive_int(str(row.get("number") or "").strip()) or ""
     nomination_prize_rows = parse_event_rows(form, "nomination_prize", ["nomination", "places", "prizes", "curator"])
     for row in nomination_prize_rows:
         row["places"] = parse_positive_int(str(row.get("places") or "").strip()) or ""
+    nomination_application_count = parse_positive_int(str(form.get("nomination_application_count", "")).strip())
 
     accreditation_rows = []
     acc_nicks = form_list(form, "acc_nick")
     acc_statuses = form_list(form, "acc_status")
     announcement_flags = set(form.getlist("acc_announcement"))
+    post_about_us_flags = set(form.getlist("acc_post_about_us"))
     prize_flags = set(form.getlist("acc_prize"))
     for index in range(max(len(acc_nicks), len(acc_statuses), 0)):
         nick = acc_nicks[index] if index < len(acc_nicks) else ""
@@ -31763,9 +31879,10 @@ def parse_event_management_payload(form: Any, db: Session, user: User) -> tuple[
             "nick": nick,
             "status": status or "other",
             "announcement": str(index) in announcement_flags,
+            "post_about_us": str(index) in post_about_us_flags,
             "prize": str(index) in prize_flags,
         }
-        if nick or row["status"] != "other" or row["announcement"] or row["prize"]:
+        if nick or row["status"] != "other" or row["announcement"] or row["post_about_us"] or row["prize"]:
             accreditation_rows.append(row)
 
     contractor_rows = []
@@ -31788,9 +31905,15 @@ def parse_event_management_payload(form: Any, db: Session, user: User) -> tuple[
         row["commission"] = commission
         row["sum"] = round(sold * price * (1 - max(0, min(100, commission)) / 100), 2)
         ticket_rows.append(row)
+    ticket_promo_rows = []
+    ticket_promo_rows_raw = parse_event_rows(form, "ticket_promo", ["code", "discount_percent", "comment"])
+    for row in ticket_promo_rows_raw:
+        row["discount_percent"] = max(0, min(100, parse_float(row.get("discount_percent")) or 0))
+        ticket_promo_rows.append(row)
 
     announcements = [{"body": row.get("body", "")} for row in parse_event_rows(form, "announcement", ["body"])]
     mail_templates = parse_event_rows(form, "mail_template", ["title", "body"])
+    promo_materials = normalize_event_promo_materials(parse_reference_values(str(form.get("promo_materials_input", ""))))
     venue_sound_equipment = [
         normalize_text_line_breaks(value)
         for value in form_list(form, "venue_sound_equipment")
@@ -31818,6 +31941,8 @@ def parse_event_management_payload(form: Any, db: Session, user: User) -> tuple[
                 "assignee": normalize_text_line_breaks(str(row.get("assignee") or "").strip()),
                 "done": to_bool(row.get("done")),
             }
+            if normalized_row["assignee"].casefold() not in team_assignee_labels:
+                normalized_row["assignee"] = ""
             if normalized_row["column"] or normalized_row["title"] or normalized_row["assignee"] or normalized_row["done"]:
                 task_rows.append(normalized_row)
     else:
@@ -31829,10 +31954,10 @@ def parse_event_management_payload(form: Any, db: Session, user: User) -> tuple[
     return {
         "festival_id": festival_id,
         "festival_name": festival_name,
-        "event_start_date": parse_date(str(form.get("event_start_date", "")).strip()),
-        "event_end_date": parse_date(str(form.get("event_end_date", "")).strip()),
-        "arrival_at": parse_datetime_local(str(form.get("arrival_at", "")).strip()),
-        "departure_at": parse_datetime_local(str(form.get("departure_at", "")).strip()),
+        "event_start_date": event_start_date,
+        "event_end_date": event_end_date,
+        "arrival_at": arrival_at,
+        "departure_at": departure_at,
         "address": normalize_text_line_breaks(str(form.get("address", "")).strip()),
         "leader_user_id": int(leader_user.id) if leader_user else None,
         "leader_name": f"@{preferred_user_alias(leader_user)}" if leader_user else "",
@@ -31856,8 +31981,11 @@ def parse_event_management_payload(form: Any, db: Session, user: User) -> tuple[
         "accreditation_rows_json": accreditation_rows,
         "contractor_payment_rows_json": contractor_rows,
         "ticket_rows_json": ticket_rows,
+        "ticket_promo_rows_json": ticket_promo_rows,
+        "nomination_application_count": nomination_application_count,
         "announcements_json": announcements,
         "mail_template_rows_json": mail_templates,
+        "promo_materials_json": promo_materials,
         "work_tasks_json": task_rows,
     }, ""
 
@@ -31931,22 +32059,25 @@ async def event_management_create(request: Request, db: Session = Depends(get_db
     payload, error = parse_event_management_payload(form, db, user)
     if error:
         add_flash(request, error, "error")
-        return redirect("/event-management/new")
+        return redirect(event_management_return_url(None, form, fallback="/event-management/new"))
     try:
         floor_plan_path = await save_event_floor_plan_from_form(form)
+        promo_materials = await save_event_promo_materials_from_form(form)
     except ValueError as exc:
         add_flash(request, str(exc), "error")
-        return redirect("/event-management/new")
+        return redirect(event_management_return_url(None, form, fallback="/event-management/new"))
     event = EventManagementEvent(creator_user_id=user.id, festival_name=payload["festival_name"])
     apply_event_management_payload(event, payload)
     if floor_plan_path:
         event.floor_plan_path = floor_plan_path
+    if promo_materials:
+        event.promo_materials_json = normalize_event_promo_materials(as_list(event.promo_materials_json) + promo_materials)
     ensure_creator_in_event_team(event, user)
     grant_event_organizer_role_for_event_team(db, event)
     db.add(event)
     db.commit()
     add_flash(request, "Событие создано.", "success")
-    return redirect("/event-management")
+    return redirect(event_management_return_url(event.id, form))
 
 
 @app.get("/event-management/{event_id}", response_class=HTMLResponse)
@@ -31976,21 +32107,24 @@ async def event_management_update(event_id: int, request: Request, db: Session =
     payload, error = parse_event_management_payload(form, db, user)
     if error:
         add_flash(request, error, "error")
-        return redirect(f"/event-management/{event_id}")
+        return redirect(event_management_return_url(event_id, form))
     try:
         floor_plan_path = await save_event_floor_plan_from_form(form)
+        promo_materials = await save_event_promo_materials_from_form(form)
     except ValueError as exc:
         add_flash(request, str(exc), "error")
-        return redirect(f"/event-management/{event_id}")
+        return redirect(event_management_return_url(event_id, form))
     apply_event_management_payload(event, payload)
     if floor_plan_path:
         event.floor_plan_path = floor_plan_path
+    if promo_materials:
+        event.promo_materials_json = normalize_event_promo_materials(as_list(event.promo_materials_json) + promo_materials)
     creator = db.get(User, int(event.creator_user_id)) or user
     ensure_creator_in_event_team(event, creator)
     grant_event_organizer_role_for_event_team(db, event)
     db.commit()
     add_flash(request, "Событие сохранено.", "success")
-    return redirect(f"/event-management/{event_id}")
+    return redirect(event_management_return_url(event_id, form))
 
 
 @app.post("/event-management/{event_id}/delete")

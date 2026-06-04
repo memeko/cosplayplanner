@@ -65,6 +65,28 @@
   .event-venue-dimensions {
     align-items: end;
   }
+  .event-section-search {
+    margin: 0.55rem 0 0.75rem;
+  }
+  .event-mail-template {
+    border: 1px solid #d9e2ec;
+    border-radius: 8px;
+    padding: 0.65rem;
+    background: rgba(255,255,255,0.52);
+  }
+  .event-mail-template + .event-mail-template,
+  .event-promo-materials-list li + li {
+    margin-top: 0.45rem;
+  }
+  .event-mail-template-copy-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.6rem;
+  }
+  .event-mail-template-body {
+    white-space: pre-wrap;
+  }
   @media (max-width: 640px) {
     .event-tabs {
       flex-wrap: nowrap;
@@ -126,6 +148,8 @@
 </style>
 
 <form method="post" enctype="multipart/form-data" action="{{ '/event-management/' ~ event_id if editing else '/event-management/new' }}" class="grid one-col big-form" id="event-management-form">
+  <input type="hidden" name="active_event_tab" id="active_event_tab" value="main" />
+  <input type="hidden" name="event_scroll_y" id="event_scroll_y" value="0" />
   <nav class="event-tabs" aria-label="Блоки карточки события">
     <button type="button" class="btn btn-small event-tab-button" data-event-tab="main" aria-selected="true">Основное</button>
     <button type="button" class="btn btn-small event-tab-button" data-event-tab="team" aria-selected="false">Команда</button>
@@ -192,6 +216,10 @@
       <h2>Команда</h2>
       <button type="button" class="btn btn-small" data-add-row="team-body">Добавить строку</button>
     </div>
+    <label class="event-section-search">
+      Поиск по команде
+      <input type="search" data-event-search-target="team-body" data-event-search-row="tr" placeholder="Участник, роль, зона или контакт" />
+    </label>
     <div class="event-table-wrap">
       <table class="table event-table">
         <thead><tr><th>Участник</th><th>Роль</th><th>Зона ответственности</th><th>Контакт</th></tr></thead>
@@ -214,6 +242,10 @@
       <h2>Программа</h2>
       <button type="button" class="btn btn-small" id="add-hall-btn">Добавить зал</button>
     </div>
+    <label class="event-section-search">
+      Поиск по программе
+      <input type="search" data-event-search-target="halls-wrap" data-event-search-row="[data-hall-card]" placeholder="Зал, куратор или блок программы" />
+    </label>
     <div id="halls-wrap">
       {% for hall in form.halls + [{}] %}
       <div class="event-hall-card" data-hall-card>
@@ -257,13 +289,17 @@
         <button type="button" class="btn btn-small" data-add-row="stage-body">Добавить строку</button>
       </div>
     </div>
+    <label class="event-section-search">
+      Поиск по сцене
+      <input type="search" data-event-search-target="stage-body" data-event-search-row="tr" placeholder="Номер, ник, свет, звук или заметки" />
+    </label>
     <div class="event-table-wrap">
       <table class="table event-table">
         <thead><tr><th>Номер</th><th>Ник</th><th>Транскрипция</th><th>Заметки ведущему</th><th>Светосценарий</th><th>Звук</th></tr></thead>
         <tbody id="stage-body">
           {% for row in form.stage_rows + [{}] %}
           <tr>
-            <td><input type="text" name="stage_number" value="{{ row.number or '' }}" /></td>
+            <td><input type="number" min="1" step="1" name="stage_number" value="{{ row.number or '' }}" /></td>
             <td><input type="text" name="stage_nick" value="{{ row.nick or '' }}" /></td>
             <td><input type="text" name="stage_transcription" value="{{ row.transcription or '' }}" /></td>
             <td><textarea name="stage_host_note" rows="2">{{ row.host_note or '' }}</textarea></td>
@@ -281,6 +317,7 @@
       <h2>Номинации и призы</h2>
       <button type="button" class="btn btn-small" data-add-row="nomination-prize-body">Добавить строку</button>
     </div>
+    <p class="meta">Всего призовых мест: <strong><span id="nomination-places-total">0</span></strong></p>
     <div class="event-table-wrap">
       <table class="table event-table">
         <thead><tr><th>Номинация</th><th>Количество мест</th><th>Призы</th><th>Куратор</th></tr></thead>
@@ -296,6 +333,13 @@
         </tbody>
       </table>
     </div>
+    <div class="grid two-col top-offset">
+      <label>
+        Объем заявок
+        <input type="number" min="1" step="1" name="nomination_application_count" id="nomination_application_count" value="{{ form.nomination_application_count }}" />
+      </label>
+      <p class="meta">Призовые места от общего объёма: <strong><span id="nomination-prize-percent">—</span></strong></p>
+    </div>
   </section>
 
   <section class="box" data-event-tab-panel="accreditation" hidden>
@@ -303,9 +347,13 @@
       <h2>Список аккредитации</h2>
       <button type="button" class="btn btn-small" data-add-row="acc-body">Добавить строку</button>
     </div>
+    <label class="event-section-search">
+      Поиск по аккредитации
+      <input type="search" data-event-search-target="acc-body" data-event-search-row="tr" placeholder="Ник, статус, отметки" />
+    </label>
     <div class="event-table-wrap">
       <table class="table event-table">
-        <thead><tr><th>Номер</th><th>Ник</th><th>Статус</th><th>Анонс</th><th>Выдаёт приз</th></tr></thead>
+        <thead><tr><th>Номер</th><th>Ник</th><th>Статус</th><th>Анонс</th><th>Пост о нас</th><th>Выдаёт приз</th></tr></thead>
         <tbody id="acc-body">
           {% for row in form.accreditation_rows + [{}] %}
           <tr>
@@ -319,6 +367,7 @@
               </select>
             </td>
             <td><input type="checkbox" name="acc_announcement" value="{{ loop.index0 }}" {% if row.announcement %}checked{% endif %} /></td>
+            <td><input type="checkbox" name="acc_post_about_us" value="{{ loop.index0 }}" {% if row.post_about_us %}checked{% endif %} /></td>
             <td><input type="checkbox" name="acc_prize" value="{{ loop.index0 }}" {% if row.prize %}checked{% endif %} /></td>
           </tr>
           {% endfor %}
@@ -437,6 +486,24 @@
         </tbody>
       </table>
     </div>
+    <div class="row-between top-offset">
+      <h3>Промокоды</h3>
+      <button type="button" class="btn btn-small" data-add-row="ticket-promo-body">Добавить промокод</button>
+    </div>
+    <div class="event-table-wrap">
+      <table class="table event-table">
+        <thead><tr><th>Код</th><th>Процент скидки</th><th>Комментарий</th></tr></thead>
+        <tbody id="ticket-promo-body">
+          {% for row in form.ticket_promo_rows + [{}] %}
+          <tr>
+            <td><input type="text" name="ticket_promo_code" value="{{ row.code or '' }}" /></td>
+            <td><input type="number" min="0" max="100" step="0.01" name="ticket_promo_discount_percent" value="{{ row.discount_percent or '' }}" /></td>
+            <td><textarea name="ticket_promo_comment" rows="2">{{ row.comment or '' }}</textarea></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
   </section>
 
   <section class="box" data-event-tab-panel="announcements" hidden>
@@ -454,13 +521,46 @@
       <h3>Шаблоны писем участникам</h3>
       <button type="button" class="btn btn-small" data-add-row="mail-template-body">Добавить шаблон</button>
     </div>
-    <div id="mail-template-body">
-      {% for row in form.mail_template_rows + [{}] %}
-      <div class="grid two-col" data-repeat-row>
-        <label>Название шаблона<input type="text" name="mail_template_title" value="{{ row.title or '' }}" /></label>
-        <label>Текст<textarea name="mail_template_body" rows="3">{{ row.body or '' }}</textarea></label>
-      </div>
+    {% if form.mail_template_rows %}
+    <div class="top-offset">
+      {% for row in form.mail_template_rows %}
+      {% if row.title or row.body %}
+      <details class="event-mail-template">
+        <summary>{{ row.title or "Шаблон письма" }}</summary>
+        <input type="hidden" name="mail_template_title" value="{{ row.title or '' }}" />
+        <input type="hidden" name="mail_template_body" value="{{ row.body or '' }}" />
+        <div class="event-mail-template-copy-row top-offset">
+          <strong>{{ row.title or "Шаблон письма" }}</strong>
+          <button type="button" class="btn btn-small" data-copy-template>Копировать</button>
+        </div>
+        <p class="notes-block event-mail-template-body" data-copy-template-body>{{ row.body or "" }}</p>
+      </details>
+      {% endif %}
       {% endfor %}
+    </div>
+    {% endif %}
+    <div id="mail-template-body">
+      <div class="grid two-col" data-repeat-row>
+        <label>Название шаблона<input type="text" name="mail_template_title" value="" /></label>
+        <label>Текст<textarea name="mail_template_body" rows="3"></textarea></label>
+      </div>
+    </div>
+    <div class="top-offset">
+      <h3>Промо-материалы</h3>
+      <input type="hidden" name="promo_materials_input" value="{{ form.promo_materials_input }}" />
+      {% if form.promo_materials %}
+      <ul class="event-promo-materials-list">
+        {% for item in form.promo_materials %}
+          {% set material_path = item.path or item.url or item %}
+          <li><a href="{{ material_path }}" target="_blank" rel="noreferrer">{{ item.label or material_path }}</a></li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+      <label>
+        Макеты для соцсетей
+        <input type="file" name="promo_material_files" accept="image/*,.pdf,application/pdf" multiple />
+      </label>
+      <p class="muted">Можно загрузить изображения или PDF.</p>
     </div>
   </section>
 
@@ -480,7 +580,7 @@
       </label>
       <label>
         Ответственный
-        <input type="text" id="kanban-new-assignee" list="event-user-aliases" />
+        <select id="kanban-new-assignee"></select>
       </label>
     </div>
     <div class="actions-inline top-offset">
@@ -567,6 +667,35 @@
     columns.push("Общее");
     return uniqueValues(columns);
   }
+  function teamMemberOptions() {
+    var members = [];
+    document.querySelectorAll('input[name="team_participant"]').forEach(function (input) {
+      var value = String(input.value || "").trim();
+      if (value) members.push(value);
+    });
+    return uniqueValues(members);
+  }
+  function refreshKanbanAssigneeOptions() {
+    var assigneeSelect = document.getElementById("kanban-new-assignee");
+    if (!assigneeSelect) return;
+    var selectedValue = assigneeSelect.value;
+    var members = teamMemberOptions();
+    assigneeSelect.innerHTML = "";
+    var emptyOption = document.createElement("option");
+    emptyOption.value = "";
+    emptyOption.textContent = members.length ? "Без ответственного" : "Добавьте участников команды";
+    assigneeSelect.appendChild(emptyOption);
+    members.forEach(function (member) {
+      var option = document.createElement("option");
+      option.value = member;
+      option.textContent = member;
+      assigneeSelect.appendChild(option);
+    });
+    assigneeSelect.disabled = members.length === 0;
+    if (selectedValue && members.indexOf(selectedValue) !== -1) {
+      assigneeSelect.value = selectedValue;
+    }
+  }
   function taskTemplate(task) {
     var doneClass = task.done ? " event-kanban-done" : "";
     var assignee = task.assignee ? '<div class="event-kanban-item-meta">Ответственный: ' + escapeHtml(task.assignee) + '</div>' : "";
@@ -582,7 +711,8 @@
   function serializeKanbanTasks() {
     if (kanban) {
       document.querySelectorAll("#event-kanban .kanban-item").forEach(function (itemNode) {
-        var taskId = itemNode.dataset.eid || "";
+        var innerTaskNode = itemNode.querySelector("[data-task-id]");
+        var taskId = (innerTaskNode && innerTaskNode.dataset.taskId) || itemNode.dataset.eid || "";
         var task = kanbanTasks.find(function (candidate) { return candidate.id === taskId; });
         if (!task) return;
         var boardId = kanban.getParentBoardID(itemNode);
@@ -597,6 +727,15 @@
         return task.title || task.assignee || task.column || task.done;
       }));
     }
+  }
+  function setKanbanTaskDone(doneInput) {
+    var taskNode = doneInput.closest("[data-task-id]");
+    var taskId = taskNode ? taskNode.dataset.taskId : "";
+    var task = kanbanTasks.find(function (candidate) { return candidate.id === taskId; });
+    if (!task) return;
+    task.done = Boolean(doneInput.checked);
+    taskNode.classList.toggle("event-kanban-done", task.done);
+    serializeKanbanTasks();
   }
   function rebuildKanban() {
     var wrap = document.getElementById("event-kanban");
@@ -617,6 +756,7 @@
         columnSelect.value = selectedValue;
       }
     }
+    refreshKanbanAssigneeOptions();
     wrap.innerHTML = "";
     kanban = new jKanban({
       element: "#event-kanban",
@@ -660,8 +800,33 @@
     document.querySelectorAll("[data-event-tab]").forEach(function (button) {
       button.setAttribute("aria-selected", button.dataset.eventTab === selectedTab ? "true" : "false");
     });
+    var activeTabInput = document.getElementById("active_event_tab");
+    if (activeTabInput) {
+      activeTabInput.value = selectedTab;
+    }
+    try {
+      window.sessionStorage.setItem("eventManagementActiveTab", selectedTab);
+    } catch (error) {
+      // Session storage can be blocked by browser settings.
+    }
     if (selectedTab === "work") {
       rebuildKanban();
+    }
+  }
+  function restoreEventLocation() {
+    var params = new URLSearchParams(window.location.search);
+    var storedTab = "";
+    try {
+      storedTab = window.sessionStorage.getItem("eventManagementActiveTab") || "";
+    } catch (error) {
+      storedTab = "";
+    }
+    activateEventTab(params.get("event_tab") || storedTab || "main");
+    var scrollY = Number(params.get("scroll_y") || "0");
+    if (Number.isFinite(scrollY) && scrollY > 0) {
+      window.requestAnimationFrame(function () {
+        window.scrollTo(0, scrollY);
+      });
     }
   }
 
@@ -698,6 +863,95 @@
     });
     totalNode.textContent = total.toLocaleString("ru-RU", { maximumFractionDigits: 2 });
   }
+  function updateNominationPrizeStats() {
+    var totalNode = document.getElementById("nomination-places-total");
+    var percentNode = document.getElementById("nomination-prize-percent");
+    var applicationInput = document.getElementById("nomination_application_count");
+    if (!totalNode || !percentNode) return;
+    var total = 0;
+    document.querySelectorAll('input[name="nomination_prize_places"]').forEach(function (input) {
+      var value = Number(String(input.value || "0").replace(",", "."));
+      if (Number.isFinite(value) && value > 0) {
+        total += value;
+      }
+    });
+    totalNode.textContent = String(total);
+    var applicationCount = Number(String((applicationInput && applicationInput.value) || "0").replace(",", "."));
+    if (Number.isFinite(applicationCount) && applicationCount > 0) {
+      percentNode.textContent = (total / applicationCount * 100).toLocaleString("ru-RU", {
+        maximumFractionDigits: 2
+      }) + "%";
+    } else {
+      percentNode.textContent = "—";
+    }
+  }
+  function collectSearchText(node) {
+    var parts = [node.textContent || ""];
+    node.querySelectorAll("input, textarea, select").forEach(function (control) {
+      if (control.type === "checkbox") {
+        parts.push(control.checked ? "да готово отмечено" : "");
+        return;
+      }
+      if (control.tagName === "SELECT") {
+        parts.push(control.value || "");
+        var selected = control.options[control.selectedIndex];
+        if (selected) parts.push(selected.textContent || "");
+        return;
+      }
+      parts.push(control.value || "");
+    });
+    return parts.join(" ").toLocaleLowerCase("ru-RU");
+  }
+  function applySectionSearch(input) {
+    var container = document.getElementById(input.dataset.eventSearchTarget || "");
+    if (!container) return;
+    var selector = input.dataset.eventSearchRow || "tr";
+    var query = String(input.value || "").trim().toLocaleLowerCase("ru-RU");
+    container.querySelectorAll(selector).forEach(function (row) {
+      row.hidden = Boolean(query) && collectSearchText(row).indexOf(query) === -1;
+    });
+  }
+  function validateEventDates() {
+    var startInput = document.querySelector('input[name="event_start_date"]');
+    var endInput = document.querySelector('input[name="event_end_date"]');
+    var arrivalInput = document.querySelector('input[name="arrival_at"]');
+    var startValue = startInput ? startInput.value : "";
+    var endValue = endInput ? endInput.value : "";
+    var arrivalValue = arrivalInput ? arrivalInput.value : "";
+    if (startValue && endValue && endValue <= startValue) {
+      if (endInput) endInput.focus();
+      alert("Дата окончания должна быть строго позже даты начала.");
+      return false;
+    }
+    if (startValue && arrivalValue && arrivalValue.slice(0, 10) > startValue) {
+      if (arrivalInput) arrivalInput.focus();
+      alert("Дата заезда должна быть раньше даты начала или совпадать с ней.");
+      return false;
+    }
+    return true;
+  }
+  function copyTextToClipboard(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      return navigator.clipboard.writeText(text);
+    }
+    return new Promise(function (resolve, reject) {
+      var textarea = document.createElement("textarea");
+      textarea.value = text;
+      textarea.setAttribute("readonly", "readonly");
+      textarea.style.position = "fixed";
+      textarea.style.left = "-9999px";
+      document.body.appendChild(textarea);
+      textarea.select();
+      try {
+        document.execCommand("copy");
+        resolve();
+      } catch (error) {
+        reject(error);
+      } finally {
+        document.body.removeChild(textarea);
+      }
+    });
+  }
   document.querySelectorAll("[data-add-row]").forEach(function (button) {
     button.addEventListener("click", function () {
       var container = document.getElementById(button.dataset.addRow);
@@ -710,6 +964,8 @@
       refreshCheckboxIndexes(container);
       refreshAccreditationNumbers();
       updateContractorTotal();
+      updateNominationPrizeStats();
+      refreshKanbanAssigneeOptions();
     });
   });
   document.addEventListener("input", function (event) {
@@ -719,9 +975,19 @@
     if (event.target && event.target.matches('textarea[name="team_responsibility"]')) {
       rebuildKanban();
     }
+    if (event.target && event.target.matches('input[name="team_participant"]')) {
+      refreshKanbanAssigneeOptions();
+    }
+    if (event.target && event.target.matches('input[name="nomination_prize_places"], #nomination_application_count')) {
+      updateNominationPrizeStats();
+    }
+    if (event.target && event.target.matches("[data-event-search-target]")) {
+      applySectionSearch(event.target);
+    }
   });
   refreshAccreditationNumbers();
   updateContractorTotal();
+  updateNominationPrizeStats();
   var hallsWrap = document.getElementById("halls-wrap");
   var addHallBtn = document.getElementById("add-hall-btn");
   if (hallsWrap && addHallBtn) {
@@ -731,6 +997,7 @@
       var clone = source.cloneNode(true);
       clone.querySelectorAll("input, textarea, select").forEach(clearControl);
       hallsWrap.appendChild(clone);
+      document.querySelectorAll("[data-event-search-target]").forEach(applySectionSearch);
     });
     hallsWrap.addEventListener("click", function (event) {
       var button = event.target.closest("[data-add-schedule-row]");
@@ -742,9 +1009,18 @@
       var clone = source.cloneNode(true);
       clone.querySelectorAll("input").forEach(clearControl);
       body.appendChild(clone);
+      document.querySelectorAll("[data-event-search-target]").forEach(applySectionSearch);
     });
   }
-  document.getElementById("event-management-form").addEventListener("submit", function () {
+  document.getElementById("event-management-form").addEventListener("submit", function (event) {
+    if (!validateEventDates()) {
+      event.preventDefault();
+      return;
+    }
+    var scrollInput = document.getElementById("event_scroll_y");
+    if (scrollInput) {
+      scrollInput.value = String(Math.max(0, Math.round(window.scrollY || 0)));
+    }
     serializeKanbanTasks();
     document.querySelectorAll("[data-hall-card]").forEach(function (card) {
       var starts = [];
@@ -774,18 +1050,33 @@
       rebuildKanban();
       return;
     }
+    var copyButton = event.target.closest("[data-copy-template]");
+    if (copyButton) {
+      var templateNode = copyButton.closest(".event-mail-template");
+      var bodyNode = templateNode && templateNode.querySelector("[data-copy-template-body]");
+      var originalText = copyButton.textContent;
+      copyTextToClipboard(bodyNode ? bodyNode.textContent : "").then(function () {
+        copyButton.textContent = "Скопировано";
+        window.setTimeout(function () { copyButton.textContent = originalText; }, 1400);
+      }).catch(function () {
+        copyButton.textContent = "Не скопировано";
+        window.setTimeout(function () { copyButton.textContent = originalText; }, 1400);
+      });
+      return;
+    }
     if (event.target && event.target.id === "kanban-add-task") {
       addKanbanTask();
     }
   });
   document.addEventListener("change", function (event) {
     if (event.target && event.target.matches("[data-kanban-done]")) {
-      serializeKanbanTasks();
-      rebuildKanban();
+      setKanbanTaskDone(event.target);
     }
   });
   kanbanTasks = (Array.isArray(initialWorkTasks) ? initialWorkTasks : []).map(normalizeTask);
+  refreshKanbanAssigneeOptions();
   rebuildKanban();
+  restoreEventLocation();
 })();
 </script>
 {% endblock %}

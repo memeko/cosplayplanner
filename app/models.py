@@ -821,8 +821,11 @@ class EventManagementEvent(Base):
     accreditation_rows_json = Column(JSON, nullable=False, default=list)
     contractor_payment_rows_json = Column(JSON, nullable=False, default=list)
     ticket_rows_json = Column(JSON, nullable=False, default=list)
+    ticket_promo_rows_json = Column(JSON, nullable=False, default=list)
+    nomination_application_count = Column(Integer, nullable=True)
     announcements_json = Column(JSON, nullable=False, default=list)
     mail_template_rows_json = Column(JSON, nullable=False, default=list)
+    promo_materials_json = Column(JSON, nullable=False, default=list)
     work_tasks_json = Column(JSON, nullable=False, default=list)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
