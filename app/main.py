@@ -31778,9 +31778,27 @@ def apply_event_management_payload(event: EventManagementEvent, payload: dict[st
         setattr(event, key, value)
 
 
-def event_management_context(db: Session, event: EventManagementEvent | None = None) -> dict[str, Any]:
+EVENT_MANAGEMENT_FESTIVAL_OPTION_LIMIT = 300
+
+
+def event_management_festival_options(db: Session, user: User, event: EventManagementEvent | None = None) -> list[Festival]:
+    options = db.execute(
+        select(Festival)
+        .where(Festival.user_id == user.id)
+        .order_by(Festival.event_date.is_(None), Festival.event_date, Festival.name)
+        .limit(EVENT_MANAGEMENT_FESTIVAL_OPTION_LIMIT)
+    ).scalars().all()
+    if event and event.festival_id and all(item.id != event.festival_id for item in options):
+        selected_festival = db.get(Festival, int(event.festival_id))
+        if selected_festival:
+            options.insert(0, selected_festival)
+    return options
+
+
+def event_management_context(db: Session, user: User, event: EventManagementEvent | None = None) -> dict[str, Any]:
     return {
-        "festival_options": db.execute(select(Festival).order_by(Festival.name.asc())).scalars().all(),
+        "festival_options": event_management_festival_options(db, user, event),
+        "festival_option_limit": EVENT_MANAGEMENT_FESTIVAL_OPTION_LIMIT,
         "user_options": db.execute(select(User).order_by(User.username.asc())).scalars().all(),
         "accreditation_status_options": EVENT_ACCREDITATION_STATUS_OPTIONS,
         "team_zone_options": merge_unique([
@@ -31811,7 +31829,7 @@ def event_management_new(request: Request, db: Session = Depends(get_db)):
     form = event_management_form_values()
     form["leader_user_id"] = str(user.id)
     form["team_rows"] = [{"participant": f"@{preferred_user_alias(user)}", "user_id": user.id, "role": "Руководитель", "responsibility": "", "contact": ""}]
-    return template_response(request, "event_management_form.html", user=user, active_tab="event-management", editing=False, event_id=None, form=form, **event_management_context(db))
+    return template_response(request, "event_management_form.html", user=user, active_tab="event-management", editing=False, event_id=None, form=form, **event_management_context(db, user))
 
 
 @app.post("/event-management/new")
@@ -31852,7 +31870,7 @@ def event_management_edit(event_id: int, request: Request, db: Session = Depends
     if not user_can_access_event_management_event(user, event):
         add_flash(request, "Карточка события недоступна.", "error")
         return redirect("/event-management")
-    return template_response(request, "event_management_form.html", user=user, active_tab="event-management", editing=True, event_id=event.id, form=event_management_form_values(event), **event_management_context(db, event))
+    return template_response(request, "event_management_form.html", user=user, active_tab="event-management", editing=True, event_id=event.id, form=event_management_form_values(event), **event_management_context(db, user, event))
 
 
 @app.post("/event-management/{event_id}")

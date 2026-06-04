@@ -150,6 +150,7 @@
             <option value="{{ festival.id }}" {% if form.festival_id|string == festival.id|string %}selected{% endif %}>{{ festival.name }}</option>
           {% endfor %}
         </select>
+        <span class="muted">Показаны ближайшие {{ festival_options|length }} карточек из ваших фестивалей{% if festival_options|length >= festival_option_limit %}; если нужной нет, впишите название вручную{% endif %}.</span>
       </label>
       <label>
         Название фестиваля вручную
