@@ -193,6 +193,83 @@
 </section>
 
 <section class="box">
+  <h2>Редакторы карточек</h2>
+  <p class="muted top-offset">Эти пользователи могут редактировать все карточки косплана, но не получают доступ к админ-дашборду и системным настройкам.</p>
+  {% if can_manage_card_global_editors %}
+  <form method="post" action="/admin/card-global-editors/add" class="grid two-col top-offset">
+    <label>
+      Добавить по нику
+      <input
+        type="text"
+        name="editor_alias"
+        list="card-global-editor-alias-options"
+        placeholder="@nickname"
+        required
+      />
+      <datalist id="card-global-editor-alias-options">
+        {% for alias in card_global_editor_alias_options %}
+          <option value="{{ alias }}"></option>
+        {% endfor %}
+      </datalist>
+    </label>
+    <div class="actions-inline">
+      <button type="submit" class="btn btn-accent">Назначить редактором</button>
+    </div>
+  </form>
+  {% else %}
+  <p class="muted top-offset">Назначение доступно только аккаунту @brfox_cosplay.</p>
+  {% endif %}
+
+  {% if card_global_editor_rows %}
+  <table class="table top-offset">
+    <thead>
+      <tr>
+        <th>Ник</th>
+        <th>Email</th>
+        <th>Город</th>
+        <th>Действие</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in card_global_editor_rows %}
+      <tr>
+        <td>
+          {% if row.profile_url %}
+            <a href="{{ row.profile_url }}">{{ row.alias }}</a>
+          {% else %}
+            {{ row.alias }}
+          {% endif %}
+        </td>
+        <td>{{ row.email or "—" }}</td>
+        <td>{{ row.city or "—" }}</td>
+        <td>
+          {% if can_manage_card_global_editors %}
+          <form method="post" action="/admin/card-global-editors/{{ row.id }}/remove" onsubmit="return confirm('Снять право редактирования всех карточек?');">
+            <button type="submit" class="btn btn-small">Снять роль</button>
+          </form>
+          {% else %}
+          —
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted top-offset">Глобальные редакторы карточек пока не назначены.</p>
+  {% endif %}
+</section>
+
+<section class="box">
+  <h2>CSV-выгрузки</h2>
+  <div class="actions-inline wrap-start top-offset">
+    <a href="/admin/export/users.csv" class="btn btn-accent">Пользователи CSV</a>
+    <a href="/admin/export/stats.csv" class="btn">Статистика CSV</a>
+  </div>
+  <p class="muted top-offset">Файлы подходят для таблиц и внешней аналитики.</p>
+</section>
+
+<section class="box">
   <h2>Ключевые показатели</h2>
   <div class="cards-grid admin-kpi-grid top-offset">
     {% for item in overview_cards %}

@@ -504,6 +504,7 @@ CONTENT_PLAN_ACCESS_VERIFIED_GROUP = "content_plan_brfox_subscription_verified_a
 CONTENT_AI_ASSISTANT_USAGE_GROUP = "content_ai_assistant_usage"
 SMM_MANAGER_ROLE_GROUP = "profile_is_smm_manager"
 EVENT_ORGANIZER_ROLE_GROUP = "profile_is_event_organizer"
+CARD_GLOBAL_EDITOR_ROLE_GROUP = "profile_is_card_global_editor"
 CONTENT_MANAGER_OWNER_GROUP = "content_manager_owner"
 CONTENT_MANAGER_USER_GROUP = "content_manager_user"
 PIGEON_CHAT_LABEL_GROUP = "pigeon_chat_label"
@@ -2464,6 +2465,10 @@ def is_event_organizer_user(user: User | None) -> bool:
     return bool(getattr(user, "_is_event_organizer", False)) if user else False
 
 
+def can_edit_all_cards(user: User | None) -> bool:
+    return bool(user and (is_primary_admin_user(user) or getattr(user, "_can_edit_all_cards", False)))
+
+
 def can_edit_master_card(user: User | None, master: CommunityMaster | None) -> bool:
     if not user or not master:
         return False
@@ -3201,6 +3206,8 @@ def user_is_card_coproplayer(user: User, card: CosplanCard) -> bool:
 def can_edit_card(user: User, card: CosplanCard) -> bool:
     if card.is_shared_copy:
         return False
+    if can_edit_all_cards(user):
+        return True
     if card.user_id == user.id:
         return True
     if user_matches_alias(user, card.project_leader):
@@ -13230,6 +13237,7 @@ def current_user(request: Request, db: Session) -> User | None:
     user = db.get(User, int(user_id))
     if user:
         setattr(user, "_is_smm_manager", to_bool(get_user_option_value(db, user.id, SMM_MANAGER_ROLE_GROUP)))
+        setattr(user, "_can_edit_all_cards", to_bool(get_user_option_value(db, user.id, CARD_GLOBAL_EDITOR_ROLE_GROUP)))
         is_event_organizer = to_bool(get_user_option_value(db, user.id, EVENT_ORGANIZER_ROLE_GROUP))
         if not is_event_organizer and user_is_mentioned_in_event_management(db, user):
             set_user_option_value(db, user.id, EVENT_ORGANIZER_ROLE_GROUP, "1")
@@ -13573,6 +13581,32 @@ def build_premium_user_rows(db: Session) -> list[dict[str, Any]]:
             }
         )
     return rows
+
+
+def build_card_global_editor_rows(db: Session) -> list[dict[str, Any]]:
+    rows = db.execute(
+        select(User)
+        .join(UserOption, UserOption.user_id == User.id)
+        .where(
+            UserOption.group == CARD_GLOBAL_EDITOR_ROLE_GROUP,
+            UserOption.value == "1",
+        )
+        .order_by(User.username.asc())
+    ).scalars().all()
+    result: list[dict[str, Any]] = []
+    for target_user in rows:
+        result.append(
+            {
+                "id": int(target_user.id),
+                "alias": f"@{preferred_user_alias(target_user)}",
+                "username": normalize_username(target_user.username),
+                "cosplay_nick": normalize_username(target_user.cosplay_nick),
+                "email": str(target_user.email or "").strip(),
+                "city": str(target_user.home_city or "").strip(),
+                "profile_url": user_profile_url_for_user(target_user),
+            }
+        )
+    return result
 
 
 def build_home_premium_channel_ad(db: Session) -> dict[str, Any] | None:
@@ -18324,6 +18358,9 @@ def admin_dashboard(
         premium_user_rows=premium_user_rows,
         premium_alias_options=build_premium_alias_options(db),
         premium_duration_options=PREMIUM_DURATION_OPTIONS,
+        can_manage_card_global_editors=is_primary_admin_user(user),
+        card_global_editor_rows=build_card_global_editor_rows(db),
+        card_global_editor_alias_options=build_premium_alias_options(db),
         notifications_pagination_query=urlencode(notifications_pagination_params, doseq=True),
         admin_notifications_next_url=notifications_next_url,
         **dashboard,
@@ -18454,6 +18491,244 @@ async def admin_add_premium_user(request: Request, db: Session = Depends(get_db)
         "success",
     )
     return redirect("/admin/dashboard")
+
+
+@app.post("/admin/card-global-editors/add")
+async def admin_add_card_global_editor(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    if not is_primary_admin_user(user):
+        add_flash(request, "Назначать редакторов карточек может только аккаунт @brfox_cosplay.", "error")
+        return redirect("/profile")
+
+    form = await request.form()
+    raw_alias = normalize_username(str(form.get("editor_alias", "")).strip())
+    if not raw_alias:
+        add_flash(request, "Введите ник пользователя.", "error")
+        return redirect("/admin/dashboard")
+
+    target_user = resolve_user_by_alias(db, raw_alias)
+    if not target_user:
+        add_flash(request, f"Пользователь @{raw_alias} не найден.", "error")
+        return redirect("/admin/dashboard")
+
+    set_user_option_value(db, int(target_user.id), CARD_GLOBAL_EDITOR_ROLE_GROUP, "1")
+    db.commit()
+    add_flash(
+        request,
+        f"@{preferred_user_alias(target_user)} теперь может редактировать все карточки косплана.",
+        "success",
+    )
+    return redirect("/admin/dashboard")
+
+
+@app.post("/admin/card-global-editors/{target_user_id}/remove")
+def admin_remove_card_global_editor(target_user_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    if not is_primary_admin_user(user):
+        add_flash(request, "Снимать роль редактора карточек может только аккаунт @brfox_cosplay.", "error")
+        return redirect("/profile")
+
+    target_user = db.get(User, target_user_id)
+    if not target_user:
+        add_flash(request, "Пользователь не найден.", "error")
+        return redirect("/admin/dashboard")
+
+    set_user_option_value(db, int(target_user.id), CARD_GLOBAL_EDITOR_ROLE_GROUP, "")
+    db.commit()
+    add_flash(
+        request,
+        f"@{preferred_user_alias(target_user)} больше не имеет глобального редактирования карточек.",
+        "info",
+    )
+    return redirect("/admin/dashboard")
+
+
+@app.get("/admin/export/users.csv")
+def admin_export_users_csv(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    if not is_primary_admin_user(user):
+        add_flash(request, "Выгрузка пользователей доступна только аккаунту @brfox_cosplay.", "error")
+        return redirect("/profile")
+
+    users = db.execute(select(User).order_by(User.created_at.desc(), User.id.desc())).scalars().all()
+    user_ids = [int(item.id) for item in users if item and item.id]
+
+    def count_by_user(model: Any, field: Any) -> dict[int, int]:
+        if not user_ids:
+            return {}
+        rows = db.execute(
+            select(field, func.count(model.id))
+            .where(field.in_(user_ids))
+            .group_by(field)
+        ).all()
+        return {int(user_id): int(count or 0) for user_id, count in rows if user_id is not None}
+
+    card_counts = count_by_user(CosplanCard, CosplanCard.user_id)
+    festival_counts = count_by_user(Festival, Festival.user_id)
+    notification_counts = count_by_user(FestivalNotification, FestivalNotification.user_id)
+    comment_counts = count_by_user(CardComment, CardComment.author_id)
+    premium_ids = {
+        int(item["user_id"])
+        for item in get_premium_access_entries(db, include_expired=False)
+        if parse_positive_int(str(item.get("user_id", "")).strip())
+    }
+    card_editor_ids = {
+        int(row.user_id)
+        for row in db.execute(
+            select(UserOption).where(
+                UserOption.group == CARD_GLOBAL_EDITOR_ROLE_GROUP,
+                UserOption.value == "1",
+            )
+        ).scalars().all()
+        if parse_positive_int(str(getattr(row, "user_id", "")).strip())
+    }
+
+    output = io.StringIO()
+    writer = csv.writer(output, delimiter=";")
+    writer.writerow(
+        [
+            "id",
+            "username",
+            "cosplay_nick",
+            "email",
+            "home_city",
+            "birth_date",
+            "created_at",
+            "telegram_linked",
+            "vk_linked",
+            "is_primary_admin",
+            "is_premium",
+            "can_edit_all_cards",
+            "is_smm_manager",
+            "is_event_organizer",
+            "cosplan_cards",
+            "festivals",
+            "notifications_received",
+            "card_comments",
+            "profile_url",
+        ]
+    )
+    for target_user in users:
+        target_user_id = int(target_user.id)
+        writer.writerow(
+            [
+                target_user_id,
+                normalize_username(target_user.username),
+                normalize_username(target_user.cosplay_nick),
+                str(target_user.email or "").strip(),
+                str(target_user.home_city or "").strip(),
+                target_user.birth_date.isoformat() if target_user.birth_date else "",
+                target_user.created_at.isoformat() if target_user.created_at else "",
+                "yes" if target_user.telegram_chat_id else "no",
+                "yes" if target_user.vk_user_id or target_user.vk_bot_user_id else "no",
+                "yes" if is_primary_admin_user(target_user) else "no",
+                "yes" if target_user_id in premium_ids else "no",
+                "yes" if target_user_id in card_editor_ids else "no",
+                "yes" if to_bool(get_user_option_value(db, target_user_id, SMM_MANAGER_ROLE_GROUP)) else "no",
+                "yes" if to_bool(get_user_option_value(db, target_user_id, EVENT_ORGANIZER_ROLE_GROUP)) else "no",
+                card_counts.get(target_user_id, 0),
+                festival_counts.get(target_user_id, 0),
+                notification_counts.get(target_user_id, 0),
+                comment_counts.get(target_user_id, 0),
+                user_profile_url_for_user(target_user) or "",
+            ]
+        )
+
+    output.seek(0)
+    filename = f"admin-users-{date.today().isoformat()}.csv"
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.get("/admin/export/stats.csv")
+def admin_export_stats_csv(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    if not is_primary_admin_user(user):
+        add_flash(request, "Выгрузка статистики доступна только аккаунту @brfox_cosplay.", "error")
+        return redirect("/profile")
+
+    dashboard = build_admin_dashboard_stats(db)
+    output = io.StringIO()
+    writer = csv.writer(output, delimiter=";")
+    writer.writerow(["section", "metric", "value", "hint", "extra"])
+
+    for section_key, section_label in [
+        ("overview_cards", "Ключевые показатели"),
+        ("card_health_cards", "Здоровье карточек"),
+        ("festival_cards", "Фестивали"),
+        ("ops_cards", "Операции"),
+        ("community_cards", "Сообщество"),
+    ]:
+        for item in dashboard.get(section_key, []):
+            writer.writerow(
+                [
+                    section_label,
+                    str(item.get("title") or ""),
+                    str(item.get("value") or ""),
+                    str(item.get("hint") or ""),
+                    "",
+                ]
+            )
+
+    for row in dashboard.get("cosplan_top_fandom_rows", []):
+        writer.writerow(
+            [
+                "Популярность косплана: фандомы",
+                str(row.get("label") or ""),
+                row.get("count") or 0,
+                "",
+                row.get("rank") or "",
+            ]
+        )
+    for row in dashboard.get("cosplan_top_character_rows", []):
+        writer.writerow(
+            [
+                "Популярность косплана: персонажи",
+                str(row.get("label") or ""),
+                row.get("count") or 0,
+                "",
+                row.get("rank") or "",
+            ]
+        )
+    for row in dashboard.get("city_rows", []):
+        writer.writerow(
+            [
+                "Города пользователей",
+                str(row.get("city") or ""),
+                row.get("count") or 0,
+                f"{row.get('share') or 0}%",
+                "",
+            ]
+        )
+    for row in dashboard.get("activity_rows", []):
+        writer.writerow(
+            [
+                "Активность по дням",
+                str(row.get("label") or ""),
+                row.get("total") or 0,
+                f"users: {row.get('users') or 0}, cards: {row.get('cards') or 0}, festivals: {row.get('festivals') or 0}",
+                "",
+            ]
+        )
+
+    output.seek(0)
+    filename = f"admin-stats-{date.today().isoformat()}.csv"
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @app.get("/profile", response_class=HTMLResponse)
