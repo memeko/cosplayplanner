@@ -1,0 +1,242 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="section-head">
+  <div>
+    <h1>Калькулятор кадров</h1>
+    <p class="meta">Премиум-инструмент для фотосетов без привязки к карточке косплана.</p>
+  </div>
+  <div class="actions-inline">
+    <a href="/" class="btn">На главную</a>
+    <button type="button" class="btn" id="photo_calc_print_btn">Печать</button>
+  </div>
+</section>
+
+<style>
+  .photo-tool-layout { display: grid; grid-template-columns: minmax(280px, 0.8fr) minmax(320px, 1.2fr); gap: 1rem; align-items: start; }
+  .photoset-calc-result { display: grid; gap: 0.35rem; }
+  .photoset-calc-result ul { margin: 0.2rem 0 0; padding-left: 1.1rem; }
+  .storyboard-table-wrap { overflow-x: auto; }
+  .storyboard-table { width: 100%; min-width: 760px; border-collapse: collapse; }
+  .storyboard-table th,
+  .storyboard-table td { border-bottom: 1px solid #e4edf4; padding: 0.45rem; text-align: left; vertical-align: top; }
+  .storyboard-table input,
+  .storyboard-table textarea { width: 100%; }
+  .storyboard-shot-cell { width: 72px; text-align: center; }
+  @media (max-width: 900px) {
+    .photo-tool-layout { grid-template-columns: 1fr; }
+  }
+</style>
+
+<div class="photo-tool-layout">
+  <section class="box">
+    <h2>Расчет</h2>
+    <div class="grid one-col">
+      <label>
+        Кадров от фотографа
+        <input type="number" id="photoset_calc_total_frames" min="1" step="1" placeholder="Например, 30" />
+      </label>
+      <label>
+        Роли
+        <textarea id="photoset_calc_roles" rows="8" placeholder="Ир Шэн&#10;Муан Гай&#10;Ло Бинхэ"></textarea>
+        <small class="muted">Можно вводить через запятую, точку с запятой или с новой строки.</small>
+      </label>
+      <div class="actions-inline wrap">
+        <button type="button" class="btn btn-accent" id="photoset_calc_run_btn">Рассчитать</button>
+        <button type="button" class="btn" id="photoset_storyboard_from_calc_btn">Собрать таблицу</button>
+      </div>
+    </div>
+    <div class="photoset-calc-result muted top-offset" id="photoset_calc_result">Введите данные и нажмите «Рассчитать».</div>
+  </section>
+
+  <section class="box">
+    <div class="row-between">
+      <h2>Таблица кадров</h2>
+      <div class="actions-inline">
+        <button type="button" class="btn btn-small" id="photoset_storyboard_add_row_btn">Добавить строку</button>
+        <span class="muted" id="photoset_storyboard_status"></span>
+      </div>
+    </div>
+    <div class="storyboard-table-wrap top-offset">
+      <table class="storyboard-table">
+        <thead>
+          <tr>
+            <th>Отснято</th>
+            <th>Кто на фото</th>
+            <th>Референс</th>
+            <th>Комментарий</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="photoset_storyboard_rows"></tbody>
+      </table>
+    </div>
+  </section>
+</div>
+
+<script>
+  (() => {
+    const totalInput = document.getElementById("photoset_calc_total_frames");
+    const rolesInput = document.getElementById("photoset_calc_roles");
+    const runButton = document.getElementById("photoset_calc_run_btn");
+    const resultNode = document.getElementById("photoset_calc_result");
+    const rowsWrap = document.getElementById("photoset_storyboard_rows");
+    const fromCalcButton = document.getElementById("photoset_storyboard_from_calc_btn");
+    const addRowButton = document.getElementById("photoset_storyboard_add_row_btn");
+    const statusNode = document.getElementById("photoset_storyboard_status");
+    let lastDistribution = null;
+
+    const escapeHtml = (rawValue) => String(rawValue || "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+
+    const parseUniqueRoles = (rawValue) => {
+      const seen = new Set();
+      const roles = [];
+      String(rawValue || "").split(/[\n,;]+/).map((item) => item.trim()).filter(Boolean).forEach((value) => {
+        const key = value.toLowerCase();
+        if (seen.has(key)) return;
+        seen.add(key);
+        roles.push(value);
+      });
+      return roles;
+    };
+
+    const buildCombinations = (items, size) => {
+      const combos = [];
+      const walk = (start, chunk) => {
+        if (chunk.length === size) {
+          combos.push(chunk.slice());
+          return;
+        }
+        for (let index = start; index < items.length; index += 1) {
+          chunk.push(items[index]);
+          walk(index + 1, chunk);
+          chunk.pop();
+        }
+      };
+      if (items.length >= size) walk(0, []);
+      return combos;
+    };
+
+    const calculateDistribution = (totalFrames, roles) => {
+      const total = Math.max(0, Math.floor(totalFrames));
+      if (!total) return { error: "Укажите количество кадров больше нуля." };
+      if (!roles.length) return { error: "Добавьте хотя бы одну роль." };
+      const soloCounts = new Array(roles.length).fill(0);
+      const pairCombos = buildCombinations(roles, 2);
+      const tripleCombos = buildCombinations(roles, 3);
+      const pairCounts = new Array(pairCombos.length).fill(0);
+      const tripleCounts = new Array(tripleCombos.length).fill(0);
+      const warnings = [];
+      let remaining = total;
+      let allRolesCount = 0;
+      if (roles.length > 1 && remaining > 0) {
+        allRolesCount = 1;
+        remaining -= 1;
+      }
+      for (let index = 0; index < roles.length && remaining > 0; index += 1) {
+        soloCounts[index] += 1;
+        remaining -= 1;
+      }
+      if (roles.length > 1 && total < roles.length + 1) {
+        warnings.push("Кадров мало: невозможно дать всем ролям сольный кадр и сохранить отдельный общий кадр.");
+      } else if (total < roles.length) {
+        warnings.push("Кадров мало: не всем ролям хватит сольных кадров.");
+      }
+      let pairIndex = 0;
+      let tripleIndex = 0;
+      while (remaining > 0) {
+        if (pairCombos.length) {
+          pairCounts[pairIndex % pairCombos.length] += 1;
+          pairIndex += 1;
+          remaining -= 1;
+          if (remaining <= 0) break;
+        }
+        if (tripleCombos.length) {
+          tripleCounts[tripleIndex % tripleCombos.length] += 1;
+          tripleIndex += 1;
+          remaining -= 1;
+          if (remaining <= 0) break;
+        }
+        if (!pairCombos.length && !tripleCombos.length) {
+          soloCounts[(total - remaining) % roles.length] += 1;
+          remaining -= 1;
+        }
+      }
+      return { total, roles, soloCounts, pairCombos, pairCounts, tripleCombos, tripleCounts, allRolesCount, warnings };
+    };
+
+    const renderList = (title, rows) => {
+      if (!rows.length) return "";
+      return `<div><strong>${escapeHtml(title)}</strong><ul>${rows.map((row) => `<li>${escapeHtml(row)}</li>`).join("")}</ul></div>`;
+    };
+
+    const renderDistribution = (distribution) => {
+      if (distribution.error) {
+        resultNode.textContent = distribution.error;
+        return;
+      }
+      const soloRows = distribution.roles.map((role, index) => `${role}: ${distribution.soloCounts[index]}`);
+      const pairRows = distribution.pairCombos.map((combo, index) => ({ combo: combo.join(" + "), count: distribution.pairCounts[index] })).filter((item) => item.count > 0).map((item) => `${item.combo}: ${item.count}`);
+      const tripleRows = distribution.tripleCombos.map((combo, index) => ({ combo: combo.join(" + "), count: distribution.tripleCounts[index] })).filter((item) => item.count > 0).map((item) => `${item.combo}: ${item.count}`);
+      const soloTotal = distribution.soloCounts.reduce((sum, value) => sum + value, 0);
+      const pairTotal = distribution.pairCounts.reduce((sum, value) => sum + value, 0);
+      const tripleTotal = distribution.tripleCounts.reduce((sum, value) => sum + value, 0);
+      const summaryRows = [`Всего кадров: ${distribution.total}`, `Сольные: ${soloTotal}`];
+      if (distribution.roles.length > 1) summaryRows.push(`Общий кадр со всеми ролями: ${distribution.allRolesCount}`);
+      summaryRows.push(`Парные: ${pairTotal}`, `Тройные: ${tripleTotal}`);
+      const warningRows = distribution.warnings.length ? renderList("Примечание", distribution.warnings) : "";
+      resultNode.innerHTML = [renderList("Сводка", summaryRows), renderList("Сольные кадры по ролям", soloRows), renderList("Парные кадры", pairRows), renderList("Тройные кадры", tripleRows), warningRows].join("");
+    };
+
+    const buildStoryboardRows = (distribution) => {
+      const rows = [];
+      const appendRows = (whoValue, countValue) => {
+        const who = String(whoValue || "").trim();
+        const count = Math.max(0, Math.floor(Number(countValue) || 0));
+        for (let index = 0; who && index < count; index += 1) rows.push({ who });
+      };
+      const roles = Array.isArray(distribution?.roles) ? distribution.roles : [];
+      const allRolesLabel = roles.length > 1 ? `Общий кадр: ${roles.join(" + ")}` : "";
+      roles.forEach((role, index) => appendRows(role, distribution?.soloCounts?.[index]));
+      appendRows(allRolesLabel, distribution?.allRolesCount);
+      (distribution?.pairCombos || []).forEach((combo, index) => appendRows(Array.isArray(combo) ? combo.join(" + ") : combo, distribution?.pairCounts?.[index]));
+      (distribution?.tripleCombos || []).forEach((combo, index) => appendRows(Array.isArray(combo) ? combo.join(" + ") : combo, distribution?.tripleCounts?.[index]));
+      return rows;
+    };
+
+    const addRow = (rowData = {}) => {
+      const row = document.createElement("tr");
+      row.innerHTML = `
+        <td class="storyboard-shot-cell"><input type="checkbox" /></td>
+        <td><input type="text" value="${escapeHtml(rowData.who || "")}" placeholder="Кто на фото" /></td>
+        <td><input type="url" placeholder="https://..." /></td>
+        <td><textarea rows="2" placeholder="Комментарий"></textarea></td>
+        <td><button type="button" class="btn btn-danger btn-small">Удалить</button></td>
+      `;
+      row.querySelector("button")?.addEventListener("click", () => row.remove());
+      rowsWrap.appendChild(row);
+    };
+
+    runButton.addEventListener("click", () => {
+      const distribution = calculateDistribution(Number(totalInput.value || "0"), parseUniqueRoles(rolesInput.value));
+      lastDistribution = distribution.error ? null : distribution;
+      renderDistribution(distribution);
+    });
+    fromCalcButton.addEventListener("click", () => {
+      if (!lastDistribution) {
+        statusNode.textContent = "Сначала выполните расчет.";
+        return;
+      }
+      rowsWrap.innerHTML = "";
+      buildStoryboardRows(lastDistribution).forEach(addRow);
+      statusNode.textContent = `Строк: ${rowsWrap.querySelectorAll("tr").length}.`;
+    });
+    addRowButton.addEventListener("click", () => addRow());
+    document.getElementById("photo_calc_print_btn")?.addEventListener("click", () => window.print());
+  })();
+</script>
+{% endblock %}

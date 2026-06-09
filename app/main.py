@@ -20,6 +20,7 @@ import smtplib
 import threading
 import time
 import uuid
+import xml.etree.ElementTree as ET
 from collections import defaultdict
 from datetime import date, datetime, timedelta
 from difflib import SequenceMatcher
@@ -488,6 +489,11 @@ CONTENT_TELEGRAM_CHANNEL_GROUP = "content_telegram_channel"
 CONTENT_TELEGRAM_PREMIUM_EMOJI_GROUP = "content_telegram_premium_emoji"
 CONTENT_TELEGRAM_UPDATES_OFFSET_GROUP = "content_telegram_updates_offset"
 CONTENT_TELEGRAM_UPDATES_TOKEN_FINGERPRINT_GROUP = "content_telegram_updates_token_fingerprint"
+CALDAV_URL_GROUP = "caldav_url"
+CALDAV_USERNAME_GROUP = "caldav_username"
+CALDAV_PASSWORD_GROUP = "caldav_password"
+CALDAV_LAST_SYNC_GROUP = "caldav_last_sync"
+CALDAV_IMPORT_MARKER = "[caldav-sync]"
 CONTENT_VK_TOKEN_GROUP = "content_vk_api_token"
 CONTENT_VK_GROUP_GROUP = "content_vk_group"
 CONTENT_PINTEREST_ACCESS_TOKEN_GROUP = "content_pinterest_access_token"
@@ -13348,6 +13354,208 @@ def replace_user_option_values(db: Session, user_id: int, group: str, values: li
         db.add(UserOption(user_id=user_id, group=group, value=value))
 
 
+def get_caldav_settings(db: Session, user_id: int) -> dict[str, Any]:
+    password = get_secret_user_option_value(db, user_id, CALDAV_PASSWORD_GROUP)
+    return {
+        "url": get_user_option_value(db, user_id, CALDAV_URL_GROUP),
+        "username": get_user_option_value(db, user_id, CALDAV_USERNAME_GROUP),
+        "connected": bool(get_user_option_value(db, user_id, CALDAV_URL_GROUP) and password),
+        "has_password": bool(password),
+        "last_sync": get_user_option_value(db, user_id, CALDAV_LAST_SYNC_GROUP),
+    }
+
+
+def parse_ical_datetime(raw_value: str | None) -> tuple[date | None, str]:
+    value = str(raw_value or "").strip()
+    if not value:
+        return None, ""
+    if "T" not in value:
+        if re.fullmatch(r"\d{8}", value):
+            try:
+                return datetime.strptime(value, "%Y%m%d").date(), ""
+            except ValueError:
+                return None, ""
+        return parse_date(value[:10]), ""
+    normalized = value.rstrip("Z")
+    for fmt, width in (
+        ("%Y%m%dT%H%M%S", 15),
+        ("%Y%m%dT%H%M", 13),
+        ("%Y-%m-%dT%H:%M:%S", 19),
+        ("%Y-%m-%dT%H:%M", 16),
+    ):
+        try:
+            parsed = datetime.strptime(normalized[:width], fmt)
+            return parsed.date(), parsed.strftime("%H:%M")
+        except ValueError:
+            continue
+    if re.fullmatch(r"\d{8}.*", value):
+        try:
+            return datetime.strptime(value[:8], "%Y%m%d").date(), ""
+        except ValueError:
+            return None, ""
+    return parse_date(value[:10]), ""
+
+
+def unfold_ical_lines(raw_text: str) -> list[str]:
+    lines: list[str] = []
+    for raw_line in str(raw_text or "").replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        if raw_line.startswith((" ", "\t")) and lines:
+            lines[-1] += raw_line[1:]
+        else:
+            lines.append(raw_line)
+    return lines
+
+
+def parse_caldav_calendar_events(calendar_data: str) -> list[dict[str, str]]:
+    events: list[dict[str, str]] = []
+    current: dict[str, str] | None = None
+    for line in unfold_ical_lines(calendar_data):
+        if line == "BEGIN:VEVENT":
+            current = {}
+            continue
+        if line == "END:VEVENT":
+            if current:
+                start_date, start_time = parse_ical_datetime(current.get("DTSTART"))
+                if start_date:
+                    events.append(
+                        {
+                            "date": start_date.isoformat(),
+                            "time": start_time,
+                            "summary": current.get("SUMMARY", "").strip(),
+                            "uid": current.get("UID", "").strip(),
+                        }
+                    )
+            current = None
+            continue
+        if current is None or ":" not in line:
+            continue
+        name_part, value = line.split(":", 1)
+        name = name_part.split(";", 1)[0].strip().upper()
+        if name in {"DTSTART", "SUMMARY", "UID"}:
+            current[name] = value.replace("\\,", ",").replace("\\n", " ").strip()
+    return events
+
+
+def fetch_caldav_busy_events(
+    *,
+    calendar_url: str,
+    username: str,
+    password: str,
+    start_date: date,
+    end_date: date,
+) -> list[dict[str, str]]:
+    start_key = f"{start_date.strftime('%Y%m%d')}T000000Z"
+    end_key = f"{end_date.strftime('%Y%m%d')}T235959Z"
+    report_body = f"""<?xml version="1.0" encoding="utf-8" ?>
+<C:calendar-query xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
+  <D:prop>
+    <D:getetag />
+    <C:calendar-data />
+  </D:prop>
+  <C:filter>
+    <C:comp-filter name="VCALENDAR">
+      <C:comp-filter name="VEVENT">
+        <C:time-range start="{start_key}" end="{end_key}" />
+      </C:comp-filter>
+    </C:comp-filter>
+  </C:filter>
+</C:calendar-query>"""
+    headers = {"Depth": "1", "Content-Type": "application/xml; charset=utf-8"}
+    urls = [calendar_url]
+    if calendar_url and not calendar_url.endswith("/"):
+        urls.append(f"{calendar_url}/")
+
+    last_error = ""
+    for url in urls:
+        try:
+            response = requests.request(
+                "REPORT",
+                url,
+                data=report_body.encode("utf-8"),
+                headers=headers,
+                auth=(username, password),
+                timeout=25,
+            )
+        except requests.RequestException as exc:
+            last_error = str(exc)
+            continue
+        if response.status_code in {401, 403}:
+            raise RuntimeError("CalDAV отклонил логин или пароль приложения.")
+        if not response.ok:
+            last_error = f"HTTP {response.status_code}"
+            continue
+        try:
+            root = ET.fromstring(response.text)
+        except ET.ParseError as exc:
+            raise RuntimeError(f"CalDAV вернул некорректный XML: {exc}") from exc
+        events: list[dict[str, str]] = []
+        for node in root.iter():
+            if node.tag.endswith("calendar-data") and node.text:
+                events.extend(parse_caldav_calendar_events(node.text))
+        return events
+    raise RuntimeError(last_error or "Не удалось получить события CalDAV.")
+
+
+def sync_caldav_busy_events_for_user(db: Session, user: User) -> dict[str, Any]:
+    settings = get_caldav_settings(db, int(user.id))
+    calendar_url = str(settings.get("url") or "").strip()
+    username = str(settings.get("username") or "").strip()
+    password = get_secret_user_option_value(db, int(user.id), CALDAV_PASSWORD_GROUP)
+    if not calendar_url or not username or not password:
+        raise RuntimeError("Сначала сохраните URL календаря, логин и пароль приложения.")
+
+    today = date.today()
+    end_date = today + timedelta(days=365)
+    imported_events = fetch_caldav_busy_events(
+        calendar_url=calendar_url,
+        username=username,
+        password=password,
+        start_date=today,
+        end_date=end_date,
+    )
+
+    old_rows = db.execute(
+        select(PersonalCalendarEvent).where(
+            PersonalCalendarEvent.user_id == user.id,
+            PersonalCalendarEvent.details.like(f"%{CALDAV_IMPORT_MARKER}%"),
+        )
+    ).scalars().all()
+    for row in old_rows:
+        db.delete(row)
+    if old_rows:
+        db.flush()
+
+    seen: set[tuple[str, str, str]] = set()
+    added = 0
+    for item in imported_events:
+        event_date = parse_date(str(item.get("date") or ""))
+        if not event_date or event_date < today:
+            continue
+        event_time = str(item.get("time") or "").strip()[:8] or None
+        summary = str(item.get("summary") or "").strip()
+        uid = str(item.get("uid") or "").strip()
+        marker = (event_date.isoformat(), event_time or "", uid or summary)
+        if marker in seen:
+            continue
+        seen.add(marker)
+        title = f"Занято: {summary}" if summary else "Занято (CalDAV)"
+        db.add(
+            PersonalCalendarEvent(
+                user_id=user.id,
+                event_date=event_date,
+                event_time=event_time,
+                title=title[:255],
+                event_city=None,
+                details=f"{CALDAV_IMPORT_MARKER} UID: {uid or 'без UID'}",
+            )
+        )
+        added += 1
+
+    set_user_option_value(db, int(user.id), CALDAV_LAST_SYNC_GROUP, datetime.utcnow().isoformat(timespec="seconds"))
+    db.commit()
+    return {"added": added, "removed": len(old_rows)}
+
+
 def get_user_option_positive_int_values(db: Session, user_id: int, group: str) -> list[int]:
     result: list[int] = []
     seen: set[int] = set()
@@ -16512,9 +16720,26 @@ def index(request: Request, db: Session = Depends(get_db)):
             activity_leaderboard=activity_leaderboard,
             premium_channel_ad=premium_channel_ad,
             can_manage_news=is_moderator_user(user),
+            can_use_photo_frames_calculator=user_has_premium_status(db, user),
             mergeable_duplicate_notification_ids=mergeable_duplicate_notification_ids,
         )
     return template_response(request, "landing.html", user=None, active_tab=None)
+
+
+@app.get("/photo-tools/frames-calculator", response_class=HTMLResponse)
+def photo_frames_calculator(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    if not user_has_premium_status(db, user):
+        add_flash(request, "Калькулятор кадров доступен только премиум-пользователям.", "error")
+        return redirect("/")
+    return template_response(
+        request,
+        "photo_frames_calculator.html",
+        user=user,
+        active_tab=None,
+    )
 
 
 @app.get("/pigeons", response_class=HTMLResponse)
@@ -19198,6 +19423,7 @@ def cosplan_list(
         editable_card_links=editable_card_links,
         shared_coproplayer_counts=shared_coproplayer_counts,
         shared_coproplayer_emojis=shared_coproplayer_emojis,
+        caldav_settings=get_caldav_settings(db, user.id),
         current_query=request.url.query or "",
         **section_totals,
     )
@@ -23767,12 +23993,80 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
             else "telegram"
         ),
         content_access_state=content_access_state,
+        caldav_settings=get_caldav_settings(db, user.id),
         content_ai_assistant_used_today=int(content_ai_usage.get("used_today") or 0),
         content_ai_assistant_remaining_today=int(content_ai_usage.get("remaining_today") or 0),
         content_ai_assistant_daily_limit=int(content_ai_usage.get("daily_limit") or CONTENT_AI_ASSISTANT_DAILY_LIMIT),
         content_ai_assistant_model=MISTRAL_FREE_MODEL,
         month_weekday_labels=["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"],
     )
+
+
+@app.post("/my-calendar/caldav/connect")
+async def my_calendar_caldav_connect(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    form = await request.form()
+    calendar_url = str(form.get("calendar_url", "")).strip()
+    username = str(form.get("calendar_username", "")).strip()
+    password = str(form.get("calendar_password", "")).strip()
+    if not calendar_url.lower().startswith(("http://", "https://")):
+        add_flash(request, "Укажите полный CalDAV URL календаря.", "error")
+        return redirect("/my-calendar?view=my#caldav-sync")
+    if not username:
+        add_flash(request, "Укажите логин CalDAV.", "error")
+        return redirect("/my-calendar?view=my#caldav-sync")
+    if not password and not get_secret_user_option_value(db, user.id, CALDAV_PASSWORD_GROUP):
+        add_flash(request, "Укажите пароль приложения CalDAV.", "error")
+        return redirect("/my-calendar?view=my#caldav-sync")
+
+    set_user_option_value(db, user.id, CALDAV_URL_GROUP, calendar_url)
+    set_user_option_value(db, user.id, CALDAV_USERNAME_GROUP, username)
+    if password:
+        set_secret_user_option_value(db, user.id, CALDAV_PASSWORD_GROUP, password)
+    db.commit()
+    add_flash(request, "CalDAV-настройки сохранены.", "success")
+    return redirect("/my-calendar?view=my#caldav-sync")
+
+
+@app.post("/my-calendar/caldav/sync")
+def my_calendar_caldav_sync(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    try:
+        result = sync_caldav_busy_events_for_user(db, user)
+    except RuntimeError as exc:
+        add_flash(request, str(exc), "error")
+        return redirect("/my-calendar?view=my#caldav-sync")
+    add_flash(
+        request,
+        f"CalDAV-синхронизация завершена: добавлено {result['added']}, заменено старых импортов {result['removed']}.",
+        "success",
+    )
+    return redirect("/my-calendar?view=my#caldav-sync")
+
+
+@app.post("/my-calendar/caldav/disconnect")
+def my_calendar_caldav_disconnect(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    for group in (CALDAV_URL_GROUP, CALDAV_USERNAME_GROUP, CALDAV_PASSWORD_GROUP, CALDAV_LAST_SYNC_GROUP):
+        set_user_option_value(db, user.id, group, "")
+    old_rows = db.execute(
+        select(PersonalCalendarEvent).where(
+            PersonalCalendarEvent.user_id == user.id,
+            PersonalCalendarEvent.details.like(f"%{CALDAV_IMPORT_MARKER}%"),
+        )
+    ).scalars().all()
+    for row in old_rows:
+        db.delete(row)
+    db.commit()
+    add_flash(request, "CalDAV отключен, импортированные занятые даты удалены.", "info")
+    return redirect("/my-calendar?view=my#caldav-sync")
 
 
 @app.post("/my-calendar/events/new")

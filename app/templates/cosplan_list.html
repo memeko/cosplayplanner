@@ -44,6 +44,9 @@
       </form>
     </div>
     <a href="/cosplan/export.csv" class="btn">Экспорт CSV</a>
+    <a href="/my-calendar?view=my#caldav-sync" class="btn">
+      {% if caldav_settings.connected %}CalDAV подключен{% else %}CalDAV занятость{% endif %}
+    </a>
     <a href="/cosplan/new" class="btn btn-accent">Новая карточка</a>
   </div>
 </section>

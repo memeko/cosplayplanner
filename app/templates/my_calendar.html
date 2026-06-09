@@ -51,6 +51,54 @@
     </form>
   </section>
 
+  <section class="box top-offset" id="caldav-sync">
+    <div class="row-between">
+      <div>
+        <h2>CalDAV-синхронизация занятости</h2>
+        {% if caldav_settings.connected %}
+          <p class="muted">
+            Подключено: {{ caldav_settings.username }} · {{ caldav_settings.url }}
+            {% if caldav_settings.last_sync %} · последняя синхронизация {{ caldav_settings.last_sync }}{% endif %}
+          </p>
+        {% else %}
+          <p class="muted">Подходит для Google Calendar, iCloud и других календарей с CalDAV. Для Google/iCloud используйте пароль приложения.</p>
+        {% endif %}
+      </div>
+      {% if caldav_settings.connected %}
+        <form method="post" action="/my-calendar/caldav/sync">
+          <button type="submit" class="btn btn-accent">Синхронизировать</button>
+        </form>
+      {% endif %}
+    </div>
+    <details class="top-offset" {% if not caldav_settings.connected %}open{% endif %}>
+      <summary>Настройки CalDAV</summary>
+      <form method="post" action="/my-calendar/caldav/connect" class="grid one-col top-offset">
+        <label>
+          CalDAV URL календаря
+          <input type="url" name="calendar_url" value="{{ caldav_settings.url }}" placeholder="https://caldav.icloud.com/..." required />
+        </label>
+        <div class="grid two-col">
+          <label>
+            Логин
+            <input type="text" name="calendar_username" value="{{ caldav_settings.username }}" autocomplete="username" required />
+          </label>
+          <label>
+            Пароль приложения
+            <input type="password" name="calendar_password" autocomplete="new-password" placeholder="{% if caldav_settings.has_password %}Оставьте пустым, чтобы не менять{% else %}Пароль приложения{% endif %}" />
+          </label>
+        </div>
+        <div class="actions-inline">
+          <button type="submit" class="btn">Сохранить CalDAV</button>
+        </div>
+      </form>
+      {% if caldav_settings.connected %}
+        <form method="post" action="/my-calendar/caldav/disconnect" class="top-offset" onsubmit="return confirm('Отключить CalDAV и удалить импортированные занятые даты?');">
+          <button type="submit" class="btn btn-danger">Отключить CalDAV</button>
+        </form>
+      {% endif %}
+    </details>
+  </section>
+
   <section class="box top-offset">
     <h2>Рабочие смены</h2>
     <form method="post" action="/my-calendar/work-shifts/add" class="grid one-col">

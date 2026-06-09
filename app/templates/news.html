@@ -4,6 +4,11 @@
   <div>
     <h1>Главная</h1>
   </div>
+  {% if can_use_photo_frames_calculator %}
+  <div class="actions-inline">
+    <a href="/photo-tools/frames-calculator" class="btn btn-accent">Калькулятор кадров</a>
+  </div>
+  {% endif %}
 </section>
 
 <section class="box">
