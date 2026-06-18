@@ -2245,17 +2245,31 @@
       let remaining = total;
       let allRolesCount = 0;
 
-      if (roleCount > 1 && remaining > 0) {
+      if (roleCount > 3 && remaining > 0) {
         allRolesCount = 1;
         remaining -= 1;
       }
 
-      for (let index = 0; index < roleCount && remaining > 0; index += 1) {
-        soloCounts[index] += 1;
-        remaining -= 1;
+      if (roleCount === 2) {
+        let cycleIndex = 0;
+        while (remaining > 0) {
+          const cycleSlot = cycleIndex % 3;
+          if (cycleSlot < 2) {
+            soloCounts[cycleSlot] += 1;
+          } else {
+            pairCounts[0] += 1;
+          }
+          cycleIndex += 1;
+          remaining -= 1;
+        }
+      } else {
+        for (let index = 0; index < roleCount && remaining > 0; index += 1) {
+          soloCounts[index] += 1;
+          remaining -= 1;
+        }
       }
 
-      if (roleCount > 1 && total < roleCount + 1) {
+      if (roleCount > 3 && total < roleCount + 1) {
         warnings.push("Кадров мало: невозможно дать всем ролям сольный кадр и сохранить отдельный общий кадр.");
       } else if (total < roleCount) {
         warnings.push("Кадров мало: не всем ролям хватит сольных кадров.");
@@ -2263,7 +2277,7 @@
 
       let pairIndex = 0;
       let tripleIndex = 0;
-      while (remaining > 0) {
+      while (roleCount !== 2 && remaining > 0) {
         if (pairCombos.length) {
           pairCounts[pairIndex % pairCombos.length] += 1;
           pairIndex += 1;
@@ -2319,7 +2333,7 @@
         `Всего кадров: ${distribution.total}`,
         `Сольные: ${soloTotal}`,
       ];
-      if (distribution.roles.length > 1) {
+      if (distribution.roles.length > 3) {
         summaryRows.push(`Общий кадр со всеми ролями: ${distribution.allRolesCount}`);
       }
       summaryRows.push(`Парные: ${pairTotal}`);
@@ -2544,12 +2558,12 @@
 
       const roles = Array.isArray(distribution?.roles) ? distribution.roles : [];
       const totalFrames = Math.max(0, Math.floor(Number(distribution?.total) || 0));
-      const allRolesLabel = roles.length > 1
+      const allRolesLabel = roles.length > 3
         ? `Общий кадр: ${roles.join(" + ")}`
         : "";
       roles.forEach((role, index) => appendRows(role, distribution?.soloCounts?.[index]));
 
-      if (roles.length > 1) {
+      if (roles.length > 3) {
         appendRows(allRolesLabel, distribution?.allRolesCount);
       }
 

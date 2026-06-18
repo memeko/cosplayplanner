@@ -10319,6 +10319,42 @@ def format_costume_hardware_rows_for_form(rows: list[Any]) -> list[dict[str, str
     return formatted
 
 
+def meaningful_costume_fabric_rows(rows: list[Any]) -> list[dict[str, Any]]:
+    meaningful: list[dict[str, Any]] = []
+    for raw_row in rows:
+        if not isinstance(raw_row, dict):
+            continue
+        if any(
+            [
+                str(raw_row.get("name") or "").strip(),
+                str(raw_row.get("purpose") or "").strip(),
+                str(raw_row.get("meterage") or "").strip(),
+                str(raw_row.get("price_per_meter") or "").strip(),
+                str(raw_row.get("link") or "").strip(),
+                to_bool(raw_row.get("bought")),
+            ]
+        ):
+            meaningful.append(raw_row)
+    return meaningful
+
+
+def meaningful_costume_hardware_rows(rows: list[Any]) -> list[dict[str, Any]]:
+    meaningful: list[dict[str, Any]] = []
+    for raw_row in rows:
+        if not isinstance(raw_row, dict):
+            continue
+        if any(
+            [
+                str(raw_row.get("name") or "").strip(),
+                str(raw_row.get("purpose") or "").strip(),
+                str(raw_row.get("quantity") or "").strip(),
+                str(raw_row.get("price_per_unit") or "").strip(),
+            ]
+        ):
+            meaningful.append(raw_row)
+    return meaningful
+
+
 def parse_project_character_rows_from_form(
     form: Any,
     *,
@@ -15188,11 +15224,7 @@ def get_card_form_values(card: CosplanCard | None = None, *, actor_user_id: int 
         ),
         "photoset_studio_price": "" if card.photoset_studio_price is None else f"{card.photoset_studio_price:g}",
         "photoset_props_price": "" if card.photoset_props_price is None else f"{card.photoset_props_price:g}",
-        "photoset_extra_price": (
-            ""
-            if card.photoset_extra_price is None and card.photoset_price is None
-            else f"{(card.photoset_extra_price if card.photoset_extra_price is not None else card.photoset_price):g}"
-        ),
+        "photoset_extra_price": "" if card.photoset_extra_price is None else f"{card.photoset_extra_price:g}",
         "photoset_currency": card.photoset_currency or "RUB",
         "photoset_comment": card.photoset_comment or "",
         "photoset_props_checklist_json": format_checklist_for_form(as_list(card.photoset_props_checklist_json)),
@@ -20343,8 +20375,8 @@ def cosplan_detail(card_id: int, request: Request, db: Session = Depends(get_db)
         reference_urls=as_list(card.references_json),
         pose_reference_urls=as_list(card.pose_references_json),
         costume_parts=as_list(card.costume_parts_json),
-        costume_fabric_rows=as_list(card.costume_fabric_rows_json),
-        costume_hardware_rows=as_list(card.costume_hardware_rows_json),
+        costume_fabric_rows=meaningful_costume_fabric_rows(as_list(card.costume_fabric_rows_json)),
+        costume_hardware_rows=meaningful_costume_hardware_rows(as_list(card.costume_hardware_rows_json)),
         craft_parts=as_list(card.craft_parts_json),
         photoset_props_checklist=format_checklist_for_form(as_list(card.photoset_props_checklist_json)),
         photoset_storyboard_rows=normalize_photoset_storyboard_rows(as_list(card.photoset_storyboard_rows_json)),

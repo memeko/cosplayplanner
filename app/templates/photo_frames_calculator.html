@@ -133,22 +133,36 @@
       const warnings = [];
       let remaining = total;
       let allRolesCount = 0;
-      if (roles.length > 1 && remaining > 0) {
+      if (roles.length > 3 && remaining > 0) {
         allRolesCount = 1;
         remaining -= 1;
       }
-      for (let index = 0; index < roles.length && remaining > 0; index += 1) {
-        soloCounts[index] += 1;
-        remaining -= 1;
+      if (roles.length === 2) {
+        let cycleIndex = 0;
+        while (remaining > 0) {
+          const cycleSlot = cycleIndex % 3;
+          if (cycleSlot < 2) {
+            soloCounts[cycleSlot] += 1;
+          } else {
+            pairCounts[0] += 1;
+          }
+          cycleIndex += 1;
+          remaining -= 1;
+        }
+      } else {
+        for (let index = 0; index < roles.length && remaining > 0; index += 1) {
+          soloCounts[index] += 1;
+          remaining -= 1;
+        }
       }
-      if (roles.length > 1 && total < roles.length + 1) {
+      if (roles.length > 3 && total < roles.length + 1) {
         warnings.push("Кадров мало: невозможно дать всем ролям сольный кадр и сохранить отдельный общий кадр.");
       } else if (total < roles.length) {
         warnings.push("Кадров мало: не всем ролям хватит сольных кадров.");
       }
       let pairIndex = 0;
       let tripleIndex = 0;
-      while (remaining > 0) {
+      while (roles.length !== 2 && remaining > 0) {
         if (pairCombos.length) {
           pairCounts[pairIndex % pairCombos.length] += 1;
           pairIndex += 1;
@@ -186,7 +200,7 @@
       const pairTotal = distribution.pairCounts.reduce((sum, value) => sum + value, 0);
       const tripleTotal = distribution.tripleCounts.reduce((sum, value) => sum + value, 0);
       const summaryRows = [`Всего кадров: ${distribution.total}`, `Сольные: ${soloTotal}`];
-      if (distribution.roles.length > 1) summaryRows.push(`Общий кадр со всеми ролями: ${distribution.allRolesCount}`);
+      if (distribution.roles.length > 3) summaryRows.push(`Общий кадр со всеми ролями: ${distribution.allRolesCount}`);
       summaryRows.push(`Парные: ${pairTotal}`, `Тройные: ${tripleTotal}`);
       const warningRows = distribution.warnings.length ? renderList("Примечание", distribution.warnings) : "";
       resultNode.innerHTML = [renderList("Сводка", summaryRows), renderList("Сольные кадры по ролям", soloRows), renderList("Парные кадры", pairRows), renderList("Тройные кадры", tripleRows), warningRows].join("");
@@ -200,7 +214,7 @@
         for (let index = 0; who && index < count; index += 1) rows.push({ who });
       };
       const roles = Array.isArray(distribution?.roles) ? distribution.roles : [];
-      const allRolesLabel = roles.length > 1 ? `Общий кадр: ${roles.join(" + ")}` : "";
+      const allRolesLabel = roles.length > 3 ? `Общий кадр: ${roles.join(" + ")}` : "";
       roles.forEach((role, index) => appendRows(role, distribution?.soloCounts?.[index]));
       appendRows(allRolesLabel, distribution?.allRolesCount);
       (distribution?.pairCombos || []).forEach((combo, index) => appendRows(Array.isArray(combo) ? combo.join(" + ") : combo, distribution?.pairCounts?.[index]));
