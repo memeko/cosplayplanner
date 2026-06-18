@@ -2681,6 +2681,43 @@ def build_profile_social_rows(values: dict[str, str]) -> list[dict[str, str]]:
     return rows
 
 
+def nearest_going_festival_for_user(db: Session, user_id: int, today: date | None = None) -> Festival | None:
+    current_date = today or date.today()
+    festivals = db.execute(
+        select(Festival).where(
+            Festival.user_id == int(user_id),
+            Festival.is_going.is_(True),
+            Festival.event_date.is_not(None),
+        )
+    ).scalars().all()
+    active_festivals = [festival for festival in festivals if festival_is_active(festival, current_date)]
+    if not active_festivals:
+        return None
+    return min(
+        active_festivals,
+        key=lambda festival: (
+            max(festival.event_date or current_date, current_date),
+            festival.event_date or date.max,
+            (festival.name or "").casefold(),
+            int(festival.id or 0),
+        ),
+    )
+
+
+def public_festival_summary(festival: Festival | None) -> dict[str, str] | None:
+    if not festival or not festival.event_date:
+        return None
+    end_date = festival_range_end(festival)
+    date_label = festival.event_date.strftime("%d-%m-%Y")
+    if end_date and end_date > festival.event_date:
+        date_label = f"{date_label} — {end_date.strftime('%d-%m-%Y')}"
+    return {
+        "name": festival.name or "Без названия",
+        "date_label": date_label,
+        "city": festival.city or "",
+    }
+
+
 def normalize_user_avatar_path(value: str | None) -> str:
     cleaned = str(value or "").strip()
     if not cleaned:
@@ -19212,6 +19249,7 @@ def user_public_card(alias: str, request: Request, db: Session = Depends(get_db)
     social_rows = build_profile_social_rows(social_values)
     profile_about_markdown = get_user_option_value(db, target_user.id, PROFILE_ABOUT_MARKDOWN_GROUP)
     profile_photo_urls = get_user_profile_photo_urls(db, target_user.id)
+    nearest_going_festival = public_festival_summary(nearest_going_festival_for_user(db, target_user.id))
 
     return template_response(
         request,
@@ -19220,6 +19258,7 @@ def user_public_card(alias: str, request: Request, db: Session = Depends(get_db)
         active_tab=None,
         target_user=target_user,
         social_rows=social_rows,
+        nearest_going_festival=nearest_going_festival,
         profile_about_markdown=profile_about_markdown,
         profile_photo_urls=profile_photo_urls,
         can_message_user=int(viewer.id) != int(target_user.id),

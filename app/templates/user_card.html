@@ -23,25 +23,29 @@
   </div>
 </section>
 
+{% if nearest_going_festival %}
+<section class="box top-offset">
+  <h2>Я буду на...</h2>
+  <h3 class="top-offset">{{ nearest_going_festival.name }}</h3>
+  <p class="meta">
+    {{ nearest_going_festival.date_label }}
+    · {{ nearest_going_festival.city or "Город не указан" }}
+  </p>
+</section>
+{% endif %}
+
 {% if social_rows %}
 <section class="box top-offset">
   <h2>Социальные сети</h2>
-  <table class="table top-offset">
-    <tbody>
-      {% for row in social_rows %}
-        <tr>
-          <th>{{ row.label }}</th>
-          <td>
-            {% if row.url %}
-              <a href="{{ row.url }}" target="_blank" rel="noreferrer">{{ row.value }}</a>
-            {% else %}
-              {{ row.value }}
-            {% endif %}
-          </td>
-        </tr>
-      {% endfor %}
-    </tbody>
-  </table>
+  <div class="actions-inline wrap top-offset">
+    {% for row in social_rows %}
+      {% if row.url %}
+        <a href="{{ row.url }}" target="_blank" rel="noreferrer" class="btn btn-small">{{ row.label }}</a>
+      {% else %}
+        <span class="chip">{{ row.label }}: {{ row.value }}</span>
+      {% endif %}
+    {% endfor %}
+  </div>
 </section>
 {% endif %}
 

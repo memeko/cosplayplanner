@@ -22,15 +22,16 @@
 </section>
 {% endif %}
 
-<section class="box" id="admin-notifications">
-  <div class="admin-section-head">
-    <h2>Все оповещения</h2>
+<details class="box calendar-spoiler" id="admin-notifications">
+  <summary>
+    <span>Все оповещения</span>
     {% if admin_notifications_total %}
-    <p class="meta">Показано {{ admin_notifications_showing_from }}–{{ admin_notifications_showing_to }} из {{ admin_notifications_total }}</p>
+      <span class="meta">Показано {{ admin_notifications_showing_from }}–{{ admin_notifications_showing_to }} из {{ admin_notifications_total }}</span>
     {% else %}
-    <p class="meta">Пока оповещений нет.</p>
+      <span class="meta">Пока оповещений нет.</span>
     {% endif %}
-  </div>
+  </summary>
+  <div class="calendar-spoiler-body">
 
   <form method="get" action="/admin/dashboard#admin-notifications" class="admin-notifications-filters top-offset">
     <label>
@@ -123,7 +124,8 @@
   <p class="meta top-offset">Страница {{ admin_notifications_current_page }} из {{ admin_notifications_total_pages }}</p>
   {% endif %}
   {% endif %}
-</section>
+  </div>
+</details>
 
 <section class="box">
   <h2>Премиум-пользователи</h2>
