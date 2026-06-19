@@ -18,7 +18,7 @@
     <div>
       <h2><span class="{% if user_is_special(target_user) %}nick-special{% endif %}">@{{ target_user.cosplay_nick or target_user.username }}</span></h2>
       <p class="meta">Город: {{ target_user.home_city or "—" }}</p>
-      <p class="meta">День рождения: {{ target_user.birth_date.strftime('%d-%m-%Y') if target_user.birth_date else "—" }}</p>
+      {% if birthday_label %}<p class="meta">День рождения: {{ birthday_label }}</p>{% endif %}
     </div>
   </div>
 </section>

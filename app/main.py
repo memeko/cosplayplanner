@@ -517,6 +517,17 @@ PIGEON_CHAT_LABEL_GROUP = "pigeon_chat_label"
 PROFILE_TELEGRAM_SECRET_CODE_GROUP = "profile_telegram_secret_code"
 PROFILE_ABOUT_MARKDOWN_GROUP = "profile_about_markdown"
 PROFILE_PHOTO_URL_GROUP = "profile_photo_url"
+PROFILE_BIRTHDAY_VISIBILITY_GROUP = "profile_birthday_visibility"
+PROFILE_BIRTHDAY_VISIBILITY_DAY_MONTH = "day_month"
+PROFILE_BIRTHDAY_VISIBILITY_HIDDEN = "hidden"
+PROFILE_BIRTHDAY_VISIBILITY_AGE = "age"
+PROFILE_BIRTHDAY_VISIBILITY_FULL = "full"
+PROFILE_BIRTHDAY_VISIBILITY_OPTIONS: tuple[tuple[str, str], ...] = (
+    (PROFILE_BIRTHDAY_VISIBILITY_DAY_MONTH, "Показывать только день и месяц"),
+    (PROFILE_BIRTHDAY_VISIBILITY_HIDDEN, "Не показывать в профиле"),
+    (PROFILE_BIRTHDAY_VISIBILITY_AGE, "Показывать возраст"),
+    (PROFILE_BIRTHDAY_VISIBILITY_FULL, "Показывать всё"),
+)
 PREMIUM_CHANNEL_AD_AVATAR_GROUP = "premium_channel_ad_avatar"
 PREMIUM_CHANNEL_AD_TEXT_GROUP = "premium_channel_ad_text"
 PREMIUM_CHANNEL_AD_URL_GROUP = "premium_channel_ad_url"
@@ -2602,6 +2613,57 @@ def get_user_profile_social_values(db: Session, user_id: int) -> dict[str, str]:
     for field_key, _field_label, option_group in PROFILE_SOCIAL_OPTION_FIELDS:
         values[field_key] = str(get_user_option_value(db, int(user_id), option_group) or "").strip()
     return values
+
+
+def normalize_profile_birthday_visibility(value: str | None) -> str:
+    normalized = str(value or "").strip()
+    allowed = {item[0] for item in PROFILE_BIRTHDAY_VISIBILITY_OPTIONS}
+    return normalized if normalized in allowed else PROFILE_BIRTHDAY_VISIBILITY_DAY_MONTH
+
+
+def calculate_full_years(birth_date: date, today: date | None = None) -> int:
+    current_date = today or date.today()
+    years = current_date.year - birth_date.year
+    birthday_this_year = safe_date_with_leap_support(current_date.year, birth_date.month, birth_date.day)
+    if birthday_this_year and current_date < birthday_this_year:
+        years -= 1
+    return max(0, years)
+
+
+def format_full_years(years: int) -> str:
+    normalized = max(0, int(years))
+    last_two = normalized % 100
+    last_one = normalized % 10
+    if 11 <= last_two <= 14:
+        suffix = "полных лет"
+    elif last_one == 1:
+        suffix = "полный год"
+    elif 2 <= last_one <= 4:
+        suffix = "полных года"
+    else:
+        suffix = "полных лет"
+    return f"{normalized} {suffix}"
+
+
+def public_birthday_label(
+    birth_date: date | None,
+    visibility: str | None,
+    today: date | None = None,
+) -> str | None:
+    if not birth_date:
+        return None
+    normalized_visibility = normalize_profile_birthday_visibility(visibility)
+    if normalized_visibility == PROFILE_BIRTHDAY_VISIBILITY_HIDDEN:
+        return None
+
+    day_month_label = birth_date.strftime("%d.%m")
+    if normalized_visibility == PROFILE_BIRTHDAY_VISIBILITY_DAY_MONTH:
+        return day_month_label
+
+    age_label = format_full_years(calculate_full_years(birth_date, today))
+    if normalized_visibility == PROFILE_BIRTHDAY_VISIBILITY_AGE:
+        return age_label
+    return f"{day_month_label} · {age_label}"
 
 
 def normalize_premium_channel_ad_avatar(value: str | None) -> str:
@@ -19102,6 +19164,9 @@ def profile_page(request: Request, db: Session = Depends(get_db)):
     saved_bot_secret_code = get_secret_user_option_value(db, user.id, PROFILE_TELEGRAM_SECRET_CODE_GROUP)
     has_legacy_bot_secret_without_reveal = bool((user.telegram_secret_code_hash or "").strip() and not saved_bot_secret_code)
     profile_social_values = get_user_profile_social_values(db, user.id)
+    profile_birthday_visibility = normalize_profile_birthday_visibility(
+        get_user_option_value(db, user.id, PROFILE_BIRTHDAY_VISIBILITY_GROUP)
+    )
     profile_about_markdown = get_user_option_value(db, user.id, PROFILE_ABOUT_MARKDOWN_GROUP)
     profile_photo_urls = get_user_profile_photo_urls(db, user.id)
     premium_channel_ad_settings = (
@@ -19122,6 +19187,8 @@ def profile_page(request: Request, db: Session = Depends(get_db)):
         has_legacy_bot_secret_without_reveal=has_legacy_bot_secret_without_reveal,
         profile_social_fields=PROFILE_SOCIAL_OPTION_FIELDS,
         profile_social_values=profile_social_values,
+        profile_birthday_visibility=profile_birthday_visibility,
+        profile_birthday_visibility_options=PROFILE_BIRTHDAY_VISIBILITY_OPTIONS,
         profile_about_markdown=profile_about_markdown,
         profile_photo_urls=profile_photo_urls,
         profile_gallery_input="\n".join(profile_photo_urls),
@@ -19149,6 +19216,9 @@ async def profile_update(request: Request, db: Session = Depends(get_db)):
     email = str(form.get("email", "")).strip().lower()
     home_city = str(form.get("home_city", "")).strip()
     birth_date = parse_date(str(form.get("birth_date", "")).strip())
+    birthday_visibility = normalize_profile_birthday_visibility(
+        str(form.get("birthday_visibility", "")).strip()
+    )
     telegram_secret_code = str(form.get("telegram_secret_code", "")).strip()
     profile_about_markdown = normalize_text_line_breaks(str(form.get("profile_about_markdown", "")).strip())
     profile_gallery_input = str(form.get("profile_gallery_input", ""))
@@ -19257,6 +19327,7 @@ async def profile_update(request: Request, db: Session = Depends(get_db)):
         )
 
     set_user_option_value(db, user.id, PROFILE_ABOUT_MARKDOWN_GROUP, profile_about_markdown)
+    set_user_option_value(db, user.id, PROFILE_BIRTHDAY_VISIBILITY_GROUP, birthday_visibility)
     set_user_option_value(db, user.id, EVENT_ORGANIZER_ROLE_GROUP, "1" if is_event_organizer else "")
     replace_user_option_values(db, user.id, PROFILE_PHOTO_URL_GROUP, profile_photo_urls)
     if can_customize_premium_nick_color:
@@ -19285,6 +19356,10 @@ def user_public_card(alias: str, request: Request, db: Session = Depends(get_db)
 
     social_values = get_user_profile_social_values(db, target_user.id)
     social_rows = build_profile_social_rows(social_values)
+    birthday_visibility = normalize_profile_birthday_visibility(
+        get_user_option_value(db, target_user.id, PROFILE_BIRTHDAY_VISIBILITY_GROUP)
+    )
+    birthday_label = public_birthday_label(target_user.birth_date, birthday_visibility)
     profile_about_markdown = get_user_option_value(db, target_user.id, PROFILE_ABOUT_MARKDOWN_GROUP)
     profile_photo_urls = get_user_profile_photo_urls(db, target_user.id)
     nearest_going_festival = public_festival_summary(nearest_going_festival_for_user(db, target_user.id))
@@ -19296,6 +19371,7 @@ def user_public_card(alias: str, request: Request, db: Session = Depends(get_db)
         active_tab=None,
         target_user=target_user,
         social_rows=social_rows,
+        birthday_label=birthday_label,
         nearest_going_festival=nearest_going_festival,
         profile_about_markdown=profile_about_markdown,
         profile_photo_urls=profile_photo_urls,
