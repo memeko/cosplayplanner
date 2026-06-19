@@ -1027,6 +1027,8 @@ ANISEARCH_BIRTHDAYS_MONTH_URL = "https://www.anisearch.com/character/birthdays?m
 HTTP_TIMEOUT_SECONDS = 8
 NETWORK_CACHE_TTL_SECONDS = 60 * 60 * 6
 NETWORK_CACHE: dict[str, tuple[datetime, Any]] = {}
+CHARACTER_BIRTHDAYS_REFRESH_LOCK = threading.Lock()
+CHARACTER_BIRTHDAYS_REFRESHING: set[str] = set()
 MAX_UPLOAD_INPUT_BYTES = 20 * 1024 * 1024
 MAX_GALLERY_IMAGE_BYTES = 30 * 1024
 MAX_GALLERY_IMAGE_WIDTH = 512
@@ -3833,6 +3835,42 @@ def character_birthdays_today(today: date) -> list[dict[str, Any]]:
             )
     items.sort(key=lambda item: str(item.get("name", "")).casefold())
     return items
+
+
+def cached_character_birthdays_today(today: date) -> list[dict[str, Any]]:
+    cache_key = f"character_birthdays_today:{today.isoformat()}"
+    cached = NETWORK_CACHE.get(cache_key)
+    now = datetime.utcnow()
+    if cached:
+        cached_at, payload = cached
+        if (now - cached_at).total_seconds() < NETWORK_CACHE_TTL_SECONDS:
+            return list(payload) if isinstance(payload, list) else []
+
+    with CHARACTER_BIRTHDAYS_REFRESH_LOCK:
+        should_refresh = cache_key not in CHARACTER_BIRTHDAYS_REFRESHING
+        if should_refresh:
+            CHARACTER_BIRTHDAYS_REFRESHING.add(cache_key)
+
+    if should_refresh:
+        def refresh() -> None:
+            try:
+                NETWORK_CACHE[cache_key] = (datetime.utcnow(), character_birthdays_today(today))
+            except Exception:
+                NETWORK_CACHE[cache_key] = (datetime.utcnow(), [])
+            finally:
+                with CHARACTER_BIRTHDAYS_REFRESH_LOCK:
+                    CHARACTER_BIRTHDAYS_REFRESHING.discard(cache_key)
+
+        threading.Thread(
+            target=refresh,
+            name=f"character-birthdays-{today.isoformat()}",
+            daemon=True,
+        ).start()
+
+    if cached:
+        _cached_at, stale_payload = cached
+        return list(stale_payload) if isinstance(stale_payload, list) else []
+    return []
 
 
 def event_matches_day(day_value: date, event: dict[str, Any]) -> bool:
@@ -16773,7 +16811,7 @@ def index(request: Request, db: Session = Depends(get_db)):
         ).scalars().all()
         birthdays_this_week = upcoming_user_birthdays_this_week(users_with_birthdays, today)
         info_events_week = weekly_infopovods(today)
-        character_birthdays_today_rows = character_birthdays_today(today)
+        character_birthdays_today_rows = cached_character_birthdays_today(today)
         unread_notifications = sum(1 for note in regular_notifications if not note.is_read)
         return template_response(
             request,
