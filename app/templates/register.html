@@ -10,6 +10,7 @@
     <label>
       Email
       <input type="email" name="email" required />
+      <small class="muted">Только адреса в доменной зоне .ru или .рф.</small>
     </label>
     <label>
       Пароль
@@ -41,8 +42,104 @@
     </div>
     <button type="submit" class="btn btn-accent" id="register-submit">Создать аккаунт</button>
   </form>
+
+  {% if vkid_enabled %}
+  <div class="top-offset" id="vk-register-wrapper">
+    <h3>Или зарегистрируйтесь через VK</h3>
+    <div id="vkid-register-onetap"></div>
+    <p class="muted" id="vkid-register-error" style="display:none;"></p>
+  </div>
+  {% endif %}
+
+  {% if yandex_oauth_enabled and yandex_oauth_url %}
+  <div class="top-offset">
+    <h3>Или зарегистрируйтесь через Яндекс</h3>
+    <a class="btn btn-accent" href="{{ yandex_oauth_url }}">Зарегистрироваться через Яндекс ID</a>
+  </div>
+  {% endif %}
+
   <p class="muted">Уже есть аккаунт? <a href="/login">Войти</a></p>
 </section>
+{% if vkid_enabled %}
+<script src="https://unpkg.com/@vkid/sdk@<3.0.0/dist-sdk/umd/index.js"></script>
+<script>
+(function () {
+  const errorEl = document.getElementById('vkid-register-error');
+  const container = document.getElementById('vkid-register-onetap');
+  if (!container || !window.VKIDSDK) {
+    return;
+  }
+
+  const VKID = window.VKIDSDK;
+
+  function showVkError(rawError) {
+    if (!errorEl) {
+      return;
+    }
+    let message = 'Не удалось выполнить регистрацию через VK. Попробуйте еще раз.';
+    if (rawError) {
+      if (typeof rawError === 'string') {
+        message = rawError;
+      } else if (rawError.detail) {
+        message = String(rawError.detail);
+      } else if (rawError.message) {
+        message = String(rawError.message);
+      }
+    }
+    errorEl.textContent = message;
+    errorEl.style.display = 'block';
+  }
+
+  VKID.Config.init({
+    app: Number({{ vkid_app_id }}),
+    redirectUrl: {{ vkid_redirect_url|tojson }},
+    responseMode: VKID.ConfigResponseMode.Callback,
+    source: VKID.ConfigSource.LOWCODE,
+    scope: {{ vkid_scope|tojson }}
+  });
+
+  const oneTap = new VKID.OneTap();
+
+  oneTap
+    .render({
+      container: container,
+      showAlternativeLogin: true
+    })
+    .on(VKID.WidgetEvents.ERROR, showVkError)
+    .on(VKID.OneTapInternalEvents.LOGIN_SUCCESS, function (payload) {
+      const code = payload && payload.code;
+      const deviceId = payload && payload.device_id;
+      if (!code || !deviceId) {
+        showVkError('VK ID не вернул данные авторизации.');
+        return;
+      }
+
+      VKID.Auth.exchangeCode(code, deviceId)
+        .then(function (exchangeData) {
+          return fetch('/auth/vk/complete', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: {
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+              id_token: exchangeData && exchangeData.id_token,
+              user_id: exchangeData && exchangeData.user_id
+            })
+          });
+        })
+        .then(async function (response) {
+          const payload = await response.json().catch(function () { return {}; });
+          if (!response.ok || !payload.ok) {
+            throw payload;
+          }
+          window.location.href = payload.redirect || '/cosplan';
+        })
+        .catch(showVkError);
+    });
+})();
+</script>
+{% endif %}
 <script>
   (function () {
     const form = document.getElementById("register-form");

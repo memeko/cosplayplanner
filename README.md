@@ -86,6 +86,10 @@ uvicorn app.main:app --reload
 - `TELEGRAM_LOOP_SLEEP` (пауза цикла воркера, по умолчанию `2`)
 - `APP_BASE_URL` (базовый URL приложения для ссылок восстановления пароля)
 - `PASSWORD_RESET_TOKEN_MINUTES` (TTL ссылки восстановления, по умолчанию `30`)
+- `YANDEX_OAUTH_ENABLED` (`1`/`0`)
+- `YANDEX_CLIENT_ID`
+- `YANDEX_CLIENT_SECRET`
+- `YANDEX_REDIRECT_URI` (по умолчанию `${APP_BASE_URL}/auth/yandex/callback`)
 - `SMTP_HOST`
 - `SMTP_PORT` (обычно `587`)
 - `SMTP_USER`

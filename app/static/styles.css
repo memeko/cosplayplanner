@@ -841,6 +841,11 @@ textarea {
   border-color: #bfdbfe;
 }
 
+.flash-warning {
+  background: #fffbeb;
+  border-color: #facc15;
+}
+
 .inline-check {
   display: inline-flex;
   align-items: center;

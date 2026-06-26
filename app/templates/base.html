@@ -111,6 +111,12 @@
       <div class="flash flash-{{ flash.kind }}">{{ flash.text }}</div>
     {% endif %}
 
+    {% if email_domain_warning %}
+      <div class="flash flash-warning">
+        В профиле указан email вне доменной зоны .ru или .рф. Пожалуйста, смените почту в профиле.
+      </div>
+    {% endif %}
+
     {% if flash and flash.kind == "welcome" %}
       <div class="welcome-overlay" id="welcome-modal">
         <div class="welcome-modal">

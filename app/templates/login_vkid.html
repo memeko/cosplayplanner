@@ -25,6 +25,13 @@
     <p class="muted" id="vkid-error" style="display:none;"></p>
   </div>
   {% endif %}
+
+  {% if yandex_oauth_enabled and yandex_oauth_url %}
+  <div class="top-offset">
+    <h3>Или войдите через Яндекс</h3>
+    <a class="btn btn-accent" href="{{ yandex_oauth_url }}">Войти через Яндекс ID</a>
+  </div>
+  {% endif %}
 </section>
 
 {% if vkid_enabled %}

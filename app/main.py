@@ -717,6 +717,13 @@ VKID_REDIRECT_URL = (
     os.getenv("VKID_REDIRECT_URL", "https://cosplay-planner.ru/") or "https://cosplay-planner.ru/"
 ).strip()
 VKID_SCOPE = (os.getenv("VKID_SCOPE", "") or "").strip()
+YANDEX_OAUTH_ENABLED = to_bool(os.getenv("YANDEX_OAUTH_ENABLED", "1"))
+YANDEX_CLIENT_ID = (os.getenv("YANDEX_CLIENT_ID", "") or "").strip()
+YANDEX_CLIENT_SECRET = (os.getenv("YANDEX_CLIENT_SECRET", "") or "").strip()
+YANDEX_REDIRECT_URI = (
+    os.getenv("YANDEX_REDIRECT_URI", f"{APP_BASE_URL}/auth/yandex/callback")
+    or f"{APP_BASE_URL}/auth/yandex/callback"
+).strip()
 VK_API_VERSION = (os.getenv("VK_API_VERSION", "5.199") or "5.199").strip()
 VK_API_TOKEN = (os.getenv("VK_API_TOKEN", "") or os.getenv("VK_IMPORT_TOKEN", "") or "").strip()
 VK_IMPORT_ENABLED = bool(VK_API_TOKEN) and to_bool(os.getenv("VK_IMPORT_ENABLED", "1"))
@@ -754,6 +761,9 @@ COSPLAY2_IMPORT_SOURCE_LABEL = "cos2"
 RAF_IMPORT_SOURCE_LABEL = "raf"
 STUDIO_ARTICLE_IMPORT_SOURCE_LABEL = "cosplay_studio"
 VKID_PUBLIC_INFO_URL = "https://id.vk.ru/oauth2/public_info"
+YANDEX_AUTHORIZE_URL = "https://oauth.yandex.ru/authorize"
+YANDEX_TOKEN_URL = "https://oauth.yandex.ru/token"
+YANDEX_USERINFO_URL = "https://login.yandex.ru/info"
 IMPORT_SOURCE_LABELS = {
     MASTER_IMPORT_SOURCE_LABEL: "Cosplay Team",
     COSPLAY2_IMPORT_SOURCE_LABEL: "взято с Cos2",
@@ -1251,6 +1261,7 @@ def apply_schema_migrations() -> None:
             ("vk_bot_linked_at", "DATETIME"),
             ("vk_user_id", "VARCHAR(64)"),
             ("vk_screen_name", "VARCHAR(255)"),
+            ("yandex_user_id", "VARCHAR(64)"),
             ("avatar_path", "VARCHAR(255)"),
         ],
         "cosplan_cards": [
@@ -1702,6 +1713,12 @@ def apply_schema_migrations() -> None:
             text(
                 "CREATE INDEX IF NOT EXISTS ix_users_vk_screen_name "
                 "ON users (vk_screen_name)"
+            )
+        )
+        conn.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ix_users_yandex_user_id "
+                "ON users (yandex_user_id)"
             )
         )
         conn.execute(
@@ -14753,6 +14770,24 @@ def extract_vk_email(payload: dict[str, Any]) -> str:
     return email_value
 
 
+def normalize_email(value: str | None) -> str:
+    return str(value or "").strip().lower()
+
+
+def email_has_allowed_domain(value: str | None) -> bool:
+    email_value = normalize_email(value)
+    if not email_value or "@" not in email_value:
+        return False
+    local_part, domain = email_value.rsplit("@", 1)
+    if not local_part or not domain or "." not in domain:
+        return False
+    return domain.endswith(".ru") or domain.endswith(".рф") or domain.endswith(".xn--p1ai")
+
+
+def allowed_email_domain_message() -> str:
+    return "Укажите email в доменной зоне .ru или .рф."
+
+
 def fetch_vk_public_profile(id_token: str) -> dict[str, Any]:
     try:
         response = requests.post(
@@ -14843,6 +14878,29 @@ def build_unique_email(db: Session, preferred_email: str, vk_user_id: str) -> st
     return candidate
 
 
+def build_unique_provider_email(db: Session, provider_prefix: str, provider_user_id: str) -> str:
+    safe_prefix = re.sub(r"[^a-z0-9_-]+", "", provider_prefix.lower()) or "oauth"
+    safe_user_id = re.sub(r"[^A-Za-z0-9_-]+", "_", str(provider_user_id or "").strip()).strip("_")
+    if not safe_user_id:
+        safe_user_id = secrets.token_hex(6)
+    base_local = f"{safe_prefix}_{safe_user_id}"
+    candidate = f"{base_local}@oauth.local"
+    counter = 2
+    while db.execute(select(User.id).where(User.email == candidate)).first() is not None:
+        candidate = f"{base_local}_{counter}@oauth.local"
+        counter += 1
+    return candidate
+
+
+def seed_new_user_data(db: Session, user: User) -> None:
+    approved_announcements = db.execute(
+        select(FestivalAnnouncement).where(FestivalAnnouncement.status == ANNOUNCEMENT_STATUS_APPROVED)
+    ).scalars().all()
+    for announcement in approved_announcements:
+        propagate_approved_announcement(db, announcement, target_user_ids=[user.id])
+    propagate_shared_festivals_to_user(db, user_id=user.id)
+
+
 def upsert_user_by_vk(
     db: Session,
     vk_profile: dict[str, Any],
@@ -14890,18 +14948,159 @@ def upsert_user_by_vk(
         user.vk_user_id = vk_user_id
 
     if created_new:
-        approved_announcements = db.execute(
-            select(FestivalAnnouncement).where(FestivalAnnouncement.status == ANNOUNCEMENT_STATUS_APPROVED)
-        ).scalars().all()
-        for announcement in approved_announcements:
-            propagate_approved_announcement(db, announcement, target_user_ids=[user.id])
-        propagate_shared_festivals_to_user(db, user_id=user.id)
+        seed_new_user_data(db, user)
 
     try:
         db.commit()
     except IntegrityError as exc:
         db.rollback()
         raise ValueError("Не удалось завершить авторизацию VK. Попробуйте ещё раз.") from exc
+
+    db.refresh(user)
+    return user
+
+
+def yandex_oauth_is_configured() -> bool:
+    return bool(YANDEX_OAUTH_ENABLED and YANDEX_CLIENT_ID and YANDEX_CLIENT_SECRET and YANDEX_REDIRECT_URI)
+
+
+def build_yandex_authorize_url(request: Request, *, mode: str = "login") -> str:
+    if not yandex_oauth_is_configured():
+        return ""
+    normalized_mode = "register" if mode == "register" else "login"
+    state_payload = f"{normalized_mode}:{secrets.token_urlsafe(24)}"
+    request.session["yandex_oauth_state"] = state_payload
+    query = {
+        "response_type": "code",
+        "client_id": YANDEX_CLIENT_ID,
+        "redirect_uri": YANDEX_REDIRECT_URI,
+        "state": state_payload,
+    }
+    return f"{YANDEX_AUTHORIZE_URL}?{urlencode(query)}"
+
+
+def exchange_yandex_code_for_token(code: str) -> str:
+    try:
+        response = requests.post(
+            YANDEX_TOKEN_URL,
+            data={
+                "grant_type": "authorization_code",
+                "code": code,
+                "client_id": YANDEX_CLIENT_ID,
+                "client_secret": YANDEX_CLIENT_SECRET,
+                "redirect_uri": YANDEX_REDIRECT_URI,
+            },
+            timeout=HTTP_TIMEOUT_SECONDS,
+        )
+    except requests.RequestException as exc:
+        raise RuntimeError("Не удалось связаться с Яндекс ID. Попробуйте позже.") from exc
+
+    if response.status_code != 200:
+        raise RuntimeError("Яндекс ID не выдал токен авторизации.")
+
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise RuntimeError("Яндекс ID вернул некорректный ответ токена.") from exc
+
+    access_token = str(payload.get("access_token") or "").strip() if isinstance(payload, dict) else ""
+    if not access_token:
+        raise RuntimeError("Яндекс ID не вернул access_token.")
+    return access_token
+
+
+def fetch_yandex_profile(access_token: str) -> dict[str, Any]:
+    try:
+        response = requests.get(
+            YANDEX_USERINFO_URL,
+            params={"format": "json"},
+            headers={"Authorization": f"OAuth {access_token}"},
+            timeout=HTTP_TIMEOUT_SECONDS,
+        )
+    except requests.RequestException as exc:
+        raise RuntimeError("Не удалось получить профиль Яндекс ID. Попробуйте позже.") from exc
+
+    if response.status_code != 200:
+        raise RuntimeError("Яндекс ID временно недоступен.")
+
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise RuntimeError("Яндекс ID вернул некорректный профиль.") from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError("Яндекс ID вернул некорректный профиль.")
+
+    yandex_user_id = str(payload.get("id") or "").strip()
+    if not yandex_user_id:
+        raise RuntimeError("В ответе Яндекс ID отсутствует id пользователя.")
+
+    default_email = normalize_email(payload.get("default_email"))
+    if not default_email and isinstance(payload.get("emails"), list):
+        for item in payload.get("emails") or []:
+            candidate = normalize_email(str(item or ""))
+            if "@" in candidate:
+                default_email = candidate
+                break
+
+    return {
+        "id": yandex_user_id,
+        "email": default_email if "@" in default_email else "",
+        "login": str(payload.get("login") or "").strip(),
+        "display_name": str(payload.get("display_name") or "").strip(),
+        "real_name": str(payload.get("real_name") or "").strip(),
+        "first_name": str(payload.get("first_name") or "").strip(),
+        "last_name": str(payload.get("last_name") or "").strip(),
+    }
+
+
+def upsert_user_by_yandex(db: Session, yandex_profile: dict[str, Any]) -> User:
+    yandex_user_id = str(yandex_profile.get("id") or "").strip()
+    if not yandex_user_id:
+        raise ValueError("Яндекс ID не вернул идентификатор пользователя.")
+
+    user_by_yandex = db.execute(select(User).where(User.yandex_user_id == yandex_user_id)).scalar_one_or_none()
+    email_candidate = normalize_email(yandex_profile.get("email"))
+    user_by_email = None
+    if email_candidate:
+        user_by_email = db.execute(select(User).where(User.email == email_candidate)).scalar_one_or_none()
+
+    if user_by_yandex and user_by_email and user_by_yandex.id != user_by_email.id:
+        raise ValueError("Этот Яндекс ID уже связан с другим профилем Cosplay Planner.")
+
+    created_new = False
+    user = user_by_yandex or user_by_email
+    if user is None:
+        preferred_name = (
+            str(yandex_profile.get("display_name") or "").strip()
+            or str(yandex_profile.get("login") or "").strip()
+            or str(yandex_profile.get("real_name") or "").strip()
+            or f"yandex_{yandex_user_id}"
+        )
+        email_value = email_candidate
+        if not email_value or db.execute(select(User.id).where(User.email == email_value)).first() is not None:
+            email_value = build_unique_provider_email(db, "yandex", yandex_user_id)
+        user = User(
+            username=build_unique_username(db, preferred=preferred_name, fallback_seed=yandex_user_id),
+            email=email_value,
+            password_hash=password_context.hash(secrets.token_urlsafe(24)),
+            yandex_user_id=yandex_user_id,
+        )
+        db.add(user)
+        db.flush()
+        created_new = True
+    else:
+        if user.yandex_user_id and user.yandex_user_id != yandex_user_id:
+            raise ValueError("Этот Яндекс ID уже привязан к другому пользователю.")
+        user.yandex_user_id = yandex_user_id
+
+    if created_new:
+        seed_new_user_data(db, user)
+
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise ValueError("Не удалось завершить авторизацию Яндекс ID. Попробуйте ещё раз.") from exc
 
     db.refresh(user)
     return user
@@ -14941,6 +15140,12 @@ def template_response(
     status_code: int = 200,
     **context: Any,
 ) -> HTMLResponse:
+    yandex_oauth_url = ""
+    if request.url.path in {"/login", "/register"}:
+        yandex_oauth_url = build_yandex_authorize_url(
+            request,
+            mode="register" if request.url.path == "/register" else "login",
+        )
     payload = {
         "request": request,
         "user": user,
@@ -14966,6 +15171,10 @@ def template_response(
         "vkid_app_id": VKID_APP_ID,
         "vkid_redirect_url": VKID_REDIRECT_URL,
         "vkid_scope": VKID_SCOPE,
+        "yandex_oauth_enabled": yandex_oauth_is_configured(),
+        "yandex_oauth_url": yandex_oauth_url,
+        "yandex_redirect_uri": YANDEX_REDIRECT_URI,
+        "email_domain_warning": bool(user and not email_has_allowed_domain(user.email)),
         "vk_bot_enabled": VK_BOT_ENABLED,
         "vk_bot_link_url": f"https://vk.me/{VK_BOT_COMMUNITY_DOMAIN}" if VK_BOT_COMMUNITY_DOMAIN else "",
         "site_url": SITE_URL,
@@ -17180,7 +17389,7 @@ def register_page(request: Request, db: Session = Depends(get_db)):
 async def register_submit(request: Request, db: Session = Depends(get_db)):
     form = await request.form()
     username = str(form.get("username", "")).strip()
-    email = str(form.get("email", "")).strip().lower()
+    email = normalize_email(form.get("email"))
     password = str(form.get("password", ""))
     password2 = str(form.get("password_confirm", ""))
     telegram_secret_code = str(form.get("telegram_secret_code", "")).strip()
@@ -17188,6 +17397,10 @@ async def register_submit(request: Request, db: Session = Depends(get_db)):
 
     if not username or not email or not password:
         add_flash(request, "Заполните все обязательные поля.", "error")
+        return redirect("/register")
+
+    if not email_has_allowed_domain(email):
+        add_flash(request, allowed_email_domain_message(), "error")
         return redirect("/register")
 
     if password != password2:
@@ -17318,6 +17531,66 @@ def profile_vk_unlink(request: Request, db: Session = Depends(get_db)):
     return redirect("/profile")
 
 
+@app.get("/auth/yandex/start")
+def auth_yandex_start(request: Request, mode: str = "login"):
+    if not yandex_oauth_is_configured():
+        add_flash(request, "Вход через Яндекс ID пока не настроен.", "error")
+        return redirect("/login")
+    return RedirectResponse(build_yandex_authorize_url(request, mode=mode), status_code=302)
+
+
+@app.get("/auth/yandex/callback")
+def auth_yandex_callback(
+    request: Request,
+    code: str = "",
+    state: str = "",
+    error: str = "",
+    error_description: str = "",
+    db: Session = Depends(get_db),
+):
+    expected_state = str(request.session.get("yandex_oauth_state") or "")
+    request.session.pop("yandex_oauth_state", None)
+    mode = "register" if expected_state.startswith("register:") else "login"
+    fallback_url = "/register" if mode == "register" else "/login"
+
+    if not yandex_oauth_is_configured():
+        add_flash(request, "Вход через Яндекс ID пока не настроен.", "error")
+        return redirect(fallback_url)
+
+    if error:
+        detail = str(error_description or error).strip()
+        add_flash(request, f"Яндекс ID отклонил авторизацию: {detail}", "error")
+        return redirect(fallback_url)
+
+    if not expected_state or not state or not hmac.compare_digest(expected_state, state):
+        add_flash(request, "Сессия авторизации Яндекс ID устарела. Попробуйте ещё раз.", "error")
+        return redirect(fallback_url)
+
+    auth_code = str(code or "").strip()
+    if not auth_code:
+        add_flash(request, "Яндекс ID не вернул код авторизации.", "error")
+        return redirect(fallback_url)
+
+    try:
+        access_token = exchange_yandex_code_for_token(auth_code)
+        yandex_profile = fetch_yandex_profile(access_token)
+        user = upsert_user_by_yandex(db, yandex_profile)
+    except ValueError as exc:
+        add_flash(request, str(exc), "error")
+        return redirect(fallback_url)
+    except RuntimeError as exc:
+        add_flash(request, str(exc), "error")
+        return redirect(fallback_url)
+
+    request.session["user_id"] = user.id
+    add_flash(request, "Вход через Яндекс ID выполнен.", "success")
+    return redirect(
+        "/my-calendar?view=content&content_scope=client"
+        if to_bool(get_user_option_value(db, user.id, SMM_MANAGER_ROLE_GROUP))
+        else "/cosplan"
+    )
+
+
 @app.get("/forgot-password", response_class=HTMLResponse)
 def forgot_password_page(request: Request, db: Session = Depends(get_db)):
     user = current_user(request, db)
@@ -17329,7 +17602,7 @@ def forgot_password_page(request: Request, db: Session = Depends(get_db)):
 @app.post("/forgot-password")
 async def forgot_password_submit(request: Request, db: Session = Depends(get_db)):
     form = await request.form()
-    email = str(form.get("email", "")).strip().lower()
+    email = normalize_email(form.get("email"))
     if not email:
         add_flash(request, "Введите email.", "error")
         return redirect("/forgot-password")
@@ -19260,6 +19533,10 @@ async def profile_update(request: Request, db: Session = Depends(get_db)):
 
     if len(profile_about_markdown) > 8000:
         add_flash(request, "Поле «О себе» слишком длинное (до 8000 символов).", "error")
+        return redirect("/profile")
+
+    if not email_has_allowed_domain(email):
+        add_flash(request, allowed_email_domain_message(), "error")
         return redirect("/profile")
 
     profile_photo_urls = parse_profile_photo_input(profile_gallery_input)
