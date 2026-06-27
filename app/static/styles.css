@@ -1,4 +1,5 @@
 @import url("https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&display=swap");
 
 :root {
   --bg: #d6ecf5;
@@ -3141,63 +3142,573 @@ textarea {
   background: #ffffff;
 }
 
-.landing-hero {
-  min-height: 50vh;
-  display: grid;
-  gap: 12px;
-  place-items: center;
-  text-align: center;
-  padding: 28px 18px;
+body.landing-page {
+  background: #000;
+  color: #fff;
 }
 
-.landing-logo-wrap {
-  width: min(30vw, 200px);
-  max-width: 30vw;
+body.landing-page::before,
+body.landing-page::after,
+body.landing-page .site-bg-foxy,
+body.landing-page .site-bg-star2,
+body.landing-page .topbar,
+body.landing-page .site-footnote {
+  display: none;
+}
+
+body.landing-page main.container {
+  width: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+.landing-cinematic {
+  position: relative;
+  min-height: 96vh;
+  min-height: 96svh;
+  overflow: hidden;
+  background: #000;
+  isolation: isolate;
+  display: flex;
+  flex-direction: column;
+}
+
+.landing-video {
+  position: absolute;
+  inset: 0;
+  z-index: -3;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.landing-video-vignette {
+  position: absolute;
+  inset: 0;
+  z-index: -2;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at 50% 42%, rgba(93, 173, 226, 0.18), rgba(93, 173, 226, 0) 34%),
+    radial-gradient(circle at 54% 84%, rgba(86, 103, 181, 0.22), rgba(10, 64, 96, 0.78) 72%),
+    linear-gradient(180deg, rgba(7, 45, 72, 0.82) 0%, rgba(20, 94, 142, 0.42) 34%, rgba(23, 50, 111, 0.88) 100%);
+}
+
+.liquid-glass {
+  position: relative;
+  overflow: hidden;
+  border: none;
+  background: rgba(255, 255, 255, 0.01);
+  background-blend-mode: luminosity;
+  box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.1);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+
+.liquid-glass::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1.4px;
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.45) 0%,
+    rgba(255, 255, 255, 0.15) 20%,
+    rgba(255, 255, 255, 0) 40%,
+    rgba(255, 255, 255, 0) 60%,
+    rgba(255, 255, 255, 0.15) 80%,
+    rgba(255, 255, 255, 0.45) 100%
+  );
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+}
+
+.landing-nav {
+  position: relative;
+  z-index: 20;
+  padding: 24px;
+}
+
+.landing-nav-inner {
+  width: min(100%, 1040px);
+  margin: 0 auto;
+  border-radius: 999px;
+  padding: 12px 22px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 26px;
+}
+
+.landing-brand,
+.landing-nav-links,
+.landing-auth-actions,
+.landing-socials {
+  display: flex;
+  align-items: center;
+}
+
+.landing-brand {
+  color: #fff;
+  text-decoration: none;
+  gap: 10px;
+  font-weight: 700;
+  font-size: 1.02rem;
+  white-space: nowrap;
+}
+
+.landing-icon,
+.landing-brand svg,
+.landing-socials svg,
+.landing-float-icon svg,
+.landing-orbit-core svg,
+.landing-carousel-btn svg,
+.landing-start button svg {
+  width: 24px;
+  height: 24px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.landing-nav-links {
+  gap: 30px;
+}
+
+.landing-nav-links a,
+.landing-signup {
+  color: rgba(255, 255, 255, 0.8);
+  text-decoration: none;
+  font-size: 0.92rem;
+  font-weight: 600;
+  transition: color 0.16s ease;
+}
+
+.landing-nav-links a:hover,
+.landing-signup:hover {
+  color: #fff;
+}
+
+.landing-auth-actions {
+  gap: 16px;
+}
+
+.landing-login {
+  color: #fff;
+  text-decoration: none;
+  border-radius: 999px;
+  padding: 9px 24px;
+  font-size: 0.92rem;
+  font-weight: 700;
+}
+
+.landing-hero {
+  position: relative;
+  z-index: 10;
+  flex: 1;
+  width: min(1160px, calc(100% - 48px));
+  margin: 0 auto;
+  display: grid;
+  grid-template-columns: minmax(0, 1.02fr) minmax(320px, 0.98fr);
+  align-items: center;
+  gap: clamp(24px, 5vw, 72px);
+  padding: 38px 0 92px;
+}
+
+.landing-copy {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  text-align: left;
+}
+
+.landing-kicker {
+  border-radius: 999px;
+  margin: 0 0 18px;
+  padding: 9px 16px;
+  color: rgba(255, 255, 255, 0.86);
+  font-size: 0.86rem;
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
+.landing-copy h1 {
+  max-width: 760px;
+  margin: 0 0 26px;
+  color: #fff;
+  font-size: clamp(3.35rem, 7vw, 6.9rem);
+  line-height: 0.88;
+  font-weight: 400;
+  letter-spacing: 0;
+}
+
+.landing-start {
+  width: min(100%, 580px);
+  border-radius: 999px;
+  padding: 8px 8px 8px 24px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.landing-start input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: #fff;
+  font: inherit;
+  font-size: 1rem;
+}
+
+.landing-start input::placeholder {
+  color: rgba(255, 255, 255, 0.44);
+}
+
+.landing-start button {
+  flex: 0 0 auto;
+  width: 46px;
+  height: 46px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 999px;
+  background: #fff;
+  color: #050505;
+  cursor: pointer;
+  transition: transform 0.16s ease, background 0.16s ease;
+}
+
+.landing-start button:hover {
+  transform: translateX(2px);
+  background: #f2f7ff;
+}
+
+.landing-start button svg {
+  width: 20px;
+  height: 20px;
+}
+
+.landing-subtitle {
+  width: min(100%, 620px);
+  margin: 16px 0 20px;
+  padding: 0 4px;
+  color: rgba(255, 255, 255, 0.82);
+  font-size: 0.98rem;
+  line-height: 1.7;
+}
+
+.landing-manifesto {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 46px;
+  border-radius: 999px;
+  padding: 12px 28px;
+  color: #fff;
+  text-decoration: none;
+  font-size: 0.92rem;
+  font-weight: 700;
+  transition: background 0.16s ease, transform 0.16s ease;
+}
+
+.landing-manifesto:hover,
+.landing-socials a:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.landing-orbit-stage {
+  position: relative;
+  justify-self: center;
+  width: min(42vw, 490px);
+  min-width: 320px;
+  aspect-ratio: 1 / 1;
+  display: grid;
+  place-items: center;
+}
+
+.landing-orbit {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  pointer-events: none;
+  animation: landingOrbit 13s linear infinite;
+}
+
+.orbit-two {
+  animation-duration: 17s;
+  animation-direction: reverse;
+}
+
+.orbit-three {
+  animation-duration: 20s;
+}
+
+.orbit-four {
+  animation-duration: 11s;
+  animation-direction: reverse;
+}
+
+.orbit-five {
+  animation-duration: 23s;
+}
+
+.orbit-six {
+  animation-duration: 15s;
+  animation-direction: reverse;
+}
+
+.landing-float-card,
+.landing-float-icon {
+  position: absolute;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  border-radius: 999px;
+  white-space: nowrap;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.28), inset 0 1px 1px rgba(255, 255, 255, 0.12);
+  animation: landingCounterOrbit 13s linear infinite;
+}
+
+.landing-float-card {
+  padding: 10px 16px;
+  font-size: 0.84rem;
+  font-weight: 800;
+}
+
+.landing-float-icon {
+  width: 54px;
+  height: 54px;
+}
+
+.orbit-two .landing-float-card {
+  animation-duration: 17s;
+  animation-direction: reverse;
+}
+
+.orbit-three .landing-float-card {
+  animation-duration: 20s;
+}
+
+.orbit-four .landing-float-icon {
+  animation-duration: 11s;
+  animation-direction: reverse;
+}
+
+.orbit-five .landing-float-card {
+  animation-duration: 23s;
+}
+
+.orbit-six .landing-float-card {
+  animation-duration: 15s;
+  animation-direction: reverse;
+}
+
+.float-deadlines {
+  top: 7%;
+  left: 36%;
+}
+
+.float-festivals {
+  right: -3%;
+  top: 48%;
+}
+
+.float-photos {
+  left: 4%;
+  bottom: 12%;
+}
+
+.orbit-four .landing-float-icon {
+  right: 11%;
+  top: 14%;
+}
+
+.float-events {
+  left: 14%;
+  top: 22%;
+}
+
+.float-storyboard {
+  right: 14%;
+  bottom: 10%;
+}
+
+.landing-orbit-core {
+  position: relative;
+  z-index: 2;
+  width: min(42%, 176px);
   aspect-ratio: 1 / 1;
   border-radius: 999px;
-  border: 1px solid var(--line-strong);
-  background: linear-gradient(165deg, rgba(255, 255, 255, 0.82), rgba(255, 255, 255, 0.56));
   display: grid;
   place-items: center;
-  margin-inline: auto;
-  box-shadow: var(--glass-shadow), var(--glass-highlight);
-  backdrop-filter: blur(var(--glass-blur)) saturate(140%);
-  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(140%);
+  color: rgba(255, 255, 255, 0.72);
+  box-shadow: 0 26px 80px rgba(0, 0, 0, 0.36), inset 0 1px 1px rgba(255, 255, 255, 0.1);
 }
 
-.landing-logo {
-  width: 62%;
-  height: 62%;
+.landing-orbit-core svg {
+  width: 46%;
+  height: 46%;
+  opacity: 0.72;
 }
 
-.landing-actions {
+.landing-socials {
+  position: absolute;
+  z-index: 12;
+  left: 50%;
+  bottom: 32px;
+  transform: translateX(-50%);
   justify-content: center;
+  gap: 16px;
+}
+
+.landing-socials a {
+  width: 52px;
+  height: 52px;
+  border-radius: 999px;
+  color: rgba(255, 255, 255, 0.78);
+  display: grid;
+  place-items: center;
+  transition: color 0.16s ease, background 0.16s ease, transform 0.16s ease;
+}
+
+.landing-socials a:hover {
+  color: #fff;
+  transform: translateY(-2px);
+}
+
+.landing-socials svg {
+  width: 20px;
+  height: 20px;
+}
+
+.landing-feature-band {
+  position: relative;
+  z-index: 2;
+  margin-top: -56px;
+  background:
+    radial-gradient(circle at 16% 0%, rgba(59, 177, 218, 0.22), rgba(0, 0, 0, 0) 34%),
+    linear-gradient(180deg, #05070b 0%, #08121a 100%);
+  color: #fff;
+  padding: 96px max(24px, calc((100vw - 1160px) / 2)) 76px;
+}
+
+.landing-feature-head {
+  display: grid;
+  grid-template-columns: minmax(0, 0.72fr) minmax(260px, 0.78fr);
+  gap: 28px;
+  align-items: end;
+  margin-bottom: 22px;
+}
+
+.landing-feature-head h2 {
+  margin: 0;
+  color: #fff;
+  font-size: clamp(2rem, 4vw, 4rem);
+  line-height: 0.98;
+  font-weight: 800;
+}
+
+.landing-feature-head p {
+  margin: 0;
+  color: rgba(255, 255, 255, 0.72);
+  line-height: 1.7;
+}
+
+.landing-carousel {
+  position: relative;
+  display: grid;
+  grid-template-columns: 54px minmax(0, 1fr) 54px;
+  gap: 16px;
+  align-items: center;
 }
 
 .landing-features {
-  display: grid;
-  gap: 10px;
-  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
-  margin-top: 12px;
+  display: flex;
+  gap: 16px;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scroll-snap-type: x mandatory;
+  scroll-padding-inline: 2px;
+  padding: 4px 2px 18px;
+  scrollbar-color: rgba(255, 255, 255, 0.28) transparent;
+}
+
+.landing-features::-webkit-scrollbar {
+  height: 8px;
+}
+
+.landing-features::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.landing-features::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.24);
 }
 
 .landing-feature {
-  border: 1px solid var(--line-strong);
-  background: linear-gradient(160deg, rgba(255, 255, 255, 0.66), rgba(255, 255, 255, 0.42));
-  border-radius: 14px;
-  padding: 12px;
-  box-shadow: var(--glass-shadow-soft), var(--glass-highlight-soft);
-  backdrop-filter: blur(calc(var(--glass-blur) * 0.7)) saturate(140%);
-  -webkit-backdrop-filter: blur(calc(var(--glass-blur) * 0.7)) saturate(140%);
+  flex: 0 0 min(76vw, 420px);
+  min-height: 270px;
+  scroll-snap-align: center;
+  border-radius: 8px;
+  padding: 24px;
+  background: rgba(255, 255, 255, 0.07);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14), 0 18px 38px rgba(0, 0, 0, 0.18);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
 }
 
 .landing-feature h3 {
-  margin-bottom: 6px;
+  margin-bottom: 14px;
+  color: #fff;
+  font-size: 1.42rem;
 }
 
 .landing-feature p {
   margin: 0;
-  color: var(--muted);
+  color: rgba(255, 255, 255, 0.72);
+  line-height: 1.65;
+}
+
+.landing-carousel-btn {
+  width: 54px;
+  height: 54px;
+  border: 0;
+  border-radius: 999px;
+  color: #fff;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  transition: background 0.16s ease, transform 0.16s ease;
+}
+
+.landing-carousel-btn:hover {
+  background: rgba(255, 255, 255, 0.06);
+  transform: translateY(-2px);
+}
+
+.landing-carousel-btn svg {
+  width: 24px;
+  height: 24px;
+}
+
+@keyframes landingOrbit {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes landingCounterOrbit {
+  to {
+    transform: rotate(-360deg);
+  }
 }
 
 .register-policy-note {
@@ -3503,6 +4014,18 @@ textarea {
   .card {
     background: rgba(255, 255, 255, 0.68);
   }
+
+  body.landing-page .landing-feature {
+    background: rgba(255, 255, 255, 0.08);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .landing-orbit,
+  .landing-float-card,
+  .landing-float-icon {
+    animation: none;
+  }
 }
 
 @media (max-width: 900px) {
@@ -3518,6 +4041,113 @@ textarea {
   .site-bg-star2 {
     width: min(98vw, 760px);
     height: min(72vh, 620px);
+  }
+
+  body.landing-page main {
+    padding-bottom: 0;
+  }
+
+  .landing-nav {
+    padding: 16px;
+  }
+
+  .landing-nav-inner {
+    gap: 14px;
+    padding: 10px 14px;
+  }
+
+  .landing-nav-links {
+    display: none;
+  }
+
+  .landing-brand span {
+    max-width: 42vw;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .landing-auth-actions {
+    gap: 10px;
+  }
+
+  .landing-signup {
+    display: none;
+  }
+
+  .landing-login {
+    padding: 8px 18px;
+  }
+
+  .landing-hero {
+    width: min(100% - 32px, 620px);
+    grid-template-columns: 1fr;
+    gap: 8px;
+    padding: 8px 0 104px;
+    transform: translateY(0);
+  }
+
+  .landing-copy {
+    align-items: center;
+    text-align: center;
+  }
+
+  .landing-copy h1 {
+    font-size: clamp(2.7rem, 10vw, 4rem);
+    line-height: 0.9;
+    max-width: 560px;
+    margin-bottom: 18px;
+  }
+
+  .landing-subtitle {
+    padding: 0;
+  }
+
+  .landing-orbit-stage {
+    order: -1;
+    width: min(60vw, 300px);
+    min-width: 210px;
+  }
+
+  .landing-float-card {
+    padding: 8px 12px;
+    font-size: 0.78rem;
+  }
+
+  .landing-float-icon {
+    width: 44px;
+    height: 44px;
+  }
+
+  .landing-socials {
+    bottom: 24px;
+  }
+
+  .landing-feature-band {
+    padding: 74px 18px 64px;
+  }
+
+  .landing-feature-head {
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+
+  .landing-carousel {
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+
+  .landing-carousel-btn {
+    display: none;
+  }
+
+  .landing-features {
+    margin-inline: -6px;
+    padding-inline: 6px;
+  }
+
+  .landing-feature {
+    flex-basis: min(84vw, 360px);
+    min-height: 310px;
   }
 
   .two-col,

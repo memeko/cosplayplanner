@@ -9,7 +9,7 @@
     </label>
     <label>
       Email
-      <input type="email" name="email" required />
+      <input type="email" name="email" value="{{ pending_email or '' }}" required />
       <small class="muted">Только адреса в доменной зоне .ru или .рф.</small>
     </label>
     <label>
@@ -33,6 +33,21 @@
       Я – СММ-менеджер
     </label>
     <p class="muted">Для такого аккаунта после регистрации будут доступны главная страница, профиль и отдельный сервис «Контент-план».</p>
+    <label>
+      Код подтверждения из письма
+      <input
+        type="text"
+        name="email_verification_code"
+        inputmode="numeric"
+        pattern="[0-9]{6}"
+        autocomplete="one-time-code"
+        placeholder="6 цифр"
+      />
+      <small class="muted">
+        Сначала отправьте форму без кода. Мы пришлем код на email; после этого введите его здесь и снова нажмите кнопку.
+        Код действует {{ registration_code_minutes }} минут.
+      </small>
+    </label>
     <p class="muted register-policy-note">
       При регистрации соглашаюсь с
       <a href="/privacy-policy" target="_blank" rel="noreferrer">Политикой обработки персональных данных</a>.
@@ -40,7 +55,7 @@
     <div class="flash flash-info register-progress-note" id="register-progress-note" hidden>
       Регистрируем аккаунт, это может занять несколько секунд.
     </div>
-    <button type="submit" class="btn btn-accent" id="register-submit">Создать аккаунт</button>
+    <button type="submit" class="btn btn-accent" id="register-submit">Получить код / создать аккаунт</button>
   </form>
 
   {% if vkid_enabled %}
@@ -154,7 +169,7 @@
         return;
       }
       submitButton.disabled = true;
-      submitButton.textContent = "Регистрируем...";
+      submitButton.textContent = "Отправляем...";
       progressNote.hidden = false;
     });
   })();

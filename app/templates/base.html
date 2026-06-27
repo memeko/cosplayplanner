@@ -24,7 +24,8 @@
   <meta name="twitter:card" content="summary" />
   <meta name="twitter:title" content="{{ seo_title }}" />
   <meta name="twitter:description" content="{{ seo_description }}" />
-  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg" />
+  <link rel="icon" type="image/png" href="/static/favicon.png" />
+  <link rel="apple-touch-icon" href="/static/icon-192.png" />
   <link rel="manifest" href="/static/site.webmanifest" />
   <link rel="stylesheet" href="/static/styles.css" />
   <script>
@@ -53,7 +54,7 @@
   </script>
   <!-- /Yandex.Metrika counter -->
 </head>
-<body>
+<body class="{% if request.url.path == '/' and not user %}landing-page{% endif %}">
   <noscript><div><img src="https://mc.yandex.ru/watch/108331088" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
   <div class="site-bg-foxy" aria-hidden="true"></div>
   <div class="site-bg-star2" aria-hidden="true"></div>
@@ -137,6 +138,7 @@
   <footer class="site-footnote">
     По вопросам и предложениям: Братец Лис
     <a href="https://t.me/brfox_cosplay" target="_blank" rel="noreferrer" class="btn btn-small btn-platform">Телеграм</a>
+    <a href="mailto:remydes@vk.com" class="btn btn-small">remydes@vk.com</a>
   </footer>
   {% endif %}
 

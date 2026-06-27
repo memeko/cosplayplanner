@@ -89,6 +89,7 @@ from .models import (
     ProjectSearchPost,
     ProjectSearchComment,
     PersonalCalendarEvent,
+    PendingRegistration,
     PasswordResetToken,
     PhotoContest,
     PhotoContestEntry,
@@ -238,6 +239,14 @@ async def apply_transport_security_headers(request: Request, call_next: Callable
 
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 templates = Jinja2Templates(directory="app/templates")
+
+
+@app.get("/c441fe8909f6a915e4005dda41699283.txt", include_in_schema=False)
+def mailjet_domain_verification_file() -> FileResponse:
+    return FileResponse(
+        "app/static/c441fe8909f6a915e4005dda41699283.txt",
+        media_type="text/plain",
+    )
 
 password_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 RU_MONTH_NAMES = [
@@ -710,6 +719,8 @@ SMTP_FROM_EMAIL = (os.getenv("SMTP_FROM_EMAIL", "") or SMTP_USER).strip()
 SMTP_USE_TLS = to_bool(os.getenv("SMTP_USE_TLS", "1"))
 SMTP_USE_SSL = to_bool(os.getenv("SMTP_USE_SSL", "0"))
 PASSWORD_RESET_TOKEN_MINUTES = max(5, min(24 * 60, int(os.getenv("PASSWORD_RESET_TOKEN_MINUTES", "30") or "30")))
+REGISTRATION_CODE_MINUTES = max(5, min(60, int(os.getenv("REGISTRATION_CODE_MINUTES", "15") or "15")))
+REGISTRATION_CODE_MAX_ATTEMPTS = max(3, min(10, int(os.getenv("REGISTRATION_CODE_MAX_ATTEMPTS", "5") or "5")))
 
 VKID_ENABLED = to_bool(os.getenv("VKID_ENABLED", "1"))
 VKID_APP_ID = int(os.getenv("VKID_APP_ID", "54500249") or "54500249")
@@ -1621,6 +1632,8 @@ def apply_schema_migrations() -> None:
             TitleEntry.__table__.create(bind=conn, checkfirst=True)
         if "password_reset_tokens" not in existing_tables:
             PasswordResetToken.__table__.create(bind=conn, checkfirst=True)
+        if "pending_registrations" not in existing_tables:
+            PendingRegistration.__table__.create(bind=conn, checkfirst=True)
         if "in_progress_master_cards" not in existing_tables:
             InProgressMasterCard.__table__.create(bind=conn, checkfirst=True)
         if "in_progress_master_comments" not in existing_tables:
@@ -8467,13 +8480,18 @@ def resolve_user_for_telegram_login(db: Session, raw_username: str) -> User | No
     return resolve_user_by_alias(db, raw_username)
 
 
+def hash_user_secret_code(raw_code: str) -> str:
+    secret_code = str(raw_code or "").strip()
+    if len(secret_code) < 6:
+        raise ValueError("Секретный код для ботов должен быть не короче 6 символов.")
+    return password_context.hash(secret_code)
+
+
 def set_user_bot_secret_code(user: User, raw_code: str, db: Session) -> None:
     secret_code = str(raw_code or "").strip()
     if not secret_code:
         return
-    if len(secret_code) < 6:
-        raise ValueError("Секретный код для ботов должен быть не короче 6 символов.")
-    user.telegram_secret_code_hash = password_context.hash(secret_code)
+    user.telegram_secret_code_hash = hash_user_secret_code(secret_code)
     user.telegram_secret_code_updated_at = datetime.utcnow()
     set_secret_user_option_value(db, user.id, PROFILE_TELEGRAM_SECRET_CODE_GROUP, secret_code)
     # Re-auth in bots after code rotation.
@@ -14729,6 +14747,107 @@ def find_active_password_reset_token(db: Session, raw_token: str | None) -> Pass
     ).scalar_one_or_none()
 
 
+def normalize_registration_code(value: str | None) -> str:
+    return re.sub(r"\D+", "", str(value or ""))
+
+
+def hash_registration_code(raw_code: str, email: str) -> str:
+    normalized_code = normalize_registration_code(raw_code)
+    normalized_email = normalize_email(email)
+    return hashlib.sha256(f"{normalized_email}:{normalized_code}".encode("utf-8")).hexdigest()
+
+
+def generate_registration_code() -> str:
+    return f"{secrets.randbelow(1_000_000):06d}"
+
+
+def cleanup_expired_pending_registrations(db: Session) -> None:
+    now_utc = datetime.utcnow()
+    expired_rows = db.execute(
+        select(PendingRegistration).where(PendingRegistration.expires_at <= now_utc)
+    ).scalars().all()
+    for row in expired_rows:
+        db.delete(row)
+
+
+def create_or_update_pending_registration(
+    db: Session,
+    *,
+    username: str,
+    email: str,
+    password: str,
+    telegram_secret_code: str,
+    is_smm_manager: bool,
+) -> str:
+    cleanup_expired_pending_registrations(db)
+    raw_code = generate_registration_code()
+    now_utc = datetime.utcnow()
+    pending = db.execute(
+        select(PendingRegistration).where(PendingRegistration.email == email)
+    ).scalar_one_or_none()
+    telegram_secret_hash = hash_user_secret_code(telegram_secret_code) if telegram_secret_code else None
+    if pending:
+        pending.username = username
+        pending.password_hash = password_context.hash(password)
+        pending.telegram_secret_code_hash = telegram_secret_hash
+        pending.is_smm_manager = is_smm_manager
+        pending.code_hash = hash_registration_code(raw_code, email)
+        pending.attempts = 0
+        pending.expires_at = now_utc + timedelta(minutes=REGISTRATION_CODE_MINUTES)
+    else:
+        db.add(
+            PendingRegistration(
+                username=username,
+                email=email,
+                password_hash=password_context.hash(password),
+                telegram_secret_code_hash=telegram_secret_hash,
+                is_smm_manager=is_smm_manager,
+                code_hash=hash_registration_code(raw_code, email),
+                attempts=0,
+                expires_at=now_utc + timedelta(minutes=REGISTRATION_CODE_MINUTES),
+            )
+        )
+    return raw_code
+
+
+def send_registration_code_email(*, to_email: str, code: str) -> bool:
+    body = (
+        "Здравствуйте!\n\n"
+        "Код подтверждения регистрации в Cosplay Planner:\n\n"
+        f"{code}\n\n"
+        f"Код действует {REGISTRATION_CODE_MINUTES} минут. Если вы не регистрировались, просто проигнорируйте это письмо.\n"
+    )
+    return send_plain_email(
+        to_email=to_email,
+        subject="Код подтверждения регистрации Cosplay Planner",
+        body=body,
+    )
+
+
+def find_pending_registration_by_code(db: Session, *, email: str, code: str) -> PendingRegistration | None:
+    normalized_code = normalize_registration_code(code)
+    if len(normalized_code) != 6:
+        return None
+    pending = db.execute(
+        select(PendingRegistration).where(
+            PendingRegistration.email == email,
+            PendingRegistration.expires_at > datetime.utcnow(),
+        )
+    ).scalar_one_or_none()
+    if not pending:
+        return None
+    if pending.attempts >= REGISTRATION_CODE_MAX_ATTEMPTS:
+        db.delete(pending)
+        db.commit()
+        return None
+    expected_hash = hash_registration_code(normalized_code, email)
+    if not hmac.compare_digest(str(pending.code_hash or ""), expected_hash):
+        pending.attempts = int(pending.attempts or 0) + 1
+        db.commit()
+        return None
+    return pending
+
+
 def _deep_find_string(payload: Any, wanted_keys: set[str]) -> str:
     stack: list[Any] = [payload]
     visited: set[int] = set()
@@ -17382,7 +17501,14 @@ def register_page(request: Request, db: Session = Depends(get_db)):
     user = current_user(request, db)
     if user:
         return redirect("/my-calendar?view=content&content_scope=client" if is_smm_manager_user(user) else "/cosplan")
-    return template_response(request, "register.html", user=None)
+    pending_email = normalize_email(request.query_params.get("email"))
+    return template_response(
+        request,
+        "register.html",
+        user=None,
+        pending_email=pending_email,
+        registration_code_minutes=REGISTRATION_CODE_MINUTES,
+    )
 
 
 @app.post("/register")
@@ -17392,6 +17518,7 @@ async def register_submit(request: Request, db: Session = Depends(get_db)):
     email = normalize_email(form.get("email"))
     password = str(form.get("password", ""))
     password2 = str(form.get("password_confirm", ""))
+    verification_code = normalize_registration_code(form.get("email_verification_code"))
     telegram_secret_code = str(form.get("telegram_secret_code", "")).strip()
     is_smm_manager = str(form.get("is_smm_manager", "")).strip().lower() in {"1", "true", "on", "yes"}
 
@@ -17421,24 +17548,76 @@ async def register_submit(request: Request, db: Session = Depends(get_db)):
         add_flash(request, "Пользователь с таким логином или email уже существует.", "error")
         return redirect("/register")
 
-    user = User(username=username, email=email, password_hash=password_context.hash(password))
-    db.add(user)
-    db.commit()
-    db.refresh(user)
-    set_user_bot_secret_code(user, telegram_secret_code, db)
-    if is_smm_manager:
-        set_user_option_value(db, user.id, SMM_MANAGER_ROLE_GROUP, "1")
-    db.commit()
-    threading.Thread(
-        target=propagate_registration_seed_data,
-        args=(int(user.id),),
-        name=f"register-seed-{user.id}",
-        daemon=True,
-    ).start()
+    if verification_code:
+        pending = find_pending_registration_by_code(db, email=email, code=verification_code)
+        if not pending:
+            add_flash(request, "Неверный или устаревший код подтверждения. Запросите новый код.", "error")
+            return redirect(f"/register?email={quote(email)}")
+        if pending.username != username or not password_context.verify(password, pending.password_hash):
+            add_flash(request, "Данные регистрации изменились. Отправьте новый код подтверждения.", "error")
+            return redirect(f"/register?email={quote(email)}")
+        pending_is_smm_manager = bool(pending.is_smm_manager)
+        user = User(username=pending.username, email=pending.email, password_hash=pending.password_hash)
+        db.add(user)
+        db.flush()
+        if pending.telegram_secret_code_hash:
+            user.telegram_secret_code_hash = pending.telegram_secret_code_hash
+            user.telegram_secret_code_updated_at = datetime.utcnow()
+        if pending_is_smm_manager:
+            set_user_option_value(db, user.id, SMM_MANAGER_ROLE_GROUP, "1")
+        db.delete(pending)
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            add_flash(request, "Пользователь с таким логином или email уже существует.", "error")
+            return redirect("/register")
+        db.refresh(user)
+        threading.Thread(
+            target=propagate_registration_seed_data,
+            args=(int(user.id),),
+            name=f"register-seed-{user.id}",
+            daemon=True,
+        ).start()
 
-    request.session["user_id"] = user.id
-    add_flash(request, "Спасибо за регистрацию!", "welcome")
-    return redirect("/my-calendar?view=content&content_scope=client" if is_smm_manager else "/cosplan")
+        request.session["user_id"] = user.id
+        add_flash(request, "Email подтверждён. Спасибо за регистрацию!", "welcome")
+        return redirect("/my-calendar?view=content&content_scope=client" if pending_is_smm_manager else "/cosplan")
+
+    if not smtp_is_configured():
+        add_flash(
+            request,
+            "Подтверждение email сейчас недоступно: почтовая отправка не настроена. Попробуйте позже.",
+            "error",
+        )
+        return redirect(f"/register?email={quote(email)}")
+
+    try:
+        raw_code = create_or_update_pending_registration(
+            db,
+            username=username,
+            email=email,
+            password=password,
+            telegram_secret_code=telegram_secret_code,
+            is_smm_manager=is_smm_manager,
+        )
+    except ValueError as exc:
+        db.rollback()
+        add_flash(request, str(exc), "error")
+        return redirect(f"/register?email={quote(email)}")
+
+    sent_ok = send_registration_code_email(to_email=email, code=raw_code)
+    if not sent_ok:
+        db.rollback()
+        add_flash(request, "Не удалось отправить код подтверждения на email. Попробуйте позже.", "error")
+        return redirect(f"/register?email={quote(email)}")
+    db.commit()
+    add_flash(
+        request,
+        f"Мы отправили код подтверждения на {email}. Введите его в форме, код действует {REGISTRATION_CODE_MINUTES} минут.",
+        "success",
+    )
+    return redirect(f"/register?email={quote(email)}")
 
 
 @app.get("/login", response_class=HTMLResponse)

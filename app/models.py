@@ -293,6 +293,22 @@ class PasswordResetToken(Base):
     user = relationship("User", back_populates="password_reset_tokens")
 
 
+class PendingRegistration(Base):
+    __tablename__ = "pending_registrations"
+
+    id = Column(Integer, primary_key=True)
+    username = Column(String(100), nullable=False, index=True)
+    email = Column(String(255), nullable=False, unique=True, index=True)
+    password_hash = Column(String(255), nullable=False)
+    telegram_secret_code_hash = Column(String(255), nullable=True)
+    is_smm_manager = Column(Boolean, nullable=False, default=False)
+    code_hash = Column(String(64), nullable=False, index=True)
+    attempts = Column(Integer, nullable=False, default=0)
+    expires_at = Column(DateTime(timezone=True), nullable=False, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
 class HomeNews(Base):
     __tablename__ = "home_news"
 

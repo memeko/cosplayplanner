@@ -1,24 +1,106 @@
 {% extends "base.html" %}
 {% block content %}
-<section class="landing-hero box">
-  <div class="landing-logo-wrap">
-    <img src="/static/favicon.svg" alt="Cosplay Planner" class="landing-logo" />
-  </div>
-  <h1>Планировщик косплея и фестивалей для косплееров и команд</h1>
-  <h2>Что такое Cosplay Planner</h2>
-  <p class="muted">
-    Cosplay Planner — онлайн-органайзер для косплееров.
-    Он помогает организовать подготовку косплей-костюмов, планировать фотосеты, следить за дедлайнами фестивалей и работать в команде с сокосплеерами.
-  </p>
-  <div class="actions-inline landing-actions">
-    <a href="/login" class="btn btn-accent">Войти</a>
-    <a href="/register" class="btn">Присоединиться!</a>
+<section class="landing-cinematic" aria-label="Cosplay Planner">
+  <video
+    id="landing-bg-video"
+    class="landing-video"
+    src="/static/landing-video.mp4"
+    muted
+    autoplay
+    playsinline
+    preload="auto"
+    aria-hidden="true"
+  ></video>
+  <div class="landing-video-vignette" aria-hidden="true"></div>
+
+  <nav class="landing-nav" aria-label="Публичная навигация">
+    <div class="landing-nav-inner liquid-glass">
+      <a class="landing-brand" href="/" aria-label="Cosplay Planner">
+        <svg class="landing-icon" viewBox="0 0 24 24" aria-hidden="true">
+          <circle cx="12" cy="12" r="10"></circle>
+          <path d="M2 12h20"></path>
+          <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path>
+        </svg>
+        <span>Cosplay Planner</span>
+      </a>
+      <div class="landing-nav-links" aria-label="Разделы">
+        <a href="#features">Возможности</a>
+        <a href="/register">Регистрация</a>
+        <a href="#about">О проекте</a>
+      </div>
+      <div class="landing-auth-actions">
+        <a class="landing-signup" href="/register">Присоединиться</a>
+        <a class="landing-login liquid-glass" href="/login">Войти</a>
+      </div>
+    </div>
+  </nav>
+
+  <div class="landing-hero">
+    <div class="landing-copy">
+      <p class="landing-kicker liquid-glass">Косплей, фестивали и фотосеты в одном плане</p>
+      <h1 style="font-family: 'Instrument Serif', serif;">Планируй. Твори. Воплощай!</h1>
+      <form class="landing-start liquid-glass" action="/register" method="get">
+        <input type="email" name="email" placeholder="Введите email" aria-label="Email для регистрации" autocomplete="email" />
+        <button type="submit" aria-label="Перейти к регистрации">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M5 12h14"></path>
+            <path d="m12 5 7 7-7 7"></path>
+          </svg>
+        </button>
+      </form>
+      <p class="landing-subtitle">
+        Собирай коспланы, дедлайны, фестивали, репетиции и командные задачи так, чтобы подготовка не терялась в чатах.
+      </p>
+      <a class="landing-manifesto liquid-glass" href="#features">Посмотреть возможности</a>
+    </div>
+
+    <div class="landing-orbit-stage" aria-label="Орбитальные элементы Cosplay Planner">
+      <div class="landing-orbit orbit-one" aria-hidden="true">
+        <span class="landing-float-card liquid-glass float-deadlines">Дедлайны</span>
+      </div>
+      <div class="landing-orbit orbit-two" aria-hidden="true">
+        <span class="landing-float-card liquid-glass float-festivals">Фестивали</span>
+      </div>
+      <div class="landing-orbit orbit-three" aria-hidden="true">
+        <span class="landing-float-card liquid-glass float-photos">Фотосеты</span>
+      </div>
+      <div class="landing-orbit orbit-four" aria-hidden="true">
+        <span class="landing-float-icon liquid-glass">
+          <svg viewBox="0 0 24 24">
+            <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78L12 21.23l8.84-8.84a5.5 5.5 0 0 0 0-7.78z"></path>
+          </svg>
+        </span>
+      </div>
+      <div class="landing-orbit orbit-five" aria-hidden="true">
+        <span class="landing-float-card liquid-glass float-events">Ивенты</span>
+      </div>
+      <div class="landing-orbit orbit-six" aria-hidden="true">
+        <span class="landing-float-card liquid-glass float-storyboard">Раскадровка</span>
+      </div>
+      <div class="landing-orbit-core liquid-glass" aria-hidden="true">
+        <svg viewBox="0 0 24 24">
+          <path d="M12 3v18"></path>
+          <path d="M3 12h18"></path>
+          <path d="m6 6 12 12"></path>
+          <path d="m18 6-12 12"></path>
+        </svg>
+      </div>
+    </div>
   </div>
 </section>
 
-<section class="box">
-  <h2>Памятка по функционалу</h2>
-  <div class="landing-features">
+<section id="features" class="landing-feature-band">
+  <div class="landing-feature-head">
+    <h2>Что уже внутри</h2>
+    <p id="about">Онлайн-органайзер для косплееров, команд и тех, кто держит в голове слишком много подготовок одновременно.</p>
+  </div>
+  <div class="landing-carousel" aria-label="Возможности Cosplay Planner">
+    <button type="button" class="landing-carousel-btn landing-carousel-prev liquid-glass" aria-label="Предыдущая возможность">
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="m15 18-6-6 6-6"></path>
+      </svg>
+    </button>
+    <div class="landing-features" id="landing-features-carousel">
     <article class="landing-feature">
       <h3>Косплан</h3>
       <p>Карточки по подготовке, бюджет проектов, сроки, референсы и дедлайны. Удобно в одной карточке. И да, можно внести сокосплеера или указать руководителя. Все карточки можно скачать как таблицу на компьютер или телефон.</p>
@@ -30,6 +112,18 @@
     <article class="landing-feature">
       <h3>Фестивали</h3>
       <p>База фестивалей подгружается из Cosplay2, добавлены фильтры по городам и не только. Можно отметить, на какой фестиваль подана или планируется подаваться заявка, с каким сокосплеером хочется пойти (кстати, эта отметка отобразится и у сокосплеера). При указании базового города в профиле фестивале в нем подсвечены лавандовым оттенком. Отдельная сводка на ближайший месяц.</p>
+    </article>
+    <article class="landing-feature">
+      <h3>Фотокосплей</h3>
+      <p>Раздел для фотоконкурсов: заявки, номинации, загрузка работ, модерация и голосование в одном месте. Удобно для участников и организаторов.</p>
+    </article>
+    <article class="landing-feature">
+      <h3>Калькулятор раскадровки</h3>
+      <p>Премиум-инструмент для планирования фотосета по кадрам: отметки, референсы, PDF-экспорт и подготовка списка сцен до съемки.</p>
+    </article>
+    <article class="landing-feature">
+      <h3>Кабинет мероприятий</h3>
+      <p>Менеджмент ивентов для организаторов: карточки событий, заявки на анонсы, участники, программа и рабочие списки для команды.</p>
     </article>
     <article class="landing-feature">
       <h3>Мой календарь</h3>
@@ -55,6 +149,124 @@
       <h3>Вопрос-ответ</h3>
       <p>Возможность задать вопрос на доске с ответами пользователей.</p>
     </article>
+    </div>
+    <button type="button" class="landing-carousel-btn landing-carousel-next liquid-glass" aria-label="Следующая возможность">
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="m9 18 6-6-6-6"></path>
+      </svg>
+    </button>
   </div>
 </section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  (function () {
+    const video = document.getElementById("landing-bg-video");
+    if (!(video instanceof HTMLVideoElement)) {
+      return;
+    }
+
+    let fadeFrame = 0;
+    let fadingOut = false;
+
+    function currentOpacity() {
+      const value = Number.parseFloat(video.style.opacity || "0");
+      return Number.isFinite(value) ? value : 0;
+    }
+
+    function fadeTo(targetOpacity, duration) {
+      if (fadeFrame) {
+        window.cancelAnimationFrame(fadeFrame);
+      }
+      const startOpacity = currentOpacity();
+      const startedAt = window.performance.now();
+
+      function tick(now) {
+        const progress = Math.min(1, (now - startedAt) / duration);
+        const eased = 1 - Math.pow(1 - progress, 3);
+        video.style.opacity = String(startOpacity + (targetOpacity - startOpacity) * eased);
+        if (progress < 1) {
+          fadeFrame = window.requestAnimationFrame(tick);
+        } else {
+          fadeFrame = 0;
+        }
+      }
+
+      fadeFrame = window.requestAnimationFrame(tick);
+    }
+
+    function restartVideo() {
+      video.style.opacity = "0";
+      window.setTimeout(function () {
+        fadingOut = false;
+        try {
+          video.currentTime = 0;
+        } catch (_) {
+          // Some browsers may reject currentTime before metadata is stable.
+        }
+        const playPromise = video.play();
+        if (playPromise && typeof playPromise.catch === "function") {
+          playPromise.catch(function () {});
+        }
+        fadeTo(1, 500);
+      }, 100);
+    }
+
+    video.style.opacity = "0";
+    video.addEventListener("loadeddata", function () {
+      fadeTo(1, 500);
+    });
+    video.addEventListener("play", function () {
+      if (!fadingOut && currentOpacity() < 1) {
+        fadeTo(1, 500);
+      }
+    });
+    video.addEventListener("timeupdate", function () {
+      if (!Number.isFinite(video.duration) || video.duration <= 0) {
+        return;
+      }
+      if (!fadingOut && video.duration - video.currentTime <= 0.55) {
+        fadingOut = true;
+        fadeTo(0, 500);
+      }
+    });
+    video.addEventListener("ended", restartVideo);
+
+    const playPromise = video.play();
+    if (playPromise && typeof playPromise.catch === "function") {
+      playPromise.catch(function () {});
+    }
+  })();
+
+  (function () {
+    const carousel = document.getElementById("landing-features-carousel");
+    const previousButton = document.querySelector(".landing-carousel-prev");
+    const nextButton = document.querySelector(".landing-carousel-next");
+    if (!carousel || !previousButton || !nextButton) {
+      return;
+    }
+
+    function slideWidth() {
+      const slide = carousel.querySelector(".landing-feature");
+      if (!slide) {
+        return carousel.clientWidth;
+      }
+      const styles = window.getComputedStyle(carousel);
+      const gap = Number.parseFloat(styles.columnGap || styles.gap || "0") || 0;
+      return slide.getBoundingClientRect().width + gap;
+    }
+
+    function move(direction) {
+      carousel.scrollBy({ left: slideWidth() * direction, behavior: "smooth" });
+    }
+
+    previousButton.addEventListener("click", function () {
+      move(-1);
+    });
+    nextButton.addEventListener("click", function () {
+      move(1);
+    });
+  })();
+</script>
 {% endblock %}
