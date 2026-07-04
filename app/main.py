@@ -116,6 +116,27 @@ from .services import (
 )
 
 
+def load_local_env_file(path: Path = Path(".env")) -> None:
+    if not path.exists():
+        return
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if not key or key in os.environ:
+            continue
+        os.environ[key] = value.strip().strip("\"'")
+
+
+load_local_env_file()
+
+
 def load_project_name() -> str:
     default_name = "Cosplay Planner"
     project_name_path = os.getenv("PROJECT_NAME_FILE", "PROJECT_NAME.txt")

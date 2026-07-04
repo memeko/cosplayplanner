@@ -4,6 +4,7 @@ __pycache__/
 *.db
 *.sqlite3
 .env
+app/.runtime-secret-key
 .venv/
 .DS_Store
 backups/
