@@ -13946,6 +13946,81 @@ def premium_expires_label(expires_on: date | None) -> str:
     return "навсегда"
 
 
+def premium_access_entry_for_user(db: Session, user_id: int, *, include_expired: bool = True) -> dict[str, Any] | None:
+    target_user_id = parse_positive_int(str(user_id).strip())
+    if not target_user_id:
+        return None
+    return next(
+        (
+            item
+            for item in get_premium_access_entries(db, include_expired=include_expired)
+            if parse_positive_int(str(item.get("user_id", "")).strip()) == int(target_user_id)
+        ),
+        None,
+    )
+
+
+def premium_status_label_for_user(db: Session, user: User) -> tuple[bool, str]:
+    premium_status_active = user_has_premium_status(db, user)
+    if is_primary_admin_user(user):
+        return premium_status_active, "навсегда"
+
+    premium_access_entry = premium_access_entry_for_user(db, int(user.id), include_expired=True)
+    premium_expires_on = (
+        premium_access_entry.get("expires_on")
+        if isinstance(premium_access_entry, dict)
+        else None
+    )
+    if isinstance(premium_expires_on, date):
+        expires_text = premium_expires_on.strftime("%d.%m.%Y")
+        return premium_status_active, f"до {expires_text}" if premium_status_active else f"истек {expires_text}"
+    if premium_status_active:
+        return premium_status_active, "навсегда"
+    return premium_status_active, "—"
+
+
+def grant_premium_access_to_user(db: Session, target_user: User, premium_duration: str) -> date | None:
+    target_user_id = int(target_user.id)
+    normalized_duration = normalize_premium_duration(premium_duration)
+    today_date = date.today()
+    access_entries = get_premium_access_entries(db, include_expired=True)
+    current_entry = next((item for item in access_entries if int(item.get("user_id", 0)) == target_user_id), None)
+
+    if normalized_duration == PREMIUM_DURATION_FOREVER:
+        next_expires_on: date | None = None
+    else:
+        if current_entry and current_entry.get("expires_on") is None:
+            raise ValueError(f"@{preferred_user_alias(target_user)} уже выдан бессрочный премиум.")
+        months_delta = int(PREMIUM_DURATION_MONTHS_MAP.get(normalized_duration, 1))
+        base_date = today_date
+        current_expires = current_entry.get("expires_on") if current_entry else None
+        if isinstance(current_expires, date) and current_expires >= today_date:
+            base_date = current_expires
+        next_expires_on = shift_months_safe(base_date, months_delta)
+
+    updated_entries: list[dict[str, Any]] = []
+    has_target = False
+    for item in access_entries:
+        user_id = parse_positive_int(str(item.get("user_id", "")).strip())
+        if not user_id:
+            continue
+        if user_id == target_user_id:
+            updated_entries.append({"user_id": target_user_id, "expires_on": next_expires_on})
+            has_target = True
+        else:
+            updated_entries.append(
+                {
+                    "user_id": user_id,
+                    "expires_on": item.get("expires_on") if isinstance(item.get("expires_on"), date) else None,
+                }
+            )
+    if not has_target:
+        updated_entries.append({"user_id": target_user_id, "expires_on": next_expires_on})
+
+    save_premium_access_entries(db, updated_entries)
+    return next_expires_on
+
+
 def refresh_premium_user_ids_cache(db: Session) -> None:
     global PREMIUM_USER_IDS_CACHE, PREMIUM_NICK_COLORS_BY_ALIAS_CACHE
     PREMIUM_USER_IDS_CACHE = {
@@ -19306,45 +19381,8 @@ async def admin_add_premium_user(request: Request, db: Session = Depends(get_db)
         add_flash(request, f"Пользователь @{raw_alias} не найден.", "error")
         return redirect("/admin/dashboard")
 
-    target_user_id = int(target_user.id)
-    today_date = date.today()
-    access_entries = get_premium_access_entries(db, include_expired=True)
-    current_entry = next((item for item in access_entries if int(item.get("user_id", 0)) == target_user_id), None)
-
-    if premium_duration == PREMIUM_DURATION_FOREVER:
-        next_expires_on: date | None = None
-    else:
-        if current_entry and current_entry.get("expires_on") is None:
-            add_flash(request, f"@{preferred_user_alias(target_user)} уже выдан бессрочный премиум.", "info")
-            return redirect("/admin/dashboard")
-        months_delta = int(PREMIUM_DURATION_MONTHS_MAP.get(premium_duration, 1))
-        base_date = today_date
-        current_expires = current_entry.get("expires_on") if current_entry else None
-        if isinstance(current_expires, date) and current_expires >= today_date:
-            base_date = current_expires
-        next_expires_on = shift_months_safe(base_date, months_delta)
-
-    updated_entries: list[dict[str, Any]] = []
-    has_target = False
-    for item in access_entries:
-        user_id = parse_positive_int(str(item.get("user_id", "")).strip())
-        if not user_id:
-            continue
-        if user_id == target_user_id:
-            updated_entries.append({"user_id": target_user_id, "expires_on": next_expires_on})
-            has_target = True
-        else:
-            updated_entries.append(
-                {
-                    "user_id": user_id,
-                    "expires_on": item.get("expires_on") if isinstance(item.get("expires_on"), date) else None,
-                }
-            )
-    if not has_target:
-        updated_entries.append({"user_id": target_user_id, "expires_on": next_expires_on})
-
     try:
-        save_premium_access_entries(db, updated_entries)
+        next_expires_on = grant_premium_access_to_user(db, target_user, premium_duration)
     except ValueError as exc:
         add_flash(request, str(exc), "error")
         return redirect("/admin/dashboard")
@@ -19358,6 +19396,48 @@ async def admin_add_premium_user(request: Request, db: Session = Depends(get_db)
         "success",
     )
     return redirect("/admin/dashboard")
+
+
+@app.post("/admin/users/{target_user_id}/premium/grant")
+async def admin_grant_user_premium_from_profile(
+    target_user_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    if not is_primary_admin_user(user):
+        add_flash(request, "Выдавать премиум может только аккаунт @brfox_cosplay.", "error")
+        return redirect("/profile")
+
+    target_user = db.get(User, int(target_user_id))
+    if not target_user:
+        add_flash(request, "Пользователь не найден.", "error")
+        return redirect("/community/cosplayers")
+
+    form = await request.form()
+    premium_duration = normalize_premium_duration(form.get("premium_duration"))
+    next_url = safe_redirect_target(
+        str(form.get("next", "")).strip(),
+        user_profile_url_for_user(target_user) or "/community/cosplayers",
+    )
+
+    try:
+        next_expires_on = grant_premium_access_to_user(db, target_user, premium_duration)
+    except ValueError as exc:
+        add_flash(request, str(exc), "error")
+        return redirect(next_url)
+
+    db.commit()
+    refresh_premium_user_ids_cache(db)
+    expires_label = premium_expires_label(next_expires_on)
+    add_flash(
+        request,
+        f"Премиум для @{preferred_user_alias(target_user)} выдан: {expires_label}.",
+        "success",
+    )
+    return redirect(next_url)
 
 
 @app.post("/admin/card-global-editors/add")
@@ -19604,31 +19684,7 @@ def profile_page(request: Request, db: Session = Depends(get_db)):
     if not user:
         return redirect("/login")
 
-    premium_status_active = user_has_premium_status(db, user)
-    premium_expires_at_label = "—"
-    if is_primary_admin_user(user):
-        premium_expires_at_label = "навсегда"
-    else:
-        premium_access_entry = next(
-            (
-                item
-                for item in get_premium_access_entries(db, include_expired=True)
-                if parse_positive_int(str(item.get("user_id", "")).strip()) == int(user.id)
-            ),
-            None,
-        )
-        premium_expires_on = (
-            premium_access_entry.get("expires_on")
-            if isinstance(premium_access_entry, dict)
-            else None
-        )
-        if isinstance(premium_expires_on, date):
-            expires_text = premium_expires_on.strftime("%d.%m.%Y")
-            premium_expires_at_label = (
-                f"до {expires_text}" if premium_status_active else f"истек {expires_text}"
-            )
-        elif premium_status_active:
-            premium_expires_at_label = "навсегда"
+    premium_status_active, premium_expires_at_label = premium_status_label_for_user(db, user)
 
     can_customize_premium_nick_color = bool(getattr(user, "_is_premium_user", False))
     saved_premium_nick_color = normalize_premium_nick_color(
@@ -19840,6 +19896,8 @@ def user_public_card(alias: str, request: Request, db: Session = Depends(get_db)
     profile_about_markdown = get_user_option_value(db, target_user.id, PROFILE_ABOUT_MARKDOWN_GROUP)
     profile_photo_urls = get_user_profile_photo_urls(db, target_user.id)
     nearest_going_festival = public_festival_summary(nearest_going_festival_for_user(db, target_user.id))
+    target_premium_active, target_premium_expires_label = premium_status_label_for_user(db, target_user)
+    can_manage_target_premium = bool(is_primary_admin_user(viewer) and int(viewer.id) != int(target_user.id))
 
     return template_response(
         request,
@@ -19853,6 +19911,10 @@ def user_public_card(alias: str, request: Request, db: Session = Depends(get_db)
         profile_about_markdown=profile_about_markdown,
         profile_photo_urls=profile_photo_urls,
         can_message_user=int(viewer.id) != int(target_user.id),
+        can_manage_target_premium=can_manage_target_premium,
+        target_premium_active=target_premium_active,
+        target_premium_expires_label=target_premium_expires_label,
+        premium_duration_options=PREMIUM_DURATION_OPTIONS,
     )
 
 

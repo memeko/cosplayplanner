@@ -23,6 +23,32 @@
   </div>
 </section>
 
+{% if can_manage_target_premium %}
+<section class="box top-offset">
+  <h2>Админ: премиум</h2>
+  <p class="meta top-offset">
+    Текущий статус: <strong>{{ "есть" if target_premium_active else "нет" }}</strong>
+  </p>
+  <p class="meta">
+    Срок действия: <strong>{{ target_premium_expires_label }}</strong>
+  </p>
+  <form method="post" action="/admin/users/{{ target_user.id }}/premium/grant" class="grid two-col top-offset">
+    <input type="hidden" name="next" value="{{ request.url.path }}" />
+    <label>
+      Выдать на
+      <select name="premium_duration" required>
+        {% for value, label in premium_duration_options %}
+          <option value="{{ value }}">{{ label }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <div class="actions-inline">
+      <button type="submit" class="btn btn-accent">Выдать премиум</button>
+    </div>
+  </form>
+</section>
+{% endif %}
+
 {% if nearest_going_festival %}
 <section class="box top-offset">
   <h2>Я буду на...</h2>
