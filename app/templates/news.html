@@ -11,6 +11,67 @@
   {% endif %}
 </section>
 
+<section class="home-citadel-promo top-offset" aria-labelledby="citadel-promo-heading">
+  <div class="home-citadel-promo-copy">
+    <span class="chip">Партнёрское объявление</span>
+    <h2 id="citadel-promo-heading">Открыт приём заявок в конкурс косплея 🔥</h2>
+    <p>Нажмите на афишу, чтобы узнать условия участия.</p>
+  </div>
+  <button
+    type="button"
+    class="home-citadel-promo-trigger"
+    id="citadel-promo-open"
+    aria-haspopup="dialog"
+    aria-controls="citadel-promo-dialog"
+  >
+    <img
+      src="/static/citadel-cosplay-contest-2026.jpeg"
+      alt="Конкурс сценических выступлений фестиваля «Цитадель Тяньинь»"
+      loading="eager"
+    />
+    <span class="home-citadel-promo-hint">Открыть объявление <span aria-hidden="true">→</span></span>
+  </button>
+</section>
+
+<div class="home-promo-dialog" id="citadel-promo-dialog" role="dialog" aria-modal="true" aria-labelledby="citadel-dialog-title" hidden>
+  <div class="home-promo-dialog-card" role="document">
+    <button type="button" class="btn btn-small home-promo-dialog-close" id="citadel-promo-close" aria-label="Закрыть объявление">✕</button>
+    <div class="home-promo-dialog-scroll">
+      <span class="chip">Фестиваль «Цитадель Тяньинь»</span>
+      <h2 id="citadel-dialog-title">Открыт приём заявок в конкурс косплея 🔥</h2>
+
+      <div class="home-promo-dialog-body">
+        <p>У самых врат Цитадели прикреплён свиток. Он гласит:</p>
+
+        <p><strong>«Открыт приём заявок в конкурс косплея»</strong> 🔥</p>
+
+        <p>Новый московский фестиваль, посвящённый китай фандому, ждет своих первых участников!</p>
+        <p>Все свои самые невероятные образы и яркие постановки вы можете подать, заполнив форму на сайте <a href="https://cosplay2.ru" target="_blank" rel="noreferrer">Cosplay2.ru</a> 👈 (жми, чтобы подать заявку!)</p>
+
+        <p>Заявки принимаются <strong>до 7 августа</strong> (досыл материалов <strong>до 14 августа</strong>). Все заявки, присланные позднее данного срока, рассматриваться не будут.</p>
+
+        <p>❤️ <strong>Итоги</strong> же будут объявлены до 17 августа и опубликованы в открытой группе «ВКонтакте» и в телеграм канале.</p>
+
+        <p>👉 Ознакомиться с регламентом можно по ссылке: <a href="https://vk.com/@citadelfest-scenicheskaya-programma-kosplei-defile" target="_blank" rel="noreferrer">vk.com/@citadelfest-scenicheskaya-programma-kosplei-defile</a><br />
+        или на сайте <a href="https://citadelfest.cosplay2.ru/pages/concurs" target="_blank" rel="noreferrer">citadelfest.cosplay2.ru/pages/concurs</a></p>
+
+        <p>Вопросы и сомнения направляйте кураторам конкурса: <a href="https://t.me/euraguxor" target="_blank" rel="noreferrer">@euraguxor</a> <a href="https://t.me/Vivernass" target="_blank" rel="noreferrer">@Vivernass</a> или в личные сообщения сообщества во «ВКонтакте». 👈</p>
+
+        <p>Явите миру свой талант!</p>
+
+        <div class="home-promo-event-details">
+          <div aria-hidden="true">📌 📌 📌 📌 📌 📌 📌 📌</div>
+          <p><strong>Дата:</strong> 13 сентября 2026<br />
+          <strong>Адрес:</strong> г. Москва | КЦ Маяк |<br />
+          ул. Газопровод, 9А, (подъезд 1)</p>
+        </div>
+
+        <a href="https://moscow.qtickets.events/239503-tsitadel-tyanin" target="_blank" rel="noreferrer" class="btn btn-accent">Купить билет ▪️</a>
+      </div>
+    </div>
+  </div>
+</div>
+
 <section class="box">
   <div class="row-between">
     <h2>Оповещения {% if unread_notifications %}<span class="chip chip-alert">{{ unread_notifications }}</span>{% endif %}</h2>
@@ -229,4 +290,51 @@
     <p class="muted">Сегодня нет данных о днях рождения персонажей.</p>
   {% endif %}
 </section>
+
+<script>
+  (function () {
+    const dialog = document.getElementById("citadel-promo-dialog");
+    const openButton = document.getElementById("citadel-promo-open");
+    const closeButton = document.getElementById("citadel-promo-close");
+    if (!dialog || !openButton || !closeButton) return;
+
+    function openDialog() {
+      dialog.hidden = false;
+      document.body.classList.add("modal-open");
+      closeButton.focus();
+    }
+
+    function closeDialog() {
+      dialog.hidden = true;
+      document.body.classList.remove("modal-open");
+      openButton.focus();
+    }
+
+    openButton.addEventListener("click", openDialog);
+    closeButton.addEventListener("click", closeDialog);
+    dialog.addEventListener("click", function (event) {
+      if (event.target === dialog) closeDialog();
+    });
+    document.addEventListener("keydown", function (event) {
+      if (dialog.hidden) return;
+      if (event.key === "Escape") {
+        closeDialog();
+        return;
+      }
+      if (event.key !== "Tab") return;
+
+      const focusable = Array.from(dialog.querySelectorAll('a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"])'));
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    });
+  })();
+</script>
 {% endblock %}

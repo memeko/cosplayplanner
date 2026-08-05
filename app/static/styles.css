@@ -2256,6 +2256,212 @@ textarea {
   gap: 10px;
 }
 
+.home-citadel-promo {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(210px, 0.72fr) minmax(0, 1.8fr);
+  gap: 22px;
+  align-items: center;
+  margin-bottom: 18px;
+  padding: 20px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.78);
+  border-radius: 26px;
+  background: linear-gradient(145deg, rgba(255, 255, 255, 0.86), rgba(232, 241, 255, 0.68));
+  box-shadow: 0 16px 42px rgba(52, 74, 132, 0.14), var(--glass-highlight);
+  backdrop-filter: blur(var(--glass-blur)) saturate(130%);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(130%);
+}
+
+.home-citadel-promo::before {
+  content: "✦";
+  position: absolute;
+  top: -34px;
+  left: 22%;
+  color: rgba(108, 99, 255, 0.12);
+  font-size: 118px;
+  pointer-events: none;
+}
+
+.home-citadel-promo-copy {
+  position: relative;
+  z-index: 1;
+}
+
+.home-citadel-promo-copy h2 {
+  margin: 12px 0 8px;
+  color: #1f2e4a;
+  font-size: clamp(1.2rem, 2vw, 1.65rem);
+  line-height: 1.2;
+}
+
+.home-citadel-promo-copy p {
+  margin: 0;
+  color: #62728c;
+  line-height: 1.55;
+}
+
+.home-citadel-promo-trigger {
+  appearance: none;
+  width: 100%;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid rgba(94, 91, 255, 0.24);
+  border-radius: 20px;
+  background: #101010;
+  color: #fff;
+  cursor: pointer;
+  box-shadow: 0 14px 28px rgba(22, 34, 66, 0.2);
+  transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+}
+
+.home-citadel-promo-trigger:hover {
+  transform: translateY(-2px);
+  border-color: rgba(94, 91, 255, 0.5);
+  box-shadow: 0 18px 34px rgba(22, 34, 66, 0.26);
+}
+
+.home-citadel-promo-trigger:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring), 0 18px 34px rgba(22, 34, 66, 0.26);
+}
+
+.home-citadel-promo-trigger img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 1.83 / 1;
+  object-fit: cover;
+}
+
+.home-citadel-promo-hint {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  background: linear-gradient(110deg, #5e5bff, #7b72ff);
+  font: 700 0.88rem/1.25 "Manrope", sans-serif;
+  text-align: left;
+}
+
+body.modal-open {
+  overflow: hidden;
+}
+
+.home-promo-dialog {
+  position: fixed;
+  inset: 0;
+  z-index: 1500;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(20, 31, 57, 0.58);
+  backdrop-filter: blur(9px);
+  -webkit-backdrop-filter: blur(9px);
+}
+
+.home-promo-dialog[hidden] {
+  display: none !important;
+}
+
+.home-promo-dialog-card {
+  position: relative;
+  width: min(720px, 100%);
+  max-height: min(86vh, 820px);
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.82);
+  border-radius: 28px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(240, 247, 255, 0.96));
+  box-shadow: 0 28px 80px rgba(12, 24, 53, 0.34), var(--glass-highlight);
+}
+
+.home-promo-dialog-scroll {
+  max-height: min(86vh, 820px);
+  overflow-y: auto;
+  padding: 30px clamp(20px, 5vw, 44px) 36px;
+  overscroll-behavior: contain;
+}
+
+.home-promo-dialog-scroll h2 {
+  max-width: calc(100% - 42px);
+  margin: 14px 0 22px;
+  color: #1f2e4a;
+  font-size: clamp(1.45rem, 3.5vw, 2.15rem);
+  line-height: 1.18;
+}
+
+.home-promo-dialog-close {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  z-index: 2;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 6px 18px rgba(31, 46, 74, 0.16);
+}
+
+.home-promo-dialog-body {
+  color: #344a6b;
+  font-size: 1rem;
+  line-height: 1.68;
+}
+
+.home-promo-dialog-body p {
+  margin: 0 0 16px;
+}
+
+.home-promo-dialog-body a:not(.btn) {
+  color: #4f4ce0;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.home-promo-event-details {
+  margin: 22px 0;
+  padding: 18px;
+  border: 1px solid rgba(94, 91, 255, 0.16);
+  border-radius: 18px;
+  background: linear-gradient(145deg, rgba(234, 242, 255, 0.94), rgba(232, 224, 255, 0.72));
+}
+
+.home-promo-event-details p {
+  margin: 10px 0 0;
+}
+
+@media (max-width: 760px) {
+  .home-citadel-promo {
+    grid-template-columns: 1fr;
+    gap: 16px;
+    padding: 14px;
+    border-radius: 22px;
+  }
+
+  .home-citadel-promo-copy {
+    padding: 4px 4px 0;
+  }
+
+  .home-citadel-promo-trigger {
+    border-radius: 16px;
+  }
+
+  .home-promo-dialog {
+    align-items: end;
+    padding: 10px;
+  }
+
+  .home-promo-dialog-card,
+  .home-promo-dialog-scroll {
+    max-height: 92vh;
+  }
+
+  .home-promo-dialog-card {
+    border-radius: 24px 24px 18px 18px;
+  }
+
+  .home-promo-dialog-scroll {
+    padding: 26px 20px 30px;
+  }
+}
+
 .news-item {
   border: 1px solid var(--line-strong);
   border-radius: 12px;
