@@ -18175,6 +18175,149 @@ def can_view_admin_dashboard(user: User | None) -> bool:
 
 
 ADMIN_DASHBOARD_NOTIFICATIONS_PAGE_SIZE = 25
+ADMIN_BROADCAST_MESSAGE_MAX_LENGTH = 4000
+ADMIN_BROADCAST_AUDIENCE_OPTIONS = (
+    ("all", "Все пользователи"),
+    ("premium", "Премиум-пользователи"),
+    ("standard", "Без активного премиума"),
+    ("smm_managers", "SMM-менеджеры"),
+    ("event_organizers", "Организаторы мероприятий"),
+    ("card_editors", "Редакторы карточек"),
+    ("cosplayers", "Косплееры с профилем в сообществе"),
+    ("masters", "Мастера с профилем в сообществе"),
+    ("studios", "Студии с профилем в сообществе"),
+    ("with_projects", "Пользователи с карточками косплана"),
+)
+ADMIN_BROADCAST_CHANNEL_OPTIONS = (
+    ("any", "Любой канал"),
+    ("telegram", "Подключён Telegram"),
+    ("vk", "Подключён VK-бот"),
+    ("external", "Подключён Telegram или VK-бот"),
+    ("none", "Внешние каналы не подключены"),
+)
+
+
+def parse_optional_iso_date(value: str | None) -> date | None:
+    cleaned = str(value or "").strip()
+    if not cleaned:
+        return None
+    try:
+        return date.fromisoformat(cleaned)
+    except ValueError:
+        return None
+
+
+def admin_broadcast_role_user_ids(db: Session, group: str) -> set[int]:
+    rows = db.execute(
+        select(UserOption.user_id).where(
+            UserOption.group == group,
+            UserOption.value == "1",
+        )
+    ).scalars().all()
+    return {int(user_id) for user_id in rows if user_id}
+
+
+def select_admin_broadcast_recipients(
+    db: Session,
+    *,
+    audience: str = "all",
+    city: str = "",
+    channel: str = "any",
+    registered_from: str = "",
+    registered_to: str = "",
+    exclude_admin: bool = True,
+) -> tuple[list[User], list[str]]:
+    valid_audiences = {value for value, _label in ADMIN_BROADCAST_AUDIENCE_OPTIONS}
+    valid_channels = {value for value, _label in ADMIN_BROADCAST_CHANNEL_OPTIONS}
+    normalized_audience = str(audience or "all").strip().lower()
+    normalized_channel = str(channel or "any").strip().lower()
+    errors: list[str] = []
+    if normalized_audience not in valid_audiences:
+        errors.append("Выбрана неизвестная категория пользователей.")
+        normalized_audience = "all"
+    if normalized_channel not in valid_channels:
+        errors.append("Выбран неизвестный фильтр канала.")
+        normalized_channel = "any"
+
+    start_date = parse_optional_iso_date(registered_from)
+    end_date = parse_optional_iso_date(registered_to)
+    if registered_from and not start_date:
+        errors.append("Некорректная начальная дата регистрации.")
+    if registered_to and not end_date:
+        errors.append("Некорректная конечная дата регистрации.")
+    if start_date and end_date and start_date > end_date:
+        errors.append("Начальная дата регистрации не может быть позже конечной.")
+    if errors:
+        return [], errors
+
+    users = db.execute(select(User).order_by(User.id.asc())).scalars().all()
+    premium_ids = {
+        int(item["user_id"])
+        for item in get_premium_access_entries(db, include_expired=False)
+        if parse_positive_int(str(item.get("user_id", "")).strip())
+    }
+    category_ids_by_audience = {
+        "smm_managers": admin_broadcast_role_user_ids(db, SMM_MANAGER_ROLE_GROUP),
+        "event_organizers": admin_broadcast_role_user_ids(db, EVENT_ORGANIZER_ROLE_GROUP),
+        "card_editors": admin_broadcast_role_user_ids(db, CARD_GLOBAL_EDITOR_ROLE_GROUP),
+        "cosplayers": {
+            int(user_id)
+            for user_id in db.execute(select(CommunityCosplayer.user_id).distinct()).scalars().all()
+            if user_id
+        },
+        "masters": {
+            int(user_id)
+            for user_id in db.execute(select(CommunityMaster.user_id).distinct()).scalars().all()
+            if user_id
+        },
+        "studios": {
+            int(user_id)
+            for user_id in db.execute(select(CommunityStudio.user_id).distinct()).scalars().all()
+            if user_id
+        },
+        "with_projects": {
+            int(user_id)
+            for user_id in db.execute(
+                select(CosplanCard.user_id).where(CosplanCard.is_shared_copy.is_(False)).distinct()
+            ).scalars().all()
+            if user_id
+        },
+    }
+    normalized_city = str(city or "").strip().casefold()
+
+    recipients: list[User] = []
+    for target_user in users:
+        target_id = int(target_user.id)
+        if exclude_admin and is_primary_admin_user(target_user):
+            continue
+        if normalized_audience == "premium" and target_id not in premium_ids:
+            continue
+        if normalized_audience == "standard" and target_id in premium_ids:
+            continue
+        if normalized_audience in category_ids_by_audience and target_id not in category_ids_by_audience[normalized_audience]:
+            continue
+        if normalized_city and str(target_user.home_city or "").strip().casefold() != normalized_city:
+            continue
+
+        has_telegram = bool(str(target_user.telegram_chat_id or "").strip())
+        has_vk = bool(str(target_user.vk_bot_peer_id or target_user.vk_bot_user_id or "").strip())
+        if normalized_channel == "telegram" and not has_telegram:
+            continue
+        if normalized_channel == "vk" and not has_vk:
+            continue
+        if normalized_channel == "external" and not (has_telegram or has_vk):
+            continue
+        if normalized_channel == "none" and (has_telegram or has_vk):
+            continue
+
+        created_at = normalize_datetime(target_user.created_at)
+        created_date = created_at.date() if created_at else None
+        if start_date and (not created_date or created_date < start_date):
+            continue
+        if end_date and (not created_date or created_date > end_date):
+            continue
+        recipients.append(target_user)
+    return recipients, []
 
 
 def build_admin_city_stats(db: Session) -> list[dict[str, Any]]:
@@ -19289,6 +19432,15 @@ def admin_dashboard(
     if notifications_current_query:
         notifications_next_url = f"{notifications_next_url}?{notifications_current_query}"
     notifications_next_url = f"{notifications_next_url}#admin-notifications"
+    broadcast_token = str(request.session.get("admin_broadcast_token") or "").strip()
+    if not broadcast_token:
+        broadcast_token = secrets.token_urlsafe(24)
+        request.session["admin_broadcast_token"] = broadcast_token
+    broadcast_city_options = [
+        str(item["city"])
+        for item in build_admin_city_stats(db)
+        if str(item.get("city") or "").strip() and str(item["city"]) != "Не указан"
+    ]
     return template_response(
         request,
         "admin_dashboard.html",
@@ -19303,11 +19455,100 @@ def admin_dashboard(
         can_manage_card_global_editors=is_primary_admin_user(user),
         card_global_editor_rows=build_card_global_editor_rows(db),
         card_global_editor_alias_options=build_premium_alias_options(db),
+        admin_broadcast_token=broadcast_token,
+        admin_broadcast_audience_options=ADMIN_BROADCAST_AUDIENCE_OPTIONS,
+        admin_broadcast_channel_options=ADMIN_BROADCAST_CHANNEL_OPTIONS,
+        admin_broadcast_city_options=broadcast_city_options,
+        admin_broadcast_message_max_length=ADMIN_BROADCAST_MESSAGE_MAX_LENGTH,
         notifications_pagination_query=urlencode(notifications_pagination_params, doseq=True),
         admin_notifications_next_url=notifications_next_url,
         **dashboard,
         **notifications_block,
     )
+
+
+@app.get("/admin/broadcasts/preview")
+def admin_broadcast_preview(request: Request, db: Session = Depends(get_db)) -> JSONResponse:
+    user = current_user(request, db)
+    if not user or not is_primary_admin_user(user):
+        return JSONResponse({"ok": False, "error": "Доступ запрещён."}, status_code=403)
+
+    recipients, errors = select_admin_broadcast_recipients(
+        db,
+        audience=request.query_params.get("audience", "all"),
+        city=request.query_params.get("city", ""),
+        channel=request.query_params.get("channel", "any"),
+        registered_from=request.query_params.get("registered_from", ""),
+        registered_to=request.query_params.get("registered_to", ""),
+        exclude_admin=to_bool(request.query_params.get("exclude_admin", "1")),
+    )
+    if errors:
+        return JSONResponse({"ok": False, "error": " ".join(errors)}, status_code=400)
+    return JSONResponse({"ok": True, "count": len(recipients)})
+
+
+@app.post("/admin/broadcasts/send")
+async def admin_send_broadcast(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    if not is_primary_admin_user(user):
+        add_flash(request, "Массовая рассылка доступна только основному администратору.", "error")
+        return redirect("/profile")
+
+    form = await request.form()
+    submitted_token = str(form.get("broadcast_token") or "").strip()
+    session_token = str(request.session.get("admin_broadcast_token") or "").strip()
+    if not submitted_token or not session_token or not secrets.compare_digest(submitted_token, session_token):
+        add_flash(request, "Форма рассылки устарела или уже была отправлена. Откройте её заново.", "error")
+        return redirect("/admin/dashboard#admin-broadcast")
+
+    message = normalize_text_line_breaks(str(form.get("message") or "").strip())
+    if not message:
+        add_flash(request, "Введите текст рассылки.", "error")
+        return redirect("/admin/dashboard#admin-broadcast")
+    if len(message) > ADMIN_BROADCAST_MESSAGE_MAX_LENGTH:
+        add_flash(
+            request,
+            f"Текст рассылки не должен превышать {ADMIN_BROADCAST_MESSAGE_MAX_LENGTH} символов.",
+            "error",
+        )
+        return redirect("/admin/dashboard#admin-broadcast")
+    if str(form.get("confirm_send") or "") != "1":
+        add_flash(request, "Подтвердите массовую отправку.", "error")
+        return redirect("/admin/dashboard#admin-broadcast")
+
+    recipients, errors = select_admin_broadcast_recipients(
+        db,
+        audience=str(form.get("audience") or "all"),
+        city=str(form.get("city") or ""),
+        channel=str(form.get("channel") or "any"),
+        registered_from=str(form.get("registered_from") or ""),
+        registered_to=str(form.get("registered_to") or ""),
+        exclude_admin=str(form.get("exclude_admin") or "") == "1",
+    )
+    if errors:
+        add_flash(request, " ".join(errors), "error")
+        return redirect("/admin/dashboard#admin-broadcast")
+    if not recipients:
+        add_flash(request, "По выбранным фильтрам получатели не найдены.", "error")
+        return redirect("/admin/dashboard#admin-broadcast")
+
+    request.session.pop("admin_broadcast_token", None)
+    for recipient in recipients:
+        db.add(
+            FestivalNotification(
+                user_id=int(recipient.id),
+                from_user_id=None,
+                source_card_id=None,
+                reply_to_notification_id=None,
+                message=message,
+                is_read=False,
+            )
+        )
+    db.commit()
+    add_flash(request, f"Рассылка создана. Получателей: {len(recipients)}.", "success")
+    return redirect("/admin/dashboard#admin-broadcast")
 
 
 @app.post("/admin/notifications/mark-read")

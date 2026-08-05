@@ -4280,6 +4280,94 @@ body.landing-page main.container {
   line-height: 1.4;
 }
 
+.admin-broadcast-card {
+  position: relative;
+  overflow: hidden;
+  border-radius: 26px;
+  background: linear-gradient(150deg, rgba(255, 255, 255, 0.9), rgba(234, 242, 255, 0.72));
+  box-shadow: 0 14px 40px rgba(80, 100, 180, 0.12), var(--glass-highlight-soft);
+}
+
+.admin-broadcast-card::after {
+  content: "✦";
+  position: absolute;
+  top: -46px;
+  right: 24%;
+  color: rgba(108, 99, 255, 0.1);
+  font-size: 138px;
+  pointer-events: none;
+}
+
+.admin-broadcast-card > * {
+  position: relative;
+  z-index: 1;
+}
+
+.admin-broadcast-card .admin-section-head h2 {
+  margin-top: 10px;
+}
+
+.admin-broadcast-reach {
+  display: grid;
+  justify-items: end;
+  min-width: 116px;
+}
+
+.admin-broadcast-reach-value {
+  color: #5e5bff;
+  font-size: 2rem;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.admin-broadcast-form {
+  display: grid;
+  gap: 18px;
+}
+
+.admin-broadcast-filters {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 190px), 1fr));
+  gap: 12px;
+}
+
+.admin-broadcast-message-field {
+  display: grid;
+  gap: 6px;
+}
+
+.admin-broadcast-message-field textarea {
+  min-height: 164px;
+  resize: vertical;
+}
+
+.admin-broadcast-message-field .meta {
+  justify-self: end;
+}
+
+.admin-broadcast-confirmation {
+  display: grid;
+  gap: 9px;
+  padding: 14px 16px;
+  border: 1px solid rgba(94, 91, 255, 0.16);
+  border-radius: 18px;
+  background: rgba(234, 242, 255, 0.66);
+}
+
+.admin-broadcast-confirmation .checkbox-row {
+  align-items: flex-start;
+}
+
+@media (max-width: 760px) {
+  .admin-broadcast-reach {
+    justify-items: start;
+  }
+
+  .admin-broadcast-filters {
+    grid-template-columns: 1fr;
+  }
+}
+
 .admin-section-head {
   display: flex;
   align-items: center;

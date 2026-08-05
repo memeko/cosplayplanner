@@ -22,6 +22,88 @@
 </section>
 {% endif %}
 
+<section class="box admin-broadcast-card" id="admin-broadcast">
+  <div class="admin-section-head">
+    <div>
+      <span class="chip">Системное оповещение</span>
+      <h2>Массовая рассылка</h2>
+    </div>
+    <div class="admin-broadcast-reach" aria-live="polite">
+      <span class="admin-broadcast-reach-value" id="admin-broadcast-recipient-count">—</span>
+      <span class="meta">получателей</span>
+    </div>
+  </div>
+  <p class="muted top-offset">Сообщение появится в блоке оповещений на главной у пользователей, соответствующих всем выбранным фильтрам.</p>
+
+  <form method="post" action="/admin/broadcasts/send" class="admin-broadcast-form top-offset" id="admin-broadcast-form">
+    <input type="hidden" name="broadcast_token" value="{{ admin_broadcast_token }}" />
+
+    <div class="admin-broadcast-filters">
+      <label>
+        Категория пользователей
+        <select name="audience" data-broadcast-filter>
+          {% for value, label in admin_broadcast_audience_options %}
+            <option value="{{ value }}">{{ label }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>
+        Город
+        <input type="text" name="city" list="admin-broadcast-city-options" placeholder="Все города" data-broadcast-filter />
+        <datalist id="admin-broadcast-city-options">
+          {% for city in admin_broadcast_city_options %}
+            <option value="{{ city }}"></option>
+          {% endfor %}
+        </datalist>
+      </label>
+      <label>
+        Подключённый канал в профиле
+        <select name="channel" data-broadcast-filter>
+          {% for value, label in admin_broadcast_channel_options %}
+            <option value="{{ value }}">{{ label }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>
+        Зарегистрированы с
+        <input type="date" name="registered_from" data-broadcast-filter />
+      </label>
+      <label>
+        Зарегистрированы по
+        <input type="date" name="registered_to" data-broadcast-filter />
+      </label>
+    </div>
+
+    <label class="admin-broadcast-message-field">
+      Текст оповещения
+      <textarea
+        name="message"
+        rows="7"
+        maxlength="{{ admin_broadcast_message_max_length }}"
+        placeholder="Напишите сообщение. Ссылки и переносы строк сохранятся."
+        required
+      ></textarea>
+      <span class="meta"><span id="admin-broadcast-character-count">0</span> / {{ admin_broadcast_message_max_length }} символов</span>
+    </label>
+
+    <div class="admin-broadcast-confirmation">
+      <label class="checkbox-row">
+        <input type="checkbox" name="exclude_admin" value="1" checked data-broadcast-filter />
+        Не отправлять основному администратору
+      </label>
+      <label class="checkbox-row">
+        <input type="checkbox" name="confirm_send" value="1" required />
+        Я проверил(а) текст, фильтры и подтверждаю массовую отправку
+      </label>
+    </div>
+
+    <div class="actions-inline wrap">
+      <button type="submit" class="btn btn-accent" id="admin-broadcast-submit" disabled>Отправить оповещение</button>
+      <span class="meta" id="admin-broadcast-status">Уточняем размер аудитории…</span>
+    </div>
+  </form>
+</section>
+
 <details class="box calendar-spoiler" id="admin-notifications">
   <summary>
     <span>Все оповещения</span>
@@ -523,6 +605,89 @@
       event.preventDefault();
       window.alert("Выберите хотя бы одно оповещение.");
     });
+  })();
+
+  (() => {
+    const form = document.getElementById("admin-broadcast-form");
+    if (!form) return;
+
+    const countNode = document.getElementById("admin-broadcast-recipient-count");
+    const statusNode = document.getElementById("admin-broadcast-status");
+    const submitButton = document.getElementById("admin-broadcast-submit");
+    const messageField = form.querySelector('textarea[name="message"]');
+    const characterCount = document.getElementById("admin-broadcast-character-count");
+    let previewTimer = null;
+    let previewController = null;
+    let recipientCount = 0;
+
+    function updateCharacterCount() {
+      if (characterCount && messageField) characterCount.textContent = String(messageField.value.length);
+    }
+
+    async function updateAudiencePreview() {
+      if (previewController) previewController.abort();
+      previewController = new AbortController();
+      countNode.textContent = "…";
+      statusNode.textContent = "Уточняем размер аудитории…";
+      submitButton.disabled = true;
+
+      const params = new URLSearchParams();
+      for (const field of form.querySelectorAll("[data-broadcast-filter]")) {
+        if (field.type === "checkbox") {
+          params.set(field.name, field.checked ? field.value : "0");
+        } else if (field.value) {
+          params.set(field.name, field.value);
+        }
+      }
+
+      try {
+        const response = await fetch(`/admin/broadcasts/preview?${params.toString()}`, {
+          credentials: "same-origin",
+          signal: previewController.signal,
+          headers: { "X-Requested-With": "XMLHttpRequest" }
+        });
+        const payload = await response.json();
+        if (!response.ok || !payload.ok) throw new Error(payload.error || "Не удалось рассчитать аудиторию.");
+        recipientCount = Number(payload.count || 0);
+        countNode.textContent = String(recipientCount);
+        statusNode.textContent = recipientCount ? "Аудитория рассчитана по выбранным фильтрам." : "По этим фильтрам получателей нет.";
+        submitButton.disabled = recipientCount < 1;
+      } catch (error) {
+        if (error.name === "AbortError") return;
+        recipientCount = 0;
+        countNode.textContent = "—";
+        statusNode.textContent = error.message || "Не удалось рассчитать аудиторию.";
+        submitButton.disabled = true;
+      }
+    }
+
+    function schedulePreview() {
+      window.clearTimeout(previewTimer);
+      previewTimer = window.setTimeout(updateAudiencePreview, 250);
+    }
+
+    for (const field of form.querySelectorAll("[data-broadcast-filter]")) {
+      field.addEventListener(field.tagName === "SELECT" || field.type === "checkbox" || field.type === "date" ? "change" : "input", schedulePreview);
+    }
+    if (messageField) {
+      messageField.addEventListener("input", updateCharacterCount);
+      updateCharacterCount();
+    }
+    form.addEventListener("submit", (event) => {
+      if (recipientCount < 1) {
+        event.preventDefault();
+        window.alert("По выбранным фильтрам получателей нет.");
+        return;
+      }
+      if (!window.confirm(`Отправить это оповещение пользователям (${recipientCount})? Отменить рассылку после отправки будет нельзя.`)) {
+        event.preventDefault();
+        return;
+      }
+      submitButton.disabled = true;
+      submitButton.textContent = "Отправляем…";
+    });
+
+    updateAudiencePreview();
   })();
 </script>
 {% endblock %}
