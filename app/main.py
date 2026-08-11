@@ -32099,24 +32099,43 @@ def import_cosplay2_events_for_user(db: Session, user: User, parsed_events: list
 
 def load_cosplay2_event_nominations(parsed_events: list[Any]) -> tuple[int, int]:
     """Enrich homepage events from the public API powering /create_request."""
-    targets = [(event, nomination_api_url(getattr(event, "url", None))) for event in parsed_events]
-    targets = [(event, url) for event, url in targets if url]
+    nominations_by_api_url, failed = load_cosplay2_nominations_for_urls(
+        [getattr(event, "url", None) for event in parsed_events]
+    )
     loaded = 0
+    for event in parsed_events:
+        api_url = nomination_api_url(getattr(event, "url", None))
+        if api_url not in nominations_by_api_url:
+            continue
+        event.nominations = nominations_by_api_url[api_url]
+        loaded += 1
+    return loaded, failed
+
+
+def load_cosplay2_nominations_for_urls(event_urls: list[Any]) -> tuple[dict[str, list[dict[str, str]]], int]:
+    """Load nomination lists once per cosplay2.ru festival host."""
+    targets: dict[str, str] = {}
+    for raw_url in event_urls:
+        event_url = str(raw_url or "").strip()
+        api_url = nomination_api_url(event_url)
+        if api_url and api_url not in targets:
+            targets[api_url] = event_url
+
+    loaded: dict[str, list[dict[str, str]]] = {}
     failed = 0
 
-    def fetch(target: tuple[Any, str]) -> tuple[Any, list[dict[str, str]]]:
-        event, url = target
-        response = requests.get(url, timeout=15, headers={"Accept": "application/json"})
+    def fetch(target: tuple[str, str]) -> tuple[str, list[dict[str, str]]]:
+        api_url, event_url = target
+        response = requests.get(api_url, timeout=15, headers={"Accept": "application/json"})
         response.raise_for_status()
-        return event, parse_nominations_payload(response.json(), getattr(event, "url", None))
+        return api_url, parse_nominations_payload(response.json(), event_url)
 
     with ThreadPoolExecutor(max_workers=8) as executor:
-        futures = [executor.submit(fetch, target) for target in targets]
+        futures = [executor.submit(fetch, target) for target in targets.items()]
         for future in as_completed(futures):
             try:
-                event, nominations = future.result()
-                event.nominations = nominations
-                loaded += 1
+                api_url, nominations = future.result()
+                loaded[api_url] = nominations
             except (requests.RequestException, ValueError):
                 failed += 1
     return loaded, failed
@@ -32739,6 +32758,7 @@ def festivals_list(request: Request, db: Session = Depends(get_db)):
         approved_announcement_total=approved_announcement_total,
         can_manage_festival_globally=can_manage_festival_globally(user),
         can_import_cosplay2=user_is_special(user),
+        can_force_refresh_cosplay2_nominations=is_primary_admin_user(user),
         can_import_raf=user_is_special(user) and VK_IMPORT_ENABLED,
         import_source_labels=IMPORT_SOURCE_LABELS,
         festival_ticket_transport_labels=FESTIVAL_TICKET_TRANSPORT_LABELS,
@@ -34547,6 +34567,46 @@ def festivals_import_cosplay2(request: Request, db: Session = Depends(get_db)):
         else:
             add_flash(request, "Новых или обновляемых фестивалей для всех пользователей не найдено.", "info")
 
+    return redirect("/festivals")
+
+
+@app.post("/festivals/refresh-cosplay2-nominations")
+def festivals_refresh_cosplay2_nominations(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    if not is_primary_admin_user(user):
+        add_flash(request, "Принудительное обновление номинаций доступно только администратору.", "error")
+        return redirect("/festivals")
+
+    festivals = db.execute(select(Festival).order_by(Festival.id)).scalars().all()
+    cosplay2_festivals = [item for item in festivals if nomination_api_url(item.url)]
+    nominations_by_api_url, failed = load_cosplay2_nominations_for_urls(
+        [item.url for item in cosplay2_festivals]
+    )
+
+    updated = 0
+    for festival in cosplay2_festivals:
+        api_url = nomination_api_url(festival.url)
+        if not api_url or api_url not in nominations_by_api_url:
+            continue
+        merged = normalize_festival_nomination_items(
+            [*festival_nomination_items(festival), *nominations_by_api_url[api_url]]
+        )
+        if merged == normalize_festival_nomination_items(festival.nominations_json):
+            continue
+        festival.nominations_json = merged
+        festival.nomination_1 = merged[0]["title"] if len(merged) > 0 else None
+        festival.nomination_2 = merged[1]["title"] if len(merged) > 1 else None
+        festival.nomination_3 = merged[2]["title"] if len(merged) > 2 else None
+        updated += 1
+
+    db.commit()
+    loaded = len(nominations_by_api_url)
+    message = f"Номинации Cosplay2 обновлены: источников {loaded}, карточек {updated}."
+    if failed:
+        message += f" Недоступных источников: {failed}."
+    add_flash(request, message, "success" if loaded else "info")
     return redirect("/festivals")
 
 

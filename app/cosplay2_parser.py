@@ -24,6 +24,9 @@ def nomination_api_url(event_url: str | None) -> str | None:
     if not normalized:
         return None
     parsed = urlparse(normalized)
+    hostname = (parsed.hostname or "").lower()
+    if hostname != "cosplay2.ru" and not hostname.endswith(".cosplay2.ru"):
+        return None
     return f"{parsed.scheme}://{parsed.netloc}/api/events/get_newrequest_state"
 
 
@@ -32,6 +35,9 @@ def create_request_url(event_url: str | None) -> str | None:
     if not normalized:
         return None
     parsed = urlparse(normalized)
+    hostname = (parsed.hostname or "").lower()
+    if hostname != "cosplay2.ru" and not hostname.endswith(".cosplay2.ru"):
+        return None
     return f"{parsed.scheme}://{parsed.netloc}/create_request"
 
 

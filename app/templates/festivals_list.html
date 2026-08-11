@@ -10,6 +10,11 @@
       <button type="submit" class="btn">Импорт с cosplay2.ru</button>
     </form>
     {% endif %}
+    {% if can_force_refresh_cosplay2_nominations %}
+    <form method="post" action="/festivals/refresh-cosplay2-nominations" onsubmit="return confirm('Принудительно обновить номинации во всех существующих карточках Cosplay2?');">
+      <button type="submit" class="btn">Обновить номинации Cosplay2</button>
+    </form>
+    {% endif %}
     {% if can_import_raf %}
     <form method="post" action="/festivals/import-raf">
       <button type="submit" class="btn">Импорт с РАФ</button>

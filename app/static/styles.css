@@ -2273,6 +2273,10 @@ textarea {
   -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(130%);
 }
 
+.home-citadel-promo[hidden] {
+  display: none !important;
+}
+
 .home-citadel-promo::before {
   content: "✦";
   position: absolute;
