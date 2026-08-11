@@ -32211,10 +32211,22 @@ def merge_cosplay2_nominations_into_festival(
     festival: Festival,
     incoming_nominations: list[dict[str, str]],
 ) -> bool:
-    merged = normalize_festival_nomination_items(
-        [*festival_nomination_items(festival), *incoming_nominations]
-    )
-    nominations_changed = merged != normalize_festival_nomination_items(festival.nominations_json)
+    current_items = festival_nomination_items(festival)
+    existing_keys = {
+        normalize_nomination_title_key(item.get("title"))
+        for item in current_items
+        if normalize_nomination_title_key(item.get("title"))
+    }
+    new_items: list[dict[str, str]] = []
+    for item in normalize_festival_nomination_items(incoming_nominations):
+        key = normalize_nomination_title_key(item.get("title"))
+        if not key or key in existing_keys:
+            continue
+        existing_keys.add(key)
+        new_items.append(item)
+
+    merged = [*current_items, *new_items]
+    nominations_changed = bool(new_items)
     has_photo_nomination = any(
         any(marker in normalize_nomination_title_key(item.get("title")).replace(" ", "") for marker in ["фотокосплей", "фотоарт"])
         for item in merged
@@ -32222,10 +32234,11 @@ def merge_cosplay2_nominations_into_festival(
     photo_flag_changed = has_photo_nomination and not bool(festival.has_photo_cosplay)
     if not nominations_changed and not photo_flag_changed:
         return False
-    festival.nominations_json = merged
-    festival.nomination_1 = merged[0]["title"] if len(merged) > 0 else None
-    festival.nomination_2 = merged[1]["title"] if len(merged) > 1 else None
-    festival.nomination_3 = merged[2]["title"] if len(merged) > 2 else None
+    if nominations_changed:
+        festival.nominations_json = merged
+        festival.nomination_1 = merged[0]["title"] if len(merged) > 0 else None
+        festival.nomination_2 = merged[1]["title"] if len(merged) > 1 else None
+        festival.nomination_3 = merged[2]["title"] if len(merged) > 2 else None
     if has_photo_nomination:
         festival.has_photo_cosplay = True
     return True
