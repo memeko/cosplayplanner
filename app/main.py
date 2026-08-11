@@ -32799,6 +32799,14 @@ def festivals_list(request: Request, db: Session = Depends(get_db)):
         requesters = db.execute(select(User).where(User.id.in_(announcement_user_ids))).scalars().all()
         announcement_requesters_by_id = {item.id: item for item in requesters}
 
+    festival_cosplay2_api_urls_by_id: dict[int, str] = {}
+    if is_primary_admin_user(user):
+        for festival in paginated_festivals:
+            source_url = festival_cosplay2_source_url(festival)
+            api_url = nomination_api_url(source_url)
+            if api_url:
+                festival_cosplay2_api_urls_by_id[int(festival.id)] = api_url
+
     return template_response(
         request,
         "festivals_list.html",
@@ -32849,6 +32857,7 @@ def festivals_list(request: Request, db: Session = Depends(get_db)):
         can_manage_festival_globally=can_manage_festival_globally(user),
         can_import_cosplay2=user_is_special(user),
         can_force_refresh_cosplay2_nominations=is_primary_admin_user(user),
+        festival_cosplay2_api_urls_by_id=festival_cosplay2_api_urls_by_id,
         can_import_raf=user_is_special(user) and VK_IMPORT_ENABLED,
         import_source_labels=IMPORT_SOURCE_LABELS,
         festival_ticket_transport_labels=FESTIVAL_TICKET_TRANSPORT_LABELS,
@@ -34660,12 +34669,11 @@ def festivals_import_cosplay2(request: Request, db: Session = Depends(get_db)):
     return redirect("/festivals")
 
 
-@app.post("/festivals/refresh-cosplay2-nominations")
-def festivals_refresh_cosplay2_nominations(
+@app.post("/festivals/{festival_id}/refresh-cosplay2-nominations")
+def festival_refresh_cosplay2_nominations(
+    festival_id: int,
     request: Request,
-    batch_start: int = Form(0),
     nominations_json: str = Form(""),
-    fetch_failed: bool = Form(False),
     db: Session = Depends(get_db),
 ):
     user = current_user(request, db)
@@ -34674,45 +34682,15 @@ def festivals_refresh_cosplay2_nominations(
     if not is_primary_admin_user(user):
         return JSONResponse({"error": "Недостаточно прав."}, status_code=403)
 
-    festival_source_rows = db.execute(
-        select(Festival.id, Festival.url, Festival.import_external_id).order_by(Festival.id)
-    ).all()
-    targets: dict[str, dict[str, Any]] = {}
-    for festival_id, festival_url, import_external_id in festival_source_rows:
-        source_url = next(
-            (
-                value
-                for value in [str(festival_url or "").strip(), str(import_external_id or "").strip()]
-                if nomination_api_url(value)
-            ),
-            None,
-        )
-        api_url = nomination_api_url(source_url)
-        if not api_url:
-            continue
-        target = targets.setdefault(api_url, {"source_url": source_url or "", "festival_ids": []})
-        target["festival_ids"].append(int(festival_id))
-
-    target_items = list(targets.items())
-    total = len(target_items)
-    safe_start = max(0, min(int(batch_start or 0), total))
-    if safe_start >= total:
-        return JSONResponse({"processed": total, "total": total, "updated": 0, "failed": 0, "done": True})
-
-    api_url, target = target_items[safe_start]
-    source_url = str(target["source_url"])
-    if not nominations_json and not fetch_failed:
-        return JSONResponse(
-            {
-                "processed": safe_start,
-                "total": total,
-                "fetch_url": api_url,
-                "done": False,
-            }
-        )
+    target_festival = db.get(Festival, int(festival_id))
+    if not target_festival:
+        return JSONResponse({"error": "Карточка фестиваля не найдена."}, status_code=404)
+    source_url = festival_cosplay2_source_url(target_festival)
+    if not source_url:
+        return JSONResponse({"error": "Для карточки не найден источник Cosplay2."}, status_code=400)
 
     incoming_nominations: list[dict[str, str]] = []
-    if nominations_json and not fetch_failed:
+    if nominations_json:
         try:
             raw_nominations = json.loads(nominations_json)
         except (TypeError, ValueError):
@@ -34725,28 +34703,28 @@ def festivals_refresh_cosplay2_nominations(
                 if isinstance(item, dict)
             ]
         )
+    if not incoming_nominations:
+        return JSONResponse({"error": "Источник не вернул номинации."}, status_code=400)
 
-    updated = 0
-    batch_festival_ids = [int(value) for value in target["festival_ids"]]
-    festivals = (
-        db.execute(select(Festival).where(Festival.id.in_(batch_festival_ids))).scalars().all()
-        if batch_festival_ids
-        else []
+    match_conditions = [Festival.id == int(target_festival.id)]
+    if target_festival.import_external_id:
+        match_conditions.append(Festival.import_external_id == target_festival.import_external_id)
+    if target_festival.url:
+        match_conditions.append(Festival.url == target_festival.url)
+    festivals = db.execute(
+        select(Festival).where(or_(*match_conditions)).order_by(Festival.id)
+    ).scalars().all()
+    updated = sum(
+        1
+        for festival in festivals
+        if merge_cosplay2_nominations_into_festival(festival, incoming_nominations)
     )
-    for festival in festivals:
-        if incoming_nominations and merge_cosplay2_nominations_into_festival(festival, incoming_nominations):
-            updated += 1
     db.commit()
-
-    next_start = min(total, safe_start + 1)
     return JSONResponse(
         {
-            "processed": next_start,
-            "total": total,
             "updated": updated,
-            "loaded": 1 if incoming_nominations else 0,
-            "failed": 1 if fetch_failed or not incoming_nominations else 0,
-            "done": next_start >= total,
+            "nominations": len(incoming_nominations),
+            "matched_cards": len(festivals),
         }
     )
 

@@ -10,11 +10,6 @@
       <button type="submit" class="btn">Импорт с cosplay2.ru</button>
     </form>
     {% endif %}
-    {% if can_force_refresh_cosplay2_nominations %}
-    <form method="post" action="/festivals/refresh-cosplay2-nominations" id="cosplay2-nominations-refresh-form">
-      <button type="submit" class="btn" id="cosplay2-nominations-refresh-button">Обновить номинации Cosplay2</button>
-    </form>
-    {% endif %}
     {% if can_import_raf %}
     <form method="post" action="/festivals/import-raf">
       <button type="submit" class="btn">Импорт с РАФ</button>
@@ -503,6 +498,15 @@
       {% if not festival.is_global_announcement or can_manage_festival_globally %}
         <a href="/festivals/{{ festival.id }}/edit" class="btn">Редактировать</a>
       {% endif %}
+      {% set cosplay2_api_url = festival_cosplay2_api_urls_by_id.get(festival.id) %}
+      {% if can_force_refresh_cosplay2_nominations and cosplay2_api_url %}
+        <button
+          type="button"
+          class="btn festival-nominations-import-button"
+          data-source-url="{{ cosplay2_api_url }}"
+          data-save-url="/festivals/{{ festival.id }}/refresh-cosplay2-nominations"
+        >Импортировать номинации</button>
+      {% endif %}
       {% if not festival.is_global_announcement %}
         <form method="post" action="/festivals/{{ festival.id }}/delete" onsubmit="return confirm('Удалить фестиваль?');">
           <button type="submit" class="btn btn-danger">Удалить</button>
@@ -559,68 +563,41 @@
 {% block scripts %}
 <script>
   (function () {
-    const form = document.getElementById("cosplay2-nominations-refresh-form");
-    const button = document.getElementById("cosplay2-nominations-refresh-button");
-    if (!form || !button) return;
-
-    form.addEventListener("submit", async function (event) {
-      event.preventDefault();
-      if (!window.confirm("Принудительно обновить номинации во всех существующих карточках Cosplay2?")) return;
-
+    document.querySelectorAll(".festival-nominations-import-button").forEach(function (button) {
+      button.addEventListener("click", async function () {
+      if (!window.confirm("Импортировать номинации для этой карточки фестиваля?")) return;
       button.disabled = true;
-      let batchStart = 0;
-      let updatedTotal = 0;
-      let failedTotal = 0;
+      const originalLabel = button.textContent;
+      button.textContent = "Загрузка…";
       try {
-        while (true) {
-          const prepareBody = new URLSearchParams({ batch_start: String(batchStart) });
-          const prepareResponse = await fetch(form.action, {
-            method: "POST",
-            headers: { "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8" },
-            body: prepareBody.toString(),
-          });
-          const preparePayload = await prepareResponse.json();
-          if (!prepareResponse.ok) throw new Error(preparePayload.error || "Ошибка обновления номинаций");
-          if (preparePayload.done) break;
+        const sourceResponse = await fetch(button.dataset.sourceUrl, {
+          headers: { "Accept": "application/json" },
+        });
+        if (!sourceResponse.ok) throw new Error("Cosplay2 не ответил");
+        const sourcePayload = await sourceResponse.json();
+        const nominations = Array.isArray(sourcePayload.state)
+          ? sourcePayload.state
+              .filter(function (item) { return item && typeof item.title === "string"; })
+              .map(function (item) { return { title: item.title }; })
+          : [];
+        if (!nominations.length) throw new Error("Номинации не найдены");
 
-          const saveBody = new URLSearchParams({ batch_start: String(batchStart) });
-          try {
-            const sourceResponse = await fetch(preparePayload.fetch_url, {
-              headers: { "Accept": "application/json" },
-            });
-            if (!sourceResponse.ok) throw new Error("Источник недоступен");
-            const sourcePayload = await sourceResponse.json();
-            const nominations = Array.isArray(sourcePayload.state)
-              ? sourcePayload.state
-                  .filter(function (item) { return item && typeof item.title === "string"; })
-                  .map(function (item) { return { title: item.title }; })
-              : [];
-            saveBody.set("nominations_json", JSON.stringify(nominations));
-          } catch (sourceError) {
-            saveBody.set("fetch_failed", "1");
-          }
-
-          const saveResponse = await fetch(form.action, {
-            method: "POST",
-            headers: { "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8" },
-            body: saveBody.toString(),
-          });
-          const payload = await saveResponse.json();
-          if (!saveResponse.ok) throw new Error(payload.error || "Ошибка сохранения номинаций");
-
-          updatedTotal += Number(payload.updated || 0);
-          failedTotal += Number(payload.failed || 0);
-          batchStart = Number(payload.processed || 0);
-          button.textContent = `Обновление: ${batchStart} из ${Number(payload.total || 0)}`;
-          if (payload.done) break;
-          await new Promise(function (resolve) { window.setTimeout(resolve, 150); });
-        }
-        button.textContent = `Готово: обновлено ${updatedTotal}` + (failedTotal ? `, ошибок ${failedTotal}` : "");
+        const body = new URLSearchParams({ nominations_json: JSON.stringify(nominations) });
+        const saveResponse = await fetch(button.dataset.saveUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8" },
+          body: body.toString(),
+        });
+        const payload = await saveResponse.json();
+        if (!saveResponse.ok) throw new Error(payload.error || "Ошибка сохранения");
+        button.textContent = `Добавлено: ${Number(payload.nominations || 0)}`;
         window.setTimeout(function () { window.location.reload(); }, 1200);
       } catch (error) {
         button.disabled = false;
         button.textContent = error instanceof Error ? error.message : "Ошибка обновления";
+        window.setTimeout(function () { button.textContent = originalLabel; }, 3500);
       }
+      });
     });
   })();
 </script>
