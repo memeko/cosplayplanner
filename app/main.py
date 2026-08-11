@@ -860,6 +860,8 @@ vk_bot_worker_lock = threading.Lock()
 vk_bot_worker_thread: threading.Thread | None = None
 external_import_worker_lock = threading.Lock()
 external_import_worker_thread: threading.Thread | None = None
+cosplay2_nomination_refresh_lock = threading.Lock()
+cosplay2_nomination_refresh_running = False
 
 MASTER_TYPE_OPTIONS = [
     "фотограф",
@@ -32126,11 +32128,11 @@ def load_cosplay2_nominations_for_urls(event_urls: list[Any]) -> tuple[dict[str,
 
     def fetch(target: tuple[str, str]) -> tuple[str, list[dict[str, str]]]:
         api_url, event_url = target
-        response = requests.get(api_url, timeout=15, headers={"Accept": "application/json"})
+        response = requests.get(api_url, timeout=(4, 10), headers={"Accept": "application/json"})
         response.raise_for_status()
         return api_url, parse_nominations_payload(response.json(), event_url)
 
-    with ThreadPoolExecutor(max_workers=8) as executor:
+    with ThreadPoolExecutor(max_workers=4) as executor:
         futures = [executor.submit(fetch, target) for target in targets.items()]
         for future in as_completed(futures):
             try:
@@ -32139,6 +32141,75 @@ def load_cosplay2_nominations_for_urls(event_urls: list[Any]) -> tuple[dict[str,
             except (requests.RequestException, ValueError):
                 failed += 1
     return loaded, failed
+
+
+def refresh_existing_cosplay2_nominations(admin_user_id: int) -> None:
+    global cosplay2_nomination_refresh_running
+    try:
+        with SessionLocal() as db:
+            event_urls = [
+                value
+                for value in db.execute(select(Festival.url).where(Festival.url.is_not(None))).scalars().all()
+                if nomination_api_url(value)
+            ]
+
+        nominations_by_api_url, failed = load_cosplay2_nominations_for_urls(event_urls)
+
+        with SessionLocal() as db:
+            festivals = db.execute(select(Festival).order_by(Festival.id)).scalars().all()
+            updated = 0
+            for festival in festivals:
+                api_url = nomination_api_url(festival.url)
+                if not api_url or api_url not in nominations_by_api_url:
+                    continue
+                merged = normalize_festival_nomination_items(
+                    [*festival_nomination_items(festival), *nominations_by_api_url[api_url]]
+                )
+                if merged == normalize_festival_nomination_items(festival.nominations_json):
+                    continue
+                festival.nominations_json = merged
+                festival.nomination_1 = merged[0]["title"] if len(merged) > 0 else None
+                festival.nomination_2 = merged[1]["title"] if len(merged) > 1 else None
+                festival.nomination_3 = merged[2]["title"] if len(merged) > 2 else None
+                updated += 1
+
+            loaded = len(nominations_by_api_url)
+            message = f"Обновление номинаций Cosplay2 завершено: источников {loaded}, карточек {updated}."
+            if failed:
+                message += f" Недоступных источников: {failed}."
+            db.add(FestivalNotification(user_id=int(admin_user_id), message=message))
+            db.commit()
+    except Exception:
+        try:
+            with SessionLocal() as db:
+                db.add(
+                    FestivalNotification(
+                        user_id=int(admin_user_id),
+                        message="Не удалось завершить фоновое обновление номинаций Cosplay2. Попробуйте ещё раз позже.",
+                    )
+                )
+                db.commit()
+        except Exception:
+            pass
+    finally:
+        with cosplay2_nomination_refresh_lock:
+            cosplay2_nomination_refresh_running = False
+
+
+def start_cosplay2_nomination_refresh(admin_user_id: int) -> bool:
+    global cosplay2_nomination_refresh_running
+    with cosplay2_nomination_refresh_lock:
+        if cosplay2_nomination_refresh_running:
+            return False
+        cosplay2_nomination_refresh_running = True
+
+    threading.Thread(
+        target=refresh_existing_cosplay2_nominations,
+        args=(int(admin_user_id),),
+        name="cosplay2-nomination-refresh",
+        daemon=True,
+    ).start()
+    return True
 
 
 def count_distinct_imported_festivals(db: Session) -> int:
@@ -34579,34 +34650,15 @@ def festivals_refresh_cosplay2_nominations(request: Request, db: Session = Depen
         add_flash(request, "Принудительное обновление номинаций доступно только администратору.", "error")
         return redirect("/festivals")
 
-    festivals = db.execute(select(Festival).order_by(Festival.id)).scalars().all()
-    cosplay2_festivals = [item for item in festivals if nomination_api_url(item.url)]
-    nominations_by_api_url, failed = load_cosplay2_nominations_for_urls(
-        [item.url for item in cosplay2_festivals]
+    if not start_cosplay2_nomination_refresh(int(user.id)):
+        add_flash(request, "Обновление номинаций Cosplay2 уже выполняется.", "info")
+        return redirect("/festivals")
+
+    add_flash(
+        request,
+        "Обновление номинаций Cosplay2 запущено в фоне. Результат появится в оповещениях.",
+        "success",
     )
-
-    updated = 0
-    for festival in cosplay2_festivals:
-        api_url = nomination_api_url(festival.url)
-        if not api_url or api_url not in nominations_by_api_url:
-            continue
-        merged = normalize_festival_nomination_items(
-            [*festival_nomination_items(festival), *nominations_by_api_url[api_url]]
-        )
-        if merged == normalize_festival_nomination_items(festival.nominations_json):
-            continue
-        festival.nominations_json = merged
-        festival.nomination_1 = merged[0]["title"] if len(merged) > 0 else None
-        festival.nomination_2 = merged[1]["title"] if len(merged) > 1 else None
-        festival.nomination_3 = merged[2]["title"] if len(merged) > 2 else None
-        updated += 1
-
-    db.commit()
-    loaded = len(nominations_by_api_url)
-    message = f"Номинации Cosplay2 обновлены: источников {loaded}, карточек {updated}."
-    if failed:
-        message += f" Недоступных источников: {failed}."
-    add_flash(request, message, "success" if loaded else "info")
     return redirect("/festivals")
 
 
