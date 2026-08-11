@@ -573,20 +573,47 @@
       let failedTotal = 0;
       try {
         while (true) {
-          const body = new URLSearchParams({ batch_start: String(batchStart) });
-          const response = await fetch(form.action, {
+          const prepareBody = new URLSearchParams({ batch_start: String(batchStart) });
+          const prepareResponse = await fetch(form.action, {
             method: "POST",
             headers: { "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8" },
-            body: body.toString(),
+            body: prepareBody.toString(),
           });
-          const payload = await response.json();
-          if (!response.ok) throw new Error(payload.error || "Ошибка обновления номинаций");
+          const preparePayload = await prepareResponse.json();
+          if (!prepareResponse.ok) throw new Error(preparePayload.error || "Ошибка обновления номинаций");
+          if (preparePayload.done) break;
+
+          const saveBody = new URLSearchParams({ batch_start: String(batchStart) });
+          try {
+            const sourceResponse = await fetch(preparePayload.fetch_url, {
+              headers: { "Accept": "application/json" },
+            });
+            if (!sourceResponse.ok) throw new Error("Источник недоступен");
+            const sourcePayload = await sourceResponse.json();
+            const nominations = Array.isArray(sourcePayload.state)
+              ? sourcePayload.state
+                  .filter(function (item) { return item && typeof item.title === "string"; })
+                  .map(function (item) { return { title: item.title }; })
+              : [];
+            saveBody.set("nominations_json", JSON.stringify(nominations));
+          } catch (sourceError) {
+            saveBody.set("fetch_failed", "1");
+          }
+
+          const saveResponse = await fetch(form.action, {
+            method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8" },
+            body: saveBody.toString(),
+          });
+          const payload = await saveResponse.json();
+          if (!saveResponse.ok) throw new Error(payload.error || "Ошибка сохранения номинаций");
 
           updatedTotal += Number(payload.updated || 0);
           failedTotal += Number(payload.failed || 0);
           batchStart = Number(payload.processed || 0);
           button.textContent = `Обновление: ${batchStart} из ${Number(payload.total || 0)}`;
           if (payload.done) break;
+          await new Promise(function (resolve) { window.setTimeout(resolve, 150); });
         }
         button.textContent = `Готово: обновлено ${updatedTotal}` + (failedTotal ? `, ошибок ${failedTotal}` : "");
         window.setTimeout(function () { window.location.reload(); }, 1200);

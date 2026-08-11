@@ -52,6 +52,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .cosplay2_parser import (
+    create_request_url,
     guess_name_from_url,
     nomination_api_url,
     normalize_url,
@@ -32191,11 +32192,11 @@ def load_cosplay2_nominations_for_urls(event_urls: list[Any]) -> tuple[dict[str,
 
     def fetch(target: tuple[str, str]) -> tuple[str, list[dict[str, str]]]:
         api_url, event_url = target
-        response = requests.get(api_url, timeout=(4, 10), headers={"Accept": "application/json"})
+        response = requests.get(api_url, timeout=(2, 4), headers={"Accept": "application/json"})
         response.raise_for_status()
         return api_url, parse_nominations_payload(response.json(), event_url)
 
-    with ThreadPoolExecutor(max_workers=6) as executor:
+    with ThreadPoolExecutor(max_workers=2) as executor:
         futures = [executor.submit(fetch, target) for target in targets.items()]
         for future in as_completed(futures):
             try:
@@ -34663,6 +34664,8 @@ def festivals_import_cosplay2(request: Request, db: Session = Depends(get_db)):
 def festivals_refresh_cosplay2_nominations(
     request: Request,
     batch_start: int = Form(0),
+    nominations_json: str = Form(""),
+    fetch_failed: bool = Form(False),
     db: Session = Depends(get_db),
 ):
     user = current_user(request, db)
@@ -34671,39 +34674,78 @@ def festivals_refresh_cosplay2_nominations(
     if not is_primary_admin_user(user):
         return JSONResponse({"error": "Недостаточно прав."}, status_code=403)
 
-    festivals = db.execute(select(Festival).order_by(Festival.id)).scalars().all()
-    targets: dict[str, str] = {}
-    for festival in festivals:
-        source_url = festival_cosplay2_source_url(festival)
+    festival_source_rows = db.execute(
+        select(Festival.id, Festival.url, Festival.import_external_id).order_by(Festival.id)
+    ).all()
+    targets: dict[str, dict[str, Any]] = {}
+    for festival_id, festival_url, import_external_id in festival_source_rows:
+        source_url = next(
+            (
+                value
+                for value in [str(festival_url or "").strip(), str(import_external_id or "").strip()]
+                if nomination_api_url(value)
+            ),
+            None,
+        )
         api_url = nomination_api_url(source_url)
-        if api_url and api_url not in targets:
-            targets[api_url] = source_url or ""
+        if not api_url:
+            continue
+        target = targets.setdefault(api_url, {"source_url": source_url or "", "festival_ids": []})
+        target["festival_ids"].append(int(festival_id))
 
-    target_urls = list(targets.values())
-    total = len(target_urls)
+    target_items = list(targets.items())
+    total = len(target_items)
     safe_start = max(0, min(int(batch_start or 0), total))
-    batch_size = 8
-    batch_urls = target_urls[safe_start:safe_start + batch_size]
-    nominations_by_api_url, failed = load_cosplay2_nominations_for_urls(batch_urls)
+    if safe_start >= total:
+        return JSONResponse({"processed": total, "total": total, "updated": 0, "failed": 0, "done": True})
+
+    api_url, target = target_items[safe_start]
+    source_url = str(target["source_url"])
+    if not nominations_json and not fetch_failed:
+        return JSONResponse(
+            {
+                "processed": safe_start,
+                "total": total,
+                "fetch_url": api_url,
+                "done": False,
+            }
+        )
+
+    incoming_nominations: list[dict[str, str]] = []
+    if nominations_json and not fetch_failed:
+        try:
+            raw_nominations = json.loads(nominations_json)
+        except (TypeError, ValueError):
+            raw_nominations = []
+        request_url = create_request_url(source_url) or ""
+        incoming_nominations = normalize_festival_nomination_items(
+            [
+                {"title": str(item.get("title") or ""), "url": request_url}
+                for item in as_list(raw_nominations)
+                if isinstance(item, dict)
+            ]
+        )
 
     updated = 0
+    batch_festival_ids = [int(value) for value in target["festival_ids"]]
+    festivals = (
+        db.execute(select(Festival).where(Festival.id.in_(batch_festival_ids))).scalars().all()
+        if batch_festival_ids
+        else []
+    )
     for festival in festivals:
-        source_url = festival_cosplay2_source_url(festival)
-        api_url = nomination_api_url(source_url)
-        if not api_url or api_url not in nominations_by_api_url:
-            continue
-        if merge_cosplay2_nominations_into_festival(festival, nominations_by_api_url[api_url]):
+        if incoming_nominations and merge_cosplay2_nominations_into_festival(festival, incoming_nominations):
             updated += 1
     db.commit()
 
-    next_start = min(total, safe_start + len(batch_urls))
+    next_start = min(total, safe_start + 1)
     return JSONResponse(
         {
             "processed": next_start,
             "total": total,
             "updated": updated,
-            "loaded": len(nominations_by_api_url),
-            "failed": failed,
+            "loaded": 1 if incoming_nominations else 0,
+            "failed": 1 if fetch_failed or not incoming_nominations else 0,
             "done": next_start >= total,
         }
     )
