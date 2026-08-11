@@ -32214,12 +32214,20 @@ def merge_cosplay2_nominations_into_festival(
     merged = normalize_festival_nomination_items(
         [*festival_nomination_items(festival), *incoming_nominations]
     )
-    if merged == normalize_festival_nomination_items(festival.nominations_json):
+    nominations_changed = merged != normalize_festival_nomination_items(festival.nominations_json)
+    has_photo_nomination = any(
+        any(marker in normalize_nomination_title_key(item.get("title")).replace(" ", "") for marker in ["фотокосплей", "фотоарт"])
+        for item in merged
+    )
+    photo_flag_changed = has_photo_nomination and not bool(festival.has_photo_cosplay)
+    if not nominations_changed and not photo_flag_changed:
         return False
     festival.nominations_json = merged
     festival.nomination_1 = merged[0]["title"] if len(merged) > 0 else None
     festival.nomination_2 = merged[1]["title"] if len(merged) > 1 else None
     festival.nomination_3 = merged[2]["title"] if len(merged) > 2 else None
+    if has_photo_nomination:
+        festival.has_photo_cosplay = True
     return True
 
 
@@ -32800,12 +32808,15 @@ def festivals_list(request: Request, db: Session = Depends(get_db)):
         announcement_requesters_by_id = {item.id: item for item in requesters}
 
     festival_cosplay2_api_urls_by_id: dict[int, str] = {}
+    festival_raf_import_ids: set[int] = set()
     if is_primary_admin_user(user):
         for festival in paginated_festivals:
             source_url = festival_cosplay2_source_url(festival)
             api_url = nomination_api_url(source_url)
             if api_url:
                 festival_cosplay2_api_urls_by_id[int(festival.id)] = api_url
+            elif festival.import_source == RAF_IMPORT_SOURCE_LABEL:
+                festival_raf_import_ids.add(int(festival.id))
 
     return template_response(
         request,
@@ -32858,6 +32869,7 @@ def festivals_list(request: Request, db: Session = Depends(get_db)):
         can_import_cosplay2=user_is_special(user),
         can_force_refresh_cosplay2_nominations=is_primary_admin_user(user),
         festival_cosplay2_api_urls_by_id=festival_cosplay2_api_urls_by_id,
+        festival_raf_import_ids=festival_raf_import_ids,
         can_import_raf=user_is_special(user) and VK_IMPORT_ENABLED,
         import_source_labels=IMPORT_SOURCE_LABELS,
         festival_ticket_transport_labels=FESTIVAL_TICKET_TRANSPORT_LABELS,
@@ -34674,6 +34686,8 @@ def festival_refresh_cosplay2_nominations(
     festival_id: int,
     request: Request,
     nominations_json: str = Form(""),
+    source_url: str = Form(""),
+    submission_deadline: str = Form(""),
     db: Session = Depends(get_db),
 ):
     user = current_user(request, db)
@@ -34685,8 +34699,8 @@ def festival_refresh_cosplay2_nominations(
     target_festival = db.get(Festival, int(festival_id))
     if not target_festival:
         return JSONResponse({"error": "Карточка фестиваля не найдена."}, status_code=404)
-    source_url = festival_cosplay2_source_url(target_festival)
-    if not source_url:
+    resolved_source_url = festival_cosplay2_source_url(target_festival) or str(source_url or "").strip()
+    if not nomination_api_url(resolved_source_url):
         return JSONResponse({"error": "Для карточки не найден источник Cosplay2."}, status_code=400)
 
     incoming_nominations: list[dict[str, str]] = []
@@ -34695,7 +34709,7 @@ def festival_refresh_cosplay2_nominations(
             raw_nominations = json.loads(nominations_json)
         except (TypeError, ValueError):
             raw_nominations = []
-        request_url = create_request_url(source_url) or ""
+        request_url = create_request_url(resolved_source_url) or ""
         incoming_nominations = normalize_festival_nomination_items(
             [
                 {"title": str(item.get("title") or ""), "url": request_url}
@@ -34714,17 +34728,22 @@ def festival_refresh_cosplay2_nominations(
     festivals = db.execute(
         select(Festival).where(or_(*match_conditions)).order_by(Festival.id)
     ).scalars().all()
-    updated = sum(
-        1
-        for festival in festivals
-        if merge_cosplay2_nominations_into_festival(festival, incoming_nominations)
-    )
+    imported_deadline = parse_date(str(submission_deadline or "").strip())
+    updated = 0
+    for festival in festivals:
+        changed = merge_cosplay2_nominations_into_festival(festival, incoming_nominations)
+        if imported_deadline and festival.submission_deadline != imported_deadline:
+            festival.submission_deadline = imported_deadline
+            changed = True
+        if changed:
+            updated += 1
     db.commit()
     return JSONResponse(
         {
             "updated": updated,
             "nominations": len(incoming_nominations),
             "matched_cards": len(festivals),
+            "submission_deadline": imported_deadline.isoformat() if imported_deadline else "",
         }
     )
 

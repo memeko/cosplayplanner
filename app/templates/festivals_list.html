@@ -499,13 +499,18 @@
         <a href="/festivals/{{ festival.id }}/edit" class="btn">Редактировать</a>
       {% endif %}
       {% set cosplay2_api_url = festival_cosplay2_api_urls_by_id.get(festival.id) %}
-      {% if can_force_refresh_cosplay2_nominations and cosplay2_api_url %}
+      {% set is_raf_import = festival.id in festival_raf_import_ids %}
+      {% if can_force_refresh_cosplay2_nominations and (cosplay2_api_url or is_raf_import) %}
         <button
           type="button"
           class="btn festival-nominations-import-button"
-          data-source-url="{{ cosplay2_api_url }}"
+          data-source-url="{{ cosplay2_api_url or '' }}"
           data-save-url="/festivals/{{ festival.id }}/refresh-cosplay2-nominations"
-        >Импортировать номинации</button>
+          data-festival-name="{{ festival.name }}"
+          data-festival-city="{{ festival.city or '' }}"
+          data-festival-date="{{ festival.event_date.isoformat() if festival.event_date else '' }}"
+          data-raf-import="{{ '1' if is_raf_import else '0' }}"
+        >{{ 'Найти номинации на Cosplay2' if is_raf_import else 'Импортировать номинации' }}</button>
       {% endif %}
       {% if not festival.is_global_announcement %}
         <form method="post" action="/festivals/{{ festival.id }}/delete" onsubmit="return confirm('Удалить фестиваль?');">
@@ -563,6 +568,71 @@
 {% block scripts %}
 <script>
   (function () {
+    let cosplay2EventsPromise = null;
+
+    function normalizeFestivalValue(value) {
+      return String(value || "")
+        .toLocaleLowerCase("ru-RU")
+        .replaceAll("ё", "е")
+        .replace(/[^0-9a-zа-я]+/g, "");
+    }
+
+    function collectCosplay2Events(value, result) {
+      if (Array.isArray(value)) {
+        value.forEach(function (item) { collectCosplay2Events(item, result); });
+        return;
+      }
+      if (!value || typeof value !== "object") return;
+      if (value["@type"] === "Event" && typeof value.url === "string") result.push(value);
+      Object.values(value).forEach(function (item) { collectCosplay2Events(item, result); });
+    }
+
+    async function loadCosplay2Events() {
+      if (!cosplay2EventsPromise) {
+        cosplay2EventsPromise = fetch("https://cosplay2.ru/", { headers: { "Accept": "text/html" } })
+          .then(function (response) {
+            if (!response.ok) throw new Error("Каталог Cosplay2 недоступен");
+            return response.text();
+          })
+          .then(function (htmlText) {
+            const documentValue = new DOMParser().parseFromString(htmlText, "text/html");
+            const events = [];
+            documentValue.querySelectorAll('script[type="application/ld+json"]').forEach(function (script) {
+              try { collectCosplay2Events(JSON.parse(script.textContent || "null"), events); } catch (error) {}
+            });
+            return events;
+          });
+      }
+      return cosplay2EventsPromise;
+    }
+
+    async function findCosplay2ApiUrl(button) {
+      if (button.dataset.sourceUrl) return button.dataset.sourceUrl;
+      const targetName = normalizeFestivalValue(button.dataset.festivalName);
+      const targetCity = normalizeFestivalValue(button.dataset.festivalCity);
+      const targetDate = String(button.dataset.festivalDate || "").slice(0, 10);
+      const events = await loadCosplay2Events();
+      let best = null;
+      let bestScore = -1;
+      events.forEach(function (event) {
+        const eventName = normalizeFestivalValue(event.name);
+        if (!targetName || !eventName || (targetName !== eventName && !targetName.includes(eventName) && !eventName.includes(targetName))) return;
+        const location = event.location && typeof event.location === "object" ? event.location : {};
+        const eventCity = normalizeFestivalValue(location.name || (location.address && location.address.addressLocality));
+        const eventDate = String(event.startDate || "").slice(0, 10);
+        let score = targetName === eventName ? 6 : 3;
+        if (targetDate && eventDate === targetDate) score += 4;
+        if (targetCity && eventCity === targetCity) score += 2;
+        if (score > bestScore) { best = event; bestScore = score; }
+      });
+      if (!best || bestScore < 6) throw new Error("Фестиваль не найден на Cosplay2");
+      const eventUrl = new URL(best.url, "https://cosplay2.ru/");
+      if (eventUrl.hostname !== "cosplay2.ru" && !eventUrl.hostname.endsWith(".cosplay2.ru")) {
+        throw new Error("Некорректный источник Cosplay2");
+      }
+      return `${eventUrl.protocol}//${eventUrl.host}/api/events/get_newrequest_state`;
+    }
+
     document.querySelectorAll(".festival-nominations-import-button").forEach(function (button) {
       button.addEventListener("click", async function () {
       if (!window.confirm("Импортировать номинации для этой карточки фестиваля?")) return;
@@ -570,7 +640,8 @@
       const originalLabel = button.textContent;
       button.textContent = "Загрузка…";
       try {
-        const sourceResponse = await fetch(button.dataset.sourceUrl, {
+        const apiUrl = await findCosplay2ApiUrl(button);
+        const sourceResponse = await fetch(apiUrl, {
           headers: { "Accept": "application/json" },
         });
         if (!sourceResponse.ok) throw new Error("Cosplay2 не ответил");
@@ -582,7 +653,28 @@
           : [];
         if (!nominations.length) throw new Error("Номинации не найдены");
 
-        const body = new URLSearchParams({ nominations_json: JSON.stringify(nominations) });
+        const nowTimestamp = Date.now();
+        const futureDeadlines = Array.isArray(sourcePayload.state)
+          ? sourcePayload.state
+              .map(function (item) { return Number(item && item.time_requests_close_uts) * 1000; })
+              .filter(function (value) { return Number.isFinite(value) && value >= nowTimestamp; })
+              .sort(function (left, right) { return left - right; })
+          : [];
+        let submissionDeadline = "";
+        if (futureDeadlines.length) {
+          const deadlineDate = new Date(futureDeadlines[0]);
+          const year = String(deadlineDate.getFullYear());
+          const month = String(deadlineDate.getMonth() + 1).padStart(2, "0");
+          const day = String(deadlineDate.getDate()).padStart(2, "0");
+          submissionDeadline = `${year}-${month}-${day}`;
+        }
+
+        const eventSourceUrl = new URL(apiUrl).origin;
+        const body = new URLSearchParams({
+          nominations_json: JSON.stringify(nominations),
+          source_url: eventSourceUrl,
+          submission_deadline: submissionDeadline,
+        });
         const saveResponse = await fetch(button.dataset.saveUrl, {
           method: "POST",
           headers: { "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8" },
