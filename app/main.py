@@ -1087,6 +1087,7 @@ GENSHIN_BIRTHDAYS_API_URL = (
     "?action=parse&page=%D0%94%D0%B5%D0%BD%D1%8C_%D1%80%D0%BE%D0%B6%D0%B4%D0%B5%D0%BD%D0%B8%D1%8F&format=json"
 )
 ANISEARCH_BIRTHDAYS_MONTH_URL = "https://www.anisearch.com/character/birthdays?month={month}"
+SHIKIMORI_ANIME_SEARCH_URL = "https://shikimori.one/api/animes"
 
 HTTP_TIMEOUT_SECONDS = 8
 NETWORK_CACHE_TTL_SECONDS = 60 * 60 * 6
@@ -3706,6 +3707,8 @@ def fetch_character_birthdays_from_sheet(month: int) -> list[dict[str, Any]]:
                     "day": day,
                     "name": name,
                     "source": "Google таблица (персонажи)",
+                    "anime_title": "Tian Guan Ci Fu",
+                    "localized_title": "Благословение небожителей",
                 }
             )
         return payload
@@ -3919,6 +3922,50 @@ def character_display_name(name: str, anime_title: str | None = None) -> str:
     return f"{base_name} ({title})"
 
 
+def fetch_russian_anime_title(anime_title: str | None) -> str:
+    title = re.sub(r"\s+", " ", (anime_title or "").strip())
+    if not title:
+        return ""
+
+    def _load() -> str:
+        try:
+            response = requests.get(
+                SHIKIMORI_ANIME_SEARCH_URL,
+                params={"search": title, "limit": 5},
+                timeout=HTTP_TIMEOUT_SECONDS,
+                headers={"User-Agent": "CosplayPlanner/1.0"},
+            )
+            response.raise_for_status()
+            payload = response.json()
+        except (requests.RequestException, ValueError):
+            return ""
+        if not isinstance(payload, list):
+            return ""
+
+        title_key = normalize_event_name_key(title)
+        best_match: dict[str, Any] | None = None
+        best_score = 0.0
+        for row in payload:
+            if not isinstance(row, dict):
+                continue
+            candidate = str(row.get("name") or "").strip()
+            candidate_key = normalize_event_name_key(candidate)
+            if not candidate_key:
+                continue
+            score = SequenceMatcher(None, title_key, candidate_key).ratio()
+            if score > best_score:
+                best_score = score
+                best_match = row
+        if not best_match or best_score < 0.65:
+            return ""
+        localized = re.sub(r"\s+", " ", str(best_match.get("russian") or "").strip())
+        if normalize_event_name_key(localized) == title_key:
+            return ""
+        return localized
+
+    return cache_get_or_load(f"shikimori_anime_russian:{title.casefold()}", _load)
+
+
 def character_birthdays_today(today: date) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -3944,25 +3991,35 @@ def character_birthdays_today(today: date) -> list[dict[str, Any]]:
                     str(row.get("character_url", "")).strip(),
                     fallback_title=anime_title,
                 )
-            display_name = character_display_name(str(row.get("name", "")), anime_title)
-            if not display_name:
+            character_name = clean_character_birthday_name(str(row.get("name", "")))
+            if not character_name:
                 continue
-            key = display_name.casefold()
+            localized_title = str(row.get("localized_title", "")).strip()
+            if anime_title and not localized_title:
+                localized_title = fetch_russian_anime_title(anime_title)
+            key = "|".join([anime_title.casefold(), character_name.casefold()])
             if key in seen:
                 continue
             seen.add(key)
             items.append(
                 {
                     "day": day_num,
-                    "name": display_name,
+                    "name": character_name,
+                    "anime_title": anime_title,
+                    "localized_title": localized_title,
                 }
             )
-    items.sort(key=lambda item: str(item.get("name", "")).casefold())
+    items.sort(
+        key=lambda item: (
+            str(item.get("anime_title", "")).casefold(),
+            str(item.get("name", "")).casefold(),
+        )
+    )
     return items
 
 
 def cached_character_birthdays_today(today: date) -> list[dict[str, Any]]:
-    cache_key = f"character_birthdays_today:{today.isoformat()}"
+    cache_key = f"character_birthdays_today:v2:{today.isoformat()}"
     cached = NETWORK_CACHE.get(cache_key)
     now = datetime.utcnow()
     if cached:
@@ -32132,7 +32189,7 @@ def load_cosplay2_nominations_for_urls(event_urls: list[Any]) -> tuple[dict[str,
         response.raise_for_status()
         return api_url, parse_nominations_payload(response.json(), event_url)
 
-    with ThreadPoolExecutor(max_workers=4) as executor:
+    with ThreadPoolExecutor(max_workers=6) as executor:
         futures = [executor.submit(fetch, target) for target in targets.items()]
         for future in as_completed(futures):
             try:
@@ -32143,37 +32200,61 @@ def load_cosplay2_nominations_for_urls(event_urls: list[Any]) -> tuple[dict[str,
     return loaded, failed
 
 
+def merge_cosplay2_nominations_into_festival(
+    festival: Festival,
+    incoming_nominations: list[dict[str, str]],
+) -> bool:
+    merged = normalize_festival_nomination_items(
+        [*festival_nomination_items(festival), *incoming_nominations]
+    )
+    if merged == normalize_festival_nomination_items(festival.nominations_json):
+        return False
+    festival.nominations_json = merged
+    festival.nomination_1 = merged[0]["title"] if len(merged) > 0 else None
+    festival.nomination_2 = merged[1]["title"] if len(merged) > 1 else None
+    festival.nomination_3 = merged[2]["title"] if len(merged) > 2 else None
+    return True
+
+
 def refresh_existing_cosplay2_nominations(admin_user_id: int) -> None:
     global cosplay2_nomination_refresh_running
     try:
         with SessionLocal() as db:
-            event_urls = [
-                value
-                for value in db.execute(select(Festival.url).where(Festival.url.is_not(None))).scalars().all()
-                if nomination_api_url(value)
-            ]
+            event_urls_by_api: dict[str, str] = {}
+            for value in db.execute(select(Festival.url).where(Festival.url.is_not(None))).scalars().all():
+                api_url = nomination_api_url(value)
+                if api_url and api_url not in event_urls_by_api:
+                    event_urls_by_api[api_url] = str(value)
 
-        nominations_by_api_url, failed = load_cosplay2_nominations_for_urls(event_urls)
+        # Commit every small batch so useful results appear without waiting for
+        # every slow or unavailable festival host to finish.
+        batch_size = 12
+        event_urls = list(event_urls_by_api.values())
+        loaded = 0
+        failed = 0
+        updated = 0
+        for batch_start in range(0, len(event_urls), batch_size):
+            batch_urls = event_urls[batch_start:batch_start + batch_size]
+            nominations_by_api_url, batch_failed = load_cosplay2_nominations_for_urls(batch_urls)
+            failed += batch_failed
+            loaded += len(nominations_by_api_url)
+
+            with SessionLocal() as db:
+                festivals = db.execute(select(Festival).order_by(Festival.id)).scalars().all()
+                batch_updated = 0
+                for festival in festivals:
+                    api_url = nomination_api_url(festival.url)
+                    if not api_url or api_url not in nominations_by_api_url:
+                        continue
+                    if merge_cosplay2_nominations_into_festival(
+                        festival,
+                        nominations_by_api_url[api_url],
+                    ):
+                        batch_updated += 1
+                db.commit()
+                updated += batch_updated
 
         with SessionLocal() as db:
-            festivals = db.execute(select(Festival).order_by(Festival.id)).scalars().all()
-            updated = 0
-            for festival in festivals:
-                api_url = nomination_api_url(festival.url)
-                if not api_url or api_url not in nominations_by_api_url:
-                    continue
-                merged = normalize_festival_nomination_items(
-                    [*festival_nomination_items(festival), *nominations_by_api_url[api_url]]
-                )
-                if merged == normalize_festival_nomination_items(festival.nominations_json):
-                    continue
-                festival.nominations_json = merged
-                festival.nomination_1 = merged[0]["title"] if len(merged) > 0 else None
-                festival.nomination_2 = merged[1]["title"] if len(merged) > 1 else None
-                festival.nomination_3 = merged[2]["title"] if len(merged) > 2 else None
-                updated += 1
-
-            loaded = len(nominations_by_api_url)
             message = f"Обновление номинаций Cosplay2 завершено: источников {loaded}, карточек {updated}."
             if failed:
                 message += f" Недоступных источников: {failed}."

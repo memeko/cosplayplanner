@@ -282,7 +282,16 @@
       {% for item in character_birthdays_today %}
         <li>
           <div class="notification-content">
-            <span>{{ item.name }}</span>
+            <span>
+              {% if item.anime_title %}
+                <strong>{{ item.anime_title }}</strong>
+                {% if item.localized_title and item.localized_title|lower != item.anime_title|lower %}
+                  ({{ item.localized_title }})
+                {% endif %}
+                <span aria-hidden="true">—</span>
+              {% endif %}
+              {{ item.name }}
+            </span>
           </div>
         </li>
       {% endfor %}
