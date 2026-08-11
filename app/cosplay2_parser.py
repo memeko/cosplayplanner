@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Any
 from urllib.parse import urlparse
@@ -16,6 +16,43 @@ class Cosplay2Event:
     event_date: date | None
     submission_deadline: date | None
     description: str | None
+    nominations: list[dict[str, str]] = field(default_factory=list)
+
+
+def nomination_api_url(event_url: str | None) -> str | None:
+    normalized = normalize_url(event_url)
+    if not normalized:
+        return None
+    parsed = urlparse(normalized)
+    return f"{parsed.scheme}://{parsed.netloc}/api/events/get_newrequest_state"
+
+
+def create_request_url(event_url: str | None) -> str | None:
+    normalized = normalize_url(event_url)
+    if not normalized:
+        return None
+    parsed = urlparse(normalized)
+    return f"{parsed.scheme}://{parsed.netloc}/create_request"
+
+
+def parse_nominations_payload(payload: Any, event_url: str | None) -> list[dict[str, str]]:
+    """Parse the public data source used by cosplay2.ru's /create_request page."""
+    if not isinstance(payload, dict) or not isinstance(payload.get("state"), list):
+        return []
+
+    request_url = create_request_url(event_url) or ""
+    result: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for row in payload["state"]:
+        if not isinstance(row, dict):
+            continue
+        title = re.sub(r"\s+", " ", str(row.get("title") or "")).strip()
+        key = title.casefold().replace("ё", "е")
+        if not title or key in seen:
+            continue
+        seen.add(key)
+        result.append({"title": title[:255], "url": request_url})
+    return result
 
 
 def normalize_url(url: str | None) -> str | None:

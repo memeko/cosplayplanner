@@ -22,6 +22,7 @@ import time
 import uuid
 import xml.etree.ElementTree as ET
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta
 from difflib import SequenceMatcher
 from email.message import EmailMessage
@@ -50,7 +51,13 @@ from starlette.middleware.gzip import GZipMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from .cosplay2_parser import guess_name_from_url, normalize_url, parse_events_from_homepage
+from .cosplay2_parser import (
+    guess_name_from_url,
+    nomination_api_url,
+    normalize_url,
+    parse_events_from_homepage,
+    parse_nominations_payload,
+)
 from .database import Base, SessionLocal, engine, get_db
 from .models import (
     CardComment,
@@ -288,7 +295,9 @@ RU_MONTH_NAMES = [
 
 DEFAULT_NOMINATIONS = [
     "одиночное дефиле",
+    "парное дефиле",
     "групповое дефиле",
+    "экшен",
     "сценка",
     "фотокосплей",
     "караоке",
@@ -16360,7 +16369,23 @@ def normalize_nomination_title_key(value: Any) -> str:
     raw = clean_nomination_title(value).casefold().replace("ё", "е")
     if not raw:
         return ""
-    return " ".join(re.findall(r"[0-9a-zа-я]+", raw))
+    key = " ".join(re.findall(r"[0-9a-zа-я]+", raw))
+    # Festival organizers use different names for the same broad category.
+    # Keep qualifiers ("Азия", "игры" etc.) while unifying the category stem.
+    aliases = (
+        (r"^(?:соло|одиночка|одиночное выступление)(?:\s+дефиле)?\b", "одиночное дефиле"),
+        # Pair, group and action are deliberately independent categories.
+        (r"^(?:дуэт|парное выступление)(?:\s+дефиле)?\b", "парное дефиле"),
+        (r"^(?:группа|групповое выступление)(?:\s+дефиле)?\b", "групповое дефиле"),
+        (r"^(?:action|экшн|экшен дефиле|дефиле экшен)\b", "экшен"),
+        (r"^(?:сценический номер|театральная постановка)\b", "сценка"),
+        (r"^(?:фото косплей|фотоконкурс)\b", "фотокосплей"),
+    )
+    for pattern, replacement in aliases:
+        updated = re.sub(pattern, replacement, key)
+        if updated != key:
+            return updated
+    return key
 
 
 def canonical_nomination_title(value: Any, known_titles: list[str] | None = None) -> str:
@@ -32002,6 +32027,16 @@ def import_cosplay2_events_for_user(db: Session, user: User, parsed_events: list
                 existing.is_partner_festival = True
                 changed = True
 
+            merged_nominations = normalize_festival_nomination_items(
+                [*festival_nomination_items(existing), *as_list(getattr(event, "nominations", []))]
+            )
+            if merged_nominations != normalize_festival_nomination_items(existing.nominations_json):
+                existing.nominations_json = merged_nominations
+                existing.nomination_1 = merged_nominations[0]["title"] if len(merged_nominations) > 0 else None
+                existing.nomination_2 = merged_nominations[1]["title"] if len(merged_nominations) > 1 else None
+                existing.nomination_3 = merged_nominations[2]["title"] if len(merged_nominations) > 2 else None
+                changed = True
+
             if changed:
                 updated += 1
             continue
@@ -32032,7 +32067,12 @@ def import_cosplay2_events_for_user(db: Session, user: User, parsed_events: list
             import_source=COSPLAY2_IMPORT_SOURCE_LABEL,
             import_external_id=normalized_url,
             is_partner_festival=festival_is_partner_by_name(event.name),
+            nominations_json=normalize_festival_nomination_items(getattr(event, "nominations", [])),
         )
+        nomination_items = normalize_festival_nomination_items(getattr(event, "nominations", []))
+        festival.nomination_1 = nomination_items[0]["title"] if len(nomination_items) > 0 else None
+        festival.nomination_2 = nomination_items[1]["title"] if len(nomination_items) > 1 else None
+        festival.nomination_3 = nomination_items[2]["title"] if len(nomination_items) > 2 else None
         db.add(festival)
         existing_by_url[normalized_url] = festival
         existing_rows.append(festival)
@@ -32055,6 +32095,31 @@ def import_cosplay2_events_for_user(db: Session, user: User, parsed_events: list
         "conflicts": conflict_count,
         "conflict_names": sorted(conflict_names, key=lambda value: value.casefold()),
     }
+
+
+def load_cosplay2_event_nominations(parsed_events: list[Any]) -> tuple[int, int]:
+    """Enrich homepage events from the public API powering /create_request."""
+    targets = [(event, nomination_api_url(getattr(event, "url", None))) for event in parsed_events]
+    targets = [(event, url) for event, url in targets if url]
+    loaded = 0
+    failed = 0
+
+    def fetch(target: tuple[Any, str]) -> tuple[Any, list[dict[str, str]]]:
+        event, url = target
+        response = requests.get(url, timeout=15, headers={"Accept": "application/json"})
+        response.raise_for_status()
+        return event, parse_nominations_payload(response.json(), getattr(event, "url", None))
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = [executor.submit(fetch, target) for target in targets]
+        for future in as_completed(futures):
+            try:
+                event, nominations = future.result()
+                event.nominations = nominations
+                loaded += 1
+            except (requests.RequestException, ValueError):
+                failed += 1
+    return loaded, failed
 
 
 def count_distinct_imported_festivals(db: Session) -> int:
@@ -34429,6 +34494,8 @@ def festivals_import_cosplay2(request: Request, db: Session = Depends(get_db)):
         add_flash(request, "На cosplay2.ru не удалось найти структурированные данные фестивалей.", "error")
         return redirect("/festivals")
 
+    nomination_pages_loaded, nomination_pages_failed = load_cosplay2_event_nominations(parsed_events)
+
     imported = 0
     updated = 0
     conflict_count = 0
@@ -34458,7 +34525,10 @@ def festivals_import_cosplay2(request: Request, db: Session = Depends(get_db)):
             request,
             (
                 f"Импорт с cosplay2.ru для всех пользователей завершён: "
-                f"новых карточек {imported}, обновлено {updated}.{conflict_text}"
+                f"новых карточек {imported}, обновлено {updated}. "
+                f"Категории получены для {nomination_pages_loaded} фестивалей"
+                + (f", недоступны для {nomination_pages_failed}" if nomination_pages_failed else "")
+                + f".{conflict_text}"
             ),
             "success",
         )
