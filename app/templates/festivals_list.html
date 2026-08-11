@@ -11,8 +11,8 @@
     </form>
     {% endif %}
     {% if can_force_refresh_cosplay2_nominations %}
-    <form method="post" action="/festivals/refresh-cosplay2-nominations" onsubmit="return confirm('Принудительно обновить номинации во всех существующих карточках Cosplay2?');">
-      <button type="submit" class="btn">Обновить номинации Cosplay2</button>
+    <form method="post" action="/festivals/refresh-cosplay2-nominations" id="cosplay2-nominations-refresh-form">
+      <button type="submit" class="btn" id="cosplay2-nominations-refresh-button">Обновить номинации Cosplay2</button>
     </form>
     {% endif %}
     {% if can_import_raf %}
@@ -554,4 +554,47 @@
   </div>
 </section>
 {% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+  (function () {
+    const form = document.getElementById("cosplay2-nominations-refresh-form");
+    const button = document.getElementById("cosplay2-nominations-refresh-button");
+    if (!form || !button) return;
+
+    form.addEventListener("submit", async function (event) {
+      event.preventDefault();
+      if (!window.confirm("Принудительно обновить номинации во всех существующих карточках Cosplay2?")) return;
+
+      button.disabled = true;
+      let batchStart = 0;
+      let updatedTotal = 0;
+      let failedTotal = 0;
+      try {
+        while (true) {
+          const body = new URLSearchParams({ batch_start: String(batchStart) });
+          const response = await fetch(form.action, {
+            method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8" },
+            body: body.toString(),
+          });
+          const payload = await response.json();
+          if (!response.ok) throw new Error(payload.error || "Ошибка обновления номинаций");
+
+          updatedTotal += Number(payload.updated || 0);
+          failedTotal += Number(payload.failed || 0);
+          batchStart = Number(payload.processed || 0);
+          button.textContent = `Обновление: ${batchStart} из ${Number(payload.total || 0)}`;
+          if (payload.done) break;
+        }
+        button.textContent = `Готово: обновлено ${updatedTotal}` + (failedTotal ? `, ошибок ${failedTotal}` : "");
+        window.setTimeout(function () { window.location.reload(); }, 1200);
+      } catch (error) {
+        button.disabled = false;
+        button.textContent = error instanceof Error ? error.message : "Ошибка обновления";
+      }
+    });
+  })();
+</script>
 {% endblock %}

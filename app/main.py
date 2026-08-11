@@ -860,8 +860,6 @@ vk_bot_worker_lock = threading.Lock()
 vk_bot_worker_thread: threading.Thread | None = None
 external_import_worker_lock = threading.Lock()
 external_import_worker_thread: threading.Thread | None = None
-cosplay2_nomination_refresh_lock = threading.Lock()
-cosplay2_nomination_refresh_running = False
 
 MASTER_TYPE_OPTIONS = [
     "фотограф",
@@ -3966,18 +3964,24 @@ def fetch_russian_anime_title(anime_title: str | None) -> str:
     return cache_get_or_load(f"shikimori_anime_russian:{title.casefold()}", _load)
 
 
-def character_birthdays_today(today: date) -> list[dict[str, Any]]:
+def character_birthdays_today(today: date, *, include_localization: bool = True) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for producer in [
+    producers = [
         fetch_character_birthdays_from_genshin,
         fetch_character_birthdays_from_sheet,
         fetch_character_birthdays_from_anisearch,
-    ]:
-        try:
-            rows = producer(today.month)
-        except Exception:
-            continue
+    ]
+    producer_rows: list[list[dict[str, Any]]] = []
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        futures = [executor.submit(producer, today.month) for producer in producers]
+        for future in futures:
+            try:
+                producer_rows.append(future.result())
+            except Exception:
+                producer_rows.append([])
+
+    for rows in producer_rows:
         for row in rows:
             day_num = int(row.get("day") or 0)
             if day_num != today.day:
@@ -3986,16 +3990,11 @@ def character_birthdays_today(today: date) -> list[dict[str, Any]]:
             anime_title = str(row.get("anime_title", "")).strip()
             if source.casefold() == "genshin impact wiki" and not anime_title:
                 anime_title = "Genshin Impact"
-            if source.casefold() == "anisearch":
-                anime_title = fetch_anisearch_anime_title(
-                    str(row.get("character_url", "")).strip(),
-                    fallback_title=anime_title,
-                )
             character_name = clean_character_birthday_name(str(row.get("name", "")))
             if not character_name:
                 continue
             localized_title = str(row.get("localized_title", "")).strip()
-            if anime_title and not localized_title:
+            if include_localization and anime_title and not localized_title:
                 localized_title = fetch_russian_anime_title(anime_title)
             key = "|".join([anime_title.casefold(), character_name.casefold()])
             if key in seen:
@@ -4027,6 +4026,13 @@ def cached_character_birthdays_today(today: date) -> list[dict[str, Any]]:
         if (now - cached_at).total_seconds() < NETWORK_CACHE_TTL_SECONDS:
             return list(payload) if isinstance(payload, list) else []
 
+    fallback_payload: list[dict[str, Any]] = []
+    if not cached:
+        try:
+            fallback_payload = character_birthdays_today(today, include_localization=False)
+        except Exception:
+            fallback_payload = []
+
     with CHARACTER_BIRTHDAYS_REFRESH_LOCK:
         should_refresh = cache_key not in CHARACTER_BIRTHDAYS_REFRESHING
         if should_refresh:
@@ -4051,7 +4057,7 @@ def cached_character_birthdays_today(today: date) -> list[dict[str, Any]]:
     if cached:
         _cached_at, stale_payload = cached
         return list(stale_payload) if isinstance(stale_payload, list) else []
-    return []
+    return fallback_payload
 
 
 def event_matches_day(day_value: date, event: dict[str, Any]) -> bool:
@@ -32216,81 +32222,12 @@ def merge_cosplay2_nominations_into_festival(
     return True
 
 
-def refresh_existing_cosplay2_nominations(admin_user_id: int) -> None:
-    global cosplay2_nomination_refresh_running
-    try:
-        with SessionLocal() as db:
-            event_urls_by_api: dict[str, str] = {}
-            for value in db.execute(select(Festival.url).where(Festival.url.is_not(None))).scalars().all():
-                api_url = nomination_api_url(value)
-                if api_url and api_url not in event_urls_by_api:
-                    event_urls_by_api[api_url] = str(value)
-
-        # Commit every small batch so useful results appear without waiting for
-        # every slow or unavailable festival host to finish.
-        batch_size = 12
-        event_urls = list(event_urls_by_api.values())
-        loaded = 0
-        failed = 0
-        updated = 0
-        for batch_start in range(0, len(event_urls), batch_size):
-            batch_urls = event_urls[batch_start:batch_start + batch_size]
-            nominations_by_api_url, batch_failed = load_cosplay2_nominations_for_urls(batch_urls)
-            failed += batch_failed
-            loaded += len(nominations_by_api_url)
-
-            with SessionLocal() as db:
-                festivals = db.execute(select(Festival).order_by(Festival.id)).scalars().all()
-                batch_updated = 0
-                for festival in festivals:
-                    api_url = nomination_api_url(festival.url)
-                    if not api_url or api_url not in nominations_by_api_url:
-                        continue
-                    if merge_cosplay2_nominations_into_festival(
-                        festival,
-                        nominations_by_api_url[api_url],
-                    ):
-                        batch_updated += 1
-                db.commit()
-                updated += batch_updated
-
-        with SessionLocal() as db:
-            message = f"Обновление номинаций Cosplay2 завершено: источников {loaded}, карточек {updated}."
-            if failed:
-                message += f" Недоступных источников: {failed}."
-            db.add(FestivalNotification(user_id=int(admin_user_id), message=message))
-            db.commit()
-    except Exception:
-        try:
-            with SessionLocal() as db:
-                db.add(
-                    FestivalNotification(
-                        user_id=int(admin_user_id),
-                        message="Не удалось завершить фоновое обновление номинаций Cosplay2. Попробуйте ещё раз позже.",
-                    )
-                )
-                db.commit()
-        except Exception:
-            pass
-    finally:
-        with cosplay2_nomination_refresh_lock:
-            cosplay2_nomination_refresh_running = False
-
-
-def start_cosplay2_nomination_refresh(admin_user_id: int) -> bool:
-    global cosplay2_nomination_refresh_running
-    with cosplay2_nomination_refresh_lock:
-        if cosplay2_nomination_refresh_running:
-            return False
-        cosplay2_nomination_refresh_running = True
-
-    threading.Thread(
-        target=refresh_existing_cosplay2_nominations,
-        args=(int(admin_user_id),),
-        name="cosplay2-nomination-refresh",
-        daemon=True,
-    ).start()
-    return True
+def festival_cosplay2_source_url(festival: Festival) -> str | None:
+    for raw_url in [festival.url, festival.import_external_id]:
+        value = str(raw_url or "").strip()
+        if nomination_api_url(value):
+            return value
+    return None
 
 
 def count_distinct_imported_festivals(db: Session) -> int:
@@ -34723,24 +34660,53 @@ def festivals_import_cosplay2(request: Request, db: Session = Depends(get_db)):
 
 
 @app.post("/festivals/refresh-cosplay2-nominations")
-def festivals_refresh_cosplay2_nominations(request: Request, db: Session = Depends(get_db)):
+def festivals_refresh_cosplay2_nominations(
+    request: Request,
+    batch_start: int = Form(0),
+    db: Session = Depends(get_db),
+):
     user = current_user(request, db)
     if not user:
-        return redirect("/login")
+        return JSONResponse({"error": "Требуется авторизация."}, status_code=401)
     if not is_primary_admin_user(user):
-        add_flash(request, "Принудительное обновление номинаций доступно только администратору.", "error")
-        return redirect("/festivals")
+        return JSONResponse({"error": "Недостаточно прав."}, status_code=403)
 
-    if not start_cosplay2_nomination_refresh(int(user.id)):
-        add_flash(request, "Обновление номинаций Cosplay2 уже выполняется.", "info")
-        return redirect("/festivals")
+    festivals = db.execute(select(Festival).order_by(Festival.id)).scalars().all()
+    targets: dict[str, str] = {}
+    for festival in festivals:
+        source_url = festival_cosplay2_source_url(festival)
+        api_url = nomination_api_url(source_url)
+        if api_url and api_url not in targets:
+            targets[api_url] = source_url or ""
 
-    add_flash(
-        request,
-        "Обновление номинаций Cosplay2 запущено в фоне. Результат появится в оповещениях.",
-        "success",
+    target_urls = list(targets.values())
+    total = len(target_urls)
+    safe_start = max(0, min(int(batch_start or 0), total))
+    batch_size = 8
+    batch_urls = target_urls[safe_start:safe_start + batch_size]
+    nominations_by_api_url, failed = load_cosplay2_nominations_for_urls(batch_urls)
+
+    updated = 0
+    for festival in festivals:
+        source_url = festival_cosplay2_source_url(festival)
+        api_url = nomination_api_url(source_url)
+        if not api_url or api_url not in nominations_by_api_url:
+            continue
+        if merge_cosplay2_nominations_into_festival(festival, nominations_by_api_url[api_url]):
+            updated += 1
+    db.commit()
+
+    next_start = min(total, safe_start + len(batch_urls))
+    return JSONResponse(
+        {
+            "processed": next_start,
+            "total": total,
+            "updated": updated,
+            "loaded": len(nominations_by_api_url),
+            "failed": failed,
+            "done": next_start >= total,
+        }
     )
-    return redirect("/festivals")
 
 
 @app.get("/festivals/export.ics")
