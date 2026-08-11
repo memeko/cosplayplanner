@@ -60,11 +60,22 @@
     Тайтлы
     <span class="chip">{{ title_entries_total }}</span>
   </a>
-  <a href="/cosplan/characters" class="tab">
+</nav>
+
+<section class="cosplan-library-guide" aria-labelledby="cosplan-library-guide-title">
+  <div class="cosplan-library-guide-copy">
+    <span class="cosplan-library-guide-kicker">Коллективная база</span>
+    <h2 id="cosplan-library-guide-title">Планируйте образы в удобном формате</h2>
+    <p>
+      Вы можете создать карточку косплана или проекта. Карточки доступны только вам и указанным вами сокосплеерам.
+      Посмотреть данные о персонажах можно в коллективной Библиотеке персонажей.
+    </p>
+  </div>
+  <a href="/cosplan/characters" class="btn cosplan-library-guide-link">
     Библиотека персонажей
     <span class="chip">{{ character_library_total }}</span>
   </a>
-</nav>
+</section>
 
 <nav class="calendar-tabs">
   <a href="/cosplan?tab=current&view={{ current_view }}{% if q %}&q={{ q|urlencode }}{% endif %}{% if character_filter %}&character={{ character_filter|urlencode }}{% endif %}{% if fandom_filter %}&fandom={{ fandom_filter|urlencode }}{% endif %}" class="tab {% if current_tab == 'current' %}active{% endif %}">
