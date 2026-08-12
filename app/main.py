@@ -16,7 +16,9 @@ import os
 import re
 import secrets
 import sqlite3
+import subprocess
 import smtplib
+import sys
 import threading
 import time
 import uuid
@@ -31058,6 +31060,57 @@ def festival_name_search_score(query: str | None, candidate: str | None) -> int:
     return best
 
 
+CYRILLIC_TO_LATIN_FESTIVAL = str.maketrans({
+    "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ё": "e", "ж": "zh",
+    "з": "z", "и": "i", "й": "i", "к": "k", "л": "l", "м": "m", "н": "n", "о": "o",
+    "п": "p", "р": "r", "с": "s", "т": "t", "у": "u", "ф": "f", "х": "h", "ц": "ts",
+    "ч": "ch", "ш": "sh", "щ": "sch", "ъ": "", "ы": "y", "ь": "", "э": "e", "ю": "yu", "я": "ya",
+})
+
+
+def festival_transliterated_key(value: str | None) -> str:
+    normalized = normalize_festival_name_text(value).replace(" ", "")
+    return normalized.translate(CYRILLIC_TO_LATIN_FESTIVAL)
+
+
+def festival_multiscript_search_score(query: str | None, candidate: str | None) -> int:
+    best = max(
+        festival_name_search_score(query, candidate),
+        festival_name_search_score(candidate, query),
+    )
+    query_key = festival_transliterated_key(query)
+    candidate_key = festival_transliterated_key(candidate)
+    if not query_key or not candidate_key:
+        return best
+    if query_key == candidate_key:
+        return max(best, 1000)
+    if query_key in candidate_key or candidate_key in query_key:
+        best = max(best, 880)
+    ratio = SequenceMatcher(None, query_key, candidate_key).ratio()
+    if ratio >= 0.9:
+        best = max(best, 800)
+    elif ratio >= 0.8:
+        best = max(best, 680)
+    elif ratio >= 0.7:
+        best = max(best, 560)
+    query_tokens = {
+        token.translate(CYRILLIC_TO_LATIN_FESTIVAL)
+        for token in festival_name_tokens(query)
+        if len(token.translate(CYRILLIC_TO_LATIN_FESTIVAL)) >= 4
+    }
+    candidate_tokens = {
+        token.translate(CYRILLIC_TO_LATIN_FESTIVAL)
+        for token in festival_name_tokens(candidate)
+        if len(token.translate(CYRILLIC_TO_LATIN_FESTIVAL)) >= 4
+    }
+    shared_tokens = query_tokens & candidate_tokens
+    if len(shared_tokens) >= 2:
+        best = max(best, 760)
+    elif shared_tokens:
+        best = max(best, 650)
+    return best
+
+
 def festival_name_keywords(value: str | None) -> set[str]:
     raw = (value or "").strip().casefold().replace("ё", "е")
     if not raw:
@@ -32823,6 +32876,23 @@ def festivals_list(request: Request, db: Session = Depends(get_db)):
     festival_cosplay2_api_urls_by_id: dict[int, str] = {}
     festival_raf_import_ids: set[int] = set()
     if is_primary_admin_user(user):
+        cosplay2_candidates_by_api: dict[str, tuple[str, str | None, date | None]] = {}
+        for candidate_name, candidate_city, candidate_date, candidate_url, candidate_external_id in db.execute(
+            select(Festival.name, Festival.city, Festival.event_date, Festival.url, Festival.import_external_id)
+            .where(Festival.import_source == COSPLAY2_IMPORT_SOURCE_LABEL)
+        ).all():
+            candidate_source = next(
+                (
+                    value
+                    for value in [str(candidate_url or "").strip(), str(candidate_external_id or "").strip()]
+                    if nomination_api_url(value)
+                ),
+                None,
+            )
+            candidate_api = nomination_api_url(candidate_source)
+            if candidate_api and candidate_api not in cosplay2_candidates_by_api:
+                cosplay2_candidates_by_api[candidate_api] = (str(candidate_name or ""), candidate_city, candidate_date)
+
         for festival in paginated_festivals:
             source_url = festival_cosplay2_source_url(festival)
             api_url = nomination_api_url(source_url)
@@ -32830,6 +32900,22 @@ def festivals_list(request: Request, db: Session = Depends(get_db)):
                 festival_cosplay2_api_urls_by_id[int(festival.id)] = api_url
             elif festival.import_source == RAF_IMPORT_SOURCE_LABEL:
                 festival_raf_import_ids.add(int(festival.id))
+                best_api_url = ""
+                best_score = 0
+                for candidate_api, (candidate_name, candidate_city, candidate_date) in cosplay2_candidates_by_api.items():
+                    name_score = festival_multiscript_search_score(festival.name, candidate_name)
+                    if name_score < 560:
+                        continue
+                    score = name_score
+                    if festival.event_date and candidate_date and festival.event_date == candidate_date:
+                        score += 180
+                    if festival.city and candidate_city and city_matches(festival.city, candidate_city):
+                        score += 100
+                    if score > best_score:
+                        best_score = score
+                        best_api_url = candidate_api
+                if best_api_url and best_score >= 680:
+                    festival_cosplay2_api_urls_by_id[int(festival.id)] = best_api_url
 
     return template_response(
         request,
@@ -34757,6 +34843,59 @@ def festival_refresh_cosplay2_nominations(
             "nominations": len(incoming_nominations),
             "matched_cards": len(festivals),
             "submission_deadline": imported_deadline.isoformat() if imported_deadline else "",
+        }
+    )
+
+
+@app.post("/festivals/cosplay2-source-fallback")
+def festival_cosplay2_source_fallback(
+    request: Request,
+    source_url: str = Form(""),
+    db: Session = Depends(get_db),
+):
+    user = current_user(request, db)
+    if not user:
+        return JSONResponse({"error": "Требуется авторизация."}, status_code=401)
+    if not is_primary_admin_user(user):
+        return JSONResponse({"error": "Недостаточно прав."}, status_code=403)
+    api_url = nomination_api_url(str(source_url or "").strip())
+    if not api_url:
+        return JSONResponse({"error": "Некорректный источник Cosplay2."}, status_code=400)
+
+    child_code = (
+        "import requests,sys; "
+        "r=requests.get(sys.argv[1],timeout=(1.5,2.5),headers={'Accept':'application/json'}); "
+        "r.raise_for_status(); print(r.text)"
+    )
+    try:
+        completed = subprocess.run(
+            [sys.executable, "-c", child_code, api_url],
+            capture_output=True,
+            text=True,
+            timeout=4,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return JSONResponse({"error": "Cosplay2 не ответил вовремя."}, status_code=504)
+    if completed.returncode != 0 or not completed.stdout.strip():
+        return JSONResponse({"error": "Не удалось получить данные Cosplay2."}, status_code=424)
+    try:
+        payload = json.loads(completed.stdout)
+    except ValueError:
+        return JSONResponse({"error": "Cosplay2 вернул некорректные данные."}, status_code=424)
+    rows = payload.get("state") if isinstance(payload, dict) else None
+    if not isinstance(rows, list):
+        rows = []
+    return JSONResponse(
+        {
+            "state": [
+                {
+                    "title": str(item.get("title") or "")[:255],
+                    "time_requests_close_uts": item.get("time_requests_close_uts"),
+                }
+                for item in rows
+                if isinstance(item, dict) and str(item.get("title") or "").strip()
+            ]
         }
     )
 

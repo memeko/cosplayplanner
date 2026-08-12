@@ -641,11 +641,25 @@
       button.textContent = "Загрузка…";
       try {
         const apiUrl = await findCosplay2ApiUrl(button);
-        const sourceResponse = await fetch(apiUrl, {
-          headers: { "Accept": "application/json" },
-        });
-        if (!sourceResponse.ok) throw new Error("Cosplay2 не ответил");
-        const sourcePayload = await sourceResponse.json();
+        let sourcePayload = null;
+        try {
+          const sourceResponse = await fetch(apiUrl, {
+            headers: { "Accept": "application/json" },
+          });
+          if (!sourceResponse.ok) throw new Error("Cosplay2 не ответил");
+          sourcePayload = await sourceResponse.json();
+        } catch (directError) {
+          button.textContent = "Повтор через сервер…";
+          const fallbackBody = new URLSearchParams({ source_url: apiUrl });
+          const fallbackResponse = await fetch("/festivals/cosplay2-source-fallback", {
+            method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8" },
+            body: fallbackBody.toString(),
+          });
+          const fallbackPayload = await fallbackResponse.json();
+          if (!fallbackResponse.ok) throw new Error(fallbackPayload.error || "Cosplay2 не ответил");
+          sourcePayload = fallbackPayload;
+        }
         const nominations = Array.isArray(sourcePayload.state)
           ? sourcePayload.state
               .filter(function (item) { return item && typeof item.title === "string"; })
