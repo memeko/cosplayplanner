@@ -668,15 +668,28 @@
         if (!nominations.length) throw new Error("Номинации не найдены");
 
         const nowTimestamp = Date.now();
-        const futureDeadlines = Array.isArray(sourcePayload.state)
+        const allDeadlines = Array.isArray(sourcePayload.state)
           ? sourcePayload.state
-              .map(function (item) { return Number(item && item.time_requests_close_uts) * 1000; })
-              .filter(function (value) { return Number.isFinite(value) && value >= nowTimestamp; })
-              .sort(function (left, right) { return left - right; })
+              .map(function (item) {
+                const unixSeconds = Number(item && item.time_requests_close_uts);
+                if (Number.isFinite(unixSeconds) && unixSeconds > 0) return unixSeconds * 1000;
+                const rawValue = String(item && item.time_requests_close || "").trim();
+                if (!rawValue) return NaN;
+                const isoValue = rawValue.includes("T") ? rawValue : rawValue.replace(" ", "T") + "Z";
+                return Date.parse(isoValue);
+              })
+              .filter(function (value) { return Number.isFinite(value) && value > 0; })
           : [];
+        const futureDeadlines = allDeadlines
+          .filter(function (value) { return value >= nowTimestamp; })
+          .sort(function (left, right) { return left - right; });
+        const fallbackDeadlines = allDeadlines
+          .filter(function (value) { return value < nowTimestamp; })
+          .sort(function (left, right) { return right - left; });
         let submissionDeadline = "";
-        if (futureDeadlines.length) {
-          const deadlineDate = new Date(futureDeadlines[0]);
+        const selectedDeadline = futureDeadlines[0] || fallbackDeadlines[0];
+        if (selectedDeadline) {
+          const deadlineDate = new Date(selectedDeadline);
           const year = String(deadlineDate.getFullYear());
           const month = String(deadlineDate.getMonth() + 1).padStart(2, "0");
           const day = String(deadlineDate.getDate()).padStart(2, "0");

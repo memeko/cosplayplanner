@@ -34892,6 +34892,7 @@ def festival_cosplay2_source_fallback(
                 {
                     "title": str(item.get("title") or "")[:255],
                     "time_requests_close_uts": item.get("time_requests_close_uts"),
+                    "time_requests_close": str(item.get("time_requests_close") or "")[:32],
                 }
                 for item in rows
                 if isinstance(item, dict) and str(item.get("title") or "").strip()
