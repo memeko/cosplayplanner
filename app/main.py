@@ -32552,9 +32552,19 @@ def festivals_list(request: Request, db: Session = Depends(get_db)):
     q = request.query_params.get("q", "").strip()
     city_filter = request.query_params.get("city", "").strip()
     city_filter_values = split_city_values(city_filter)
-    nomination_filter = request.query_params.get("nomination", "").strip()
+    nomination_filters = merge_unique_nomination_titles(
+        [str(value).strip() for value in request.query_params.getlist("nomination") if str(value).strip()]
+    )
     coproplayer_filter = request.query_params.get("coproplayer", "").strip()
-    nomination_filter_key = normalize_nomination_title_key(nomination_filter)
+    nomination_filter_keys = {
+        normalize_nomination_title_key(value)
+        for value in nomination_filters
+        if normalize_nomination_title_key(value)
+    }
+    date_from_raw = str(request.query_params.get("date_from", "") or "").strip()
+    date_to_raw = str(request.query_params.get("date_to", "") or "").strip()
+    date_from = parse_date(date_from_raw)
+    date_to = parse_date(date_to_raw)
     only_going = to_bool(request.query_params.get("only_going", ""))
     requested_page = parse_positive_int(str(request.query_params.get("page", "")).strip()) or 1
     festival_page_size = 12
@@ -32569,7 +32579,7 @@ def festivals_list(request: Request, db: Session = Depends(get_db)):
         and_(Festival.event_end_date.is_(None), Festival.event_date >= today),
         and_(Festival.event_end_date < Festival.event_date, Festival.event_date >= today),
     )
-    fast_festival_query = not any([q, city_filter, nomination_filter, coproplayer_filter])
+    fast_festival_query = not any([q, city_filter, nomination_filters, coproplayer_filter, date_from, date_to])
     filtered: list[Festival] = []
     active_festivals: list[Festival] = []
     if fast_festival_query:
@@ -32607,9 +32617,17 @@ def festivals_list(request: Request, db: Session = Depends(get_db)):
             if city_filter_values and not city_matches_any(city_filter_values, festival.city):
                 continue
 
+            festival_start = festival.event_date
+            festival_end = festival_range_end(festival)
+            if date_from and (not festival_end or festival_end < date_from):
+                continue
+            if date_to and (not festival_start or festival_start > date_to):
+                continue
+
             nominations = [item["title"] for item in nomination_items]
-            if nomination_filter_key and not any(
-                nomination_filter_key in normalize_nomination_title_key(value)
+            if nomination_filter_keys and not any(
+                selected_key in normalize_nomination_title_key(value)
+                for selected_key in nomination_filter_keys
                 for value in nominations
             ):
                 continue
@@ -32661,13 +32679,17 @@ def festivals_list(request: Request, db: Session = Depends(get_db)):
         festival_pagination_params["q"] = q
     if city_filter:
         festival_pagination_params["city"] = city_filter
-    if nomination_filter:
-        festival_pagination_params["nomination"] = nomination_filter
+    if nomination_filters:
+        festival_pagination_params["nomination"] = nomination_filters
+    if date_from_raw:
+        festival_pagination_params["date_from"] = date_from_raw
+    if date_to_raw:
+        festival_pagination_params["date_to"] = date_to_raw
     if coproplayer_filter:
         festival_pagination_params["coproplayer"] = coproplayer_filter
     if only_going:
         festival_pagination_params["only_going"] = "1"
-    festival_pagination_query = urlencode(festival_pagination_params)
+    festival_pagination_query = urlencode(festival_pagination_params, doseq=True)
 
     festival_coproplayers_display: dict[int, list[str]] = {}
     festival_planned_nominations_by_id: dict[int, list[str]] = {}
@@ -32752,7 +32774,9 @@ def festivals_list(request: Request, db: Session = Depends(get_db)):
         if name
     }
 
-    show_summary = festival_tab == "all" and not any([q, city_filter, nomination_filter, coproplayer_filter, only_going])
+    show_summary = festival_tab == "all" and not any(
+        [q, city_filter, nomination_filters, coproplayer_filter, date_from, date_to, only_going]
+    )
 
     month_limit = date.today() + timedelta(days=30)
     summary_rows: list[dict[str, Any]] = []
@@ -32935,7 +32959,9 @@ def festivals_list(request: Request, db: Session = Depends(get_db)):
         shared_planned_festival_names=shared_planned_festival_names,
         q=q,
         city_filter=city_filter,
-        nomination_filter=nomination_filter,
+        nomination_filters=nomination_filters,
+        date_from_filter=date_from_raw,
+        date_to_filter=date_to_raw,
         coproplayer_filter=coproplayer_filter,
         only_going=only_going,
         festival_tab=festival_tab,

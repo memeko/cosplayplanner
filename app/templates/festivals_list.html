@@ -94,6 +94,38 @@
     min-width: 2.75rem;
     white-space: nowrap;
   }
+  .festival-filter-form {
+    align-items: start;
+  }
+  .festival-nomination-filter {
+    grid-column: span 2;
+    min-width: 0;
+    margin: 0;
+    padding: 0;
+    border: 0;
+  }
+  .festival-nomination-filter legend {
+    padding: 0;
+    font-weight: 600;
+  }
+  .festival-nomination-options {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.45rem;
+    max-height: 9rem;
+    overflow-y: auto;
+    margin-top: 0.35rem;
+    padding: 0.7rem;
+    border: 1px solid rgba(184, 200, 255, 0.7);
+    border-radius: 14px;
+    background: rgba(248, 251, 255, 0.78);
+  }
+  .festival-nomination-options .inline-check {
+    margin: 0;
+    padding: 0.35rem 0.55rem;
+    border-radius: 999px;
+    background: rgba(215, 228, 255, 0.7);
+  }
   @media (max-width: 640px) {
     .festival-pagination {
       align-items: stretch;
@@ -129,6 +161,9 @@
     .festival-list-card .going-toggle-form .inline-check {
       width: 100%;
       justify-content: flex-start;
+    }
+    .festival-nomination-filter {
+      grid-column: 1 / -1;
     }
   }
 </style>
@@ -245,7 +280,7 @@
 
 <section class="box">
   <h2>Фильтры{% if festival_tab == 'my' %} (мои фестивали){% endif %}</h2>
-  <form method="get" action="/festivals" class="grid four-col">
+  <form method="get" action="/festivals" class="grid four-col festival-filter-form">
     <input type="hidden" name="festival_tab" value="{{ festival_tab }}" />
     <label>
       Название
@@ -261,13 +296,12 @@
       </datalist>
     </label>
     <label>
-      Номинация
-      <input type="text" name="nomination" value="{{ nomination_filter }}" list="nomination-options" />
-      <datalist id="nomination-options">
-        {% for value in nomination_options %}
-          <option value="{{ value }}"></option>
-        {% endfor %}
-      </datalist>
+      Дата от
+      <input type="date" name="date_from" value="{{ date_from_filter }}" {% if date_to_filter %}max="{{ date_to_filter }}"{% endif %} />
+    </label>
+    <label>
+      Дата до
+      <input type="date" name="date_to" value="{{ date_to_filter }}" {% if date_from_filter %}min="{{ date_from_filter }}"{% endif %} />
     </label>
     <label>
       Сокосплеер
@@ -278,6 +312,18 @@
         {% endfor %}
       </datalist>
     </label>
+    <fieldset class="festival-nomination-filter">
+      <legend>Номинации</legend>
+      <p class="muted">Можно выбрать одну или несколько — будет найдена карточка хотя бы с одной из них.</p>
+      <div class="festival-nomination-options">
+        {% for value in nomination_options %}
+          <label class="inline-check">
+            <input type="checkbox" name="nomination" value="{{ value }}" {% if value in nomination_filters %}checked{% endif %} />
+            {{ value }}
+          </label>
+        {% endfor %}
+      </div>
+    </fieldset>
     <label class="inline-check top-offset">
       <input type="checkbox" name="only_going" value="1" {% if only_going %}checked{% endif %} />
       Только "я иду"
