@@ -2602,11 +2602,13 @@ body.modal-open {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 16px;
+  justify-items: center;
 }
 
 .home-favorite-tile {
+  width: min(100%, 25vh);
+  max-height: 25vh;
   aspect-ratio: 1 / 1;
-  min-height: 150px;
   display: flex;
   flex-direction: column;
   justify-content: space-between;
@@ -2629,7 +2631,7 @@ body.modal-open {
 
 @media (max-width: 700px) {
   .home-favorites-grid { grid-template-columns: 1fr; }
-  .home-favorite-tile { aspect-ratio: auto; min-height: 120px; }
+  .home-favorite-tile { width: min(100%, 25vh); }
 }
 
 .calendar-list {

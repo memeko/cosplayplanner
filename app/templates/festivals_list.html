@@ -666,6 +666,7 @@
         const location = event.location && typeof event.location === "object" ? event.location : {};
         const eventCity = normalizeFestivalValue(location.name || (location.address && location.address.addressLocality));
         const eventDate = String(event.startDate || "").slice(0, 10);
+        if (targetDate && eventDate && targetDate !== eventDate) return;
         let score = targetName === eventName ? 6 : 3;
         if (targetDate && eventDate === targetDate) score += 4;
         if (targetCity && eventCity === targetCity) score += 2;

@@ -32406,6 +32406,38 @@ def festival_cosplay2_source_url(festival: Festival) -> str | None:
     return None
 
 
+def cosplay2_source_matches_festival(
+    db: Session,
+    festival: Festival,
+    source_url: str | None,
+) -> bool:
+    requested_api = nomination_api_url(source_url)
+    if not requested_api:
+        return False
+    direct_source = festival_cosplay2_source_url(festival)
+    if direct_source:
+        return nomination_api_url(direct_source) == requested_api
+    if not festival.event_date:
+        return False
+
+    candidates = db.execute(
+        select(Festival).where(
+            Festival.import_source == COSPLAY2_IMPORT_SOURCE_LABEL,
+            Festival.event_date == festival.event_date,
+        )
+    ).scalars().all()
+    for candidate in candidates:
+        candidate_source = festival_cosplay2_source_url(candidate)
+        if nomination_api_url(candidate_source) != requested_api:
+            continue
+        if festival_multiscript_search_score(festival.name, candidate.name) < 560:
+            continue
+        if festival.city and candidate.city and not city_matches(festival.city, candidate.city):
+            continue
+        return True
+    return False
+
+
 def count_distinct_imported_festivals(db: Session) -> int:
     external_id_total = int(
         db.execute(
@@ -32855,12 +32887,24 @@ def festivals_list(request: Request, db: Session = Depends(get_db)):
             and any(city_matches(city_key, festival.city) for city_key in nearest_city_keys)
         }
 
-    own_cards = db.execute(
-        select(CosplanCard).where(CosplanCard.user_id == user.id, CosplanCard.is_shared_copy.is_(False))
-    ).scalars().all()
-    shared_cards = db.execute(
-        select(CosplanCard).where(CosplanCard.user_id == user.id, CosplanCard.is_shared_copy.is_(True))
-    ).scalars().all()
+    try:
+        own_cards = db.execute(
+            select(CosplanCard).where(CosplanCard.user_id == user.id, CosplanCard.is_shared_copy.is_(False))
+        ).scalars().all()
+        shared_cards = db.execute(
+            select(CosplanCard).where(CosplanCard.user_id == user.id, CosplanCard.is_shared_copy.is_(True))
+        ).scalars().all()
+    except OperationalError:
+        # A worker may receive traffic before a newly deployed SQLite column has
+        # been added. Repair the lightweight schema and retry instead of returning 503.
+        db.rollback()
+        apply_schema_migrations()
+        own_cards = db.execute(
+            select(CosplanCard).where(CosplanCard.user_id == user.id, CosplanCard.is_shared_copy.is_(False))
+        ).scalars().all()
+        shared_cards = db.execute(
+            select(CosplanCard).where(CosplanCard.user_id == user.id, CosplanCard.is_shared_copy.is_(True))
+        ).scalars().all()
 
     planned_festival_names = {
         name.casefold()
@@ -33028,6 +33072,8 @@ def festivals_list(request: Request, db: Session = Depends(get_db)):
                 best_api_url = ""
                 best_score = 0
                 for candidate_api, (candidate_name, candidate_city, candidate_date) in cosplay2_candidates_by_api.items():
+                    if festival.event_date and candidate_date and festival.event_date != candidate_date:
+                        continue
                     name_score = festival_multiscript_search_score(festival.name, candidate_name)
                     if name_score < 560:
                         continue
@@ -34925,9 +34971,13 @@ def festival_refresh_cosplay2_nominations(
     target_festival = db.get(Festival, int(festival_id))
     if not target_festival:
         return JSONResponse({"error": "Карточка фестиваля не найдена."}, status_code=404)
-    resolved_source_url = festival_cosplay2_source_url(target_festival) or str(source_url or "").strip()
-    if not nomination_api_url(resolved_source_url):
-        return JSONResponse({"error": "Для карточки не найден источник Cosplay2."}, status_code=400)
+    requested_source_url = str(source_url or "").strip()
+    resolved_source_url = festival_cosplay2_source_url(target_festival) or requested_source_url
+    if not cosplay2_source_matches_festival(db, target_festival, resolved_source_url):
+        return JSONResponse(
+            {"error": "Источник Cosplay2 не совпадает с названием, городом и датой фестиваля."},
+            status_code=400,
+        )
 
     incoming_nominations: list[dict[str, str]] = []
     if nominations_json:
