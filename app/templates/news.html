@@ -57,9 +57,9 @@
     </div>
     <a class="chip" href="/my-calendar?view=content">Постов запланировано: {{ home_week_summary.planned_posts_count }}</a>
   </div>
-  {% if home_week_summary.items %}
+  {% if home_week_summary["items"] %}
     <ul class="home-week-list top-offset">
-      {% for item in home_week_summary.items %}
+      {% for item in home_week_summary["items"] %}
         <li>
           <time datetime="{{ item.date.isoformat() }}">{{ item.date.strftime('%d.%m') }}{% if item.time %}, {{ item.time }}{% endif %}</time>
           <span class="chip">{{ item.kind }}</span>
