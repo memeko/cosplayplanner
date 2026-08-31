@@ -162,9 +162,9 @@
     border-radius: 10px;
     background: #fff;
   }
-  .defile-modal { position: fixed; inset: 0; z-index: 1300; display: grid; place-items: center; padding: 1rem; background: rgba(31,46,74,.72); }
+  .defile-modal { position: fixed; inset: 0; z-index: 1300; display: block; padding: 0; background: #f4f8ff; }
   .defile-modal[hidden] { display: none; }
-  .defile-modal-card { width: min(1180px, 96vw); max-height: 92vh; overflow: auto; padding: 24px; border-radius: 28px; background: linear-gradient(180deg, #fff, #f4f8ff); box-shadow: 0 24px 70px rgba(31,46,74,.28); }
+  .defile-modal-card { width: 100vw; height: 100vh; overflow: auto; padding: clamp(18px, 3vw, 42px); border-radius: 0; background: linear-gradient(180deg, #fff, #f4f8ff); }
   .defile-table-wrap { overflow-x: auto; margin-top: 1rem; }
   .defile-table { min-width: 980px; width: 100%; border-collapse: collapse; }
   .defile-table th, .defile-table td { padding: .5rem; border-bottom: 1px solid #d7e4ff; vertical-align: top; text-align: left; }
@@ -172,6 +172,8 @@
   .defile-guides { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 1.2rem; }
   .defile-guide { padding: 16px; border: 1px solid rgba(108,99,255,.16); border-radius: 20px; background: rgba(255,255,255,.72); }
   .defile-start-choice { display: flex; flex-wrap: wrap; gap: 1rem; margin-top: 1rem; }
+  .defile-timing-modes { display: flex; flex-wrap: wrap; gap: 1rem; margin-top: 1rem; }
+  .defile-manual-time { width: 76px; min-width: 76px; }
   @media (max-width: 760px) { .defile-guides { grid-template-columns: 1fr; } }
   @media (max-width: 900px) {
     .project-character-row { grid-template-columns: 1fr; }
@@ -878,12 +880,20 @@
             <label class="inline-check"><input type="radio" name="defile_start_mode" value="wings" /> Начало из-за кулис</label>
             <label class="inline-check"><input type="radio" name="defile_start_mode" value="point" /> Начало с точки</label>
           </div>
+          <div class="defile-timing-modes" role="radiogroup" aria-label="Режим тайминга">
+            <label class="inline-check"><input type="radio" name="defile_timing_mode" value="grid" /> Сетка по 5 секунд</label>
+            <label class="inline-check"><input type="radio" name="defile_timing_mode" value="manual" /> Самостоятельный тайминг</label>
+            <button type="button" class="btn btn-small" id="defile-add-row">Добавить строку</button>
+          </div>
           <div class="defile-table-wrap"><table class="defile-table"><thead><tr><th>Время</th><th>Действие</th><th>Реквизит</th><th>Светосценарий</th><th>Ориентир по звуку</th><th></th></tr></thead><tbody id="defile-rows"></tbody></table></div>
           <div class="defile-guides">
             <article class="defile-guide"><h4>Краткий гайд по светосценарию</h4><p><strong>Заливка</strong> — полное равномерное освещение сцены; иногда можно выбрать холодный или тёплый свет.</p><p><strong>Цветная заливка</strong> — равномерное освещение выбранным оттенком. Уточните перечень цветов в регламенте площадки.</p><p><strong>Стробоскоп</strong> — быстрые повторяющиеся яркие световые импульсы; есть не во всех ДК.</p><p><strong>Профильные прожекторы / освещение на точку</strong> — акцентный свет на фигуру или точку, обычно центр сцены.</p><p><strong>Дым-машина</strong> — доступна не на всех площадках, проверяйте регламент.</p><p class="muted"><strong>Важно:</strong> количество смен освещения задаёт регламент, обычно — не более двух за номер.</p></article>
             <article class="defile-guide"><h4>Гайд по режиссуре номера</h4><p>Учитывайте время на выход и перемещение за кулису. Впишите эти действия в выступление, если оно начинается не с точки.</p><p>Не используйте оборванный звук: вводите и выводите трек через fading (затухание), без обрыва фраз, музыкальных фраз и тактов.</p><p>Желательно заложить развитие сюжета и кульминацию во второй трети дефиле. Продумайте несколько поз в авансцене, которые будут хорошо смотреться в кадре.</p></article>
           </div>
-          <div class="actions-inline top-offset"><button type="button" class="btn btn-accent" id="defile-save">Сохранить план</button></div>
+          <div class="actions-inline top-offset">
+            <button type="button" class="btn btn-accent" id="defile-save">Сохранить план</button>
+            <button type="button" class="btn" id="defile-export">Экспорт в PDF</button>
+          </div>
         </div>
       </div>
   </section>
@@ -2657,7 +2667,9 @@
     const openButton = document.getElementById("defile-builder-open");
     const closeButton = document.getElementById("defile-builder-close");
     const saveButton = document.getElementById("defile-save");
+    const exportButton = document.getElementById("defile-export");
     const generateButton = document.getElementById("defile-generate");
+    const addRowButton = document.getElementById("defile-add-row");
     const durationInput = document.getElementById("defile-duration");
     const cardDuration = document.querySelector('[name="performance_duration"]');
     const hiddenInput = document.getElementById("performance-plan-json");
@@ -2685,7 +2697,14 @@
       row.dataset.end = String(item.end);
       const time = document.createElement("td");
       time.className = "defile-time";
-      time.textContent = `${formatTime(item.start)}–${formatTime(item.end)}`;
+      const timeLabel = document.createElement("span");
+      timeLabel.className = "defile-time-label";
+      timeLabel.textContent = `${formatTime(item.start)}–${formatTime(item.end)}`;
+      const startInput = document.createElement("input");
+      startInput.type = "text"; startInput.className = "defile-manual-time"; startInput.dataset.time = "start"; startInput.value = formatTime(item.start);
+      const endInput = document.createElement("input");
+      endInput.type = "text"; endInput.className = "defile-manual-time"; endInput.dataset.time = "end"; endInput.value = formatTime(item.end);
+      time.append(timeLabel, startInput, document.createTextNode(" – "), endInput);
       row.append(time, makeCell("action", item.action), makeCell("props", item.props), makeCell("light", item.light), makeCell("sound", item.sound));
       const actions = document.createElement("td");
       const merge = document.createElement("button");
@@ -2696,7 +2715,8 @@
         const next = row.nextElementSibling;
         if (!next) return;
         row.dataset.end = next.dataset.end;
-        row.querySelector(".defile-time").textContent = `${formatTime(Number(row.dataset.start))}–${formatTime(Number(row.dataset.end))}`;
+        row.querySelector(".defile-time-label").textContent = `${formatTime(Number(row.dataset.start))}–${formatTime(Number(row.dataset.end))}`;
+        row.querySelector('[data-time="end"]').value = formatTime(Number(row.dataset.end));
         ["action", "props", "light", "sound"].forEach((fieldName) => {
           const current = row.querySelector(`[data-field="${fieldName}"]`);
           const addition = next.querySelector(`[data-field="${fieldName}"]`).value.trim();
@@ -2704,9 +2724,26 @@
         });
         next.remove();
       });
-      actions.appendChild(merge);
+      const remove = document.createElement("button");
+      remove.type = "button"; remove.className = "btn btn-danger btn-small defile-remove-row"; remove.textContent = "Удалить";
+      remove.addEventListener("click", () => row.remove());
+      actions.append(merge, remove);
       row.appendChild(actions);
+      updateRowMode(row);
       return row;
+    };
+    const currentTimingMode = () => modal.querySelector('[name="defile_timing_mode"]:checked')?.value || "grid";
+    function updateRowMode(row) {
+      const manual = currentTimingMode() === "manual";
+      row.querySelector(".defile-time-label").hidden = manual;
+      row.querySelectorAll(".defile-manual-time").forEach((field) => { field.hidden = !manual; });
+      row.querySelector(".defile-remove-row").hidden = !manual;
+    }
+    const updateTimingMode = () => {
+      const manual = currentTimingMode() === "manual";
+      rowsWrap.querySelectorAll("tr").forEach(updateRowMode);
+      addRowButton.hidden = !manual;
+      generateButton.textContent = manual ? "Создать первую строку" : "Создать таблицу";
     };
     const readPlan = () => {
       try { return JSON.parse(hiddenInput.value || "{}"); } catch (_error) { return {}; }
@@ -2717,6 +2754,10 @@
       const mode = plan.start_mode === "wings" ? "wings" : "point";
       const radio = modal.querySelector(`[name="defile_start_mode"][value="${mode}"]`);
       if (radio) radio.checked = true;
+      const timingMode = plan.timing_mode === "manual" ? "manual" : "grid";
+      const timingRadio = modal.querySelector(`[name="defile_timing_mode"][value="${timingMode}"]`);
+      if (timingRadio) timingRadio.checked = true;
+      updateTimingMode();
       if (plan.rows?.length) durationInput.value = formatTime(Number(plan.rows[plan.rows.length - 1].end || 0));
     };
     const close = () => { modal.hidden = true; document.body.classList.remove("modal-open"); };
@@ -2729,26 +2770,64 @@
     });
     closeButton.addEventListener("click", close);
     modal.addEventListener("click", (event) => { if (event.target === modal) close(); });
+    modal.querySelectorAll('[name="defile_timing_mode"]').forEach((radio) => radio.addEventListener("change", updateTimingMode));
+    addRowButton.addEventListener("click", () => {
+      const last = rowsWrap.lastElementChild;
+      const start = last ? parseDuration(last.querySelector('[data-time="end"]').value) : 0;
+      rowsWrap.appendChild(makeRow({ start, end: start + 5 }));
+    });
     generateButton.addEventListener("click", () => {
       const duration = parseDuration(durationInput.value);
       if (!duration) { durationInput.setCustomValidity("Укажите длительность в формате MM:SS"); durationInput.reportValidity(); return; }
       durationInput.setCustomValidity("");
       rowsWrap.innerHTML = "";
-      for (let start = 0; start < duration; start += 5) rowsWrap.appendChild(makeRow({ start, end: Math.min(start + 5, duration) }));
+      if (currentTimingMode() === "manual") rowsWrap.appendChild(makeRow({ start: 0, end: duration }));
+      else for (let start = 0; start < duration; start += 5) rowsWrap.appendChild(makeRow({ start, end: Math.min(start + 5, duration) }));
     });
-    saveButton.addEventListener("click", () => {
+    const collectPlan = () => {
       const selectedMode = modal.querySelector('[name="defile_start_mode"]:checked')?.value || "point";
+      const timingMode = currentTimingMode();
       const rows = Array.from(rowsWrap.children).map((row) => ({
-        start: Number(row.dataset.start), end: Number(row.dataset.end),
+        start: timingMode === "manual" ? parseDuration(row.querySelector('[data-time="start"]').value) : Number(row.dataset.start),
+        end: timingMode === "manual" ? parseDuration(row.querySelector('[data-time="end"]').value) : Number(row.dataset.end),
         action: row.querySelector('[data-field="action"]').value,
         props: row.querySelector('[data-field="props"]').value,
         light: row.querySelector('[data-field="light"]').value,
         sound: row.querySelector('[data-field="sound"]').value,
       }));
-      hiddenInput.value = JSON.stringify({ start_mode: selectedMode, rows });
+      if (rows.some((row) => row.end <= row.start)) { window.alert("В каждой строке окончание должно быть позже начала."); return null; }
+      rows.sort((left, right) => left.start - right.start);
+      return { start_mode: selectedMode, timing_mode: timingMode, rows };
+    };
+    saveButton.addEventListener("click", () => {
+      const plan = collectPlan();
+      if (!plan) return;
+      hiddenInput.value = JSON.stringify(plan);
+      const rows = plan.rows;
       if (rows.length && cardDuration) cardDuration.value = formatTime(rows[rows.length - 1].end);
       status.textContent = rows.length ? `План сохранён: ${rows.length} блоков` : "План сохранён";
       close();
+    });
+    exportButton.addEventListener("click", async () => {
+      const plan = collectPlan();
+      if (!plan || !plan.rows.length) { window.alert("Добавьте хотя бы одну строку."); return; }
+      hiddenInput.value = JSON.stringify(plan);
+      exportButton.disabled = true;
+      try {
+        const body = new URLSearchParams({
+          plan_json: hiddenInput.value,
+          card_name: document.querySelector('[name="character_name"]')?.value || "План дефиле",
+        });
+        const response = await fetch("/cosplan/performance-plan.pdf", {
+          method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8" }, body: body.toString(),
+        });
+        if (!response.ok) throw new Error("Не удалось сформировать PDF");
+        const blob = await response.blob();
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a"); link.href = url; link.download = "defile-plan.pdf"; link.click();
+        URL.revokeObjectURL(url);
+      } catch (error) { window.alert(error.message || "Не удалось сформировать PDF"); }
+      finally { exportButton.disabled = false; }
     });
   };
 

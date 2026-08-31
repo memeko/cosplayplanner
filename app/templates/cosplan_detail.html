@@ -437,7 +437,7 @@
 </section>
 {% endif %}
 
-{% set has_performance = card.performance_track or card.performance_video_bg_url or card.performance_script or card.performance_light_script or card.performance_duration or card.performance_rehearsal_point or card.performance_rehearsal_price is not none or card.performance_rehearsal_count or performance_total is not none or 'performance_rehearsal_price' in unknown_fields %}
+{% set has_performance = card.performance_track or card.performance_video_bg_url or card.performance_script or card.performance_light_script or card.performance_duration or card.performance_rehearsal_point or card.performance_rehearsal_price is not none or card.performance_rehearsal_count or performance_total is not none or performance_plan.rows or 'performance_rehearsal_price' in unknown_fields %}
 {% if has_performance %}
 <section class="box">
   <h2>Выступление</h2>
@@ -470,6 +470,25 @@
   {% if card.performance_light_script %}
     <h3>Светосценарий</h3>
     <p class="notes-block">{{ card.performance_light_script|render_markdown }}</p>
+  {% endif %}
+  {% if performance_plan.rows %}
+    <div class="row-between top-offset">
+      <div><h3>План дефиле</h3><p class="muted">Начало {{ "из-за кулис" if performance_plan.start_mode == "wings" else "с точки" }}</p></div>
+      <a href="/cosplan/{{ card.id }}/performance-plan.pdf" class="btn btn-accent">Скачать PDF</a>
+    </div>
+    <div class="table-wrap top-offset">
+      <table class="table">
+        <thead><tr><th>Время</th><th>Действие</th><th>Реквизит</th><th>Светосценарий</th><th>Ориентир по звуку</th></tr></thead>
+        <tbody>
+          {% for row in performance_plan.rows %}
+            <tr>
+              <td>{{ '%02d:%02d'|format(row.start // 60, row.start % 60) }}–{{ '%02d:%02d'|format(row.end // 60, row.end % 60) }}</td>
+              <td>{{ row.action or "—" }}</td><td>{{ row.props or "—" }}</td><td>{{ row.light or "—" }}</td><td>{{ row.sound or "—" }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
   {% endif %}
 </section>
 {% endif %}

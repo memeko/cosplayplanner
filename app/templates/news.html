@@ -49,6 +49,29 @@
   {% endif %}
 </section>
 
+<section class="box home-week-summary top-offset">
+  <div class="row-between">
+    <div>
+      <h2>На этой неделе</h2>
+      <p class="muted">{{ home_week_summary.start.strftime('%d.%m') }}–{{ home_week_summary.end.strftime('%d.%m.%Y') }}</p>
+    </div>
+    <a class="chip" href="/my-calendar?view=content">Постов запланировано: {{ home_week_summary.planned_posts_count }}</a>
+  </div>
+  {% if home_week_summary.items %}
+    <ul class="home-week-list top-offset">
+      {% for item in home_week_summary.items %}
+        <li>
+          <time datetime="{{ item.date.isoformat() }}">{{ item.date.strftime('%d.%m') }}{% if item.time %}, {{ item.time }}{% endif %}</time>
+          <span class="chip">{{ item.kind }}</span>
+          {% if item.url %}<a href="{{ item.url }}">{{ item.title }}</a>{% else %}<span>{{ item.title }}</span>{% endif %}
+        </li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <p class="muted top-offset">На оставшуюся часть недели дел в календаре нет.</p>
+  {% endif %}
+</section>
+
 {# Promo slot is preserved for future announcements; remove `hidden` when a new campaign is ready. #}
 <section class="home-citadel-promo top-offset" aria-labelledby="citadel-promo-heading" hidden>
   <div class="home-citadel-promo-copy">

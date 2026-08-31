@@ -2625,6 +2625,10 @@ body.modal-open {
 .home-favorite-icon { font-size: 2rem; color: #6c63ff; }
 .home-favorite-tile strong { font-size: 1.08rem; overflow-wrap: anywhere; }
 
+.home-week-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 9px; }
+.home-week-list li { display: grid; grid-template-columns: 76px minmax(120px, auto) 1fr; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 14px; background: rgba(255,255,255,.62); border: 1px solid rgba(184,200,255,.55); }
+.home-week-list time { color: #344a6b; font-weight: 700; }
+
 .home-collapse-button { margin-left: auto; float: right; }
 .home-section-collapsed > :not(h2):not(.row-between):not(.home-collapse-button) { display: none !important; }
 .home-section-collapsed > .row-between > :not(h2):not(.home-collapse-button) { display: none !important; }
@@ -2632,6 +2636,7 @@ body.modal-open {
 @media (max-width: 700px) {
   .home-favorites-grid { grid-template-columns: 1fr; }
   .home-favorite-tile { width: min(100%, 25vh); }
+  .home-week-list li { grid-template-columns: 1fr; }
 }
 
 .calendar-list {

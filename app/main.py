@@ -7513,6 +7513,7 @@ def normalize_performance_plan(raw: Any) -> dict[str, Any]:
     if not isinstance(raw, dict):
         return {}
     start_mode = "wings" if raw.get("start_mode") == "wings" else "point"
+    timing_mode = "manual" if raw.get("timing_mode") == "manual" else "grid"
     rows: list[dict[str, Any]] = []
     for item in as_list(raw.get("rows"))[:180]:
         if not isinstance(item, dict):
@@ -7530,7 +7531,7 @@ def normalize_performance_plan(raw: Any) -> dict[str, Any]:
             "light": str(item.get("light") or "")[:1000],
             "sound": str(item.get("sound") or "")[:1000],
         })
-    return {"start_mode": start_mode, "rows": rows}
+    return {"start_mode": start_mode, "timing_mode": timing_mode, "rows": rows}
 
 
 def parse_positive_int(raw: str | None) -> int | None:
@@ -11126,6 +11127,65 @@ def build_storyboard_pdf_document(card: CosplanCard, rows: list[dict[str, Any]])
         resolution=STORYBOARD_PDF_DPI,
     )
     output.seek(0)
+    return output.getvalue()
+
+
+def performance_time_label(row: dict[str, Any]) -> str:
+    def label(seconds: int) -> str:
+        return f"{seconds // 60:02d}:{seconds % 60:02d}"
+    return f"{label(int(row.get('start') or 0))}-{label(int(row.get('end') or 0))}"
+
+
+def build_performance_plan_pdf_document(card: CosplanCard, plan: dict[str, Any]) -> bytes:
+    rows = as_list(plan.get("rows"))
+    if not rows:
+        raise ValueError("В конструкторе дефиле пока нет строк.")
+    width, height = STORYBOARD_PDF_PAGE_HEIGHT, STORYBOARD_PDF_PAGE_WIDTH
+    margin, header_height, padding = 44, 42, 8
+    columns = [150, 330, 260, 330, width - margin * 2 - 150 - 330 - 260 - 330]
+    headers = ["Время", "Действие", "Реквизит", "Светосценарий", "Ориентир по звуку"]
+    fonts = load_storyboard_pdf_fonts()
+    pages: list[Image.Image] = []
+    page: Image.Image
+    draw: ImageDraw.ImageDraw
+    y = 0
+
+    def new_page() -> None:
+        nonlocal page, draw, y
+        page = Image.new("RGB", (width, height), "white")
+        draw = ImageDraw.Draw(page)
+        draw.text((margin, 28), f"План дефиле: {card.character_name or 'Карточка'}", fill="#1f2e4a", font=fonts["title"])
+        start_label = "из-за кулис" if plan.get("start_mode") == "wings" else "с точки"
+        draw.text((margin, 74), f"Начало {start_label} | Карточка #{card.id}", fill="#62728c", font=fonts["subtitle"])
+        y = 112
+        x = margin
+        for index, header in enumerate(headers):
+            draw.rectangle((x, y, x + columns[index], y + header_height), fill="#eaf2ff", outline="#b8c8ff", width=2)
+            draw.text((x + padding, y + 10), header, fill="#1f2e4a", font=fonts["header"])
+            x += columns[index]
+        y += header_height
+        pages.append(page)
+
+    new_page()
+    for row in rows:
+        values = [performance_time_label(row), row.get("action"), row.get("props"), row.get("light"), row.get("sound")]
+        wrapped = [storyboard_pdf_wrap_text(draw, str(value or "—"), fonts["cell"], columns[i] - padding * 2) or ["—"] for i, value in enumerate(values)]
+        line_height = storyboard_pdf_line_height(draw, fonts["cell"])
+        row_height = max(46, max(len(lines) for lines in wrapped) * line_height + padding * 2)
+        if y + row_height > height - margin:
+            new_page()
+        x = margin
+        for index, lines in enumerate(wrapped):
+            draw.rectangle((x, y, x + columns[index], y + row_height), outline="#b8c8ff", width=1)
+            text_y = y + padding
+            for line in lines:
+                draw.text((x + padding, text_y), line, fill="#1f2e4a", font=fonts["cell"])
+                text_y += line_height
+            x += columns[index]
+        y += row_height
+
+    output = io.BytesIO()
+    pages[0].save(output, format="PDF", save_all=True, append_images=pages[1:], resolution=STORYBOARD_PDF_DPI)
     return output.getvalue()
 
 
@@ -17434,6 +17494,67 @@ def home_favorites_for_user(db: Session, user: User, options: list[dict[str, str
     return result
 
 
+def build_home_week_summary(db: Session, user: User, today: date) -> dict[str, Any]:
+    week_end = today + timedelta(days=6 - today.weekday())
+    items: list[dict[str, Any]] = []
+    def add(day: date | None, kind: str, title: str, url: str = "", time_value: str = "") -> None:
+        if isinstance(day, date) and today <= day <= week_end:
+            items.append({"date": day, "kind": kind, "title": title or "Без названия", "url": url, "time": time_value})
+
+    rehearsals = db.execute(select(RehearsalEntry).where(
+        RehearsalEntry.user_id == user.id,
+        RehearsalEntry.entry_date.between(today, week_end),
+        RehearsalEntry.status.in_([REHEARSAL_STATUS_APPROVED, REHEARSAL_STATUS_ACCEPTED]),
+    )).scalars().all()
+    for entry in rehearsals:
+        add(entry.entry_date, "Репетиция", entry.cosplan_card.character_name if entry.cosplan_card else "Косплан", f"/cosplan/{entry.cosplan_card_id}", entry.entry_time or "")
+
+    festivals = db.execute(select(Festival).where(Festival.user_id == user.id, Festival.is_going.is_(True))).scalars().all()
+    for festival in festivals:
+        for festival_day in iter_date_range(festival.event_date, festival.event_end_date):
+            add(festival_day, "Фестиваль", festival.name or "Фестиваль", f"/festivals/{festival.id}/card")
+
+    cards = db.execute(select(CosplanCard).where(CosplanCard.user_id == user.id, CosplanCard.is_shared_copy.is_(False))).scalars().all()
+    deadline_fields = [
+        ("photoset_date", "Фотосет"), ("submission_date", "Подача заявки"),
+        ("project_deadline", "Дедлайн проекта"), ("costume_deadline", "Дедлайн костюма"),
+        ("shoes_deadline", "Дедлайн обуви"), ("wig_deadline", "Дедлайн парика"),
+        ("craft_deadline", "Дедлайн крафта"),
+    ]
+    for card in cards:
+        for field_name, kind in deadline_fields:
+            add(getattr(card, field_name, None), kind, card.character_name or "Косплан", f"/cosplan/{card.id}")
+
+    personal_events = db.execute(select(PersonalCalendarEvent).where(
+        PersonalCalendarEvent.user_id == user.id,
+        PersonalCalendarEvent.event_date.between(today, week_end),
+    )).scalars().all()
+    for event in personal_events:
+        add(event.event_date, "Календарь", event.title, "/my-calendar", event.event_time or "")
+
+    master_cards = db.execute(select(InProgressMasterCard).where(
+        or_(InProgressMasterCard.user_id == user.id, InProgressMasterCard.customer_user_id == user.id),
+        InProgressMasterCard.is_archived.is_(False),
+    )).scalars().all()
+    for card in master_cards:
+        add(card.deadline_date, "Дедлайн мастера", card.name, f"/in-progress/master/{card.id}")
+        for deadline in normalize_master_intermediate_deadline_dates(as_list(card.intermediate_deadlines_json)):
+            add(deadline, "Примерка / этап", card.name, f"/in-progress/master/{card.id}")
+
+    planned_posts = db.execute(select(ContentPlanPost).where(
+        ContentPlanPost.user_id == user.id,
+        ContentPlanPost.publish_date.between(today, week_end),
+        ContentPlanPost.status.in_(["plan", "draft"]),
+    )).scalars().all()
+    items.sort(key=lambda item: (item["date"], item["time"], item["kind"], item["title"]))
+    return {
+        "start": today,
+        "end": week_end,
+        "items": items,
+        "planned_posts_count": len(planned_posts),
+    }
+
+
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request, db: Session = Depends(get_db)):
     user = current_user(request, db)
@@ -17473,6 +17594,7 @@ def index(request: Request, db: Session = Depends(get_db)):
         character_birthdays_today_rows = cached_character_birthdays_today(today)
         home_favorite_options = build_home_favorite_options(db, user)
         home_favorites = home_favorites_for_user(db, user, home_favorite_options)
+        home_week_summary = build_home_week_summary(db, user, today)
         unread_notifications = sum(1 for note in regular_notifications if not note.is_read)
         return template_response(
             request,
@@ -17492,6 +17614,7 @@ def index(request: Request, db: Session = Depends(get_db)):
             mergeable_duplicate_notification_ids=mergeable_duplicate_notification_ids,
             home_favorite_options=home_favorite_options,
             home_favorites=home_favorites,
+            home_week_summary=home_week_summary,
         )
     return template_response(request, "landing.html", user=None, active_tab=None)
 
@@ -21305,6 +21428,52 @@ def cosplan_new(request: Request, db: Session = Depends(get_db)):
     )
 
 
+@app.get("/cosplan/{card_id}/performance-plan.pdf")
+def cosplan_performance_plan_export_pdf(card_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    card = get_accessible_card(db, card_id, user, allow_project_leader=True, allow_coproplayer=True)
+    if not card:
+        add_flash(request, "Карточка не найдена.", "error")
+        return redirect("/cosplan")
+    plan = normalize_performance_plan(card.performance_plan_json)
+    try:
+        pdf_bytes = build_performance_plan_pdf_document(card, plan)
+    except ValueError as exc:
+        add_flash(request, str(exc), "error")
+        return redirect(f"/cosplan/{card.id}")
+    safe_name = re.sub(r"[^A-Za-z0-9_-]+", "-", normalize_username(card.character_name) or f"card-{card.id}").strip("-")
+    return StreamingResponse(
+        iter([pdf_bytes]),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="defile-{safe_name or card.id}.pdf"'},
+    )
+
+
+@app.post("/cosplan/performance-plan.pdf")
+def cosplan_performance_plan_preview_pdf(
+    request: Request,
+    plan_json: str = Form(""),
+    card_name: str = Form(""),
+    db: Session = Depends(get_db),
+):
+    user = current_user(request, db)
+    if not user:
+        return JSONResponse({"error": "Требуется авторизация."}, status_code=401)
+    plan = normalize_performance_plan(plan_json)
+    preview_card = CosplanCard(character_name=str(card_name or "План дефиле").strip()[:255] or "План дефиле")
+    preview_card.id = 0
+    try:
+        pdf_bytes = build_performance_plan_pdf_document(preview_card, plan)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    return StreamingResponse(
+        iter([pdf_bytes]), media_type="application/pdf",
+        headers={"Content-Disposition": 'attachment; filename="defile-plan.pdf"'},
+    )
+
+
 @app.get("/cosplan/{card_id}", response_class=HTMLResponse)
 def cosplan_detail(card_id: int, request: Request, db: Session = Depends(get_db)):
     user = current_user(request, db)
@@ -21517,6 +21686,7 @@ def cosplan_detail(card_id: int, request: Request, db: Session = Depends(get_db)
         looks_like_url=looks_like_url,
         is_mp3_url=is_mp3_url,
         performance_total=performance_total,
+        performance_plan=normalize_performance_plan(card.performance_plan_json),
         card_date_conflicts=card_date_conflicts,
         can_comment=can_comment_on_card(card, user),
         can_edit_card=bool(editable_card),
