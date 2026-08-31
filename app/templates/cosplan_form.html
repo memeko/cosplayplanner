@@ -1230,7 +1230,7 @@
     });
 
     document.querySelectorAll("#cosplan-form section.box h3").forEach((h3) => {
-      if (h3.closest("summary")) return;
+      if (h3.closest("summary") || h3.closest(".defile-modal")) return;
       const title = (h3.textContent || "").trim();
       wrapContentAfterHeading({
         heading: h3,
@@ -2676,6 +2676,9 @@
     const rowsWrap = document.getElementById("defile-rows");
     const status = document.getElementById("defile-builder-status");
     if (!modal || !openButton || !hiddenInput || !rowsWrap) return;
+    // Keep the fullscreen layer outside the transformed/form layout. Otherwise
+    // position:fixed is constrained by the main content column and leaves the sidebar visible.
+    document.body.appendChild(modal);
 
     const formatTime = (seconds) => `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
     const parseDuration = (value) => {
