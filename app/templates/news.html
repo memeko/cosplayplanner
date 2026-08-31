@@ -11,6 +11,44 @@
   {% endif %}
 </section>
 
+<section class="box home-favorites" id="home-favorites" data-home-fixed>
+  <div class="row-between">
+    <div>
+      <h2>Избранное</h2>
+      <p class="muted">Три быстрых пути к самому важному.</p>
+    </div>
+    <details class="home-favorites-settings">
+      <summary class="btn btn-small">Настроить</summary>
+      <form method="post" action="/home/favorites" class="grid one-col top-offset">
+        {% for slot in range(3) %}
+          <label>
+            Кнопка {{ slot + 1 }}
+            <select name="favorite">
+              <option value="">Не выбрано</option>
+              {% for option in home_favorite_options %}
+                <option value="{{ option.value }}" {% if home_favorites|length > slot and home_favorites[slot].value == option.value %}selected{% endif %}>{{ option.label }}</option>
+              {% endfor %}
+            </select>
+          </label>
+        {% endfor %}
+        <button type="submit" class="btn btn-accent">Сохранить избранное</button>
+      </form>
+    </details>
+  </div>
+  {% if home_favorites %}
+    <div class="home-favorites-grid top-offset">
+      {% for favorite in home_favorites %}
+        <a class="home-favorite-tile" href="{{ favorite.value }}">
+          <span class="home-favorite-icon" aria-hidden="true">{{ favorite.icon }}</span>
+          <strong>{{ favorite.label }}</strong>
+        </a>
+      {% endfor %}
+    </div>
+  {% else %}
+    <p class="muted top-offset">Нажмите «Настроить», чтобы закрепить разделы, коспланы или карточки фестивалей.</p>
+  {% endif %}
+</section>
+
 {# Promo slot is preserved for future announcements; remove `hidden` when a new campaign is ready. #}
 <section class="home-citadel-promo top-offset" aria-labelledby="citadel-promo-heading" hidden>
   <div class="home-citadel-promo-copy">
@@ -284,9 +322,9 @@
           <div class="notification-content">
             <span>
               {% if item.anime_title %}
-                <strong>{{ item.anime_title }}</strong>
+                <strong>{{ item.localized_title or item.anime_title }}</strong>
                 {% if item.localized_title and item.localized_title|lower != item.anime_title|lower %}
-                  ({{ item.localized_title }})
+                  <span class="muted">({{ item.anime_title }})</span>
                 {% endif %}
                 <span aria-hidden="true">—</span>
               {% endif %}
@@ -302,6 +340,36 @@
 </section>
 
 <script>
+  (function () {
+    document.querySelectorAll("main section.box:not([data-home-fixed])").forEach(function (section, index) {
+      const heading = section.querySelector(":scope > .row-between, :scope > h2");
+      if (!heading) return;
+      const title = (section.querySelector("h2")?.textContent || `block-${index}`).trim();
+      const key = `cosplay-home-collapsed:${title}`;
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "btn btn-small home-collapse-button";
+      button.setAttribute("aria-expanded", "true");
+      button.setAttribute("aria-label", `Свернуть блок «${title}»`);
+      button.textContent = "Свернуть";
+      if (heading.classList.contains("row-between")) heading.appendChild(button);
+      else section.insertBefore(button, heading.nextSibling);
+
+      const setCollapsed = function (collapsed) {
+        section.classList.toggle("home-section-collapsed", collapsed);
+        button.textContent = collapsed ? "Развернуть" : "Свернуть";
+        button.setAttribute("aria-expanded", collapsed ? "false" : "true");
+        button.setAttribute("aria-label", `${collapsed ? "Развернуть" : "Свернуть"} блок «${title}»`);
+      };
+      setCollapsed(localStorage.getItem(key) === "1");
+      button.addEventListener("click", function () {
+        const collapsed = !section.classList.contains("home-section-collapsed");
+        setCollapsed(collapsed);
+        localStorage.setItem(key, collapsed ? "1" : "0");
+      });
+    });
+  })();
+
   (function () {
     const dialog = document.getElementById("citadel-promo-dialog");
     const openButton = document.getElementById("citadel-promo-open");

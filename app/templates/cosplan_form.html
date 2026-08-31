@@ -162,6 +162,17 @@
     border-radius: 10px;
     background: #fff;
   }
+  .defile-modal { position: fixed; inset: 0; z-index: 1300; display: grid; place-items: center; padding: 1rem; background: rgba(31,46,74,.72); }
+  .defile-modal[hidden] { display: none; }
+  .defile-modal-card { width: min(1180px, 96vw); max-height: 92vh; overflow: auto; padding: 24px; border-radius: 28px; background: linear-gradient(180deg, #fff, #f4f8ff); box-shadow: 0 24px 70px rgba(31,46,74,.28); }
+  .defile-table-wrap { overflow-x: auto; margin-top: 1rem; }
+  .defile-table { min-width: 980px; width: 100%; border-collapse: collapse; }
+  .defile-table th, .defile-table td { padding: .5rem; border-bottom: 1px solid #d7e4ff; vertical-align: top; text-align: left; }
+  .defile-table textarea { min-width: 150px; resize: vertical; }
+  .defile-guides { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 1.2rem; }
+  .defile-guide { padding: 16px; border: 1px solid rgba(108,99,255,.16); border-radius: 20px; background: rgba(255,255,255,.72); }
+  .defile-start-choice { display: flex; flex-wrap: wrap; gap: 1rem; margin-top: 1rem; }
+  @media (max-width: 760px) { .defile-guides { grid-template-columns: 1fr; } }
   @media (max-width: 900px) {
     .project-character-row { grid-template-columns: 1fr; }
     .project-character-row button { width: 100%; }
@@ -795,6 +806,11 @@
       </label>
 
       <h4>Выступление</h4>
+      <div class="actions-inline">
+        <button type="button" class="btn btn-accent" id="defile-builder-open">Конструктор дефиле</button>
+        <span class="muted" id="defile-builder-status"></span>
+      </div>
+      <input type="hidden" name="performance_plan_json" id="performance-plan-json" value='{{ form.performance_plan_json|tojson|forceescape }}' />
       <div class="grid two-col">
         <label>
           Название трека / ссылка на трек
@@ -847,6 +863,29 @@
         Планируемое количество репетиций
         <input type="number" min="1" step="1" name="performance_rehearsal_count" value="{{ form.performance_rehearsal_count }}" />
       </label>
+
+      <div class="defile-modal" id="defile-builder-modal" role="dialog" aria-modal="true" aria-labelledby="defile-builder-title" hidden>
+        <div class="defile-modal-card">
+          <div class="row-between">
+            <div><h3 id="defile-builder-title">Конструктор дефиле</h3><p class="muted">Шаг сетки — 5 секунд. Соседние блоки можно объединять.</p></div>
+            <button type="button" class="btn" id="defile-builder-close">Закрыть</button>
+          </div>
+          <div class="grid two-col top-offset">
+            <label>Длительность выступления (MM:SS)<input type="text" id="defile-duration" placeholder="01:30" pattern="\d{1,3}:[0-5]\d" /></label>
+            <div class="actions-inline"><button type="button" class="btn btn-accent" id="defile-generate">Создать таблицу</button></div>
+          </div>
+          <div class="defile-start-choice" role="radiogroup" aria-label="Положение в начале номера">
+            <label class="inline-check"><input type="radio" name="defile_start_mode" value="wings" /> Начало из-за кулис</label>
+            <label class="inline-check"><input type="radio" name="defile_start_mode" value="point" /> Начало с точки</label>
+          </div>
+          <div class="defile-table-wrap"><table class="defile-table"><thead><tr><th>Время</th><th>Действие</th><th>Реквизит</th><th>Светосценарий</th><th>Ориентир по звуку</th><th></th></tr></thead><tbody id="defile-rows"></tbody></table></div>
+          <div class="defile-guides">
+            <article class="defile-guide"><h4>Краткий гайд по светосценарию</h4><p><strong>Заливка</strong> — полное равномерное освещение сцены; иногда можно выбрать холодный или тёплый свет.</p><p><strong>Цветная заливка</strong> — равномерное освещение выбранным оттенком. Уточните перечень цветов в регламенте площадки.</p><p><strong>Стробоскоп</strong> — быстрые повторяющиеся яркие световые импульсы; есть не во всех ДК.</p><p><strong>Профильные прожекторы / освещение на точку</strong> — акцентный свет на фигуру или точку, обычно центр сцены.</p><p><strong>Дым-машина</strong> — доступна не на всех площадках, проверяйте регламент.</p><p class="muted"><strong>Важно:</strong> количество смен освещения задаёт регламент, обычно — не более двух за номер.</p></article>
+            <article class="defile-guide"><h4>Гайд по режиссуре номера</h4><p>Учитывайте время на выход и перемещение за кулису. Впишите эти действия в выступление, если оно начинается не с точки.</p><p>Не используйте оборванный звук: вводите и выводите трек через fading (затухание), без обрыва фраз, музыкальных фраз и тактов.</p><p>Желательно заложить развитие сюжета и кульминацию во второй трети дефиле. Продумайте несколько поз в авансцене, которые будут хорошо смотреться в кадре.</p></article>
+          </div>
+          <div class="actions-inline top-offset"><button type="button" class="btn btn-accent" id="defile-save">Сохранить план</button></div>
+        </div>
+      </div>
   </section>
 
   <section class="box">
@@ -2613,6 +2652,106 @@
     fromCalcButton.addEventListener("click", fillFromCalculator);
   };
 
+  const setupDefileBuilder = () => {
+    const modal = document.getElementById("defile-builder-modal");
+    const openButton = document.getElementById("defile-builder-open");
+    const closeButton = document.getElementById("defile-builder-close");
+    const saveButton = document.getElementById("defile-save");
+    const generateButton = document.getElementById("defile-generate");
+    const durationInput = document.getElementById("defile-duration");
+    const cardDuration = document.querySelector('[name="performance_duration"]');
+    const hiddenInput = document.getElementById("performance-plan-json");
+    const rowsWrap = document.getElementById("defile-rows");
+    const status = document.getElementById("defile-builder-status");
+    if (!modal || !openButton || !hiddenInput || !rowsWrap) return;
+
+    const formatTime = (seconds) => `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
+    const parseDuration = (value) => {
+      const match = String(value || "").trim().match(/^(\d{1,3}):([0-5]\d)$/);
+      return match ? Number(match[1]) * 60 + Number(match[2]) : 0;
+    };
+    const makeCell = (name, value) => {
+      const cell = document.createElement("td");
+      const field = document.createElement("textarea");
+      field.rows = 2;
+      field.dataset.field = name;
+      field.value = String(value || "");
+      cell.appendChild(field);
+      return cell;
+    };
+    const makeRow = (item) => {
+      const row = document.createElement("tr");
+      row.dataset.start = String(item.start);
+      row.dataset.end = String(item.end);
+      const time = document.createElement("td");
+      time.className = "defile-time";
+      time.textContent = `${formatTime(item.start)}–${formatTime(item.end)}`;
+      row.append(time, makeCell("action", item.action), makeCell("props", item.props), makeCell("light", item.light), makeCell("sound", item.sound));
+      const actions = document.createElement("td");
+      const merge = document.createElement("button");
+      merge.type = "button";
+      merge.className = "btn btn-small";
+      merge.textContent = "Объединить со следующим";
+      merge.addEventListener("click", () => {
+        const next = row.nextElementSibling;
+        if (!next) return;
+        row.dataset.end = next.dataset.end;
+        row.querySelector(".defile-time").textContent = `${formatTime(Number(row.dataset.start))}–${formatTime(Number(row.dataset.end))}`;
+        ["action", "props", "light", "sound"].forEach((fieldName) => {
+          const current = row.querySelector(`[data-field="${fieldName}"]`);
+          const addition = next.querySelector(`[data-field="${fieldName}"]`).value.trim();
+          if (addition) current.value = [current.value.trim(), addition].filter(Boolean).join(" / ");
+        });
+        next.remove();
+      });
+      actions.appendChild(merge);
+      row.appendChild(actions);
+      return row;
+    };
+    const readPlan = () => {
+      try { return JSON.parse(hiddenInput.value || "{}"); } catch (_error) { return {}; }
+    };
+    const renderPlan = (plan) => {
+      rowsWrap.innerHTML = "";
+      (Array.isArray(plan.rows) ? plan.rows : []).forEach((item) => rowsWrap.appendChild(makeRow(item)));
+      const mode = plan.start_mode === "wings" ? "wings" : "point";
+      const radio = modal.querySelector(`[name="defile_start_mode"][value="${mode}"]`);
+      if (radio) radio.checked = true;
+      if (plan.rows?.length) durationInput.value = formatTime(Number(plan.rows[plan.rows.length - 1].end || 0));
+    };
+    const close = () => { modal.hidden = true; document.body.classList.remove("modal-open"); };
+    openButton.addEventListener("click", () => {
+      renderPlan(readPlan());
+      if (!durationInput.value) durationInput.value = cardDuration?.value || "";
+      modal.hidden = false;
+      document.body.classList.add("modal-open");
+      durationInput.focus();
+    });
+    closeButton.addEventListener("click", close);
+    modal.addEventListener("click", (event) => { if (event.target === modal) close(); });
+    generateButton.addEventListener("click", () => {
+      const duration = parseDuration(durationInput.value);
+      if (!duration) { durationInput.setCustomValidity("Укажите длительность в формате MM:SS"); durationInput.reportValidity(); return; }
+      durationInput.setCustomValidity("");
+      rowsWrap.innerHTML = "";
+      for (let start = 0; start < duration; start += 5) rowsWrap.appendChild(makeRow({ start, end: Math.min(start + 5, duration) }));
+    });
+    saveButton.addEventListener("click", () => {
+      const selectedMode = modal.querySelector('[name="defile_start_mode"]:checked')?.value || "point";
+      const rows = Array.from(rowsWrap.children).map((row) => ({
+        start: Number(row.dataset.start), end: Number(row.dataset.end),
+        action: row.querySelector('[data-field="action"]').value,
+        props: row.querySelector('[data-field="props"]').value,
+        light: row.querySelector('[data-field="light"]').value,
+        sound: row.querySelector('[data-field="sound"]').value,
+      }));
+      hiddenInput.value = JSON.stringify({ start_mode: selectedMode, rows });
+      if (rows.length && cardDuration) cardDuration.value = formatTime(rows[rows.length - 1].end);
+      status.textContent = rows.length ? `План сохранён: ${rows.length} блоков` : "План сохранён";
+      close();
+    });
+  };
+
   bindAliasSuggest({ inputId: "project_leader", listId: "project-leader-suggest", multi: false });
   setupCoproplayerRows();
   setupProjectCharacterRows();
@@ -2622,6 +2761,7 @@
   setupChecklistControls();
   setupPhotosetFramesCalculator();
   setupPhotosetStoryboardTable();
+  setupDefileBuilder();
   syncPlanTypeFromProjectCheckbox();
   applyFormRules();
   applyFestivalCityFilter();

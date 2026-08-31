@@ -416,6 +416,7 @@ class CosplanCard(Base):
     performance_script = Column(Text, nullable=True)
     performance_light_script = Column(Text, nullable=True)
     performance_duration = Column(String(8), nullable=True)
+    performance_plan_json = Column(JSON, nullable=False, default=dict)
     performance_rehearsal_point = Column(String(255), nullable=True)
     performance_rehearsal_price = Column(Float, nullable=True)
     performance_rehearsal_currency = Column(String(16), nullable=True)

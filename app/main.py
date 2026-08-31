@@ -560,6 +560,7 @@ PROFILE_TELEGRAM_SECRET_CODE_GROUP = "profile_telegram_secret_code"
 PROFILE_ABOUT_MARKDOWN_GROUP = "profile_about_markdown"
 PROFILE_PHOTO_URL_GROUP = "profile_photo_url"
 PROFILE_BIRTHDAY_VISIBILITY_GROUP = "profile_birthday_visibility"
+HOME_FAVORITE_GROUP_PREFIX = "home_favorite_"
 PROFILE_BIRTHDAY_VISIBILITY_DAY_MONTH = "day_month"
 PROFILE_BIRTHDAY_VISIBILITY_HIDDEN = "hidden"
 PROFILE_BIRTHDAY_VISIBILITY_AGE = "age"
@@ -1359,6 +1360,7 @@ def apply_schema_migrations() -> None:
             ("performance_script", "TEXT"),
             ("performance_light_script", "TEXT"),
             ("performance_duration", "VARCHAR(8)"),
+            ("performance_plan_json", "JSON NOT NULL DEFAULT '{}'"),
             ("performance_rehearsal_point", "VARCHAR(255)"),
             ("performance_rehearsal_price", "FLOAT"),
             ("performance_rehearsal_currency", "VARCHAR(16)"),
@@ -3949,11 +3951,17 @@ def fetch_russian_anime_title(anime_title: str | None) -> str:
         for row in payload:
             if not isinstance(row, dict):
                 continue
-            candidate = str(row.get("name") or "").strip()
-            candidate_key = normalize_event_name_key(candidate)
-            if not candidate_key:
-                continue
-            score = SequenceMatcher(None, title_key, candidate_key).ratio()
+            aliases = [row.get("name"), row.get("russian"), row.get("japanese")]
+            aliases.extend(as_list(row.get("synonyms")))
+            candidate_keys = [
+                normalize_event_name_key(str(candidate or ""))
+                for candidate in aliases
+                if str(candidate or "").strip()
+            ]
+            score = max(
+                (SequenceMatcher(None, title_key, candidate_key).ratio() for candidate_key in candidate_keys),
+                default=0.0,
+            )
             if score > best_score:
                 best_score = score
                 best_match = row
@@ -4021,7 +4029,7 @@ def character_birthdays_today(today: date, *, include_localization: bool = True)
 
 
 def cached_character_birthdays_today(today: date) -> list[dict[str, Any]]:
-    cache_key = f"character_birthdays_today:v2:{today.isoformat()}"
+    cache_key = f"character_birthdays_today:v3:{today.isoformat()}"
     cached = NETWORK_CACHE.get(cache_key)
     now = datetime.utcnow()
     if cached:
@@ -4032,12 +4040,16 @@ def cached_character_birthdays_today(today: date) -> list[dict[str, Any]]:
     fallback_payload: list[dict[str, Any]] = []
     if not cached:
         try:
-            fallback_payload = character_birthdays_today(today, include_localization=False)
+            # On a cold cache, return the localized payload immediately. Previously the
+            # first page view always received the non-localized fallback and users rarely
+            # saw the background refresh result without manually reloading the page.
+            fallback_payload = character_birthdays_today(today, include_localization=True)
+            NETWORK_CACHE[cache_key] = (datetime.utcnow(), fallback_payload)
         except Exception:
             fallback_payload = []
 
     with CHARACTER_BIRTHDAYS_REFRESH_LOCK:
-        should_refresh = cache_key not in CHARACTER_BIRTHDAYS_REFRESHING
+        should_refresh = bool(cached) and cache_key not in CHARACTER_BIRTHDAYS_REFRESHING
         if should_refresh:
             CHARACTER_BIRTHDAYS_REFRESHING.add(cache_key)
 
@@ -7490,6 +7502,35 @@ def normalize_duration_mmss(raw: str | None) -> str | None:
     minutes = int(match.group(1))
     seconds = int(match.group(2))
     return f"{minutes:02d}:{seconds:02d}"
+
+
+def normalize_performance_plan(raw: Any) -> dict[str, Any]:
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (TypeError, ValueError):
+            return {}
+    if not isinstance(raw, dict):
+        return {}
+    start_mode = "wings" if raw.get("start_mode") == "wings" else "point"
+    rows: list[dict[str, Any]] = []
+    for item in as_list(raw.get("rows"))[:180]:
+        if not isinstance(item, dict):
+            continue
+        try:
+            start = max(0, int(item.get("start") or 0))
+            end = max(start + 1, int(item.get("end") or start + 5))
+        except (TypeError, ValueError):
+            continue
+        rows.append({
+            "start": start,
+            "end": end,
+            "action": str(item.get("action") or "")[:2000],
+            "props": str(item.get("props") or "")[:1000],
+            "light": str(item.get("light") or "")[:1000],
+            "sound": str(item.get("sound") or "")[:1000],
+        })
+    return {"start_mode": start_mode, "rows": rows}
 
 
 def parse_positive_int(raw: str | None) -> int | None:
@@ -12627,6 +12668,7 @@ def card_fields_for_sync() -> list[str]:
         "performance_script",
         "performance_light_script",
         "performance_duration",
+        "performance_plan_json",
         "performance_rehearsal_point",
         "performance_rehearsal_price",
         "performance_rehearsal_currency",
@@ -15731,6 +15773,7 @@ def get_card_form_values(card: CosplanCard | None = None, *, actor_user_id: int 
             "performance_script": "",
             "performance_light_script": "",
             "performance_duration": "",
+            "performance_plan_json": {},
             "performance_rehearsal_point": "",
             "performance_rehearsal_price": "",
             "performance_rehearsal_currency": "RUB",
@@ -15874,6 +15917,7 @@ def get_card_form_values(card: CosplanCard | None = None, *, actor_user_id: int 
         "performance_script": card.performance_script or "",
         "performance_light_script": card.performance_light_script or "",
         "performance_duration": card.performance_duration or "",
+        "performance_plan_json": card.performance_plan_json if isinstance(card.performance_plan_json, dict) else {},
         "performance_rehearsal_point": card.performance_rehearsal_point or "",
         "performance_rehearsal_price": (
             "" if card.performance_rehearsal_price is None else f"{card.performance_rehearsal_price:g}"
@@ -17354,6 +17398,42 @@ def build_home_activity_leaderboard(db: Session, *, limit: int = 10) -> list[dic
     return top_rows
 
 
+def build_home_favorite_options(db: Session, user: User) -> list[dict[str, str]]:
+    options = [
+        {"value": "/cosplan", "label": "Коспланы", "icon": "✦"},
+        {"value": "/in-progress", "label": "В работе", "icon": "✓"},
+        {"value": "/festivals", "label": "Фестивали", "icon": "☆"},
+        {"value": "/my-calendar", "label": "Календарь", "icon": "◷"},
+        {"value": "/rehearsals", "label": "Репетиции", "icon": "♫"},
+        {"value": "/community", "label": "Сообщество", "icon": "◇"},
+    ]
+    cards = db.execute(
+        select(CosplanCard).where(CosplanCard.user_id == user.id).order_by(CosplanCard.updated_at.desc()).limit(80)
+    ).scalars().all()
+    options.extend(
+        {"value": f"/cosplan/{card.id}", "label": f"Косплан: {card.character_name}", "icon": "✧"}
+        for card in cards if card.character_name
+    )
+    festivals = db.execute(
+        select(Festival).where(Festival.user_id == user.id).order_by(Festival.event_date.asc()).limit(80)
+    ).scalars().all()
+    options.extend(
+        {"value": f"/festivals/{festival.id}/card", "label": f"Фестиваль: {festival.name}", "icon": "☆"}
+        for festival in festivals if festival.name
+    )
+    return options
+
+
+def home_favorites_for_user(db: Session, user: User, options: list[dict[str, str]]) -> list[dict[str, str]]:
+    by_value = {item["value"]: item for item in options}
+    result: list[dict[str, str]] = []
+    for slot in range(1, 4):
+        value = get_user_option_value(db, user.id, f"{HOME_FAVORITE_GROUP_PREFIX}{slot}")
+        if value in by_value:
+            result.append(by_value[value])
+    return result
+
+
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request, db: Session = Depends(get_db)):
     user = current_user(request, db)
@@ -17391,6 +17471,8 @@ def index(request: Request, db: Session = Depends(get_db)):
         birthdays_this_week = upcoming_user_birthdays_this_week(users_with_birthdays, today)
         info_events_week = weekly_infopovods(today)
         character_birthdays_today_rows = cached_character_birthdays_today(today)
+        home_favorite_options = build_home_favorite_options(db, user)
+        home_favorites = home_favorites_for_user(db, user, home_favorite_options)
         unread_notifications = sum(1 for note in regular_notifications if not note.is_read)
         return template_response(
             request,
@@ -17408,8 +17490,33 @@ def index(request: Request, db: Session = Depends(get_db)):
             can_manage_news=is_moderator_user(user),
             can_use_photo_frames_calculator=user_has_premium_status(db, user),
             mergeable_duplicate_notification_ids=mergeable_duplicate_notification_ids,
+            home_favorite_options=home_favorite_options,
+            home_favorites=home_favorites,
         )
     return template_response(request, "landing.html", user=None, active_tab=None)
+
+
+@app.post("/home/favorites")
+async def save_home_favorites(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    form = await request.form()
+    allowed = {item["value"] for item in build_home_favorite_options(db, user)}
+    selected: list[str] = []
+    for raw_value in form.getlist("favorite"):
+        value = str(raw_value or "").strip()
+        if value and value in allowed and value not in selected:
+            selected.append(value)
+        if len(selected) >= 3:
+            break
+    for slot in range(1, 4):
+        set_user_option_value(
+            db, user.id, f"{HOME_FAVORITE_GROUP_PREFIX}{slot}", selected[slot - 1] if slot <= len(selected) else ""
+        )
+    db.commit()
+    add_flash(request, "Избранное на главной обновлено.", "success")
+    return redirect("/#home-favorites")
 
 
 @app.get("/photo-tools/frames-calculator", response_class=HTMLResponse)
@@ -21827,6 +21934,7 @@ def save_card_from_form(form: Any, card: CosplanCard, user: User, db: Session) -
     card.performance_script = str(form.get("performance_script", "")).strip() or None
     card.performance_light_script = str(form.get("performance_light_script", "")).strip() or None
     card.performance_duration = normalize_duration_mmss(str(form.get("performance_duration", "")))
+    card.performance_plan_json = normalize_performance_plan(form.get("performance_plan_json", ""))
     card.performance_rehearsal_point = str(form.get("performance_rehearsal_point", "")).strip() or None
     card.performance_rehearsal_price = parse_price_field("performance_rehearsal_price")
     card.performance_rehearsal_currency = str(form.get("performance_rehearsal_currency", "")).strip() or None
@@ -31312,14 +31420,7 @@ def duplicate_festival_candidates_from_notification(db: Session, message: str | 
 
 
 def has_mergeable_duplicate_festivals(items: list[Festival]) -> bool:
-    if len(items) < 2:
-        return False
-    per_user_counts: dict[int, int] = defaultdict(int)
-    for item in items:
-        per_user_counts[int(item.user_id)] += 1
-        if per_user_counts[int(item.user_id)] >= 2:
-            return True
-    return False
+    return len(items) >= 2
 
 
 def festival_merge_rank(festival: Festival | None) -> tuple[int, int, int, int, int, int]:
