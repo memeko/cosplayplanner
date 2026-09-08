@@ -565,10 +565,10 @@
       <details class="top-offset">
         <summary>Как подключить VK</summary>
         <ol class="notes-list top-offset">
-          <li>Нажмите «Подключить через VK» — откроется официальное Mini App Cosplay Planner.</li>
-          <li>Разрешите показать управляемые сообщества. Создавать собственное приложение VK не требуется.</li>
-          <li>Выберите сообщества, где у вас роль редактора или администратора, и подтвердите доступ к их фотографиям и управлению.</li>
-          <li>Вернитесь в контент-план: выбранные сообщества появятся в настройках публикации.</li>
+          <li>Откройте своё сообщество VK и перейдите в «Управление» → «Дополнительно» → «Работа с API».</li>
+          <li>Создайте ключ доступа сообщества с правами на стену и фотографии. Отдельное приложение VK и ИНН для этого не нужны.</li>
+          <li>Скопируйте ключ и добавьте ниже строку вида «vk.ru/my_group — ключ_сообщества».</li>
+          <li>Для каждого сообщества создаётся и сохраняется свой ключ.</li>
           <li>После сохранения посты с галочкой <strong>VK</strong> смогут публиковаться в выбранные сообщества вручную и по расписанию.</li>
         </ol>
       </details>
@@ -577,19 +577,13 @@
           Настройки VK-сообществ меняет только владелец этого контент-плана.
         </div>
       {% else %}
-      {% if vk_mini_app_url %}
-        <div class="actions-inline top-offset">
-          <a href="{{ vk_mini_app_url }}" target="_blank" rel="noreferrer" class="btn btn-accent">Подключить через VK</a>
-        </div>
-        <p class="muted">Авторизация проходит внутри VK. Планер запросит только права, необходимые для публикации.</p>
-      {% endif %}
       <form method="post" action="/my-calendar/content/vk/connect" class="grid one-col top-offset">
         <input type="hidden" name="content_scope" value="{{ content_scope }}" />
         {% if content_owner_id %}<input type="hidden" name="content_owner_id" value="{{ content_owner_id }}" />{% endif %}
         <label>
           Сообщества VK и токены доступа
           <textarea name="vk_groups_text" rows="6" placeholder="vk.ru/my_public — токен_доступа&#10;club123456 — токен_доступа&#10;Название — vk.ru/my_group — токен_доступа">{{ vk_settings.groups_text }}</textarea>
-          <small class="muted">Ручной способ для ранее полученных токенов. Обычно используйте кнопку «Подключить через VK» выше.</small>
+          <small class="muted">По одному сообществу на строку. Ключ хранится в зашифрованном виде и используется только для публикации в указанное сообщество.</small>
           {% if vk_settings_masked.groups_text %}
             <small class="muted">Сейчас сохранено:
 {{ vk_settings_masked.groups_text }}</small>
