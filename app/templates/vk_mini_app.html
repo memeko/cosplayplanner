@@ -24,6 +24,9 @@
   const list = document.getElementById('vk-groups-list');
   const status = document.getElementById('vk-connect-status');
   let accessToken = '';
+  const bridgeReady = window.vkBridge
+    ? vkBridge.send('VKWebAppInit')
+    : Promise.reject(new Error('Не удалось загрузить VK Bridge. Обновите приложение.'));
 
   function showStatus(message, isError) {
     status.hidden = false;
@@ -43,8 +46,7 @@
   }
 
   async function authorize() {
-    if (!window.vkBridge) throw new Error('Откройте эту страницу внутри приложения VK.');
-    await vkBridge.send('VKWebAppInit');
+    await bridgeReady;
     const auth = await vkBridge.send('VKWebAppGetAuthToken', {
       app_id: appId,
       scope: 'wall,photos,groups'
