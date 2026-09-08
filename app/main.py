@@ -6951,7 +6951,8 @@ def load_content_photo_binary(photo_ref: str) -> tuple[str, bytes, str]:
 def upload_content_photo_to_vk(token: str, group_id: str, photo_ref: str) -> str:
     upload_payload = vk_content_api_call(
         token,
-        "photos.getMessagesUploadServer",
+        "docs.getWallUploadServer",
+        {"group_id": group_id},
     )
     if not isinstance(upload_payload, dict):
         raise RuntimeError("VK не вернул сервер загрузки изображений.")
@@ -6963,7 +6964,7 @@ def upload_content_photo_to_vk(token: str, group_id: str, photo_ref: str) -> str
     try:
         upload_response = requests.post(
             upload_url,
-            files={"photo": (filename, file_bytes, media_type)},
+            files={"file": (filename, file_bytes, media_type)},
             timeout=max(10, HTTP_TIMEOUT_SECONDS * 2),
         )
     except requests.RequestException as exc:
@@ -6977,31 +6978,27 @@ def upload_content_photo_to_vk(token: str, group_id: str, photo_ref: str) -> str
     if not isinstance(upload_result, dict):
         raise RuntimeError("Сервер загрузки VK вернул неожиданный формат данных.")
 
-    photo_value = str(upload_result.get("photo") or "").strip()
-    server_value = str(upload_result.get("server") or "").strip()
-    hash_value = str(upload_result.get("hash") or "").strip()
-    if not photo_value or not server_value or not hash_value:
-        raise RuntimeError("VK не вернул все данные для сохранения изображения.")
+    file_value = str(upload_result.get("file") or "").strip()
+    if not file_value:
+        raise RuntimeError("VK не вернул данные для сохранения изображения.")
 
     save_payload = vk_content_api_call(
         token,
-        "photos.saveMessagesPhoto",
+        "docs.save",
         {
-            "photo": photo_value,
-            "server": server_value,
-            "hash": hash_value,
+            "file": file_value,
+            "title": Path(filename).stem[:128] or "Изображение",
         },
     )
-    items = save_payload if isinstance(save_payload, list) else [save_payload] if isinstance(save_payload, dict) else []
-    photo_item = next((item for item in items if isinstance(item, dict)), None)
-    if not photo_item:
+    doc_item = save_payload.get("doc") if isinstance(save_payload, dict) else None
+    if not isinstance(doc_item, dict):
         raise RuntimeError("VK не вернул сохранённое изображение.")
-    owner_id = str(photo_item.get("owner_id") or "").strip()
-    photo_id = str(photo_item.get("id") or "").strip()
-    access_key = str(photo_item.get("access_key") or "").strip()
-    if not owner_id or not photo_id:
+    owner_id = str(doc_item.get("owner_id") or "").strip()
+    doc_id = str(doc_item.get("id") or "").strip()
+    access_key = str(doc_item.get("access_key") or "").strip()
+    if not owner_id or not doc_id:
         raise RuntimeError("VK вернул неполные данные по изображению.")
-    attachment = f"photo{owner_id}_{photo_id}"
+    attachment = f"doc{owner_id}_{doc_id}"
     if access_key:
         attachment = f"{attachment}_{access_key}"
     return attachment
@@ -14668,6 +14665,8 @@ def format_vk_content_api_error(method: str, error_payload: dict[str, Any]) -> s
         "photos.saveWallPhoto",
         "photos.getMessagesUploadServer",
         "photos.saveMessagesPhoto",
+        "docs.getWallUploadServer",
+        "docs.save",
     }
     if error_code == 5:
         return (
