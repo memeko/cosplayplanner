@@ -547,6 +547,7 @@ CONTENT_VK_TOKEN_GROUP = "content_vk_api_token"
 CONTENT_VK_GROUP_GROUP = "content_vk_group"
 VK_MINI_APP_ID = int(os.getenv("VK_MINI_APP_ID", "54760695") or "54760695")
 VK_MINI_APP_URL = (os.getenv("VK_MINI_APP_URL", f"https://vk.ru/app{VK_MINI_APP_ID}") or "").strip()
+VK_MINI_APP_SECRET = (os.getenv("VK_MINI_APP_SECRET", "") or "").strip()
 CONTENT_PINTEREST_ACCESS_TOKEN_GROUP = "content_pinterest_access_token"
 CONTENT_PINTEREST_REFRESH_TOKEN_GROUP = "content_pinterest_refresh_token"
 CONTENT_PINTEREST_SCOPE_GROUP = "content_pinterest_scope"
@@ -6960,8 +6961,7 @@ def load_content_photo_binary(photo_ref: str) -> tuple[str, bytes, str]:
 def upload_content_photo_to_vk(token: str, group_id: str, photo_ref: str) -> str:
     upload_payload = vk_content_api_call(
         token,
-        "photos.getWallUploadServer",
-        {"group_id": group_id},
+        "photos.getMessagesUploadServer",
     )
     if not isinstance(upload_payload, dict):
         raise RuntimeError("VK не вернул сервер загрузки изображений.")
@@ -6995,9 +6995,8 @@ def upload_content_photo_to_vk(token: str, group_id: str, photo_ref: str) -> str
 
     save_payload = vk_content_api_call(
         token,
-        "photos.saveWallPhoto",
+        "photos.saveMessagesPhoto",
         {
-            "group_id": group_id,
             "photo": photo_value,
             "server": server_value,
             "hash": hash_value,
@@ -14749,32 +14748,28 @@ def extract_vk_group_list(payload: Any) -> list[dict[str, Any]]:
     return []
 
 
-def available_vk_groups_for_user_token(token: str) -> tuple[str, list[dict[str, str]]]:
-    users_payload = vk_content_api_call(token, "users.get")
-    users = users_payload if isinstance(users_payload, list) else []
-    vk_user_id = str(users[0].get("id") or "").strip() if users and isinstance(users[0], dict) else ""
-    if not vk_user_id:
-        raise RuntimeError("VK не вернул владельца токена.")
-
-    groups_payload = vk_content_api_call(
-        token,
-        "groups.get",
-        {"filter": "editor", "extended": 1, "count": 1000},
+def verify_vk_mini_app_launch_params(value: str | None) -> str:
+    if not VK_MINI_APP_SECRET:
+        raise RuntimeError("На сервере не задан VK_MINI_APP_SECRET.")
+    raw = str(value or "").lstrip("?").strip()
+    params = parse_qs(raw, keep_blank_values=True)
+    received_sign = str((params.pop("sign", [""]) or [""])[0]).strip()
+    if not received_sign:
+        raise RuntimeError("VK не передал подпись запуска приложения.")
+    vk_pairs = sorted(
+        (key, str(values[0] if values else ""))
+        for key, values in params.items()
+        if key.startswith("vk_")
     )
-    groups: list[dict[str, str]] = []
-    for item in extract_vk_group_list(groups_payload):
-        group_id = str(item.get("id") or "").strip()
-        if not group_id.isdigit():
-            continue
-        groups.append(
-            {
-                "group_id": group_id,
-                "owner_id": f"-{group_id}",
-                "screen_name": str(item.get("screen_name") or item.get("screenName") or "").strip(),
-                "title": str(item.get("name") or f"Сообщество {group_id}").strip()[:120],
-            }
-        )
-    return vk_user_id, groups
+    signed_value = urlencode(vk_pairs)
+    digest = hmac.new(VK_MINI_APP_SECRET.encode("utf-8"), signed_value.encode("utf-8"), hashlib.sha256).digest()
+    expected_sign = base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+    if not hmac.compare_digest(received_sign, expected_sign):
+        raise RuntimeError("Подпись запуска VK Mini App недействительна.")
+    vk_user_id = str((params.get("vk_user_id", [""]) or [""])[0]).strip()
+    if not vk_user_id.isdigit():
+        raise RuntimeError("VK не передал идентификатор пользователя.")
+    return vk_user_id
 
 
 def resolve_content_vk_group_entry(token: str, title: str, target: str) -> dict[str, str]:
@@ -26344,62 +26339,49 @@ def vk_mini_app(request: Request):
     )
 
 
-@app.post("/api/vk-mini-app/groups")
-async def vk_mini_app_groups(request: Request, db: Session = Depends(get_db)):
-    try:
-        payload = await request.json()
-    except ValueError:
-        payload = {}
-    token = str(payload.get("access_token") or "").strip() if isinstance(payload, dict) else ""
-    if not token:
-        return JSONResponse({"ok": False, "error": "VK не передал токен доступа."}, status_code=400)
-    try:
-        vk_user_id, groups = available_vk_groups_for_user_token(token)
-    except RuntimeError as exc:
-        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
-    user = db.execute(select(User).where(User.vk_user_id == vk_user_id)).scalar_one_or_none()
-    if not user:
-        return JSONResponse(
-            {"ok": False, "error": "Сначала войдите в Cosplay Planner через этот же аккаунт VK."},
-            status_code=403,
-        )
-    return JSONResponse({"ok": True, "groups": groups})
-
-
 @app.post("/api/vk-mini-app/connect")
 async def vk_mini_app_connect(request: Request, db: Session = Depends(get_db)):
     try:
         payload = await request.json()
     except ValueError:
         payload = {}
-    token = str(payload.get("access_token") or "").strip() if isinstance(payload, dict) else ""
-    selected_ids = payload.get("group_ids") if isinstance(payload, dict) else []
-    selected = (
-        {str(value).strip() for value in selected_ids if str(value).strip().isdigit()}
-        if isinstance(selected_ids, list)
-        else set()
-    )
-    if not token or not selected:
+    launch_params = str(payload.get("launch_params") or "").strip() if isinstance(payload, dict) else ""
+    raw_groups = payload.get("groups") if isinstance(payload, dict) else []
+    if not isinstance(raw_groups, list) or not raw_groups:
         return JSONResponse({"ok": False, "error": "Выберите хотя бы одно сообщество."}, status_code=400)
     try:
-        vk_user_id, available_groups = available_vk_groups_for_user_token(token)
+        vk_user_id = verify_vk_mini_app_launch_params(launch_params)
     except RuntimeError as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
     user = db.execute(select(User).where(User.vk_user_id == vk_user_id)).scalar_one_or_none()
     if not user:
-        return JSONResponse({"ok": False, "error": "Профиль VK не связан с Cosplay Planner."}, status_code=403)
-    chosen_groups = [group for group in available_groups if group["group_id"] in selected]
-    if not chosen_groups:
         return JSONResponse(
-            {"ok": False, "error": "Выбранные сообщества недоступны этому аккаунту VK."}, status_code=403
+            {"ok": False, "error": "Сначала войдите в Cosplay Planner через этот же аккаунт VK."}, status_code=403
         )
+    chosen_groups: list[dict[str, str]] = []
+    seen_group_ids: set[str] = set()
+    for raw_group in raw_groups:
+        if not isinstance(raw_group, dict):
+            continue
+        group_id = str(raw_group.get("group_id") or "").strip()
+        token = str(raw_group.get("access_token") or "").strip()
+        if not group_id.isdigit() or not token or group_id in seen_group_ids:
+            continue
+        try:
+            group = resolve_content_vk_group_entry(token, "", group_id)
+        except RuntimeError as exc:
+            return JSONResponse({"ok": False, "error": f"Сообщество {group_id}: {exc}"}, status_code=400)
+        seen_group_ids.add(group_id)
+        chosen_groups.append(group)
+    if not chosen_groups:
+        return JSONResponse({"ok": False, "error": "VK не выдал ключи выбранных сообществ."}, status_code=400)
     replace_user_option_values(
         db,
         user.id,
         CONTENT_VK_GROUP_GROUP,
         [
             encode_content_vk_group_value(
-                group["title"], group["group_id"], group["owner_id"], group["screen_name"], token
+                group["title"], group["group_id"], group["owner_id"], group["screen_name"], group["api_token"]
             )
             for group in chosen_groups
         ],

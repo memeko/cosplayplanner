@@ -3,7 +3,7 @@
 {% block content %}
 <section class="card narrow-card">
   <h1>Подключение сообществ VK</h1>
-  <p class="muted">Разрешите Cosplay Planner работать со стеной и фотографиями, затем выберите сообщества для публикации.</p>
+  <p class="muted">Разрешите показать управляемые сообщества, затем выберите сообщества для публикации.</p>
 
   <div id="vk-connect-start">
     <button type="button" class="btn btn-accent" id="vk-authorize">Предоставить доступ</button>
@@ -49,14 +49,26 @@
     await bridgeReady;
     const auth = await vkBridge.send('VKWebAppGetAuthToken', {
       app_id: appId,
-      scope: 'wall,photos,groups'
+      scope: 'groups'
     });
     accessToken = auth.access_token || '';
     if (!accessToken) throw new Error('VK не выдал токен доступа.');
-    const data = await postJson('/api/vk-mini-app/groups', {access_token: accessToken});
+    const apiResult = await vkBridge.send('VKWebAppCallAPIMethod', {
+      method: 'groups.get',
+      params: {
+        filter: 'editor',
+        extended: 1,
+        count: 1000,
+        v: '5.199',
+        access_token: accessToken
+      }
+    });
+    const groups = apiResult && apiResult.response && Array.isArray(apiResult.response.items)
+      ? apiResult.response.items
+      : [];
     list.replaceChildren();
-    if (!data.groups.length) throw new Error('VK не нашёл сообществ, где вы редактор или администратор.');
-    data.groups.forEach(function (group) {
+    if (!groups.length) throw new Error('VK не нашёл сообществ, где вы редактор или администратор.');
+    groups.forEach(function (group) {
       const label = document.createElement('label');
       label.className = 'checkbox-row';
       const input = document.createElement('input');
@@ -81,19 +93,35 @@
     });
   });
 
-  form.addEventListener('submit', function (event) {
+  form.addEventListener('submit', async function (event) {
     event.preventDefault();
     const groupIds = Array.from(form.querySelectorAll('input[name="group_id"]:checked')).map(function (item) {
       return item.value;
     });
-    postJson('/api/vk-mini-app/connect', {access_token: accessToken, group_ids: groupIds})
-      .then(function (data) {
-        form.hidden = true;
-        showStatus('Подключено сообществ: ' + data.count + '. Вернитесь в контент-план.', false);
-      })
-      .catch(function (error) {
-        showStatus(error.message || 'Не удалось сохранить сообщества.', true);
+    if (!groupIds.length) {
+      showStatus('Выберите хотя бы одно сообщество.', true);
+      return;
+    }
+    try {
+      const groups = [];
+      for (const groupId of groupIds) {
+        const communityAuth = await vkBridge.send('VKWebAppGetCommunityToken', {
+          app_id: appId,
+          group_id: Number(groupId),
+          scope: 'photos,manage'
+        });
+        if (!communityAuth.access_token) throw new Error('VK не выдал ключ сообщества.');
+        groups.push({group_id: groupId, access_token: communityAuth.access_token});
+      }
+      const data = await postJson('/api/vk-mini-app/connect', {
+        launch_params: window.location.search,
+        groups: groups
       });
+      form.hidden = true;
+      showStatus('Подключено сообществ: ' + data.count + '. Вернитесь в контент-план.', false);
+    } catch (error) {
+      showStatus(error.message || 'Не удалось сохранить сообщества.', true);
+    }
   });
 })();
 </script>
