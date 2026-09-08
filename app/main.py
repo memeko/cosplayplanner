@@ -26821,11 +26821,13 @@ async def vk_mini_app_posts(request: Request, db: Session = Depends(get_db)) -> 
         if not content_post_targets_vk(post):
             continue
         photo_refs = [str(item).strip() for item in as_list(post.telegram_photos_json) if str(item).strip()]
+        publish_datetime = content_post_publish_datetime(post)
         result.append(
             {
                 "id": post.id,
                 "title": str(post.title or "Публикация"),
                 "publish_date": post.publish_date.isoformat() if post.publish_date else "",
+                "publish_at": int(publish_datetime.timestamp()) if publish_datetime else None,
                 "message": build_content_post_plain_message(
                     post,
                     normalize_content_rubric_tag(post.rubric_tag)
@@ -26868,6 +26870,81 @@ def vk_mini_app_post_photo(
             "Cache-Control": "private, no-store",
             "Content-Disposition": f'inline; filename="{safe_filename}"',
         },
+    )
+
+
+def validate_vk_photo_upload_url(value: str | None) -> str:
+    upload_url = str(value or "").strip()
+    try:
+        parsed = urlparse(upload_url)
+        hostname = str(parsed.hostname or "").casefold().rstrip(".")
+        port = parsed.port
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="VK вернул некорректный адрес загрузки.") from exc
+    allowed_suffixes = ("vk.com", "vk.ru", "userapi.com")
+    allowed_host = any(hostname == suffix or hostname.endswith(f".{suffix}") for suffix in allowed_suffixes)
+    if parsed.scheme != "https" or not allowed_host or parsed.username or parsed.password or port not in (None, 443):
+        raise HTTPException(status_code=400, detail="Адрес загрузки не принадлежит VK.")
+    return upload_url
+
+
+@app.post("/api/vk-mini-app/upload-photo")
+async def vk_mini_app_upload_photo(request: Request, db: Session = Depends(get_db)) -> JSONResponse:
+    payload = await request.json()
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Некорректный запрос.")
+    user = vk_mini_app_user(db, str(payload.get("launch_params") or ""))
+    try:
+        post_id = int(payload.get("post_id"))
+        photo_index = int(payload.get("photo_index"))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="Некорректная фотография.") from exc
+    post = db.execute(
+        select(ContentPlanPost).where(
+            ContentPlanPost.id == post_id,
+            ContentPlanPost.user_id == user.id,
+            ContentPlanPost.vk_published_at.is_(None),
+        )
+    ).scalar_one_or_none()
+    if not post or not content_post_targets_vk(post):
+        raise HTTPException(status_code=404, detail="Публикация не найдена или уже опубликована.")
+    photo_refs = [str(item).strip() for item in as_list(post.telegram_photos_json) if str(item).strip()]
+    if photo_index < 0 or photo_index >= len(photo_refs):
+        raise HTTPException(status_code=404, detail="Фотография не найдена.")
+    upload_url = validate_vk_photo_upload_url(payload.get("upload_url"))
+    try:
+        filename, file_bytes, media_type = load_content_photo_binary(photo_refs[photo_index])
+        upload_response = requests.post(
+            upload_url,
+            files={"photo": (filename, file_bytes, media_type)},
+            timeout=max(20, HTTP_TIMEOUT_SECONDS * 3),
+            allow_redirects=False,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except requests.RequestException as exc:
+        raise HTTPException(status_code=502, detail="Сервер VK не принял фотографию.") from exc
+    if upload_response.status_code != 200:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Сервер загрузки VK вернул HTTP {upload_response.status_code}.",
+        )
+    try:
+        upload_result = upload_response.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=502, detail="Сервер VK вернул некорректный ответ.") from exc
+    if not isinstance(upload_result, dict):
+        raise HTTPException(status_code=502, detail="Сервер VK вернул неожиданный ответ.")
+    if upload_result.get("error"):
+        raise HTTPException(status_code=502, detail=f"VK не загрузил фотографию: {upload_result['error']}")
+    if not upload_result.get("photo") or not upload_result.get("hash") or upload_result.get("server") is None:
+        raise HTTPException(status_code=502, detail="VK не вернул данные загруженной фотографии.")
+    return JSONResponse(
+        {
+            "server": upload_result.get("server"),
+            "photo": upload_result.get("photo"),
+            "hash": upload_result.get("hash"),
+        }
     )
 
 

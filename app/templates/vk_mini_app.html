@@ -146,15 +146,11 @@
   async function uploadPhoto(post, index, groupId) {
     const server = await vkMethod("photos.getWallUploadServer", {group_id: groupId});
     if (!server.upload_url) throw new Error("VK не вернул сервер загрузки фотографии.");
-    const photoUrl = `/api/vk-mini-app/posts/${post.id}/photos/${index}?launch_params=${encodeURIComponent(launchParams)}`;
-    const source = await fetch(photoUrl);
-    if (!source.ok) throw new Error(`Не удалось получить фотографию ${index + 1} из планера.`);
-    const blob = await source.blob();
-    const form = new FormData();
-    form.append("photo", blob, `photo-${index + 1}.${blob.type.includes("png") ? "png" : "jpg"}`);
-    const uploaded = await fetch(server.upload_url, {method: "POST", body: form});
-    const uploadData = await uploaded.json().catch(() => ({}));
-    if (!uploaded.ok || !uploadData.photo || !uploadData.hash) throw new Error(`VK не принял фотографию ${index + 1}.`);
+    const uploadData = await backend("/api/vk-mini-app/upload-photo", {
+      post_id: post.id,
+      photo_index: index,
+      upload_url: server.upload_url
+    });
     const saved = await vkMethod("photos.saveWallPhoto", {
       group_id: groupId,
       photo: typeof uploadData.photo === "string" ? uploadData.photo : JSON.stringify(uploadData.photo),
@@ -182,19 +178,24 @@
           attachments.push(await uploadPhoto(post, index, groupId));
         }
         setStatus(`${checkbox.dataset.title}: публикую запись…`);
-        const published = await vkMethod("wall.post", {
+        const wallParams = {
           owner_id: -groupId,
           from_group: 1,
           signed: 0,
           message: post.message || "",
           attachments: attachments.join(",")
-        });
+        };
+        if (post.publish_at && post.publish_at > Math.floor(Date.now() / 1000) + 60) {
+          wallParams.publish_date = post.publish_at;
+        }
+        const published = await vkMethod("wall.post", wallParams);
         const vkPostId = String(published?.post_id || published?.id || "");
         if (!vkPostId) throw new Error("VK не вернул номер опубликованной записи.");
         results.push({group_id: String(groupId), title: checkbox.dataset.title, post_id: vkPostId});
       }
       await backend("/api/vk-mini-app/mark-published", {post_id: post.id, results});
-      setStatus(`Опубликовано в сообществах: ${results.length}. Фотографии прикреплены как фото VK.`, "success");
+      const delayed = post.publish_at && post.publish_at > Math.floor(Date.now() / 1000);
+      setStatus(`${delayed ? "Создана отложенная запись" : "Опубликовано"} в сообществах: ${results.length}. Фотографии прикреплены как фото VK.`, "success");
       await loadData();
     } catch (error) {
       if (results.length) {
