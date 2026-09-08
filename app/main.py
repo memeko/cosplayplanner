@@ -262,7 +262,14 @@ async def apply_transport_security_headers(request: Request, call_next: Callable
     if is_https_request and hsts_enabled:
         response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
-    response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
+    if request.url.path == "/vk-mini-app":
+        if "X-Frame-Options" in response.headers:
+            del response.headers["X-Frame-Options"]
+        response.headers["Content-Security-Policy"] = (
+            "frame-ancestors https://vk.ru https://*.vk.ru https://vk.com https://*.vk.com"
+        )
+    else:
+        response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
     response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
     response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
     return response
