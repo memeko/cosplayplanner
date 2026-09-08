@@ -556,8 +556,7 @@
 
     <div class="content-platform-panel" data-platform-panel="vk" hidden>
       <p class="muted">
-        Для каждого VK-сообщества здесь сохраняется пара «адрес сообщества — токен доступа»,
-        и посты уходят только в отмеченные вами сообщества.
+        VK публикуется вручную через мини-приложение «Коспи публикует». Оно покажет сообщества, которыми вы управляете, и прикрепит изображения как нативные фотографии VK.
       </p>
       <div class="notes-block telegram-editor-note">
         VK не поддерживает расширенную разметку шрифта для таких постов: полужирный, курсив, подчёркивание, зачёркивание, спойлеры и premium-эмодзи в VK не рендерятся так же, как в Telegram. Для VK используется plain-text версия вашего текста.
@@ -565,41 +564,15 @@
       <details class="top-offset">
         <summary>Как подключить VK</summary>
         <ol class="notes-list top-offset">
-          <li>Откройте своё сообщество VK и перейдите в «Управление» → «Дополнительно» → «Работа с API».</li>
-          <li>Создайте ключ доступа сообщества с правами на стену и документы. Отдельное приложение VK и ИНН для этого не нужны.</li>
-          <li>Скопируйте ключ и добавьте ниже строку вида «vk.ru/my_group — ключ_сообщества».</li>
-          <li>Для каждого сообщества создаётся и сохраняется свой ключ.</li>
-          <li>Из-за ограничений VK API изображения прикрепляются к записи как графические документы.</li>
-          <li>После сохранения посты с галочкой <strong>VK</strong> смогут публиковаться в выбранные сообщества вручную и по расписанию.</li>
+          <li>Войдите в Cosplay Planner через VK ID — так планер свяжет ваш аккаунт с мини-приложением.</li>
+          <li>В карточке поста отметьте соцсеть <strong>VK</strong>, добавьте текст и фотографии, затем сохраните её.</li>
+          <li>Нажмите «Открыть VK Mini App» и внутри VK выберите «Предоставить доступ».</li>
+          <li>Выберите пост и одно или несколько сообществ, где у вас есть роль редактора или администратора.</li>
+          <li>Нажмите «Опубликовать с фотографиями». Токен остаётся внутри VK и не передаётся на сервер Cosplay Planner.</li>
+          <li>Из-за ограничений VK пользователь должен подтвердить публикацию вручную; автопубликация VK по времени недоступна.</li>
         </ol>
       </details>
-      {% if not content_can_manage_connections %}
-        <div class="notes-block telegram-editor-note top-offset">
-          Настройки VK-сообществ меняет только владелец этого контент-плана.
-        </div>
-      {% else %}
-      <form method="post" action="/my-calendar/content/vk/connect" class="grid one-col top-offset">
-        <input type="hidden" name="content_scope" value="{{ content_scope }}" />
-        {% if content_owner_id %}<input type="hidden" name="content_owner_id" value="{{ content_owner_id }}" />{% endif %}
-        <label>
-          Сообщества VK и токены доступа
-          <textarea name="vk_groups_text" rows="6" placeholder="vk.ru/my_public — токен_доступа&#10;club123456 — токен_доступа&#10;Название — vk.ru/my_group — токен_доступа">{{ vk_settings.groups_text }}</textarea>
-          <small class="muted">По одному сообществу на строку. Ключ хранится в зашифрованном виде и используется только для публикации в указанное сообщество.</small>
-          {% if vk_settings_masked.groups_text %}
-            <small class="muted">Сейчас сохранено:
-{{ vk_settings_masked.groups_text }}</small>
-          {% endif %}
-        </label>
-        <div class="actions-inline">
-          <button type="submit" class="btn btn-accent">Сохранить VK</button>
-        </div>
-      </form>
-      {% if vk_content_connected %}
-        <form method="post" action="/my-calendar/content/vk/disconnect?{{ content_action_query }}" class="top-offset" onsubmit="return confirm('Удалить настройки VK-сообществ?');">
-          <button type="submit" class="btn btn-danger">Отключить VK-сообщества</button>
-        </form>
-      {% endif %}
-      {% endif %}
+      <a class="btn btn-accent top-offset" href="{{ vk_mini_app_url }}" target="_blank" rel="noreferrer">Открыть VK Mini App</a>
     </div>
 
     <div class="content-platform-panel" data-platform-panel="threads" hidden>
@@ -1089,10 +1062,10 @@
         </label>
       </div>
       <p class="muted" id="content_auto_publish_hint" {% if content_form.manual_publish_only %}hidden{% endif %}>
-        Если отмечены <strong>ТГ</strong>, <strong>VK</strong>, <strong>Pinterest</strong> и/или <strong>Threads</strong>, пост отправится автоматически по указанным дате и времени. Для <strong>RedNote</strong> в текущей версии сохраняется только ручной трекинг публикации без автопоста.
+        Если отмечены <strong>ТГ</strong>, <strong>Pinterest</strong> и/или <strong>Threads</strong>, пост отправится автоматически по указанным дате и времени. <strong>VK</strong> публикуется вручную через Mini App с нативными фотографиями; для <strong>RedNote</strong> сохраняется ручной трекинг.
       </p>
       <p class="muted" id="content_manual_publish_hint" data-force-manual="{{ 1 if content_form.manual_publish_only else 0 }}" {% if not content_form.manual_publish_only %}hidden{% endif %}>
-        Для совместных карточек автопубликация отключена. Даже при указанном времени публикация возможна только вручную кнопками «В Telegram», «В VK», «В Pinterest», «В Threads» и «В RedNote».
+        Для совместных карточек автопубликация отключена. VK всегда публикуется вручную через Mini App; остальные сети — соответствующими кнопками.
       </p>
       <div>
         <p class="muted">Telegram-каналы для публикации</p>
@@ -1116,25 +1089,7 @@
         {% endif %}
       </div>
       <div>
-        <p class="muted">VK-сообщества для публикации</p>
-        {% if vk_settings.groups %}
-          <div class="chips-wrap">
-            {% for group in vk_settings.groups %}
-              <label class="chip-check">
-                <input
-                  type="checkbox"
-                  name="vk_group_ids"
-                  value="{{ group.owner_id }}"
-                  {% if group.owner_id in content_form.vk_group_ids %}checked{% endif %}
-                />
-                {{ group.title or group.screen_name or group.owner_id }}
-              </label>
-            {% endfor %}
-          </div>
-          <small class="muted">Можно выбрать несколько сообществ: пост уйдет во все отмеченные сообщества VK.</small>
-        {% else %}
-          <p class="muted">Сначала добавьте VK-сообщества в блоке выше.</p>
-        {% endif %}
+        <p class="muted">VK-сообщества выбираются непосредственно в Mini App перед публикацией.</p>
       </div>
       <div>
         <p class="muted">Pinterest-доски для публикации</p>
@@ -1231,7 +1186,7 @@
             <button type="submit" class="btn" formaction="/my-calendar/content/{{ editing_content_post.id }}/telegram-publish?{{ content_action_query }}" formmethod="post">Опубликовать в Telegram</button>
           {% endif %}
           {% if vk_content_connected %}
-            <button type="submit" class="btn" formaction="/my-calendar/content/{{ editing_content_post.id }}/vk-publish?{{ content_action_query }}" formmethod="post">Опубликовать в VK</button>
+            <a class="btn" href="{{ vk_mini_app_url }}" target="_blank" rel="noreferrer">Опубликовать в VK Mini App</a>
           {% endif %}
           {% if pinterest_content_connected %}
             <button type="submit" class="btn" formaction="/my-calendar/content/{{ editing_content_post.id }}/pinterest-publish?{{ content_action_query }}" formmethod="post">Опубликовать в Pinterest</button>
@@ -1374,9 +1329,7 @@
                   </form>
                 {% endif %}
                 {% if vk_content_connected %}
-                  <form method="post" action="/my-calendar/content/{{ item.post_id }}/vk-publish?{{ content_action_query }}">
-                    <button type="submit" class="btn btn-small">В VK</button>
-                  </form>
+                  <a class="btn btn-small" href="{{ vk_mini_app_url }}" target="_blank" rel="noreferrer">В VK Mini App</a>
                 {% endif %}
                 {% if pinterest_content_connected %}
                   <form method="post" action="/my-calendar/content/{{ item.post_id }}/pinterest-publish?{{ content_action_query }}">

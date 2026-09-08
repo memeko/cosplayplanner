@@ -38,7 +38,7 @@ import requests
 from cryptography.fernet import Fernet, InvalidToken
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.exception_handlers import http_exception_handler
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from itsdangerous import BadSignature, TimestampSigner
@@ -262,7 +262,14 @@ async def apply_transport_security_headers(request: Request, call_next: Callable
     if is_https_request and hsts_enabled:
         response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
-    response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
+    if request.url.path == "/vk-mini-app":
+        if "X-Frame-Options" in response.headers:
+            del response.headers["X-Frame-Options"]
+        response.headers["Content-Security-Policy"] = (
+            "frame-ancestors https://vk.ru https://*.vk.ru https://vk.com https://*.vk.com"
+        )
+    else:
+        response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
     response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
     response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
     return response
@@ -770,6 +777,12 @@ YANDEX_REDIRECT_URI = (
     or f"{APP_BASE_URL}/auth/yandex/callback"
 ).strip()
 VK_API_VERSION = (os.getenv("VK_API_VERSION", "5.199") or "5.199").strip()
+VK_MINI_APP_ID = int(os.getenv("VK_MINI_APP_ID", "54760695") or "54760695")
+VK_MINI_APP_URL = (
+    os.getenv("VK_MINI_APP_URL", f"https://vk.ru/app{VK_MINI_APP_ID}")
+    or f"https://vk.ru/app{VK_MINI_APP_ID}"
+).strip()
+VK_MINI_APP_SECRET = (os.getenv("VK_MINI_APP_SECRET", "") or "").strip()
 VK_API_TOKEN = (os.getenv("VK_API_TOKEN", "") or os.getenv("VK_IMPORT_TOKEN", "") or "").strip()
 VK_IMPORT_ENABLED = bool(VK_API_TOKEN) and to_bool(os.getenv("VK_IMPORT_ENABLED", "1"))
 VK_IMPORT_WALL_DOMAIN = (os.getenv("VK_IMPORT_WALL_DOMAIN", "cosplay_teamm") or "cosplay_teamm").strip()
@@ -5125,10 +5138,10 @@ def save_content_plan_post_from_form(
         return False, "Текст для Telegram должен быть не длиннее 12000 символов."
     if (
         not manual_publish_only
-        and any(normalize_content_social_value(item).casefold() in {"тг", "vk", "pinterest", "threads"} for item in socials)
+        and any(normalize_content_social_value(item).casefold() in {"тг", "pinterest", "threads"} for item in socials)
         and not publish_time
     ):
-        return False, "Для автопубликации в Telegram, VK, Pinterest и Threads укажите время публикации."
+        return False, "Для автопубликации в Telegram, Pinterest и Threads укажите время публикации."
     if not manual_publish_only and any(normalize_content_social_value(item).casefold() == "тг" for item in socials):
         if not available_telegram_channels:
             return False, "Сначала добавьте хотя бы один Telegram-канал в настройках."
@@ -5137,14 +5150,6 @@ def save_content_plan_post_from_form(
                 selected_telegram_channel_ids = [available_telegram_channels[0]["chat_id"]]
             else:
                 return False, "Выберите хотя бы один Telegram-канал для публикации."
-    if not manual_publish_only and any(normalize_content_social_value(item).casefold() == "vk" for item in socials):
-        if not available_vk_groups:
-            return False, "Сначала добавьте хотя бы одно сообщество VK в настройках."
-        if not selected_vk_group_ids:
-            if len(available_vk_groups) == 1:
-                selected_vk_group_ids = [available_vk_groups[0]["owner_id"]]
-            else:
-                return False, "Выберите хотя бы одно сообщество VK для публикации."
     if not manual_publish_only and any(normalize_content_social_value(item).casefold() == "pinterest" for item in socials):
         if not available_pinterest_boards:
             return False, "Сначала подключите Pinterest и подтяните хотя бы одну доску."
@@ -6569,6 +6574,48 @@ def content_post_targets_telegram(post: ContentPlanPost) -> bool:
 
 def content_post_targets_vk(post: ContentPlanPost) -> bool:
     return any(normalize_content_social_value(item).casefold() == "vk" for item in as_list(post.socials_json))
+
+
+def verify_vk_mini_app_launch_params(value: str | None) -> str:
+    """Verify VK Mini Apps launch params and return the VK user id."""
+    if not VK_MINI_APP_SECRET:
+        raise HTTPException(status_code=503, detail="VK Mini App не настроено на сервере.")
+    raw_value = str(value or "").strip().lstrip("?")
+    parsed = parse_qs(raw_value, keep_blank_values=True)
+    received_sign = str((parsed.pop("sign", [""]) or [""])[0]).strip()
+    if not received_sign:
+        raise HTTPException(status_code=401, detail="Не найдена подпись запуска VK Mini App.")
+    signed_pairs = sorted(
+        (key, str((values or [""])[0]))
+        for key, values in parsed.items()
+        if key.startswith("vk_")
+    )
+    signed_value = urlencode(signed_pairs)
+    digest = hmac.new(
+        VK_MINI_APP_SECRET.encode("utf-8"),
+        signed_value.encode("utf-8"),
+        hashlib.sha256,
+    ).digest()
+    expected_sign = base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+    if not hmac.compare_digest(received_sign, expected_sign):
+        raise HTTPException(status_code=401, detail="Подпись запуска VK Mini App недействительна.")
+    vk_user_id = str((parsed.get("vk_user_id", [""]) or [""])[0]).strip()
+    if not vk_user_id.isdigit():
+        raise HTTPException(status_code=401, detail="VK не передал пользователя приложения.")
+    return vk_user_id
+
+
+def vk_mini_app_user(db: Session, launch_params: str | None) -> User:
+    vk_user_id = verify_vk_mini_app_launch_params(launch_params)
+    user = db.execute(select(User).where(User.vk_user_id == vk_user_id)).scalar_one_or_none()
+    if not user:
+        raise HTTPException(
+            status_code=403,
+            detail="Сначала войдите в Cosplay Planner через VK ID, затем снова откройте мини-приложение.",
+        )
+    if not user_has_content_plan_access(db, user):
+        raise HTTPException(status_code=403, detail="Контент-план недоступен для этого аккаунта.")
+    return user
 
 
 def content_post_targets_pinterest(post: ContentPlanPost) -> bool:
@@ -9701,7 +9748,9 @@ def dispatch_scheduled_content_posts() -> None:
             if content_post_manual_publish_only(post):
                 continue
             should_publish_telegram = content_post_targets_telegram(post) and post.telegram_published_at is None
-            should_publish_vk = content_post_targets_vk(post) and post.vk_published_at is None
+            # VK user tokens issued to a Mini App are device/IP-bound. VK posts are
+            # therefore published manually in the Mini App, never by this worker.
+            should_publish_vk = False
             should_publish_pinterest = content_post_targets_pinterest(post) and post.pinterest_published_at is None
             should_publish_threads = content_post_targets_threads(post) and post.threads_published_at is None
             if (
@@ -25348,7 +25397,8 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
         telegram_content_connected=bool(telegram_settings.get("bot_token") and telegram_channels),
         content_review_week_requested=bool(content_review_week_requested),
         content_telegram_weekly_review=content_telegram_weekly_review,
-        vk_content_connected=bool(vk_groups),
+        vk_content_connected=bool(VK_MINI_APP_URL),
+        vk_mini_app_url=VK_MINI_APP_URL,
         threads_content_connected=bool(threads_settings.get("publish_ready")),
         threads_content_account_connected=bool(threads_settings.get("connected")),
         threads_content_password_issue=bool(threads_settings.get("requires_password_refresh")),
@@ -26744,6 +26794,127 @@ def my_calendar_content_publish_telegram(post_id: int, request: Request, db: Ses
     return content_calendar_redirect(request, user, content_owner=content_owner)
 
 
+@app.get("/vk-mini-app", response_class=HTMLResponse)
+def vk_mini_app(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse(
+        request=request,
+        name="vk_mini_app.html",
+        context={
+            "vk_mini_app_id": VK_MINI_APP_ID,
+            "vk_api_version": VK_API_VERSION,
+        },
+    )
+
+
+@app.post("/api/vk-mini-app/posts")
+async def vk_mini_app_posts(request: Request, db: Session = Depends(get_db)) -> JSONResponse:
+    payload = await request.json()
+    launch_params = str(payload.get("launch_params") or "") if isinstance(payload, dict) else ""
+    user = vk_mini_app_user(db, launch_params)
+    posts = db.execute(
+        select(ContentPlanPost)
+        .where(ContentPlanPost.user_id == user.id, ContentPlanPost.vk_published_at.is_(None))
+        .order_by(ContentPlanPost.publish_date.asc(), ContentPlanPost.id.asc())
+    ).scalars().all()
+    result: list[dict[str, Any]] = []
+    for post in posts:
+        if not content_post_targets_vk(post):
+            continue
+        photo_refs = [str(item).strip() for item in as_list(post.telegram_photos_json) if str(item).strip()]
+        result.append(
+            {
+                "id": post.id,
+                "title": str(post.title or "Публикация"),
+                "publish_date": post.publish_date.isoformat() if post.publish_date else "",
+                "message": build_content_post_plain_message(
+                    post,
+                    normalize_content_rubric_tag(post.rubric_tag)
+                    or get_content_rubric_tags(db, user.id).get(post.rubric or "", ""),
+                ),
+                "photo_count": len(photo_refs),
+            }
+        )
+    return JSONResponse({"posts": result})
+
+
+@app.get("/api/vk-mini-app/posts/{post_id}/photos/{photo_index}")
+def vk_mini_app_post_photo(
+    post_id: int,
+    photo_index: int,
+    launch_params: str,
+    db: Session = Depends(get_db),
+) -> Response:
+    user = vk_mini_app_user(db, launch_params)
+    post = db.execute(
+        select(ContentPlanPost).where(
+            ContentPlanPost.id == post_id,
+            ContentPlanPost.user_id == user.id,
+        )
+    ).scalar_one_or_none()
+    if not post or not content_post_targets_vk(post):
+        raise HTTPException(status_code=404, detail="Публикация не найдена.")
+    photo_refs = [str(item).strip() for item in as_list(post.telegram_photos_json) if str(item).strip()]
+    if photo_index < 0 or photo_index >= len(photo_refs):
+        raise HTTPException(status_code=404, detail="Фотография не найдена.")
+    try:
+        filename, file_bytes, media_type = load_content_photo_binary(photo_refs[photo_index])
+    except RuntimeError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    safe_filename = re.sub(r"[^A-Za-z0-9._-]", "_", filename) or "photo.jpg"
+    return Response(
+        file_bytes,
+        media_type=media_type,
+        headers={
+            "Cache-Control": "private, no-store",
+            "Content-Disposition": f'inline; filename="{safe_filename}"',
+        },
+    )
+
+
+@app.post("/api/vk-mini-app/mark-published")
+async def vk_mini_app_mark_published(request: Request, db: Session = Depends(get_db)) -> JSONResponse:
+    payload = await request.json()
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Некорректный запрос.")
+    user = vk_mini_app_user(db, str(payload.get("launch_params") or ""))
+    try:
+        post_id = int(payload.get("post_id"))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="Некорректная публикация.") from exc
+    post = db.execute(
+        select(ContentPlanPost).where(
+            ContentPlanPost.id == post_id,
+            ContentPlanPost.user_id == user.id,
+            ContentPlanPost.vk_published_at.is_(None),
+        )
+    ).scalar_one_or_none()
+    if not post or not content_post_targets_vk(post):
+        raise HTTPException(status_code=404, detail="Публикация не найдена или уже опубликована.")
+    raw_results = payload.get("results")
+    results = raw_results if isinstance(raw_results, list) else []
+    normalized_results: list[dict[str, str]] = []
+    for item in results:
+        if not isinstance(item, dict):
+            continue
+        group_id = str(item.get("group_id") or "").strip()
+        vk_post_id = str(item.get("post_id") or "").strip()
+        if not group_id.isdigit() or not vk_post_id.isdigit():
+            continue
+        normalized_results.append(
+            {
+                "owner_id": f"-{group_id}",
+                "group_id": group_id,
+                "title": str(item.get("title") or f"Сообщество {group_id}")[:255],
+                "post_id": vk_post_id,
+            }
+        )
+    if not normalized_results:
+        raise HTTPException(status_code=400, detail="VK не вернул опубликованные записи.")
+    mark_content_post_vk_published(post, group_post_ids=normalized_results, rubric_tag=post.rubric_tag)
+    db.commit()
+    return JSONResponse({"ok": True})
+
+
 @app.post("/my-calendar/content/{post_id}/vk-publish")
 def my_calendar_content_publish_vk(post_id: int, request: Request, db: Session = Depends(get_db)):
     user = current_user(request, db)
@@ -26767,45 +26938,8 @@ def my_calendar_content_publish_vk(post_id: int, request: Request, db: Session =
         add_flash(request, "Пост контент-плана не найден.", "error")
         return content_calendar_redirect(request, user, content_owner=content_owner)
 
-    vk_settings = get_content_vk_settings(content_owner, db)
-    available_groups = list(vk_settings.get("groups") or [])
-    if not available_groups:
-        add_flash(request, "Сначала подключите VK-сообщества в настройках контент-плана.", "error")
-        return content_calendar_redirect(request, user, content_owner=content_owner)
-
-    selected_groups = resolve_content_vk_groups(as_list(post.vk_groups_json), available_groups)
-    if not selected_groups and len(available_groups) == 1:
-        selected_groups = [available_groups[0]]
-    if not selected_groups:
-        add_flash(request, "Выберите хотя бы одно сообщество VK в карточке поста.", "error")
-        return content_calendar_redirect(request, user, content_owner=content_owner)
-
-    try:
-        rubric_tag = normalize_content_rubric_tag(post.rubric_tag) or get_content_rubric_tags(db, content_owner.id).get(post.rubric or "", "")
-        sent_posts, send_errors = publish_content_post_to_vk_groups(
-            groups=selected_groups,
-            post=post,
-            rubric_tag=rubric_tag,
-        )
-    except Exception as exc:
-        add_flash(request, str(exc), "error")
-        return content_calendar_redirect(request, user, content_owner=content_owner)
-
-    if not sent_posts:
-        add_flash(request, send_errors[0] if send_errors else "Не удалось опубликовать пост в VK.", "error")
-        return content_calendar_redirect(request, user, content_owner=content_owner)
-
-    mark_content_post_vk_published(
-        post,
-        group_post_ids=sent_posts,
-        rubric_tag=rubric_tag,
-    )
-    db.commit()
-    success_text = f"Пост опубликован в VK-сообщества: {len(sent_posts)}."
-    if send_errors:
-        success_text = f"{success_text} Не удалось отправить в: {'; '.join(send_errors)}"
-    add_flash(request, success_text, "success")
-    return content_calendar_redirect(request, user, content_owner=content_owner)
+    add_flash(request, "VK публикует нативные фотографии через мини-приложение. Откройте его кнопкой «В VK».", "info")
+    return RedirectResponse(VK_MINI_APP_URL, status_code=303)
 
 
 @app.post("/my-calendar/content/{post_id}/pinterest-publish")

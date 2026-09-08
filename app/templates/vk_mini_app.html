@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Публикация в VK — Cosplay Planner</title>
+  <script src="https://unpkg.com/@vkontakte/vk-bridge/dist/browser.min.js"></script>
+  <style>
+    :root { color-scheme: light dark; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    body { margin: 0; background: #eef7fb; color: #16354a; }
+    main { max-width: 880px; margin: 0 auto; padding: 24px 18px 48px; }
+    .card { background: rgba(255,255,255,.9); border: 1px solid #b9dcea; border-radius: 20px; padding: 22px; box-shadow: 0 12px 32px rgba(36,109,145,.12); }
+    h1 { margin: 0 0 8px; font-size: clamp(26px, 5vw, 42px); }
+    p { line-height: 1.5; }
+    label { display: block; margin-top: 18px; font-weight: 650; }
+    select { width: 100%; margin-top: 7px; padding: 12px; border: 1px solid #9fcfe4; border-radius: 12px; background: white; color: #16354a; font-size: 16px; }
+    .groups { margin: 8px 0 20px; display: grid; gap: 8px; }
+    .group { display: flex; gap: 10px; align-items: center; margin: 0; padding: 11px; border: 1px solid #c8e3ee; border-radius: 12px; font-weight: 500; }
+    button { border: 0; border-radius: 12px; padding: 13px 18px; background: #2787f5; color: white; font-size: 16px; font-weight: 700; cursor: pointer; }
+    button:disabled { opacity: .55; cursor: wait; }
+    .secondary { background: #e5f2f8; color: #15557c; }
+    .actions { display: flex; flex-wrap: wrap; gap: 10px; }
+    .status { min-height: 24px; margin-top: 16px; white-space: pre-line; }
+    .muted { color: #55778a; }
+    .error { color: #b42318; }
+    .success { color: #18723c; }
+    @media (prefers-color-scheme: dark) {
+      body { background: #111b22; color: #e9f7ff; }
+      .card { background: #182832; border-color: #31596d; }
+      select { background: #12212a; color: #e9f7ff; border-color: #31596d; }
+      .group { border-color: #31596d; }
+      .muted { color: #a9c3d1; }
+      .secondary { background: #294653; color: #e9f7ff; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <section class="card">
+    <h1>Публикация в VK</h1>
+    <p class="muted">Выберите пост и сообщества. Фотографии загрузятся в VK как нативные фото, а токен останется внутри VK на вашем устройстве.</p>
+    <div class="actions">
+      <button type="button" id="accessButton">Предоставить доступ</button>
+      <button type="button" id="reloadButton" class="secondary" hidden>Обновить список</button>
+    </div>
+    <div id="workspace" hidden>
+      <label for="postSelect">Пост из контент-плана</label>
+      <select id="postSelect"></select>
+      <label>Ваши сообщества</label>
+      <div id="groups" class="groups"></div>
+      <button type="button" id="publishButton">Опубликовать с фотографиями</button>
+    </div>
+    <p id="status" class="status muted">Инициализация приложения…</p>
+  </section>
+</main>
+<script>
+(() => {
+  const APP_ID = {{ vk_mini_app_id | tojson }};
+  const API_VERSION = {{ vk_api_version | tojson }};
+  const launchParams = window.location.search.replace(/^\?/, "");
+  const accessButton = document.getElementById("accessButton");
+  const reloadButton = document.getElementById("reloadButton");
+  const publishButton = document.getElementById("publishButton");
+  const workspace = document.getElementById("workspace");
+  const postSelect = document.getElementById("postSelect");
+  const groupsBox = document.getElementById("groups");
+  const statusBox = document.getElementById("status");
+  let accessToken = "";
+  let posts = [];
+
+  function setStatus(message, kind = "muted") {
+    statusBox.textContent = message;
+    statusBox.className = `status ${kind}`;
+  }
+  function errorText(error, fallback) {
+    const data = error?.error_data || error?.detail?.error_data || {};
+    return error?.message || data.error_reason || data.error_description || data.error_msg || error?.error_type || fallback;
+  }
+  async function backend(path, body) {
+    const response = await fetch(path, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({...body, launch_params: launchParams})
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.detail || "Ошибка Cosplay Planner.");
+    return data;
+  }
+  async function vkMethod(method, params = {}) {
+    const result = await vkBridge.send("VKWebAppCallAPIMethod", {
+      method,
+      params: {...params, access_token: accessToken, v: API_VERSION}
+    });
+    if (result?.response === undefined) throw new Error(`VK не вернул ответ для ${method}.`);
+    return result.response;
+  }
+  function renderPosts() {
+    postSelect.innerHTML = "";
+    for (const post of posts) {
+      const option = document.createElement("option");
+      option.value = String(post.id);
+      option.textContent = `${post.publish_date ? post.publish_date + " — " : ""}${post.title} · фото: ${post.photo_count}`;
+      postSelect.appendChild(option);
+    }
+  }
+  function renderGroups(items) {
+    groupsBox.innerHTML = "";
+    for (const group of items) {
+      const label = document.createElement("label");
+      label.className = "group";
+      const input = document.createElement("input");
+      input.type = "checkbox";
+      input.value = String(group.id);
+      input.dataset.title = group.name || `Сообщество ${group.id}`;
+      label.append(input, document.createTextNode(input.dataset.title));
+      groupsBox.appendChild(label);
+    }
+  }
+  async function loadData() {
+    setStatus("Загружаю контент-план и сообщества…");
+    const [postData, groupData] = await Promise.all([
+      backend("/api/vk-mini-app/posts", {}),
+      vkMethod("groups.get", {filter: "editor", extended: 1, count: 1000})
+    ]);
+    posts = postData.posts || [];
+    renderPosts();
+    renderGroups(groupData.items || []);
+    workspace.hidden = false;
+    reloadButton.hidden = false;
+    publishButton.disabled = !posts.length;
+    setStatus(posts.length ? "Готово. Выберите пост и сообщества." : "В плане нет неопубликованных постов для VK.");
+  }
+  async function requestAccess() {
+    accessButton.disabled = true;
+    try {
+      const auth = await vkBridge.send("VKWebAppGetAuthToken", {app_id: APP_ID, scope: "groups,wall,photos"});
+      accessToken = auth.access_token || "";
+      if (!accessToken) throw new Error("VK не выдал токен доступа.");
+      accessButton.hidden = true;
+      await loadData();
+    } catch (error) {
+      setStatus(errorText(error, "Не удалось получить доступ VK."), "error");
+      accessButton.disabled = false;
+    }
+  }
+  async function uploadPhoto(post, index, groupId) {
+    const server = await vkMethod("photos.getWallUploadServer", {group_id: groupId});
+    if (!server.upload_url) throw new Error("VK не вернул сервер загрузки фотографии.");
+    const photoUrl = `/api/vk-mini-app/posts/${post.id}/photos/${index}?launch_params=${encodeURIComponent(launchParams)}`;
+    const source = await fetch(photoUrl);
+    if (!source.ok) throw new Error(`Не удалось получить фотографию ${index + 1} из планера.`);
+    const blob = await source.blob();
+    const form = new FormData();
+    form.append("photo", blob, `photo-${index + 1}.${blob.type.includes("png") ? "png" : "jpg"}`);
+    const uploaded = await fetch(server.upload_url, {method: "POST", body: form});
+    const uploadData = await uploaded.json().catch(() => ({}));
+    if (!uploaded.ok || !uploadData.photo || !uploadData.hash) throw new Error(`VK не принял фотографию ${index + 1}.`);
+    const saved = await vkMethod("photos.saveWallPhoto", {
+      group_id: groupId,
+      photo: typeof uploadData.photo === "string" ? uploadData.photo : JSON.stringify(uploadData.photo),
+      server: uploadData.server,
+      hash: uploadData.hash
+    });
+    const item = Array.isArray(saved) ? saved[0] : saved;
+    if (!item?.owner_id || !item?.id) throw new Error(`VK не сохранил фотографию ${index + 1}.`);
+    return `photo${item.owner_id}_${item.id}${item.access_key ? "_" + item.access_key : ""}`;
+  }
+  async function publish() {
+    const post = posts.find(item => String(item.id) === postSelect.value);
+    const selected = [...groupsBox.querySelectorAll("input:checked")];
+    if (!post) return setStatus("Выберите пост.", "error");
+    if (!selected.length) return setStatus("Выберите хотя бы одно сообщество.", "error");
+    publishButton.disabled = true;
+    const results = [];
+    try {
+      for (let groupIndex = 0; groupIndex < selected.length; groupIndex += 1) {
+        const checkbox = selected[groupIndex];
+        const groupId = Number(checkbox.value);
+        const attachments = [];
+        for (let index = 0; index < post.photo_count; index += 1) {
+          setStatus(`${checkbox.dataset.title}: загружаю фото ${index + 1} из ${post.photo_count}…`);
+          attachments.push(await uploadPhoto(post, index, groupId));
+        }
+        setStatus(`${checkbox.dataset.title}: публикую запись…`);
+        const published = await vkMethod("wall.post", {
+          owner_id: -groupId,
+          from_group: 1,
+          signed: 0,
+          message: post.message || "",
+          attachments: attachments.join(",")
+        });
+        const vkPostId = String(published?.post_id || published?.id || "");
+        if (!vkPostId) throw new Error("VK не вернул номер опубликованной записи.");
+        results.push({group_id: String(groupId), title: checkbox.dataset.title, post_id: vkPostId});
+      }
+      await backend("/api/vk-mini-app/mark-published", {post_id: post.id, results});
+      setStatus(`Опубликовано в сообществах: ${results.length}. Фотографии прикреплены как фото VK.`, "success");
+      await loadData();
+    } catch (error) {
+      if (results.length) {
+        try {
+          await backend("/api/vk-mini-app/mark-published", {post_id: post.id, results});
+          setStatus(`Частично опубликовано (${results.length}). ${errorText(error, "Следующее сообщество вернуло ошибку.")}`, "error");
+        } catch (markError) {
+          setStatus(`${errorText(error, "Публикация прервана.")} ${errorText(markError, "Не удалось записать результат в планер.")}`, "error");
+        }
+      } else {
+        setStatus(errorText(error, "Публикация не удалась."), "error");
+      }
+    } finally {
+      publishButton.disabled = false;
+    }
+  }
+
+  accessButton.addEventListener("click", requestAccess);
+  reloadButton.addEventListener("click", loadData);
+  publishButton.addEventListener("click", publish);
+  vkBridge.send("VKWebAppInit")
+    .then(() => setStatus("Приложение готово. Нажмите «Предоставить доступ»."))
+    .catch(error => setStatus(errorText(error, "VK Mini App не инициализировано."), "error"));
+})();
+</script>
+</body>
+</html>
