@@ -787,9 +787,9 @@ RAF_PAGE_TITLES = [
     "Календарь_2026_сентябрь-декабрь",
 ]
 RAF_PAGE_URLS = [
-    "https://vk.com/pages?hash=bf2fe57dc20023910b&oid=-22664912&p=Календарь_2026_январь-май",
-    "https://vk.com/pages?hash=bf2fe57dc20023910b&oid=-22664912&p=Календарь_2026_июнь-август",
-    "https://vk.com/pages?hash=bf2fe57dc20023910b&oid=-22664912&p=Календарь_2026_сентябрь-декабрь",
+    "https://vk.ru/pages?hash=bf2fe57dc20023910b&oid=-22664912&p=Календарь_2026_январь-май",
+    "https://vk.ru/pages?hash=bf2fe57dc20023910b&oid=-22664912&p=Календарь_2026_июнь-август",
+    "https://vk.ru/pages?hash=bf2fe57dc20023910b&oid=-22664912&p=Календарь_2026_сентябрь-декабрь",
 ]
 MASTER_IMPORT_INTERVAL_HOURS = max(1, min(24, int(os.getenv("MASTER_IMPORT_INTERVAL_HOURS", "12") or "12")))
 RAF_IMPORT_INTERVAL_HOURS = max(1, min(72, int(os.getenv("RAF_IMPORT_INTERVAL_HOURS", "24") or "24")))
@@ -2778,7 +2778,7 @@ def build_profile_social_url(field_key: str, value: str | None) -> str:
     if field_key in {"telegram_channel", "telegram"} and re.fullmatch(r"[A-Za-z0-9_]{3,64}", username_like):
         return f"https://t.me/{username_like}"
     if field_key in {"vk_public", "vk"} and re.fullmatch(r"[A-Za-z0-9_.-]{2,64}", username_like):
-        return f"https://vk.com/{username_like}"
+        return f"https://vk.ru/{username_like}"
     if field_key == "x":
         x_like = username_like.removeprefix("x.com/").lstrip("/")
         if re.fullmatch(r"[A-Za-z0-9_]{1,64}", x_like):
@@ -7582,7 +7582,7 @@ def normalize_url_with_scheme(value: str | None) -> str:
         return f"{SITE_URL}{raw}"
     if looks_like_url(raw):
         return raw
-    if raw.lower().startswith(("www.", "t.me/", "telegram.me/", "vk.com/", "m.vk.com/")):
+    if raw.lower().startswith(("www.", "t.me/", "telegram.me/", "vk.ru/", "m.vk.ru/", "vk.com/", "m.vk.com/")):
         return f"https://{raw}"
     return raw
 
@@ -7600,7 +7600,7 @@ def classify_external_url(value: str | None) -> str:
     host = (parsed.netloc or "").lower()
     if "t.me" in host or "telegram.me" in host:
         return "telegram"
-    if host.endswith("vk.com"):
+    if host in {"vk.ru", "www.vk.ru", "m.vk.ru", "vk.com", "www.vk.com", "m.vk.com"}:
         return "vk"
     if host:
         return "site"
@@ -9915,7 +9915,7 @@ def vk_bot_api_call(method: str, params: dict[str, Any]) -> dict[str, Any]:
     payload["v"] = VK_API_VERSION
     try:
         response = requests.post(
-            f"https://api.vk.com/method/{method}",
+            f"https://api.vk.ru/method/{method}",
             data=payload,
             timeout=20,
         )
@@ -14565,7 +14565,28 @@ def normalize_vk_group_target(value: str | None) -> str:
     raw = (value or "").strip()
     if not raw:
         return ""
-    if raw.lower().startswith(("https://vk.com/", "http://vk.com/", "vk.com/")):
+    if raw.lower().startswith(
+        (
+            "https://vk.ru/",
+            "http://vk.ru/",
+            "vk.ru/",
+            "https://www.vk.ru/",
+            "http://www.vk.ru/",
+            "www.vk.ru/",
+            "https://m.vk.ru/",
+            "http://m.vk.ru/",
+            "m.vk.ru/",
+            "https://vk.com/",
+            "http://vk.com/",
+            "vk.com/",
+            "https://www.vk.com/",
+            "http://www.vk.com/",
+            "www.vk.com/",
+            "https://m.vk.com/",
+            "http://m.vk.com/",
+            "m.vk.com/",
+        )
+    ):
         normalized = build_external_url(raw)
         try:
             raw = (urlparse(normalized).path or "").strip("/")
@@ -14624,7 +14645,7 @@ def decode_content_vk_group_value(value: str) -> dict[str, str] | None:
     if owner_id != f"-{group_id}":
         owner_id = f"-{group_id}"
     if not title:
-        title = f"vk.com/{screen_name}" if screen_name else f"Сообщество {group_id}"
+        title = f"vk.ru/{screen_name}" if screen_name else f"Сообщество {group_id}"
     return {
         "title": title[:120],
         "group_id": group_id,
@@ -14676,7 +14697,7 @@ def vk_content_api_call(
     payload["v"] = VK_API_VERSION
     try:
         response = requests.post(
-            f"https://api.vk.com/method/{method}",
+            f"https://api.vk.ru/method/{method}",
             data=payload,
             timeout=max(10, HTTP_TIMEOUT_SECONDS * 2),
         )
@@ -14726,7 +14747,7 @@ def resolve_content_vk_group_entry(token: str, title: str, target: str) -> dict[
     if not group_id_value:
         raise RuntimeError(f"VK не нашёл сообщество «{target}».")
     screen_name = str(group.get("screen_name") or group.get("screenName") or "").strip()
-    resolved_title = title or str(group.get("name") or "").strip() or (f"vk.com/{screen_name}" if screen_name else "")
+    resolved_title = title or str(group.get("name") or "").strip() or (f"vk.ru/{screen_name}" if screen_name else "")
     if not resolved_title:
         resolved_title = f"Сообщество {group_id_value}"
     group_id = str(group_id_value)
@@ -14758,13 +14779,13 @@ def parse_content_vk_group_lines(raw_text: str) -> tuple[list[dict[str, str]], s
             token = " — ".join(parts[2:]).strip()
         if not group_raw or not token:
             return [], (
-                f"Строка {index}: используйте формат «vk.com/my_group — ключ_сообщества» "
-                "или «Название — vk.com/my_group — ключ_сообщества»."
+                f"Строка {index}: используйте формат «vk.ru/my_group — ключ_сообщества» "
+                "или «Название — vk.ru/my_group — ключ_сообщества»."
             )
         target = normalize_vk_group_target(group_raw)
         if not target:
             return [], (
-                f"Строка {index}: укажите сообщество VK в формате «Название — vk.com/my_group», "
+                f"Строка {index}: укажите сообщество VK в формате «Название — vk.ru/my_group», "
                 "«Название — club123456» или просто «my_group»."
             )
         try:
@@ -14787,7 +14808,7 @@ def format_content_vk_group_lines(entries: list[dict[str, str]], *, masked_token
             continue
         screen_name = str(entry.get("screen_name") or "").strip()
         group_id = str(entry.get("group_id") or "").strip()
-        target = f"vk.com/{screen_name}" if screen_name else (f"club{group_id}" if group_id else owner_id)
+        target = f"vk.ru/{screen_name}" if screen_name else (f"club{group_id}" if group_id else owner_id)
         token = str(entry.get("api_token") or "").strip()
         token_label = mask_secret_value(token) if masked_tokens else token
         title = str(entry.get("title") or "").strip()
@@ -31207,7 +31228,7 @@ def vk_api_call(method: str, params: dict[str, Any]) -> dict[str, Any]:
 
     try:
         response = requests.get(
-            f"https://api.vk.com/method/{method}",
+            f"https://api.vk.ru/method/{method}",
             params=query,
             timeout=max(10, HTTP_TIMEOUT_SECONDS * 2),
         )
@@ -31881,7 +31902,7 @@ def import_cosplays_studio_articles(db: Session, *, since_date: date, fetch_coun
             continue
 
         external_id = f"wall{int(owner_id)}_{int(post_id)}"
-        post_url = f"https://vk.com/{external_id}"
+        post_url = f"https://vk.ru/{external_id}"
         if external_id in existing_external_ids or post_url in existing_import_urls:
             skipped_existing += 1
             continue
@@ -31994,7 +32015,7 @@ def import_cosplay_team_masters(db: Session, *, since_date: date, fetch_count: i
             continue
 
         external_id = f"wall{int(owner_id)}_{int(post_id)}"
-        post_url = f"https://vk.com/{external_id}"
+        post_url = f"https://vk.ru/{external_id}"
         if external_id in existing_external_ids or post_url in existing_import_urls:
             skipped += 1
             continue
@@ -32175,7 +32196,7 @@ def parse_raf_events_from_page_html(page_html: str, page_title: str) -> list[dic
         url_match = re.search(r'href=["\']([^"\']+)["\']', entry_value, flags=re.IGNORECASE)
         event_url = html.unescape(url_match.group(1).strip()) if url_match else ""
         if event_url.startswith("/"):
-            event_url = f"https://vk.com{event_url}"
+            event_url = f"https://vk.ru{event_url}"
 
         text_value = re.sub(r"<br\s*/?>", "\n", entry_value, flags=re.IGNORECASE)
         text_value = re.sub(r"<[^>]+>", " ", text_value)
