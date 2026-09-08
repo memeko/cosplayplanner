@@ -538,6 +538,8 @@ CALDAV_LAST_SYNC_GROUP = "caldav_last_sync"
 CALDAV_IMPORT_MARKER = "[caldav-sync]"
 CONTENT_VK_TOKEN_GROUP = "content_vk_api_token"
 CONTENT_VK_GROUP_GROUP = "content_vk_group"
+VK_MINI_APP_ID = int(os.getenv("VK_MINI_APP_ID", "54507339") or "54507339")
+VK_MINI_APP_URL = (os.getenv("VK_MINI_APP_URL", f"https://vk.ru/app{VK_MINI_APP_ID}") or "").strip()
 CONTENT_PINTEREST_ACCESS_TOKEN_GROUP = "content_pinterest_access_token"
 CONTENT_PINTEREST_REFRESH_TOKEN_GROUP = "content_pinterest_refresh_token"
 CONTENT_PINTEREST_SCOPE_GROUP = "content_pinterest_scope"
@@ -14667,18 +14669,25 @@ def format_vk_content_api_error(method: str, error_payload: dict[str, Any]) -> s
     publish_methods = {"wall.post", "photos.getWallUploadServer", "photos.saveWallPhoto"}
     if error_code == 5:
         return (
-            f"{error_text}. Ключ VK недействителен или истёк. "
-            "Сгенерируйте новый ключ доступа сообщества и сохраните его в настройках."
+            f"{error_text}. Токен VK недействителен или истёк. "
+            "Получите новый токен доступа и сохраните его в настройках."
         )
     if error_code in {15, 200} and method in publish_methods:
         return (
-            f"{error_text}. Проверьте, что ключ выдан именно для этого сообщества, "
-            "у него есть права «стена» и «фотографии», а у владельца ключа в этом сообществе роль не ниже редактора."
+            f"{error_text}. Проверьте права токена и убедитесь, что его владелец "
+            "имеет в этом сообществе роль не ниже редактора."
+        )
+    if error_code == 27 and method in {"photos.getWallUploadServer", "photos.saveWallPhoto"}:
+        return (
+            f"{error_text}. Ключ сообщества может быть действительным, но VK не разрешает этим типом ключа "
+            "загружать фотографии на стену. Для постов с изображениями нужен пользовательский токен VK "
+            "с правами «стена» и «фотографии»; его владелец должен иметь в сообществе роль не ниже редактора. "
+            "Ключ сообщества можно использовать только для публикаций без изображений."
         )
     if error_code == 27:
         return (
             f"{error_text}. Метод недоступен для текущего типа авторизации. "
-            "Для публикации в сообщество используйте ключ доступа сообщества (раздел «Работа с API» в настройках сообщества)."
+            "Для этого метода требуется другой тип токена VK."
         )
     return error_text
 
@@ -14733,6 +14742,34 @@ def extract_vk_group_list(payload: Any) -> list[dict[str, Any]]:
     return []
 
 
+def available_vk_groups_for_user_token(token: str) -> tuple[str, list[dict[str, str]]]:
+    users_payload = vk_content_api_call(token, "users.get")
+    users = users_payload if isinstance(users_payload, list) else []
+    vk_user_id = str(users[0].get("id") or "").strip() if users and isinstance(users[0], dict) else ""
+    if not vk_user_id:
+        raise RuntimeError("VK не вернул владельца токена.")
+
+    groups_payload = vk_content_api_call(
+        token,
+        "groups.get",
+        {"filter": "editor", "extended": 1, "count": 1000},
+    )
+    groups: list[dict[str, str]] = []
+    for item in extract_vk_group_list(groups_payload):
+        group_id = str(item.get("id") or "").strip()
+        if not group_id.isdigit():
+            continue
+        groups.append(
+            {
+                "group_id": group_id,
+                "owner_id": f"-{group_id}",
+                "screen_name": str(item.get("screen_name") or item.get("screenName") or "").strip(),
+                "title": str(item.get("name") or f"Сообщество {group_id}").strip()[:120],
+            }
+        )
+    return vk_user_id, groups
+
+
 def resolve_content_vk_group_entry(token: str, title: str, target: str) -> dict[str, str]:
     payload = vk_content_api_call(
         token,
@@ -14779,8 +14816,8 @@ def parse_content_vk_group_lines(raw_text: str) -> tuple[list[dict[str, str]], s
             token = " — ".join(parts[2:]).strip()
         if not group_raw or not token:
             return [], (
-                f"Строка {index}: используйте формат «vk.ru/my_group — ключ_сообщества» "
-                "или «Название — vk.ru/my_group — ключ_сообщества»."
+                f"Строка {index}: используйте формат «vk.ru/my_group — токен_доступа» "
+                "или «Название — vk.ru/my_group — токен_доступа»."
             )
         target = normalize_vk_group_target(group_raw)
         if not target:
@@ -25319,6 +25356,7 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
         content_copost_alias_options=user_alias_options,
         telegram_settings=telegram_settings,
         vk_settings=vk_settings,
+        vk_mini_app_url=VK_MINI_APP_URL,
         rednote_settings=rednote_settings,
         threads_settings=threads_settings,
         pinterest_settings=pinterest_settings,
@@ -26288,6 +26326,81 @@ async def my_calendar_content_telegram_disable_webhook(request: Request, db: Ses
     return redirect(f"/my-calendar?{urlencode(query_params)}#content-social-settings")
 
 
+@app.get("/vk-mini-app", response_class=HTMLResponse)
+def vk_mini_app(request: Request):
+    return template_response(
+        request,
+        "vk_mini_app.html",
+        user=None,
+        title="Подключение VK — Cosplay Planner",
+        vk_mini_app_id=VK_MINI_APP_ID,
+    )
+
+
+@app.post("/api/vk-mini-app/groups")
+async def vk_mini_app_groups(request: Request, db: Session = Depends(get_db)):
+    try:
+        payload = await request.json()
+    except ValueError:
+        payload = {}
+    token = str(payload.get("access_token") or "").strip() if isinstance(payload, dict) else ""
+    if not token:
+        return JSONResponse({"ok": False, "error": "VK не передал токен доступа."}, status_code=400)
+    try:
+        vk_user_id, groups = available_vk_groups_for_user_token(token)
+    except RuntimeError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    user = db.execute(select(User).where(User.vk_user_id == vk_user_id)).scalar_one_or_none()
+    if not user:
+        return JSONResponse(
+            {"ok": False, "error": "Сначала войдите в Cosplay Planner через этот же аккаунт VK."},
+            status_code=403,
+        )
+    return JSONResponse({"ok": True, "groups": groups})
+
+
+@app.post("/api/vk-mini-app/connect")
+async def vk_mini_app_connect(request: Request, db: Session = Depends(get_db)):
+    try:
+        payload = await request.json()
+    except ValueError:
+        payload = {}
+    token = str(payload.get("access_token") or "").strip() if isinstance(payload, dict) else ""
+    selected_ids = payload.get("group_ids") if isinstance(payload, dict) else []
+    selected = (
+        {str(value).strip() for value in selected_ids if str(value).strip().isdigit()}
+        if isinstance(selected_ids, list)
+        else set()
+    )
+    if not token or not selected:
+        return JSONResponse({"ok": False, "error": "Выберите хотя бы одно сообщество."}, status_code=400)
+    try:
+        vk_user_id, available_groups = available_vk_groups_for_user_token(token)
+    except RuntimeError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    user = db.execute(select(User).where(User.vk_user_id == vk_user_id)).scalar_one_or_none()
+    if not user:
+        return JSONResponse({"ok": False, "error": "Профиль VK не связан с Cosplay Planner."}, status_code=403)
+    chosen_groups = [group for group in available_groups if group["group_id"] in selected]
+    if not chosen_groups:
+        return JSONResponse(
+            {"ok": False, "error": "Выбранные сообщества недоступны этому аккаунту VK."}, status_code=403
+        )
+    replace_user_option_values(
+        db,
+        user.id,
+        CONTENT_VK_GROUP_GROUP,
+        [
+            encode_content_vk_group_value(
+                group["title"], group["group_id"], group["owner_id"], group["screen_name"], token
+            )
+            for group in chosen_groups
+        ],
+    )
+    db.commit()
+    return JSONResponse({"ok": True, "count": len(chosen_groups)})
+
+
 @app.post("/my-calendar/content/vk/connect")
 async def my_calendar_content_vk_connect(request: Request, db: Session = Depends(get_db)):
     user = current_user(request, db)
@@ -26318,7 +26431,7 @@ async def my_calendar_content_vk_connect(request: Request, db: Session = Depends
     else:
         group_entries = list(existing_groups)
         if not group_entries:
-            add_flash(request, "Добавьте хотя бы одну пару «сообщество — ключ сообщества» для VK.", "error")
+            add_flash(request, "Добавьте хотя бы одну пару «сообщество — токен доступа» для VK.", "error")
             return content_calendar_redirect(request, user, form=form, content_owner=content_owner)
 
     set_secret_user_option_value(db, content_owner.id, CONTENT_VK_TOKEN_GROUP, "")

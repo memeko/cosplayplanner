@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="card narrow-card">
+  <h1>Подключение сообществ VK</h1>
+  <p class="muted">Разрешите Cosplay Planner работать со стеной и фотографиями, затем выберите сообщества для публикации.</p>
+
+  <div id="vk-connect-start">
+    <button type="button" class="btn btn-accent" id="vk-authorize">Предоставить доступ</button>
+  </div>
+  <form id="vk-groups-form" class="grid one-col top-offset" hidden>
+    <div id="vk-groups-list"></div>
+    <button type="submit" class="btn btn-accent">Подключить выбранные сообщества</button>
+  </form>
+  <div id="vk-connect-status" class="notes-block top-offset" role="status" hidden></div>
+</section>
+
+<script src="https://unpkg.com/@vkontakte/vk-bridge/dist/browser.min.js"></script>
+<script>
+(function () {
+  const appId = {{ vk_mini_app_id|int }};
+  const authorizeButton = document.getElementById('vk-authorize');
+  const form = document.getElementById('vk-groups-form');
+  const list = document.getElementById('vk-groups-list');
+  const status = document.getElementById('vk-connect-status');
+  let accessToken = '';
+
+  function showStatus(message, isError) {
+    status.hidden = false;
+    status.textContent = message;
+    status.classList.toggle('error', Boolean(isError));
+  }
+
+  async function postJson(url, payload) {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload)
+    });
+    const data = await response.json();
+    if (!response.ok || !data.ok) throw new Error(data.error || 'Не удалось подключить VK.');
+    return data;
+  }
+
+  async function authorize() {
+    if (!window.vkBridge) throw new Error('Откройте эту страницу внутри приложения VK.');
+    await vkBridge.send('VKWebAppInit');
+    const auth = await vkBridge.send('VKWebAppGetAuthToken', {
+      app_id: appId,
+      scope: 'wall,photos,groups'
+    });
+    accessToken = auth.access_token || '';
+    if (!accessToken) throw new Error('VK не выдал токен доступа.');
+    const data = await postJson('/api/vk-mini-app/groups', {access_token: accessToken});
+    list.replaceChildren();
+    if (!data.groups.length) throw new Error('VK не нашёл сообществ, где вы редактор или администратор.');
+    data.groups.forEach(function (group) {
+      const label = document.createElement('label');
+      label.className = 'checkbox-row';
+      const input = document.createElement('input');
+      input.type = 'checkbox';
+      input.name = 'group_id';
+      input.value = group.group_id;
+      const text = document.createElement('span');
+      text.textContent = group.title;
+      label.append(input, text);
+      list.append(label);
+    });
+    form.hidden = false;
+    showStatus('Доступ получен. Выберите сообщества.', false);
+  }
+
+  authorizeButton.addEventListener('click', function () {
+    authorizeButton.disabled = true;
+    authorize().catch(function (error) {
+      showStatus(error.message || 'Не удалось получить доступ VK.', true);
+    }).finally(function () {
+      authorizeButton.disabled = false;
+    });
+  });
+
+  form.addEventListener('submit', function (event) {
+    event.preventDefault();
+    const groupIds = Array.from(form.querySelectorAll('input[name="group_id"]:checked')).map(function (item) {
+      return item.value;
+    });
+    postJson('/api/vk-mini-app/connect', {access_token: accessToken, group_ids: groupIds})
+      .then(function (data) {
+        form.hidden = true;
+        showStatus('Подключено сообществ: ' + data.count + '. Вернитесь в контент-план.', false);
+      })
+      .catch(function (error) {
+        showStatus(error.message || 'Не удалось сохранить сообщества.', true);
+      });
+  });
+})();
+</script>
+{% endblock %}
