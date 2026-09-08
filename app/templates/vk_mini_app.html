@@ -38,7 +38,7 @@
 <main>
   <section class="card">
     <h1>Публикация в VK</h1>
-    <p class="muted">Выберите пост и сообщества. Фотографии загрузятся в VK как нативные фото, а токен останется внутри VK на вашем устройстве.</p>
+    <p class="muted">Выберите пост и сообщества. Фотографии загрузятся в VK как нативные фото, а токен останется внутри VK на вашем устройстве. VK покажет окно подтверждения для каждого сообщества; запись публикуется сразу.</p>
     <div class="actions">
       <button type="button" id="accessButton">Предоставить доступ</button>
       <button type="button" id="reloadButton" class="secondary" hidden>Обновить список</button>
@@ -180,22 +180,17 @@
         setStatus(`${checkbox.dataset.title}: публикую запись…`);
         const wallParams = {
           owner_id: -groupId,
-          from_group: 1,
           signed: 0,
           message: post.message || "",
           attachments: attachments.join(",")
         };
-        if (post.publish_at && post.publish_at > Math.floor(Date.now() / 1000) + 60) {
-          wallParams.publish_date = post.publish_at;
-        }
-        const published = await vkMethod("wall.post", wallParams);
+        const published = await vkBridge.send("VKWebAppShowWallPostBox", wallParams);
         const vkPostId = String(published?.post_id || published?.id || "");
         if (!vkPostId) throw new Error("VK не вернул номер опубликованной записи.");
         results.push({group_id: String(groupId), title: checkbox.dataset.title, post_id: vkPostId});
       }
       await backend("/api/vk-mini-app/mark-published", {post_id: post.id, results});
-      const delayed = post.publish_at && post.publish_at > Math.floor(Date.now() / 1000);
-      setStatus(`${delayed ? "Создана отложенная запись" : "Опубликовано"} в сообществах: ${results.length}. Фотографии прикреплены как фото VK.`, "success");
+      setStatus(`Опубликовано в сообществах: ${results.length}. Фотографии прикреплены как фото VK.`, "success");
       await loadData();
     } catch (error) {
       if (results.length) {

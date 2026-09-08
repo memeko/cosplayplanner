@@ -26821,13 +26821,11 @@ async def vk_mini_app_posts(request: Request, db: Session = Depends(get_db)) -> 
         if not content_post_targets_vk(post):
             continue
         photo_refs = [str(item).strip() for item in as_list(post.telegram_photos_json) if str(item).strip()]
-        publish_datetime = content_post_publish_datetime(post)
         result.append(
             {
                 "id": post.id,
                 "title": str(post.title or "Публикация"),
                 "publish_date": post.publish_date.isoformat() if post.publish_date else "",
-                "publish_at": int(publish_datetime.timestamp()) if publish_datetime else None,
                 "message": build_content_post_plain_message(
                     post,
                     normalize_content_rubric_tag(post.rubric_tag)
