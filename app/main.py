@@ -5,7 +5,6 @@ import calendar
 import colorsys
 import asyncio
 import base64
-import importlib
 import hashlib
 import hmac
 import html
@@ -550,6 +549,10 @@ CONTENT_PINTEREST_REFRESH_TOKEN_GROUP = "content_pinterest_refresh_token"
 CONTENT_PINTEREST_SCOPE_GROUP = "content_pinterest_scope"
 CONTENT_PINTEREST_PROFILE_GROUP = "content_pinterest_profile"
 CONTENT_PINTEREST_BOARD_GROUP = "content_pinterest_board"
+CONTENT_THREADS_ACCESS_TOKEN_GROUP = "content_threads_access_token"
+CONTENT_THREADS_TOKEN_EXPIRES_AT_GROUP = "content_threads_token_expires_at"
+CONTENT_THREADS_SCOPE_GROUP = "content_threads_scope"
+# Legacy option names are retained only so OAuth connect/disconnect can erase them.
 CONTENT_THREADS_USERNAME_GROUP = "content_threads_username"
 CONTENT_THREADS_PASSWORD_GROUP = "content_threads_password"
 CONTENT_REDNOTE_PROFILE_GROUP = "content_rednote_profile"
@@ -668,10 +671,6 @@ CONTENT_AI_ASSISTANT_DAILY_LIMIT = max(
 MISTRAL_API_BASE_URL = str(os.getenv("MISTRAL_API_BASE_URL", "https://api.mistral.ai")).strip().rstrip("/")
 MISTRAL_API_KEY = str(os.getenv("MISTRAL_API_KEY", "")).strip()
 MISTRAL_FREE_MODEL = str(os.getenv("MISTRAL_FREE_MODEL", "codestral-2508")).strip() or "codestral-2508"
-THREADS_LIBRARY_UNAVAILABLE_TEXT = "Интеграция Threads сейчас временно недоступна на сервере. Попробуйте позже."
-THREADS_API_IMPORT_PATHS = ("threads_api.src.threads_api", "threads_api.threads_api", "threads_api")
-threads_api_class_cache: Any | None = None
-threads_api_import_error_message = ""
 try:
     SITE_TIMEZONE = ZoneInfo(os.getenv("SITE_TIMEZONE", "Europe/Moscow"))
 except ZoneInfoNotFoundError:
@@ -697,6 +696,18 @@ PINTEREST_OAUTH_SCOPES = [
 PINTEREST_OAUTH_STATE_MAX_AGE_SECONDS = max(
     300,
     min(86400, int(os.getenv("PINTEREST_OAUTH_STATE_MAX_AGE_SECONDS", "3600"))),
+)
+THREADS_APP_ID = str(os.getenv("THREADS_APP_ID", "")).strip()
+THREADS_APP_SECRET = str(os.getenv("THREADS_APP_SECRET", "")).strip()
+THREADS_REDIRECT_URI = str(
+    os.getenv("THREADS_REDIRECT_URI", f"{SITE_URL}/my-calendar/content/threads/oauth/callback")
+).strip()
+THREADS_API_URI = str(os.getenv("THREADS_API_URI", "https://graph.threads.net/v1.0")).strip().rstrip("/")
+THREADS_OAUTH_URI = str(os.getenv("THREADS_OAUTH_URI", "https://threads.net")).strip().rstrip("/")
+THREADS_OAUTH_SCOPES = ["threads_basic", "threads_content_publish"]
+THREADS_OAUTH_STATE_MAX_AGE_SECONDS = max(
+    300,
+    min(86400, int(os.getenv("THREADS_OAUTH_STATE_MAX_AGE_SECONDS", "3600"))),
 )
 
 COSPLAYER_COLLAB_OPTIONS = {
@@ -1837,6 +1848,7 @@ def apply_schema_migrations() -> None:
 def startup() -> None:
     Base.metadata.create_all(bind=engine)
     apply_schema_migrations()
+    purge_legacy_content_threads_credentials()
     start_telegram_worker()
     start_content_telegram_worker()
     start_vk_bot_worker()
@@ -5231,221 +5243,102 @@ def get_content_rednote_settings(user: User, db: Session) -> dict[str, Any]:
     }
 
 
-def normalize_threads_username(value: str | None) -> str:
-    cleaned = str(value or "").strip().lstrip("@")
-    if not cleaned:
-        return ""
-    if re.fullmatch(r"[A-Za-z0-9._]{1,30}", cleaned):
-        return cleaned
-    return ""
-
-
-def content_threads_storage_path() -> Path:
-    data_dir = Path("/data")
-    if data_dir.exists() and os.access(data_dir, os.W_OK):
-        path = (data_dir / "content-threads").resolve()
-        path.mkdir(parents=True, exist_ok=True)
-        return path
-
-    path = Path("./app/runtime/content-threads").resolve()
-    path.mkdir(parents=True, exist_ok=True)
-    return path
-
-
-def content_threads_settings_path(user_id: int) -> Path:
-    safe_user_id = max(1, int(user_id))
-    return content_threads_storage_path() / f"user-{safe_user_id}.settings.json"
-
-
-def content_threads_token_cache_path(user_id: int) -> Path:
-    safe_user_id = max(1, int(user_id))
-    return content_threads_storage_path() / f"user-{safe_user_id}.token"
-
-
-def content_threads_username_backup_path(user_id: int) -> Path:
-    safe_user_id = max(1, int(user_id))
-    return content_threads_storage_path() / f"user-{safe_user_id}.username"
-
-
-def content_threads_password_backup_path(user_id: int) -> Path:
-    safe_user_id = max(1, int(user_id))
-    return content_threads_storage_path() / f"user-{safe_user_id}.password"
-
-
-def read_content_threads_username_backup(user_id: int) -> str:
-    backup_path = content_threads_username_backup_path(user_id)
-    if not backup_path.exists() or not backup_path.is_file():
-        return ""
-    try:
-        return normalize_threads_username(backup_path.read_text(encoding="utf-8").strip())
-    except OSError:
-        return ""
-
-
-def read_content_threads_password_backup(user_id: int) -> str:
-    backup_path = content_threads_password_backup_path(user_id)
-    if not backup_path.exists() or not backup_path.is_file():
-        return ""
-    try:
-        return backup_path.read_text(encoding="utf-8").strip()
-    except OSError:
-        return ""
-
-
-def write_content_threads_password_backup(user_id: int, password: str | None) -> None:
-    backup_path = content_threads_password_backup_path(user_id)
-    normalized_password = str(password or "").strip()
-    if not normalized_password:
-        if backup_path.exists() and backup_path.is_file():
-            backup_path.unlink(missing_ok=True)
-        return
-    try:
-        descriptor = os.open(str(backup_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            handle.write(normalized_password)
-    except OSError:
-        return
-
-
-def write_content_threads_username_backup(user_id: int, username: str | None) -> None:
-    backup_path = content_threads_username_backup_path(user_id)
-    normalized_username = normalize_threads_username(username)
-    if not normalized_username:
-        if backup_path.exists() and backup_path.is_file():
-            backup_path.unlink(missing_ok=True)
-        return
-    try:
-        descriptor = os.open(str(backup_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            handle.write(normalized_username)
-    except OSError:
-        return
-
-
-def get_content_threads_password_state(db: Session, user_id: int) -> dict[str, Any]:
-    raw_secret = str(get_user_option_value(db, user_id, CONTENT_THREADS_PASSWORD_GROUP) or "").strip()
-    decrypted_password = decrypt_secret_option_value(raw_secret)
-    backup_password = read_content_threads_password_backup(user_id)
-    password_value = str(decrypted_password or backup_password or "").strip()
-    source = "db" if decrypted_password else "backup" if backup_password else ""
-    has_saved_password = bool(raw_secret or backup_password)
-    return {
-        "password": password_value,
-        "password_source": source,
-        "has_saved_password": has_saved_password,
-    }
-
-
 def clear_content_threads_cache_files(user_id: int) -> None:
-    for cache_path in [
-        content_threads_settings_path(user_id),
-        content_threads_token_cache_path(user_id),
-        content_threads_username_backup_path(user_id),
-        content_threads_password_backup_path(user_id),
-    ]:
+    safe_user_id = max(1, int(user_id))
+    roots = [Path("/data/content-threads"), Path("./app/runtime/content-threads").resolve()]
+    names = (
+        f"user-{safe_user_id}.settings.json",
+        f"user-{safe_user_id}.token",
+        f"user-{safe_user_id}.username",
+        f"user-{safe_user_id}.password",
+    )
+    for cache_path in (root / name for root in roots for name in names):
         if cache_path.exists() and cache_path.is_file():
             cache_path.unlink(missing_ok=True)
 
 
-def format_threads_api_import_error(exc: Exception | None) -> str:
-    if isinstance(exc, ModuleNotFoundError):
-        missing_name = str(getattr(exc, "name", "") or "").strip()
-        if missing_name.startswith("threads_api"):
-            return (
-                "Интеграция Threads недоступна: установлена несовместимая версия пакета threads-api"
-                " или пакет не установлен. Обновите зависимости приложения и перезапустите сервис."
+def threads_app_configured() -> bool:
+    return bool(THREADS_APP_ID and THREADS_APP_SECRET and THREADS_REDIRECT_URI)
+
+
+def build_threads_oauth_state(user_id: int) -> str:
+    timestamp = str(int(time.time()))
+    nonce = secrets.token_urlsafe(12)
+    payload = f"{int(user_id)}:{timestamp}:{nonce}"
+    signature = hmac.new(secret_key_hash, payload.encode("utf-8"), hashlib.sha256).hexdigest()
+    return base64.urlsafe_b64encode(f"{payload}:{signature}".encode("utf-8")).decode("ascii").rstrip("=")
+
+
+def verify_threads_oauth_state(state: str, user_id: int) -> bool:
+    raw_state = str(state or "").strip()
+    try:
+        decoded = base64.urlsafe_b64decode(f"{raw_state}{'=' * (-len(raw_state) % 4)}").decode("utf-8")
+    except (ValueError, UnicodeDecodeError):
+        return False
+    parts = decoded.split(":")
+    if len(parts) != 4:
+        return False
+    state_user_id, timestamp_text, nonce, signature = parts
+    if not state_user_id.isdigit() or int(state_user_id) != int(user_id) or not timestamp_text.isdigit() or not nonce:
+        return False
+    payload = f"{state_user_id}:{timestamp_text}:{nonce}"
+    expected = hmac.new(secret_key_hash, payload.encode("utf-8"), hashlib.sha256).hexdigest()
+    now_ts = int(time.time())
+    created_at = int(timestamp_text)
+    return (
+        hmac.compare_digest(signature, expected)
+        and created_at <= now_ts + 60
+        and now_ts - created_at <= THREADS_OAUTH_STATE_MAX_AGE_SECONDS
+    )
+
+
+def threads_authorize_url(state: str) -> str:
+    query = urlencode(
+        {
+            "client_id": THREADS_APP_ID,
+            "redirect_uri": THREADS_REDIRECT_URI,
+            "scope": ",".join(THREADS_OAUTH_SCOPES),
+            "response_type": "code",
+            "state": state,
+        }
+    )
+    return f"{THREADS_OAUTH_URI}/oauth/authorize?{query}"
+
+
+def clear_legacy_content_threads_credentials(db: Session, user_id: int) -> None:
+    set_user_option_value(db, user_id, CONTENT_THREADS_USERNAME_GROUP, "")
+    set_secret_user_option_value(db, user_id, CONTENT_THREADS_PASSWORD_GROUP, "")
+    clear_content_threads_cache_files(user_id)
+
+
+def purge_legacy_content_threads_credentials() -> None:
+    """Remove credentials created by the retired unofficial password integration."""
+    with SessionLocal() as db:
+        legacy_rows = db.execute(
+            select(UserOption).where(
+                UserOption.group.in_((CONTENT_THREADS_USERNAME_GROUP, CONTENT_THREADS_PASSWORD_GROUP))
             )
-        if missing_name:
-            return (
-                "Интеграция Threads недоступна: на сервере отсутствует зависимость "
-                f"{missing_name}. Обновите зависимости приложения и перезапустите сервис."
-            )
-    if isinstance(exc, RuntimeError):
-        message = str(exc or "").strip()
-        if message:
-            return f"Интеграция Threads недоступна: {message}"
-    if exc is not None:
-        return f"Интеграция Threads недоступна: ошибка загрузки библиотеки ({exc.__class__.__name__})."
-    return THREADS_LIBRARY_UNAVAILABLE_TEXT
-
-
-def resolve_threads_api_class() -> Any | None:
-    global threads_api_class_cache, threads_api_import_error_message
-    if threads_api_class_cache is not None:
-        return threads_api_class_cache
-
-    import_errors: list[Exception] = []
-    imported_modules = 0
-    for module_path in THREADS_API_IMPORT_PATHS:
-        try:
-            loaded_module = importlib.import_module(module_path)
-        except Exception as exc:
-            import_errors.append(exc)
-            continue
-        imported_modules += 1
-        candidate = getattr(loaded_module, "ThreadsAPI", None)
-        if candidate is None:
-            import_errors.append(RuntimeError("В установленной версии threads-api не найден класс ThreadsAPI."))
-            continue
-        threads_api_class_cache = candidate
-        threads_api_import_error_message = ""
-        return threads_api_class_cache
-
-    if imported_modules > 0 and not import_errors:
-        import_errors.append(RuntimeError("В установленной версии threads-api не найден класс ThreadsAPI."))
-
-    selected_error: Exception | None = None
-    for error in import_errors:
-        if isinstance(error, ModuleNotFoundError):
-            missing_name = str(getattr(error, "name", "") or "").strip()
-            if missing_name and not missing_name.startswith("threads_api"):
-                selected_error = error
-                break
-            continue
-        selected_error = error
-        break
-    if selected_error is None and import_errors:
-        selected_error = import_errors[0]
-
-    threads_api_import_error_message = format_threads_api_import_error(selected_error)
-    return None
-
-
-def content_threads_library_available() -> bool:
-    return resolve_threads_api_class() is not None
-
-
-def content_threads_library_error() -> str:
-    if resolve_threads_api_class() is not None:
-        return ""
-    return threads_api_import_error_message or THREADS_LIBRARY_UNAVAILABLE_TEXT
-
-
-def content_threads_error_text(default_text: str) -> str:
-    if default_text == THREADS_LIBRARY_UNAVAILABLE_TEXT:
-        return content_threads_library_error() or THREADS_LIBRARY_UNAVAILABLE_TEXT
-    # Не раскрываем внутренние ошибки библиотеки в UI.
-    return default_text
+        ).scalars().all()
+        affected_user_ids = {int(row.user_id) for row in legacy_rows}
+        for row in legacy_rows:
+            db.delete(row)
+        for user_id in affected_user_ids:
+            clear_content_threads_cache_files(user_id)
+        if legacy_rows:
+            db.commit()
 
 
 def get_content_threads_settings(user: User, db: Session) -> dict[str, Any]:
-    username_value = normalize_threads_username(get_user_option_value(db, user.id, CONTENT_THREADS_USERNAME_GROUP))
-    if not username_value:
-        username_value = read_content_threads_username_backup(user.id)
-    password_state = get_content_threads_password_state(db, user.id)
-    password_value = str(password_state.get("password") or "").strip()
-    has_saved_password = bool(password_state.get("has_saved_password"))
-    library_available = content_threads_library_available()
+    access_token = str(get_secret_user_option_value(db, user.id, CONTENT_THREADS_ACCESS_TOKEN_GROUP) or "").strip()
+    expires_at_text = str(get_user_option_value(db, user.id, CONTENT_THREADS_TOKEN_EXPIRES_AT_GROUP) or "").strip()
+    expires_at = int(expires_at_text) if expires_at_text.isdigit() else 0
+    configured = threads_app_configured()
     return {
-        "username": username_value,
-        "connected": bool(username_value),
-        "publish_ready": bool(username_value and password_value),
-        "password_saved": has_saved_password,
-        "password_readable": bool(password_value),
-        "password_source": str(password_state.get("password_source") or ""),
-        "requires_password_refresh": bool(username_value and has_saved_password and not password_value),
-        "library_available": library_available,
-        "library_error": content_threads_library_error() if not library_available else "",
+        "connected": bool(access_token),
+        "publish_ready": bool(access_token and configured),
+        "app_configured": configured,
+        "connect_url": "/my-calendar/content/threads/oauth/start",
+        "expires_at": expires_at,
     }
 
 
@@ -6767,93 +6660,118 @@ def first_content_post_external_link(post: ContentPlanPost) -> str:
     return ""
 
 
-def load_threads_api_class() -> Any:
-    threads_api_class = resolve_threads_api_class()
-    if threads_api_class is None:
-        raise RuntimeError(content_threads_library_error() or THREADS_LIBRARY_UNAVAILABLE_TEXT)
-    return threads_api_class
+class ThreadsUnauthorizedError(RuntimeError):
+    pass
 
 
-def classify_threads_auth_error(exc: Exception) -> tuple[str, str]:
-    class_name = str(exc.__class__.__name__ or "").strip()
-    raw_message = str(exc or "").strip()
-    signature = f"{class_name} {raw_message}".casefold()
-
-    if any(token in signature for token in ("challenge", "checkpoint", "2fa", "twofactor", "two-factor", "otp", "security code", "verification")):
-        return (
-            "challenge",
-            "Нужна дополнительная проверка входа (challenge/2FA). Подтвердите вход в приложении Threads/Instagram и попробуйте снова.",
-        )
-    if any(token in signature for token in ("rate", "too many", "throttl", "429", "slow down", "wait a few minutes")):
-        return (
-            "rate_limit",
-            "Слишком много попыток входа. Подождите 10-15 минут и попробуйте снова.",
-        )
-    if any(token in signature for token in ("timeout", "timed out", "connection", "network", "temporar", "proxy", "dns", "ssl")):
-        return (
-            "network",
-            "Проблема сети или временная недоступность Threads API. Попробуйте позже.",
-        )
-    if any(token in signature for token in ("password", "credential", "invalid", "unauthorized", "auth", "login")):
-        return (
-            "credentials",
-            "Проверьте логин и пароль. Логин должен быть без @, только латиница/цифры/./_.",
-        )
-    return (
-        "unknown",
-        "Неожиданная ошибка авторизации Threads API. Проверьте подключение позже.",
-    )
+def threads_response_error(response: requests.Response, payload: Any) -> str:
+    if isinstance(payload, dict):
+        error = payload.get("error")
+        if isinstance(error, dict):
+            message = str(error.get("message") or error.get("error_user_msg") or "").strip()
+            code = str(error.get("code") or "").strip()
+            if message:
+                return f"{message}{f' (код {code})' if code else ''}"
+        message = str(payload.get("message") or "").strip()
+        if message:
+            return message
+    return f"Threads API вернул HTTP {response.status_code}."
 
 
-async def authorize_content_threads_account(
+def threads_http_request(
+    method: str,
+    path: str,
     *,
-    user_id: int,
-    username: str,
-    password: str,
-) -> str:
-    normalized_username = normalize_threads_username(username)
-    if not normalized_username:
-        raise RuntimeError("Укажите корректный логин Threads (латиница, цифры, точка, подчёркивание).")
-    if not str(password or "").strip():
-        raise RuntimeError("Укажите пароль для входа в Threads.")
-
-    threads_api_class = load_threads_api_class()
-    api = threads_api_class(settings_path=str(content_threads_settings_path(user_id)))
-    resolved_username = normalized_username
+    params: dict[str, Any] | None = None,
+    api_base: str | None = None,
+) -> dict[str, Any]:
+    url = f"{(api_base or THREADS_API_URI).rstrip('/')}/{path.lstrip('/')}"
     try:
-        await api.login(
-            normalized_username,
-            str(password or "").strip(),
-            cached_token_path=str(content_threads_token_cache_path(user_id)),
+        response = requests.request(
+            method.upper(),
+            url,
+            params={key: value for key, value in (params or {}).items() if value not in (None, "")},
+            timeout=max(10, HTTP_TIMEOUT_SECONDS * 2),
         )
-        resolved_username = normalize_threads_username(getattr(api, "username", "") or normalized_username) or normalized_username
-        user_id_value = str(getattr(api, "user_id", "") or "").strip()
-        if user_id_value:
-            try:
-                profile = await api.get_user_profile(user_id_value)
-            except Exception:
-                profile = None
-            profile_username = normalize_threads_username(getattr(profile, "username", "") if profile else "")
-            if profile_username:
-                resolved_username = profile_username
-    except Exception as exc:
-        reason_code, reason_text = classify_threads_auth_error(exc)
-        print(
-            "[threads-auth] login-failed "
-            f"user={user_id} username={normalized_username} "
-            f"reason={reason_code} exc_class={exc.__class__.__name__} exc={exc}"
-        )
-        raise RuntimeError(
-            f"Не удалось авторизовать аккаунт Threads. {reason_text} "
-            f"(код: {reason_code})."
-        ) from exc
-    finally:
-        try:
-            await api.close_gracefully()
-        except Exception:
-            pass
+    except requests.RequestException as exc:
+        raise RuntimeError("Не удалось связаться с официальным Threads API.") from exc
+    try:
+        payload = response.json() if response.content else {}
+    except ValueError as exc:
+        raise RuntimeError("Threads API вернул некорректный ответ.") from exc
+    if response.status_code in {401, 403}:
+        raise ThreadsUnauthorizedError(threads_response_error(response, payload))
+    if not response.ok or not isinstance(payload, dict):
+        raise RuntimeError(threads_response_error(response, payload))
+    return payload
 
-    return resolved_username
+
+def store_content_threads_token(db: Session, user_id: int, payload: dict[str, Any]) -> str:
+    access_token = str(payload.get("access_token") or "").strip()
+    if not access_token:
+        raise RuntimeError("Threads не выдал access token.")
+    expires_in = int(payload.get("expires_in") or 0)
+    expires_at = int(time.time()) + expires_in if expires_in > 0 else 0
+    set_secret_user_option_value(db, user_id, CONTENT_THREADS_ACCESS_TOKEN_GROUP, access_token)
+    set_user_option_value(db, user_id, CONTENT_THREADS_TOKEN_EXPIRES_AT_GROUP, str(expires_at) if expires_at else "")
+    scope = str(payload.get("scope") or "").strip()
+    if scope:
+        set_user_option_value(db, user_id, CONTENT_THREADS_SCOPE_GROUP, scope)
+    return access_token
+
+
+def exchange_threads_oauth_code(db: Session, user_id: int, code: str) -> str:
+    short_payload = threads_http_request(
+        "POST",
+        "/oauth/access_token",
+        api_base="https://graph.threads.net",
+        params={
+            "client_id": THREADS_APP_ID,
+            "client_secret": THREADS_APP_SECRET,
+            "grant_type": "authorization_code",
+            "redirect_uri": THREADS_REDIRECT_URI,
+            "code": code,
+        },
+    )
+    short_token = str(short_payload.get("access_token") or "").strip()
+    if not short_token:
+        raise RuntimeError("Threads не выдал краткосрочный токен.")
+    long_payload = threads_http_request(
+        "GET",
+        "/access_token",
+        api_base="https://graph.threads.net",
+        params={
+            "grant_type": "th_exchange_token",
+            "client_secret": THREADS_APP_SECRET,
+            "access_token": short_token,
+        },
+    )
+    access_token = store_content_threads_token(db, user_id, long_payload)
+    clear_legacy_content_threads_credentials(db, user_id)
+    return access_token
+
+
+def refresh_content_threads_token(db: Session, user_id: int, access_token: str) -> str:
+    payload = threads_http_request(
+        "GET",
+        "/refresh_access_token",
+        api_base="https://graph.threads.net",
+        params={"grant_type": "th_refresh_token", "access_token": access_token},
+    )
+    refreshed = store_content_threads_token(db, user_id, payload)
+    db.commit()
+    return refreshed
+
+
+def get_content_threads_access_token(db: Session, user_id: int) -> str:
+    token = str(get_secret_user_option_value(db, user_id, CONTENT_THREADS_ACCESS_TOKEN_GROUP) or "").strip()
+    if not token:
+        raise RuntimeError("Сначала подключите Threads через OAuth.")
+    expires_text = str(get_user_option_value(db, user_id, CONTENT_THREADS_TOKEN_EXPIRES_AT_GROUP) or "").strip()
+    expires_at = int(expires_text) if expires_text.isdigit() else 0
+    if expires_at and expires_at <= int(time.time()) + 7 * 24 * 60 * 60:
+        token = refresh_content_threads_token(db, user_id, token)
+    return token
 
 
 def build_content_post_threads_caption(post: ContentPlanPost, rubric_tag: str | None = None) -> str:
@@ -6865,107 +6783,78 @@ def build_content_post_threads_caption(post: ContentPlanPost, rubric_tag: str | 
     return message
 
 
-def resolve_content_post_threads_media_inputs(post: ContentPlanPost) -> list[str]:
-    resolved: list[str] = []
-    for raw_value in as_list(post.telegram_photos_json):
-        source = str(raw_value or "").strip()
-        if not source:
-            continue
-        local_path = local_media_reference_to_path(source)
-        if local_path and local_path.exists() and local_path.is_file():
-            resolved.append(str(local_path))
-            continue
-        external_url = build_external_url(source)
-        if external_url:
-            resolved.append(external_url)
-    return resolved[:10]
-
-
-def extract_content_threads_post_identity(response_payload: Any) -> tuple[str, str]:
-    media_obj = getattr(response_payload, "media", None)
-    if media_obj is None and isinstance(response_payload, dict):
-        media_obj = response_payload.get("media")
-
-    post_id = ""
-    post_code = ""
-    if isinstance(media_obj, dict):
-        post_id = str(media_obj.get("id") or media_obj.get("pk") or "").strip()
-        post_code = str(media_obj.get("code") or "").strip()
-    elif media_obj is not None:
-        post_id = str(getattr(media_obj, "id", "") or getattr(media_obj, "pk", "") or "").strip()
-        post_code = str(getattr(media_obj, "code", "") or "").strip()
-
-    if not post_id and isinstance(response_payload, dict):
-        post_id = str(response_payload.get("upload_id") or "").strip()
-    return post_id, post_code
-
-
-async def publish_content_post_to_threads_async(
-    *,
-    user_id: int,
-    username: str,
-    password: str,
-    post: ContentPlanPost,
-    rubric_tag: str | None = None,
-) -> dict[str, str]:
-    normalized_username = normalize_threads_username(username)
-    if not normalized_username or not str(password or "").strip():
-        raise RuntimeError("Сначала подключите аккаунт Threads в настройках контент-плана.")
-
-    caption_text = build_content_post_threads_caption(post, rubric_tag)
-    media_inputs = resolve_content_post_threads_media_inputs(post)
-
-    threads_api_class = load_threads_api_class()
-    api = threads_api_class(settings_path=str(content_threads_settings_path(user_id)))
-    try:
-        await api.login(
-            normalized_username,
-            str(password or "").strip(),
-            cached_token_path=str(content_threads_token_cache_path(user_id)),
-        )
-        if not media_inputs:
-            link_value = first_content_post_external_link(post)
-            if link_value:
-                response_payload = await api.post(caption=caption_text, url=link_value)
-            else:
-                response_payload = await api.post(caption=caption_text)
-        elif len(media_inputs) == 1:
-            response_payload = await api.post(caption=caption_text, image_path=media_inputs[0])
-        else:
-            response_payload = await api.post(caption=caption_text, image_path=media_inputs)
-
-        post_id, post_code = extract_content_threads_post_identity(response_payload)
-        return {
-            "post_id": post_id,
-            "post_code": post_code,
-            "username": normalize_threads_username(getattr(api, "username", "") or normalized_username) or normalized_username,
-        }
-    except Exception as exc:
-        raise RuntimeError("Не удалось опубликовать пост в Threads.") from exc
-    finally:
-        try:
-            await api.close_gracefully()
-        except Exception:
-            pass
-
-
 def publish_content_post_to_threads(
     *,
+    db: Session,
     user_id: int,
-    username: str,
-    password: str,
     post: ContentPlanPost,
     rubric_tag: str | None = None,
 ) -> dict[str, str]:
-    return asyncio.run(
-        publish_content_post_to_threads_async(
-            user_id=user_id,
-            username=username,
-            password=password,
-            post=post,
-            rubric_tag=rubric_tag,
+    access_token = get_content_threads_access_token(db, user_id)
+    caption_text = build_content_post_threads_caption(post, rubric_tag)
+    media_urls = [build_external_url(item) for item in as_list(post.telegram_photos_json) if str(item or "").strip()]
+    media_urls = [url for url in media_urls if url][:10]
+
+    def api_request(method: str, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        nonlocal access_token
+        request_params = dict(params or {})
+        request_params["access_token"] = access_token
+        try:
+            return threads_http_request(method, path, params=request_params)
+        except ThreadsUnauthorizedError:
+            access_token = refresh_content_threads_token(db, user_id, access_token)
+            request_params["access_token"] = access_token
+            return threads_http_request(method, path, params=request_params)
+
+    def create_container(params: dict[str, Any]) -> str:
+        payload = api_request("POST", "/me/threads", params=params)
+        container_id = str(payload.get("id") or "").strip()
+        if not container_id:
+            raise RuntimeError("Threads не вернул ID контейнера публикации.")
+        return container_id
+
+    if not media_urls:
+        creation_id = create_container({"media_type": "TEXT", "text": caption_text})
+    elif len(media_urls) == 1:
+        creation_id = create_container(
+            {"media_type": "IMAGE", "image_url": media_urls[0], "text": caption_text}
         )
+    else:
+        child_ids = [
+            create_container(
+                {"media_type": "IMAGE", "image_url": image_url, "is_carousel_item": "true"}
+            )
+            for image_url in media_urls
+        ]
+        creation_id = create_container(
+            {"media_type": "CAROUSEL", "children": ",".join(child_ids), "text": caption_text}
+        )
+
+    last_status = ""
+    for attempt in range(6):
+        status_payload = api_request(
+            "GET",
+            f"/{creation_id}",
+            params={"fields": "status,error_message"},
+        )
+        last_status = str(status_payload.get("status") or "").strip().upper()
+        if last_status in {"FINISHED", "PUBLISHED"}:
+            break
+        if last_status in {"ERROR", "EXPIRED"}:
+            error_message = str(status_payload.get("error_message") or "").strip()
+            raise RuntimeError(error_message or f"Threads не подготовил публикацию ({last_status}).")
+        if attempt < 5:
+            time.sleep(2)
+
+    publish_payload = api_request(
+        "POST",
+        "/me/threads_publish",
+        params={"creation_id": creation_id},
     )
+    post_id = str(publish_payload.get("id") or "").strip()
+    if not post_id:
+        raise RuntimeError("Threads не вернул ID опубликованного поста.")
+    return {"post_id": post_id, "post_code": ""}
 
 
 def load_content_photo_binary(photo_ref: str) -> tuple[str, bytes, str]:
@@ -7107,7 +6996,6 @@ def mark_content_post_threads_published(
     *,
     thread_post_id: str,
     thread_post_code: str = "",
-    thread_username: str = "",
     rubric_tag: str | None = None,
 ) -> None:
     normalized_tag = normalize_content_rubric_tag(rubric_tag) or normalize_content_rubric_tag(post.rubric_tag)
@@ -7115,13 +7003,11 @@ def mark_content_post_threads_published(
         post.rubric_tag = normalized_tag
     normalized_post_id = str(thread_post_id or "").strip()
     normalized_post_code = str(thread_post_code or "").strip()
-    normalized_username = normalize_threads_username(thread_username)
     post.threads_post_ids_json = (
         [
             {
                 "post_id": normalized_post_id,
                 "post_code": normalized_post_code,
-                "username": normalized_username,
             }
         ]
         if normalized_post_id
@@ -9858,14 +9744,11 @@ def dispatch_scheduled_content_posts() -> None:
                 if user.id not in threads_settings_cache:
                     threads_settings_cache[user.id] = get_content_threads_settings(user, db)
                 threads_settings = threads_settings_cache[user.id]
-                threads_username = normalize_threads_username(threads_settings.get("username"))
-                threads_password = str(get_content_threads_password_state(db, user.id).get("password") or "").strip()
-                if threads_username and threads_password:
+                if threads_settings.get("publish_ready"):
                     try:
                         published_post = publish_content_post_to_threads(
+                            db=db,
                             user_id=user.id,
-                            username=threads_username,
-                            password=threads_password,
                             post=post,
                             rubric_tag=rubric_tag,
                         )
@@ -9876,7 +9759,6 @@ def dispatch_scheduled_content_posts() -> None:
                             post,
                             thread_post_id=str(published_post.get("post_id") or "").strip(),
                             thread_post_code=str(published_post.get("post_code") or "").strip(),
-                            thread_username=str(published_post.get("username") or threads_username).strip(),
                             rubric_tag=rubric_tag,
                         )
                         has_changes = True
@@ -25044,15 +24926,11 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
         "connected": False,
     }
     threads_settings: dict[str, Any] = {
-        "username": "",
         "connected": False,
         "publish_ready": False,
-        "password_saved": False,
-        "password_readable": False,
-        "password_source": "",
-        "requires_password_refresh": False,
-        "library_available": content_threads_library_available(),
-        "library_error": content_threads_library_error(),
+        "app_configured": threads_app_configured(),
+        "connect_url": f"/my-calendar/content/threads/oauth/start?{content_action_query}",
+        "expires_at": 0,
     }
     pinterest_settings: dict[str, Any] = {
         "app_configured": pinterest_app_configured(),
@@ -25095,6 +24973,7 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
         vk_settings = get_content_vk_settings(content_owner, db)
         rednote_settings = get_content_rednote_settings(content_owner, db)
         threads_settings = get_content_threads_settings(content_owner, db)
+        threads_settings["connect_url"] = f"/my-calendar/content/threads/oauth/start?{content_action_query}"
         pinterest_settings = get_content_pinterest_settings(content_owner, db)
         pinterest_settings["connect_url"] = f"/my-calendar/content/pinterest/oauth/start?{content_action_query}"
         pinterest_settings["sync_url"] = f"/my-calendar/content/pinterest/sync?{content_action_query}"
@@ -25401,7 +25280,6 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
         vk_mini_app_url=VK_MINI_APP_URL,
         threads_content_connected=bool(threads_settings.get("publish_ready")),
         threads_content_account_connected=bool(threads_settings.get("connected")),
-        threads_content_password_issue=bool(threads_settings.get("requires_password_refresh")),
         rednote_content_connected=bool(rednote_settings.get("connected")),
         pinterest_content_connected=bool(pinterest_settings.get("connected")),
         content_initial_platform=(
@@ -26483,8 +26361,8 @@ def my_calendar_content_rednote_disconnect(request: Request, db: Session = Depen
     return content_calendar_redirect(request, user, content_owner=content_owner)
 
 
-@app.post("/my-calendar/content/threads/connect")
-async def my_calendar_content_threads_connect(request: Request, db: Session = Depends(get_db)):
+@app.get("/my-calendar/content/threads/oauth/start")
+def my_calendar_content_threads_oauth_start(request: Request, db: Session = Depends(get_db)):
     user = current_user(request, db)
     if not user:
         return redirect("/login")
@@ -26492,91 +26370,45 @@ async def my_calendar_content_threads_connect(request: Request, db: Session = De
     if access_redirect:
         return access_redirect
 
-    form = await request.form()
-    content_owner, owner_redirect = ensure_content_owner_for_action(request, user, db, form=form)
+    content_owner, owner_redirect = ensure_content_owner_for_action(request, user, db)
     if owner_redirect or not content_owner:
-        return owner_redirect or content_calendar_redirect(request, user, form=form)
+        return owner_redirect or content_calendar_redirect(request, user)
     if not content_connections_editable(user, content_owner):
         add_flash(request, "Настройки Threads может менять только владелец контент-плана.", "error")
-        return content_calendar_redirect(request, user, form=form, content_owner=content_owner)
+        return content_calendar_redirect(request, user, content_owner=content_owner)
+    if not threads_app_configured():
+        add_flash(request, "Threads OAuth пока не настроен на сервере.", "error")
+        return content_calendar_redirect(request, user, content_owner=content_owner)
+    return RedirectResponse(threads_authorize_url(build_threads_oauth_state(user.id)), status_code=302)
 
-    if not content_threads_library_available():
-        add_flash(request, content_threads_library_error(), "error")
-        return content_calendar_redirect(request, user, form=form, content_owner=content_owner)
 
-    username_raw = str(form.get("threads_username", "")).strip()
-    password_raw = str(form.get("threads_password", "")).strip()
-    provided_username = normalize_threads_username(username_raw)
-    existing_username = (
-        normalize_threads_username(get_user_option_value(db, content_owner.id, CONTENT_THREADS_USERNAME_GROUP))
-        or read_content_threads_username_backup(content_owner.id)
-    )
-    username = provided_username or existing_username
-    existing_password = str(get_content_threads_password_state(db, content_owner.id).get("password") or "").strip()
-    password = password_raw or existing_password
-    username_source = "form" if provided_username else "saved" if existing_username else "missing"
-    password_source = "form" if password_raw else "saved" if existing_password else "missing"
-
-    if not username:
-        add_flash(request, "Укажите корректный логин Threads (латиница, цифры, точка или подчёркивание).", "error")
-        return content_calendar_redirect(request, user, form=form, content_owner=content_owner)
-    if not password:
-        add_flash(request, "Укажите пароль для подключения Threads.", "error")
-        return content_calendar_redirect(request, user, form=form, content_owner=content_owner)
-
-    if existing_username and existing_username.casefold() != username.casefold():
-        clear_content_threads_cache_files(content_owner.id)
-
+@app.get("/my-calendar/content/threads/oauth/callback")
+def my_calendar_content_threads_oauth_callback(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    state = str(request.query_params.get("state") or "").strip()
+    error_code = str(request.query_params.get("error") or "").strip()
+    error_description = str(request.query_params.get("error_description") or "").strip()
+    code = str(request.query_params.get("code") or "").strip()
+    target = calendar_redirect_for_view(CALENDAR_VIEW_CONTENT, content_scope=CONTENT_SCOPE_PERSONAL)
+    if error_code:
+        add_flash(request, error_description or f"Threads OAuth вернул ошибку: {error_code}", "error")
+        return target
+    if not verify_threads_oauth_state(state, user.id):
+        add_flash(request, "Threads OAuth завершился с неверным state. Повторите подключение.", "error")
+        return target
+    if not code:
+        add_flash(request, "Threads не вернул код авторизации.", "error")
+        return target
     try:
-        resolved_username = await authorize_content_threads_account(
-            user_id=content_owner.id,
-            username=username,
-            password=password,
-        )
+        exchange_threads_oauth_code(db, user.id, code)
+        db.commit()
     except RuntimeError as exc:
-        print(
-            "[threads-connect] auth-failed "
-            f"actor={user.id} owner={content_owner.id} "
-            f"username_source={username_source} password_source={password_source} "
-            f"provided_username={bool(provided_username)} provided_password={bool(password_raw)} "
-            f"existing_username={bool(existing_username)} existing_password={bool(existing_password)} "
-            f"error={exc}"
-        )
-        add_flash(
-            request,
-            f"{content_threads_error_text(str(exc))} "
-            f"Диагностика: логин={username_source}, пароль={password_source}.",
-            "error",
-        )
-        return content_calendar_redirect(request, user, form=form, content_owner=content_owner)
-
-    saved_username = normalize_threads_username(resolved_username or username) or username
-    set_user_option_value(db, content_owner.id, CONTENT_THREADS_USERNAME_GROUP, saved_username)
-    set_secret_user_option_value(db, content_owner.id, CONTENT_THREADS_PASSWORD_GROUP, password)
-    write_content_threads_username_backup(content_owner.id, saved_username)
-    write_content_threads_password_backup(content_owner.id, password)
-    db_username_saved = bool(normalize_threads_username(get_user_option_value(db, content_owner.id, CONTENT_THREADS_USERNAME_GROUP)))
-    db_password_saved = bool(str(get_user_option_value(db, content_owner.id, CONTENT_THREADS_PASSWORD_GROUP) or "").strip())
-    backup_username_saved = bool(read_content_threads_username_backup(content_owner.id))
-    backup_password_saved = bool(read_content_threads_password_backup(content_owner.id))
-    db.commit()
-    print(
-        "[threads-connect] connected "
-        f"actor={user.id} owner={content_owner.id} "
-        f"username_source={username_source} password_source={password_source} "
-        f"saved_username={saved_username} "
-        f"db_username_saved={db_username_saved} db_password_saved={db_password_saved} "
-        f"backup_username_saved={backup_username_saved} backup_password_saved={backup_password_saved}"
-    )
-    add_flash(
-        request,
-        f"Аккаунт Threads подключён: @{saved_username}. "
-        f"Диагностика: логин={username_source}, пароль={password_source}, "
-        f"db_login={'ok' if db_username_saved else 'нет'}, db_pass={'ok' if db_password_saved else 'нет'}, "
-        f"backup_login={'ok' if backup_username_saved else 'нет'}, backup_pass={'ok' if backup_password_saved else 'нет'}.",
-        "success",
-    )
-    return content_calendar_redirect(request, user, form=form, content_owner=content_owner)
+        add_flash(request, str(exc), "error")
+        return target
+    add_flash(request, "Threads подключён через официальный OAuth.", "success")
+    return target
 
 
 @app.post("/my-calendar/content/threads/disconnect")
@@ -26595,9 +26427,10 @@ def my_calendar_content_threads_disconnect(request: Request, db: Session = Depen
         add_flash(request, "Настройки Threads может менять только владелец контент-плана.", "error")
         return content_calendar_redirect(request, user, content_owner=content_owner)
 
-    set_user_option_value(db, content_owner.id, CONTENT_THREADS_USERNAME_GROUP, "")
-    set_secret_user_option_value(db, content_owner.id, CONTENT_THREADS_PASSWORD_GROUP, "")
-    clear_content_threads_cache_files(content_owner.id)
+    set_secret_user_option_value(db, content_owner.id, CONTENT_THREADS_ACCESS_TOKEN_GROUP, "")
+    set_user_option_value(db, content_owner.id, CONTENT_THREADS_TOKEN_EXPIRES_AT_GROUP, "")
+    set_user_option_value(db, content_owner.id, CONTENT_THREADS_SCOPE_GROUP, "")
+    clear_legacy_content_threads_credentials(db, content_owner.id)
     db.commit()
     add_flash(request, "Настройки Threads удалены.", "info")
     return content_calendar_redirect(request, user, content_owner=content_owner)
@@ -27110,50 +26943,32 @@ def my_calendar_content_publish_threads(post_id: int, request: Request, db: Sess
         return content_calendar_redirect(request, user, content_owner=content_owner)
 
     threads_settings = get_content_threads_settings(content_owner, db)
-    threads_username = normalize_threads_username(threads_settings.get("username"))
-    threads_password_state = get_content_threads_password_state(db, content_owner.id)
-    threads_password = str(threads_password_state.get("password") or "").strip()
-    if not threads_username or not threads_password:
-        if threads_username and threads_settings.get("requires_password_refresh"):
-            add_flash(
-                request,
-                "Аккаунт Threads сохранён, но пароль недоступен в текущем окружении. "
-                "Введите пароль заново в настройках Threads и нажмите «Сохранить Threads».",
-                "error",
-            )
-        elif threads_username:
-            add_flash(request, "Для публикации в Threads сохраните пароль в блоке настроек выше.", "error")
-        else:
-            add_flash(request, "Сначала подключите аккаунт Threads в настройках контент-плана.", "error")
+    if not threads_settings.get("publish_ready"):
+        add_flash(request, "Сначала подключите Threads через официальный OAuth.", "error")
         return content_calendar_redirect(request, user, content_owner=content_owner)
 
     try:
         rubric_tag = normalize_content_rubric_tag(post.rubric_tag) or get_content_rubric_tags(db, content_owner.id).get(post.rubric or "", "")
         published_post = publish_content_post_to_threads(
+            db=db,
             user_id=content_owner.id,
-            username=threads_username,
-            password=threads_password,
             post=post,
             rubric_tag=rubric_tag,
         )
     except RuntimeError as exc:
-        add_flash(request, content_threads_error_text(str(exc)), "error")
+        add_flash(request, str(exc), "error")
         return content_calendar_redirect(request, user, content_owner=content_owner)
 
     thread_post_id = str(published_post.get("post_id") or "").strip()
     thread_post_code = str(published_post.get("post_code") or "").strip()
-    resolved_username = normalize_threads_username(published_post.get("username")) or threads_username
-    if not thread_post_id:
-        add_flash(request, "Пост отправлен, но не удалось получить ID публикации Threads.", "info")
     mark_content_post_threads_published(
         post,
         thread_post_id=thread_post_id,
         thread_post_code=thread_post_code,
-        thread_username=resolved_username,
         rubric_tag=rubric_tag,
     )
     db.commit()
-    add_flash(request, f"Пост опубликован в Threads (@{resolved_username}).", "success")
+    add_flash(request, "Пост опубликован в Threads.", "success")
     return content_calendar_redirect(request, user, content_owner=content_owner)
 
 

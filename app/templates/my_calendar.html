@@ -580,24 +580,17 @@
 
     <div class="content-platform-panel" data-platform-panel="threads" hidden>
       <p class="muted">
-        Threads подключается через логин и пароль аккаунта. После подключения можно публиковать посты вручную
-        и по расписанию из контент-плана.
+        Threads подключается через официальное окно OAuth. Cosplay Planner не получает и не хранит логин, ник или пароль аккаунта.
       </p>
       <div class="notes-block telegram-editor-note">
-        В публикацию уйдёт текст карточки и до 10 изображений из блока фотографий. Для Threads используется plain-text версия контента.
+        В публикацию уйдёт plain-text версия текста и до 10 изображений. Для публикации используются официальные права <code>threads_basic</code> и <code>threads_content_publish</code>.
       </div>
       {% if threads_settings.connected %}
-        <p class="muted top-offset">Подключён аккаунт: <strong>@{{ threads_settings.username }}</strong></p>
+        <p class="muted top-offset">Threads подключён через официальный OAuth.</p>
       {% endif %}
-      {% if threads_settings.connected and threads_settings.requires_password_refresh %}
+      {% if not threads_settings.app_configured %}
         <div class="notes-block telegram-editor-note telegram-editor-note-warning top-offset">
-          Аккаунт Threads определён, но сохранённый пароль недоступен в текущем окружении.
-          Введите пароль ещё раз и нажмите «Сохранить Threads».
-        </div>
-      {% endif %}
-      {% if not threads_settings.library_available %}
-        <div class="notes-block telegram-editor-note telegram-editor-note-warning top-offset">
-          {{ threads_settings.library_error or "Интеграция Threads сейчас временно недоступна на сервере. Попробуйте позже." }}
+          OAuth-приложение Threads пока не настроено на сервере.
         </div>
       {% endif %}
       {% if not content_can_manage_connections %}
@@ -605,22 +598,7 @@
           Настройки Threads может менять только владелец этого контент-плана.
         </div>
       {% else %}
-      <form method="post" action="/my-calendar/content/threads/connect" class="grid one-col top-offset">
-        <input type="hidden" name="content_scope" value="{{ content_scope }}" />
-        {% if content_owner_id %}<input type="hidden" name="content_owner_id" value="{{ content_owner_id }}" />{% endif %}
-        <label>
-          Логин Threads
-          <input type="text" name="threads_username" value="{{ threads_settings.username }}" maxlength="30" placeholder="@username" />
-        </label>
-        <label>
-          Пароль
-          <input type="password" name="threads_password" value="" placeholder="Пароль аккаунта" />
-          <small class="muted">Можно оставить пустым, если пароль уже сохранён и не меняется.</small>
-        </label>
-        <div class="actions-inline">
-          <button type="submit" class="btn btn-accent" {% if not threads_settings.library_available %}disabled{% endif %}>Сохранить Threads</button>
-        </div>
-      </form>
+      <a href="{{ threads_settings.connect_url }}" class="btn btn-accent top-offset {% if not threads_settings.app_configured %}disabled{% endif %}">Подключить Threads через OAuth</a>
       {% if threads_content_account_connected %}
         <form method="post" action="/my-calendar/content/threads/disconnect?{{ content_action_query }}" class="top-offset" onsubmit="return confirm('Удалить настройки Threads?');">
           <button type="submit" class="btn btn-danger">Отключить Threads</button>
@@ -1134,13 +1112,11 @@
       <div>
         <p class="muted">Threads</p>
         {% if threads_content_connected %}
-          <p class="muted">Публикация уйдёт в аккаунт <strong>@{{ threads_settings.username }}</strong>. Для автопубликации нужен заполненный блок даты и времени.</p>
-        {% elif threads_content_account_connected and threads_content_password_issue %}
-          <p class="muted">Аккаунт <strong>@{{ threads_settings.username }}</strong> подключён, но пароль нужно сохранить заново в блоке настроек выше.</p>
+          <p class="muted">Threads подключён через OAuth. Для автопубликации нужен заполненный блок даты и времени.</p>
         {% elif threads_content_account_connected %}
-          <p class="muted">Аккаунт <strong>@{{ threads_settings.username }}</strong> подключён. Для публикации сохраните пароль в блоке настроек выше.</p>
+          <p class="muted">OAuth-токен сохранён, но приложение Threads сейчас не настроено на сервере.</p>
         {% else %}
-          <p class="muted">Сначала подключите аккаунт Threads в блоке настроек выше.</p>
+          <p class="muted">Сначала подключите Threads через официальное окно OAuth в блоке настроек выше.</p>
         {% endif %}
       </div>
       <div>
