@@ -590,7 +590,8 @@
       {% endif %}
       {% if not threads_settings.app_configured %}
         <div class="notes-block telegram-editor-note telegram-editor-note-warning top-offset">
-          OAuth-приложение Threads пока не настроено на сервере.
+          OAuth Threads пока не настроен на сервере. Нужны отдельные <strong>Threads App ID</strong> и <strong>Threads App secret</strong>
+          из раздела <strong>Use cases → Access the Threads API → Settings</strong>. Обычные Meta App ID и secret не подходят.
         </div>
       {% endif %}
       {% if not content_can_manage_connections %}

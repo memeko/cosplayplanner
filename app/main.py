@@ -697,13 +697,16 @@ PINTEREST_OAUTH_STATE_MAX_AGE_SECONDS = max(
     300,
     min(86400, int(os.getenv("PINTEREST_OAUTH_STATE_MAX_AGE_SECONDS", "3600"))),
 )
-THREADS_APP_ID = str(os.getenv("THREADS_APP_ID", "") or "1317521263650959").strip()
+# Threads OAuth uses the dedicated credentials issued inside the
+# "Access the Threads API" use case.  The top-level Meta App ID is a
+# different identifier and Threads reports it misleadingly as error 4476002.
+THREADS_APP_ID = str(os.getenv("THREADS_APP_ID", "")).strip()
 THREADS_APP_SECRET = str(os.getenv("THREADS_APP_SECRET", "")).strip()
 THREADS_REDIRECT_URI = str(
     os.getenv("THREADS_REDIRECT_URI", f"{SITE_URL}/my-calendar/content/threads/oauth/callback")
 ).strip()
 THREADS_API_URI = str(os.getenv("THREADS_API_URI", "https://graph.threads.net/v1.0")).strip().rstrip("/")
-THREADS_OAUTH_URI = str(os.getenv("THREADS_OAUTH_URI", "https://threads.net")).strip().rstrip("/")
+THREADS_OAUTH_URI = str(os.getenv("THREADS_OAUTH_URI", "https://www.threads.com")).strip().rstrip("/")
 THREADS_OAUTH_SCOPES = ["threads_basic", "threads_content_publish"]
 THREADS_OAUTH_STATE_MAX_AGE_SECONDS = max(
     300,
