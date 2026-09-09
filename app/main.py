@@ -697,7 +697,7 @@ PINTEREST_OAUTH_STATE_MAX_AGE_SECONDS = max(
     300,
     min(86400, int(os.getenv("PINTEREST_OAUTH_STATE_MAX_AGE_SECONDS", "3600"))),
 )
-THREADS_APP_ID = str(os.getenv("THREADS_APP_ID", "1317521263650959")).strip()
+THREADS_APP_ID = str(os.getenv("THREADS_APP_ID", "") or "1317521263650959").strip()
 THREADS_APP_SECRET = str(os.getenv("THREADS_APP_SECRET", "")).strip()
 THREADS_REDIRECT_URI = str(
     os.getenv("THREADS_REDIRECT_URI", f"{SITE_URL}/my-calendar/content/threads/oauth/callback")
