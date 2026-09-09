@@ -697,7 +697,7 @@ PINTEREST_OAUTH_STATE_MAX_AGE_SECONDS = max(
     300,
     min(86400, int(os.getenv("PINTEREST_OAUTH_STATE_MAX_AGE_SECONDS", "3600"))),
 )
-THREADS_APP_ID = str(os.getenv("THREADS_APP_ID", "")).strip()
+THREADS_APP_ID = str(os.getenv("THREADS_APP_ID", "1317521263650959")).strip()
 THREADS_APP_SECRET = str(os.getenv("THREADS_APP_SECRET", "")).strip()
 THREADS_REDIRECT_URI = str(
     os.getenv("THREADS_REDIRECT_URI", f"{SITE_URL}/my-calendar/content/threads/oauth/callback")
@@ -6747,6 +6747,13 @@ def exchange_threads_oauth_code(db: Session, user_id: int, code: str) -> str:
         },
     )
     access_token = store_content_threads_token(db, user_id, long_payload)
+    profile_payload = threads_http_request(
+        "GET",
+        "/me",
+        params={"fields": "id", "access_token": access_token},
+    )
+    if not str(profile_payload.get("id") or "").strip():
+        raise RuntimeError("Threads OAuth не подтвердил доступ threads_basic.")
     clear_legacy_content_threads_credentials(db, user_id)
     return access_token
 
