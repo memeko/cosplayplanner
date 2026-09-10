@@ -21808,6 +21808,7 @@ def cosplan_performance_plan_video_job_status(
     if not job:
         return JSONResponse({"error": "Задача анализа не найдена."}, status_code=404)
     payload = {
+        "job_id": job.job_id,
         "status": str(job.status or "processing"),
         "remaining_today": int(job.remaining_today or 0),
     }
