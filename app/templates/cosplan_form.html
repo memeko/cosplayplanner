@@ -2830,7 +2830,8 @@
         if (!response.ok) throw new Error(payload.error || "Не удалось запустить анализ видео.");
         if (!payload.job_id) throw new Error("Сервер не вернул номер задачи анализа.");
         const jobId = payload.job_id;
-        aiStatus.textContent = "ИИ смотрит репетицию и составляет план. Страницу пока не закрывайте…";
+        const activeModel = payload.model || "Gemini";
+        aiStatus.textContent = `ИИ смотрит репетицию и составляет план (${activeModel}). Страницу пока не закрывайте…`;
         const deadline = Date.now() + 4 * 60 * 1000;
         while (payload.status === "processing" && Date.now() < deadline) {
           await new Promise((resolve) => window.setTimeout(resolve, 2000));

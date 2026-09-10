@@ -677,8 +677,17 @@ MISTRAL_API_KEY = str(os.getenv("MISTRAL_API_KEY", "")).strip()
 MISTRAL_FREE_MODEL = str(os.getenv("MISTRAL_FREE_MODEL", "codestral-2508")).strip() or "codestral-2508"
 GEMINI_API_BASE_URL = str(os.getenv("GEMINI_API_BASE_URL", "https://generativelanguage.googleapis.com")).strip().rstrip("/")
 GEMINI_API_KEY = str(os.getenv("GEMINI_API_KEY", "")).strip()
-GEMINI_VIDEO_MODEL = str(os.getenv("GEMINI_VIDEO_MODEL", "gemini-3.5-flash-lite")).strip() or "gemini-3.5-flash-lite"
-if GEMINI_VIDEO_MODEL in {"gemini-2.0-flash-lite", "gemini-2.5-flash-lite"}:
+GEMINI_VIDEO_MODEL = str(os.getenv("GEMINI_VIDEO_MODEL", "gemini-3.5-flash-lite")).strip().lower()
+if GEMINI_VIDEO_MODEL.startswith("models/"):
+    GEMINI_VIDEO_MODEL = GEMINI_VIDEO_MODEL.removeprefix("models/")
+if GEMINI_VIDEO_MODEL not in {
+    "gemini-3.1-flash-lite",
+    "gemini-3.5-flash-lite",
+    "gemini-3.5-flash",
+    "gemini-3.6-flash",
+    "gemini-3.7-flash",
+    "gemini-3.8-flash",
+}:
     GEMINI_VIDEO_MODEL = "gemini-3.5-flash-lite"
 try:
     SITE_TIMEZONE = ZoneInfo(os.getenv("SITE_TIMEZONE", "Europe/Moscow"))
@@ -21776,7 +21785,12 @@ async def cosplan_performance_plan_analyze_video(
         worker.start()
         temp_path_handed_off = True
         return JSONResponse(
-            {"job_id": job_id, "status": "processing", "remaining_today": usage["remaining_today"]},
+            {
+                "job_id": job_id,
+                "status": "processing",
+                "remaining_today": usage["remaining_today"],
+                "model": GEMINI_VIDEO_MODEL,
+            },
             status_code=202,
         )
     except requests.RequestException:
@@ -21813,6 +21827,7 @@ def cosplan_performance_plan_video_job_status(
         "job_id": job.job_id,
         "status": str(job.status or "processing"),
         "remaining_today": int(job.remaining_today or 0),
+        "model": GEMINI_VIDEO_MODEL,
     }
     if payload["status"] == "completed":
         try:
