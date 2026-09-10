@@ -280,6 +280,19 @@ class UserOption(Base):
     __table_args__ = (UniqueConstraint("user_id", "group", "value", name="uq_user_option_value"),)
 
 
+class PerformanceVideoAnalysisJob(Base):
+    __tablename__ = "performance_video_analysis_jobs"
+
+    job_id = Column(String(64), primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    status = Column(String(24), nullable=False, default="processing", index=True)
+    result_json = Column(Text, nullable=True)
+    error = Column(Text, nullable=True)
+    remaining_today = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
 class PasswordResetToken(Base):
     __tablename__ = "password_reset_tokens"
 
