@@ -677,7 +677,9 @@ MISTRAL_API_KEY = str(os.getenv("MISTRAL_API_KEY", "")).strip()
 MISTRAL_FREE_MODEL = str(os.getenv("MISTRAL_FREE_MODEL", "codestral-2508")).strip() or "codestral-2508"
 GEMINI_API_BASE_URL = str(os.getenv("GEMINI_API_BASE_URL", "https://generativelanguage.googleapis.com")).strip().rstrip("/")
 GEMINI_API_KEY = str(os.getenv("GEMINI_API_KEY", "")).strip()
-GEMINI_VIDEO_MODEL = str(os.getenv("GEMINI_VIDEO_MODEL", "gemini-2.5-flash-lite")).strip() or "gemini-2.5-flash-lite"
+GEMINI_VIDEO_MODEL = str(os.getenv("GEMINI_VIDEO_MODEL", "gemini-3.5-flash-lite")).strip() or "gemini-3.5-flash-lite"
+if GEMINI_VIDEO_MODEL in {"gemini-2.0-flash-lite", "gemini-2.5-flash-lite"}:
+    GEMINI_VIDEO_MODEL = "gemini-3.5-flash-lite"
 try:
     SITE_TIMEZONE = ZoneInfo(os.getenv("SITE_TIMEZONE", "Europe/Moscow"))
 except ZoneInfoNotFoundError:
@@ -7641,7 +7643,7 @@ start и end — целые секунды. Последний end не долж
             headers={"Content-Type": "application/json", "X-Goog-Api-Key": GEMINI_API_KEY},
             json={
                 "contents": [{"parts": [{"file_data": {"mime_type": mime_type, "file_uri": file_uri}}, {"text": prompt}]}],
-                "generationConfig": {"temperature": 0.2, "responseMimeType": "application/json", "maxOutputTokens": 4096},
+                "generationConfig": {"responseMimeType": "application/json", "maxOutputTokens": 4096},
             },
         )
         if generate_response.status_code >= 400:
