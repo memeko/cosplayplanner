@@ -2823,10 +2823,24 @@
         const body = new FormData();
         body.append("video", file);
         body.append("start_mode", modal.querySelector('[name="defile_start_mode"]:checked')?.value || "point");
-        aiStatus.textContent = "ИИ смотрит репетицию и составляет план. Это может занять до минуты…";
+        body.append("duration_seconds", String(seconds));
+        aiStatus.textContent = "Загружаю видео…";
         const response = await fetch("/cosplan/performance-plan/analyze-video", { method: "POST", body });
-        const payload = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(payload.error || "Не удалось проанализировать видео.");
+        let payload = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(payload.error || "Не удалось запустить анализ видео.");
+        if (!payload.job_id) throw new Error("Сервер не вернул номер задачи анализа.");
+        aiStatus.textContent = "ИИ смотрит репетицию и составляет план. Страницу пока не закрывайте…";
+        const deadline = Date.now() + 4 * 60 * 1000;
+        while (payload.status === "processing" && Date.now() < deadline) {
+          await new Promise((resolve) => window.setTimeout(resolve, 2000));
+          const statusResponse = await fetch(`/cosplan/performance-plan/video-jobs/${encodeURIComponent(payload.job_id)}`, {
+            headers: { "Accept": "application/json" },
+          });
+          payload = await statusResponse.json().catch(() => ({}));
+          if (!statusResponse.ok) throw new Error(payload.error || "Не удалось получить результат анализа.");
+        }
+        if (payload.status === "failed") throw new Error(payload.error || "ИИ не смог обработать видео.");
+        if (payload.status !== "completed") throw new Error("Анализ занял слишком много времени. Попробуйте ещё раз позже.");
         renderPlan(payload.plan || {});
         const rows = Array.isArray(payload.plan?.rows) ? payload.plan.rows : [];
         if (rows.length) {
@@ -2836,7 +2850,10 @@
         const limitNote = Number.isInteger(payload.remaining_today) ? ` Осталось анализов сегодня: ${payload.remaining_today}.` : "";
         aiStatus.textContent = `Готово: создано блоков — ${rows.length}. Проверьте и сохраните план.${limitNote}`;
       } catch (error) {
-        aiStatus.textContent = error.message || "Не удалось проанализировать видео.";
+        const message = error?.message === "Load failed" || error?.message === "Failed to fetch"
+          ? "Соединение с сервером прервалось. Проверьте интернет и повторите попытку."
+          : (error.message || "Не удалось проанализировать видео.");
+        aiStatus.textContent = message;
       } finally {
         aiAnalyzeButton.disabled = false;
       }

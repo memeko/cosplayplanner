@@ -1132,6 +1132,9 @@ CHARACTER_BIRTHDAYS_REFRESHING: set[str] = set()
 MAX_UPLOAD_INPUT_BYTES = 20 * 1024 * 1024
 MAX_PERFORMANCE_VIDEO_BYTES = max(5, min(250, int(os.getenv("MAX_PERFORMANCE_VIDEO_MB", "100")))) * 1024 * 1024
 MAX_PERFORMANCE_VIDEO_SECONDS = 90
+PERFORMANCE_VIDEO_JOBS: dict[str, dict[str, Any]] = {}
+PERFORMANCE_VIDEO_JOBS_LOCK = threading.Lock()
+PERFORMANCE_VIDEO_JOB_RETENTION_SECONDS = 60 * 60
 MAX_GALLERY_IMAGE_BYTES = 30 * 1024
 MAX_GALLERY_IMAGE_WIDTH = 512
 MAX_CHARACTER_REFERENCE_IMAGE_BYTES = 450 * 1024
@@ -7663,6 +7666,51 @@ start и end — целые секунды. Последний end не долж
                 headers={"X-Goog-Api-Key": GEMINI_API_KEY},
             )
         except requests.RequestException:
+            pass
+
+
+def purge_performance_video_jobs() -> None:
+    cutoff = time.time() - PERFORMANCE_VIDEO_JOB_RETENTION_SECONDS
+    with PERFORMANCE_VIDEO_JOBS_LOCK:
+        expired = [job_id for job_id, job in PERFORMANCE_VIDEO_JOBS.items() if float(job.get("created_at") or 0) < cutoff]
+        for job_id in expired:
+            PERFORMANCE_VIDEO_JOBS.pop(job_id, None)
+
+
+def run_performance_video_job(
+    job_id: str,
+    temp_path: Path,
+    mime_type: str,
+    start_mode: str,
+    duration_seconds: float,
+) -> None:
+    try:
+        plan = analyze_performance_video_with_gemini(
+            temp_path, mime_type, start_mode, duration_seconds
+        )
+        with PERFORMANCE_VIDEO_JOBS_LOCK:
+            job = PERFORMANCE_VIDEO_JOBS.get(job_id)
+            if job is not None:
+                job.update({"status": "completed", "plan": plan})
+    except requests.RequestException:
+        with PERFORMANCE_VIDEO_JOBS_LOCK:
+            job = PERFORMANCE_VIDEO_JOBS.get(job_id)
+            if job is not None:
+                job.update({"status": "failed", "error": "Не удалось связаться с Gemini. Попробуйте ещё раз позже."})
+    except (RuntimeError, ValueError) as exc:
+        with PERFORMANCE_VIDEO_JOBS_LOCK:
+            job = PERFORMANCE_VIDEO_JOBS.get(job_id)
+            if job is not None:
+                job.update({"status": "failed", "error": str(exc)})
+    except Exception:
+        with PERFORMANCE_VIDEO_JOBS_LOCK:
+            job = PERFORMANCE_VIDEO_JOBS.get(job_id)
+            if job is not None:
+                job.update({"status": "failed", "error": "Не удалось обработать видео. Попробуйте ещё раз."})
+    finally:
+        try:
+            temp_path.unlink(missing_ok=True)
+        except OSError:
             pass
 
 
@@ -21651,6 +21699,7 @@ async def cosplan_performance_plan_analyze_video(
     request: Request,
     video: UploadFile = File(...),
     start_mode: str = Form("point"),
+    duration_seconds: str = Form(""),
     db: Session = Depends(get_db),
 ):
     user = current_user(request, db)
@@ -21674,6 +21723,7 @@ async def cosplan_performance_plan_analyze_video(
     start_mode = "wings" if start_mode == "wings" else "point"
     suffix = Path(video.filename or "video").suffix[:12]
     temp_path: Path | None = None
+    temp_path_handed_off = False
     try:
         with tempfile.NamedTemporaryFile(prefix="defile-video-", suffix=suffix, delete=False) as target:
             temp_path = Path(target.name)
@@ -21688,29 +21738,77 @@ async def cosplan_performance_plan_analyze_video(
                 target.write(chunk)
         if not temp_path.stat().st_size:
             return JSONResponse({"error": "Загружен пустой файл."}, status_code=400)
+        try:
+            browser_duration = float(duration_seconds)
+        except (TypeError, ValueError):
+            browser_duration = 0
         duration = await asyncio.to_thread(performance_video_duration_seconds, temp_path)
         if duration is None:
-            return JSONResponse({"error": "Не удалось прочитать видеофайл."}, status_code=400)
+            duration = browser_duration
+        if duration <= 0:
+            return JSONResponse({"error": "Не удалось определить длительность видеофайла."}, status_code=400)
         if duration > MAX_PERFORMANCE_VIDEO_SECONDS + 0.5:
             return JSONResponse({"error": "Видео должно быть не длиннее 01:30."}, status_code=400)
         usage = increment_performance_video_ai_usage(db, user.id)
         db.commit()
         gemini_mime_type = {"video/quicktime": "video/mov", "video/x-msvideo": "video/avi"}.get(mime_type, mime_type)
-        plan = await asyncio.to_thread(
-            analyze_performance_video_with_gemini, temp_path, gemini_mime_type, start_mode, duration
+        purge_performance_video_jobs()
+        job_id = secrets.token_urlsafe(18)
+        with PERFORMANCE_VIDEO_JOBS_LOCK:
+            PERFORMANCE_VIDEO_JOBS[job_id] = {
+                "user_id": user.id,
+                "status": "processing",
+                "created_at": time.time(),
+                "remaining_today": usage["remaining_today"],
+            }
+        worker = threading.Thread(
+            target=run_performance_video_job,
+            args=(job_id, temp_path, gemini_mime_type, start_mode, duration),
+            name=f"defile-video-{job_id[:8]}",
+            daemon=True,
         )
-        return JSONResponse({"plan": plan, "model": GEMINI_VIDEO_MODEL, "remaining_today": usage["remaining_today"]})
+        worker.start()
+        temp_path_handed_off = True
+        return JSONResponse(
+            {"job_id": job_id, "status": "processing", "remaining_today": usage["remaining_today"]},
+            status_code=202,
+        )
     except requests.RequestException:
         return JSONResponse({"error": "Не удалось связаться с Gemini. Попробуйте ещё раз позже."}, status_code=502)
     except RuntimeError as exc:
         return JSONResponse({"error": str(exc)}, status_code=422)
     finally:
         await video.close()
-        if temp_path:
+        if temp_path and not temp_path_handed_off:
             try:
                 temp_path.unlink(missing_ok=True)
             except OSError:
                 pass
+
+
+@app.get("/cosplan/performance-plan/video-jobs/{job_id}")
+def cosplan_performance_plan_video_job_status(
+    job_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    user = current_user(request, db)
+    if not user:
+        return JSONResponse({"error": "Требуется авторизация."}, status_code=401)
+    purge_performance_video_jobs()
+    with PERFORMANCE_VIDEO_JOBS_LOCK:
+        job = PERFORMANCE_VIDEO_JOBS.get(job_id)
+        if not job or int(job.get("user_id") or 0) != user.id:
+            return JSONResponse({"error": "Задача анализа не найдена."}, status_code=404)
+        payload = {
+            "status": str(job.get("status") or "processing"),
+            "remaining_today": int(job.get("remaining_today") or 0),
+        }
+        if payload["status"] == "completed":
+            payload["plan"] = job.get("plan")
+        elif payload["status"] == "failed":
+            payload["error"] = str(job.get("error") or "Не удалось обработать видео.")
+    return JSONResponse(payload)
 
 
 @app.get("/cosplan/{card_id}", response_class=HTMLResponse)
