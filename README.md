@@ -95,6 +95,10 @@ uvicorn app.main:app --reload
 - `SMTP_USER`
 - `SMTP_PASSWORD`
 - `SMTP_FROM_EMAIL`
+- `GEMINI_API_KEY` — ключ Google AI Studio для создания плана дефиле из видео
+- `GEMINI_VIDEO_MODEL` — модель анализа видео (по умолчанию `gemini-2.5-flash-lite`)
+- `MAX_PERFORMANCE_VIDEO_MB` — максимальный размер видео (по умолчанию `100`)
+- `PERFORMANCE_VIDEO_AI_DAILY_LIMIT` — анализов видео на пользователя в сутки (по умолчанию `3`)
 - `SMTP_USE_TLS` (`1`/`0`)
 - `SMTP_USE_SSL` (`1`/`0`)
 

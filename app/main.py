@@ -18,6 +18,7 @@ import sqlite3
 import subprocess
 import smtplib
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -668,9 +669,14 @@ CONTENT_AI_ASSISTANT_DAILY_LIMIT = max(
     1,
     min(200, int(os.getenv("CONTENT_AI_ASSISTANT_DAILY_LIMIT", "25"))),
 )
+PERFORMANCE_VIDEO_AI_USAGE_GROUP = "performance_video_ai_usage"
+PERFORMANCE_VIDEO_AI_DAILY_LIMIT = max(1, min(25, int(os.getenv("PERFORMANCE_VIDEO_AI_DAILY_LIMIT", "3"))))
 MISTRAL_API_BASE_URL = str(os.getenv("MISTRAL_API_BASE_URL", "https://api.mistral.ai")).strip().rstrip("/")
 MISTRAL_API_KEY = str(os.getenv("MISTRAL_API_KEY", "")).strip()
 MISTRAL_FREE_MODEL = str(os.getenv("MISTRAL_FREE_MODEL", "codestral-2508")).strip() or "codestral-2508"
+GEMINI_API_BASE_URL = str(os.getenv("GEMINI_API_BASE_URL", "https://generativelanguage.googleapis.com")).strip().rstrip("/")
+GEMINI_API_KEY = str(os.getenv("GEMINI_API_KEY", "")).strip()
+GEMINI_VIDEO_MODEL = str(os.getenv("GEMINI_VIDEO_MODEL", "gemini-2.5-flash-lite")).strip() or "gemini-2.5-flash-lite"
 try:
     SITE_TIMEZONE = ZoneInfo(os.getenv("SITE_TIMEZONE", "Europe/Moscow"))
 except ZoneInfoNotFoundError:
@@ -1124,6 +1130,8 @@ NETWORK_CACHE: dict[str, tuple[datetime, Any]] = {}
 CHARACTER_BIRTHDAYS_REFRESH_LOCK = threading.Lock()
 CHARACTER_BIRTHDAYS_REFRESHING: set[str] = set()
 MAX_UPLOAD_INPUT_BYTES = 20 * 1024 * 1024
+MAX_PERFORMANCE_VIDEO_BYTES = max(5, min(250, int(os.getenv("MAX_PERFORMANCE_VIDEO_MB", "100")))) * 1024 * 1024
+MAX_PERFORMANCE_VIDEO_SECONDS = 90
 MAX_GALLERY_IMAGE_BYTES = 30 * 1024
 MAX_GALLERY_IMAGE_WIDTH = 512
 MAX_CHARACTER_REFERENCE_IMAGE_BYTES = 450 * 1024
@@ -6387,6 +6395,31 @@ def increment_content_ai_assistant_usage(db: Session, user_id: int) -> dict[str,
     }
 
 
+def get_performance_video_ai_usage(db: Session, user_id: int) -> dict[str, int]:
+    today_key = content_ai_assistant_today_key()
+    state = parse_content_ai_assistant_usage_state(
+        get_user_option_value(db, user_id, PERFORMANCE_VIDEO_AI_USAGE_GROUP)
+    )
+    used_today = int(state.get("count") or 0) if str(state.get("date") or "") == today_key else 0
+    return {
+        "used_today": used_today,
+        "remaining_today": max(0, PERFORMANCE_VIDEO_AI_DAILY_LIMIT - used_today),
+        "daily_limit": PERFORMANCE_VIDEO_AI_DAILY_LIMIT,
+    }
+
+
+def increment_performance_video_ai_usage(db: Session, user_id: int) -> dict[str, int]:
+    usage = get_performance_video_ai_usage(db, user_id)
+    next_used = min(PERFORMANCE_VIDEO_AI_DAILY_LIMIT, usage["used_today"] + 1)
+    set_user_option_value(
+        db,
+        user_id,
+        PERFORMANCE_VIDEO_AI_USAGE_GROUP,
+        json.dumps({"date": content_ai_assistant_today_key(), "count": next_used}, separators=(",", ":")),
+    )
+    return {"used_today": next_used, "remaining_today": PERFORMANCE_VIDEO_AI_DAILY_LIMIT - next_used, "daily_limit": PERFORMANCE_VIDEO_AI_DAILY_LIMIT}
+
+
 def extract_mistral_chat_completion_text(payload: dict[str, Any]) -> str:
     choices = payload.get("choices")
     if not isinstance(choices, list) or not choices:
@@ -7470,6 +7503,167 @@ def normalize_performance_plan(raw: Any) -> dict[str, Any]:
             "sound": str(item.get("sound") or "")[:1000],
         })
     return {"start_mode": start_mode, "timing_mode": timing_mode, "rows": rows}
+
+
+def extract_json_object(raw: str) -> dict[str, Any]:
+    value = (raw or "").strip()
+    if value.startswith("```"):
+        value = re.sub(r"^```(?:json)?\s*", "", value, flags=re.IGNORECASE)
+        value = re.sub(r"\s*```$", "", value)
+    try:
+        payload = json.loads(value)
+    except (TypeError, ValueError):
+        start, end = value.find("{"), value.rfind("}")
+        if start < 0 or end <= start:
+            raise RuntimeError("ИИ вернул ответ без таблицы. Попробуйте другое видео.")
+        try:
+            payload = json.loads(value[start:end + 1])
+        except ValueError as exc:
+            raise RuntimeError("Не удалось прочитать таблицу из ответа ИИ.") from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError("ИИ вернул таблицу в неверном формате.")
+    return payload
+
+
+def performance_video_duration_seconds(file_path: Path) -> float | None:
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe", "-v", "error", "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1", str(file_path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    try:
+        duration = float(result.stdout.strip())
+    except (TypeError, ValueError):
+        return None
+    return duration if duration > 0 else None
+
+
+def extract_gemini_response_text(payload: dict[str, Any]) -> str:
+    candidates = payload.get("candidates")
+    if not isinstance(candidates, list) or not candidates:
+        return ""
+    content = candidates[0].get("content") if isinstance(candidates[0], dict) else None
+    parts = content.get("parts") if isinstance(content, dict) else None
+    if not isinstance(parts, list):
+        return ""
+    return "\n".join(str(item.get("text") or "") for item in parts if isinstance(item, dict)).strip()
+
+
+def gemini_error_message(response: requests.Response) -> str:
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = {}
+    error = payload.get("error") if isinstance(payload, dict) else None
+    message = str(error.get("message") or "").strip() if isinstance(error, dict) else ""
+    return message or f"HTTP {response.status_code}"
+
+
+def analyze_performance_video_with_gemini(
+    file_path: Path, mime_type: str, start_mode: str, duration_seconds: float
+) -> dict[str, Any]:
+    if not GEMINI_API_KEY:
+        raise RuntimeError("Анализ видео не настроен: добавьте GEMINI_API_KEY в переменные окружения.")
+
+    file_size = file_path.stat().st_size
+    upload_url = f"{GEMINI_API_BASE_URL}/upload/v1beta/files"
+    start_response = requests.post(
+        upload_url,
+        timeout=max(20, HTTP_TIMEOUT_SECONDS * 4),
+        headers={
+            "X-Goog-Upload-Protocol": "resumable",
+            "X-Goog-Upload-Command": "start",
+            "X-Goog-Upload-Header-Content-Length": str(file_size),
+            "X-Goog-Upload-Header-Content-Type": mime_type,
+            "Content-Type": "application/json",
+            "X-Goog-Api-Key": GEMINI_API_KEY,
+        },
+        json={"file": {"display_name": f"defile-{uuid.uuid4().hex[:10]}"}},
+    )
+    if start_response.status_code >= 400:
+        raise RuntimeError(f"Gemini не принял видео: {gemini_error_message(start_response)}")
+    resumable_url = str(start_response.headers.get("X-Goog-Upload-URL") or "").strip()
+    if not resumable_url:
+        raise RuntimeError("Gemini не вернул адрес для загрузки видео.")
+
+    with file_path.open("rb") as source:
+        upload_response = requests.post(
+            resumable_url,
+            data=source,
+            timeout=max(60, HTTP_TIMEOUT_SECONDS * 15),
+            headers={
+                "Content-Length": str(file_size),
+                "X-Goog-Upload-Offset": "0",
+                "X-Goog-Upload-Command": "upload, finalize",
+            },
+        )
+    if upload_response.status_code >= 400:
+        raise RuntimeError(f"Не удалось загрузить видео в Gemini: {gemini_error_message(upload_response)}")
+    uploaded = upload_response.json().get("file", {}) if upload_response.content else {}
+    file_name = str(uploaded.get("name") or "").strip()
+    file_uri = str(uploaded.get("uri") or "").strip()
+    if not file_name or not file_uri:
+        raise RuntimeError("Gemini не вернул идентификатор загруженного видео.")
+
+    try:
+        state = str(uploaded.get("state") or "").upper()
+        deadline = time.monotonic() + 90
+        while state == "PROCESSING" and time.monotonic() < deadline:
+            time.sleep(2)
+            status_response = requests.get(
+                f"{GEMINI_API_BASE_URL}/v1beta/{file_name}", timeout=20,
+                headers={"X-Goog-Api-Key": GEMINI_API_KEY},
+            )
+            if status_response.status_code >= 400:
+                raise RuntimeError(f"Не удалось проверить видео: {gemini_error_message(status_response)}")
+            uploaded = status_response.json()
+            state = str(uploaded.get("state") or "").upper()
+        if state != "ACTIVE":
+            raise RuntimeError("Gemini не успел подготовить видео. Попробуйте ещё раз.")
+
+        prompt = f"""Ты режиссёр косплей-дефиле. Проанализируй видео репетиции целиком (не более 90 секунд), движения исполнителей и аудио.
+Составь практический план номера по реальным таймкодам. Объединяй одинаковые действия в блоки; обычно достаточно 8–20 строк. Не придумывай реквизит, которого не видно. Свет предлагай реалистичный, не более двух заметных смен за номер. В sound укажи слышимые музыкальные ориентиры: вступление, удар, смену части, паузу, кульминацию. Пиши кратко по-русски.
+Положение в начале: {"за кулисами" if start_mode == "wings" else "на сценической точке"}.
+Верни только JSON: {{"start_mode":"{start_mode}","timing_mode":"manual","rows":[{{"start":0,"end":5,"action":"...","props":"...","light":"...","sound":"..."}}]}}.
+start и end — целые секунды. Последний end не должен превышать фактическую длительность видео или 90 секунд."""
+        generate_response = requests.post(
+            f"{GEMINI_API_BASE_URL}/v1beta/models/{GEMINI_VIDEO_MODEL}:generateContent",
+            timeout=max(90, HTTP_TIMEOUT_SECONDS * 20),
+            headers={"Content-Type": "application/json", "X-Goog-Api-Key": GEMINI_API_KEY},
+            json={
+                "contents": [{"parts": [{"file_data": {"mime_type": mime_type, "file_uri": file_uri}}, {"text": prompt}]}],
+                "generationConfig": {"temperature": 0.2, "responseMimeType": "application/json", "maxOutputTokens": 4096},
+            },
+        )
+        if generate_response.status_code >= 400:
+            raise RuntimeError(f"Gemini не смог разобрать видео: {gemini_error_message(generate_response)}")
+        plan = normalize_performance_plan(extract_json_object(extract_gemini_response_text(generate_response.json())))
+        duration_limit = max(1, min(MAX_PERFORMANCE_VIDEO_SECONDS, int(duration_seconds + 0.999)))
+        rows = [row for row in plan.get("rows", []) if int(row.get("start") or 0) < duration_limit]
+        for row in rows:
+            row["end"] = min(int(row.get("end") or 0), duration_limit)
+        plan["rows"] = [row for row in rows if row["end"] > row["start"]]
+        plan["start_mode"] = start_mode
+        plan["timing_mode"] = "manual"
+        if not plan["rows"]:
+            raise RuntimeError("ИИ не смог выделить действия в видео. Попробуйте более чёткую запись.")
+        return plan
+    finally:
+        try:
+            requests.delete(
+                f"{GEMINI_API_BASE_URL}/v1beta/{file_name}", timeout=15,
+                headers={"X-Goog-Api-Key": GEMINI_API_KEY},
+            )
+        except requests.RequestException:
+            pass
 
 
 def parse_positive_int(raw: str | None) -> int | None:
@@ -21450,6 +21644,73 @@ def cosplan_performance_plan_preview_pdf(
         iter([pdf_bytes]), media_type="application/pdf",
         headers={"Content-Disposition": 'attachment; filename="defile-plan.pdf"'},
     )
+
+
+@app.post("/cosplan/performance-plan/analyze-video")
+async def cosplan_performance_plan_analyze_video(
+    request: Request,
+    video: UploadFile = File(...),
+    start_mode: str = Form("point"),
+    db: Session = Depends(get_db),
+):
+    user = current_user(request, db)
+    if not user:
+        return JSONResponse({"error": "Требуется авторизация."}, status_code=401)
+    if not GEMINI_API_KEY:
+        return JSONResponse(
+            {"error": "ИИ-анализ видео пока не настроен: администратору нужно добавить GEMINI_API_KEY."},
+            status_code=503,
+        )
+    usage = get_performance_video_ai_usage(db, user.id)
+    if usage["remaining_today"] <= 0:
+        return JSONResponse(
+            {"error": f"Дневной лимит исчерпан ({usage['daily_limit']} анализа). Попробуйте завтра."},
+            status_code=429,
+        )
+    allowed_mime_types = {"video/mp4", "video/quicktime", "video/webm", "video/mpeg", "video/x-msvideo", "video/avi"}
+    mime_type = str(video.content_type or "").lower().strip()
+    if mime_type not in allowed_mime_types:
+        return JSONResponse({"error": "Поддерживаются MP4, MOV, WebM, MPEG и AVI."}, status_code=400)
+    start_mode = "wings" if start_mode == "wings" else "point"
+    suffix = Path(video.filename or "video").suffix[:12]
+    temp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(prefix="defile-video-", suffix=suffix, delete=False) as target:
+            temp_path = Path(target.name)
+            total = 0
+            while chunk := await video.read(1024 * 1024):
+                total += len(chunk)
+                if total > MAX_PERFORMANCE_VIDEO_BYTES:
+                    return JSONResponse(
+                        {"error": f"Видео слишком большое. Максимум {MAX_PERFORMANCE_VIDEO_BYTES // (1024 * 1024)} МБ."},
+                        status_code=413,
+                    )
+                target.write(chunk)
+        if not temp_path.stat().st_size:
+            return JSONResponse({"error": "Загружен пустой файл."}, status_code=400)
+        duration = await asyncio.to_thread(performance_video_duration_seconds, temp_path)
+        if duration is None:
+            return JSONResponse({"error": "Не удалось прочитать видеофайл."}, status_code=400)
+        if duration > MAX_PERFORMANCE_VIDEO_SECONDS + 0.5:
+            return JSONResponse({"error": "Видео должно быть не длиннее 01:30."}, status_code=400)
+        usage = increment_performance_video_ai_usage(db, user.id)
+        db.commit()
+        gemini_mime_type = {"video/quicktime": "video/mov", "video/x-msvideo": "video/avi"}.get(mime_type, mime_type)
+        plan = await asyncio.to_thread(
+            analyze_performance_video_with_gemini, temp_path, gemini_mime_type, start_mode, duration
+        )
+        return JSONResponse({"plan": plan, "model": GEMINI_VIDEO_MODEL, "remaining_today": usage["remaining_today"]})
+    except requests.RequestException:
+        return JSONResponse({"error": "Не удалось связаться с Gemini. Попробуйте ещё раз позже."}, status_code=502)
+    except RuntimeError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=422)
+    finally:
+        await video.close()
+        if temp_path:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 @app.get("/cosplan/{card_id}", response_class=HTMLResponse)
