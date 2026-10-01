@@ -27,6 +27,23 @@
   <link rel="icon" type="image/png" href="/static/favicon.png" />
   <link rel="apple-touch-icon" href="/static/icon-192.png" />
   <link rel="manifest" href="/static/site.webmanifest" />
+  <script>
+    (function () {
+      var theme = "light";
+      try {
+        var savedTheme = window.localStorage.getItem("cosplay-planner-theme");
+        if (savedTheme === "dark" || savedTheme === "light") {
+          theme = savedTheme;
+        } else if (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) {
+          theme = "dark";
+        }
+      } catch (_) {
+        // The light theme remains a safe fallback when storage is unavailable.
+      }
+      document.documentElement.dataset.theme = theme;
+      document.documentElement.style.colorScheme = theme;
+    })();
+  </script>
   <link rel="stylesheet" href="/static/styles.css" />
   <script>
     (function () {
@@ -56,6 +73,17 @@
 </head>
 <body class="{% if request.url.path == '/' and not user %}landing-page{% endif %}">
   <noscript><div><img src="https://mc.yandex.ru/watch/108331088" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+  <button
+    type="button"
+    id="theme-toggle"
+    class="theme-toggle"
+    aria-label="Включить темную тему"
+    aria-pressed="false"
+    title="Включить темную тему"
+  >
+    <span class="theme-toggle-icon theme-toggle-icon-moon" aria-hidden="true">☾</span>
+    <span class="theme-toggle-icon theme-toggle-icon-sun" aria-hidden="true">☀</span>
+  </button>
   <div class="site-bg-foxy" aria-hidden="true"></div>
   <div class="site-bg-star2" aria-hidden="true"></div>
   <header class="topbar">
@@ -540,6 +568,35 @@
     })();
   </script>
   {% endif %}
+  <script>
+    (function () {
+      const toggle = document.getElementById("theme-toggle");
+      const themeColor = document.querySelector('meta[name="theme-color"]');
+      if (!toggle) return;
+
+      function setTheme(theme, persist) {
+        const isDark = theme === "dark";
+        document.documentElement.dataset.theme = isDark ? "dark" : "light";
+        document.documentElement.style.colorScheme = isDark ? "dark" : "light";
+        toggle.setAttribute("aria-pressed", String(isDark));
+        toggle.setAttribute("aria-label", isDark ? "Включить светлую тему" : "Включить темную тему");
+        toggle.setAttribute("title", isDark ? "Включить светлую тему" : "Включить темную тему");
+        if (themeColor) themeColor.setAttribute("content", isDark ? "#25232d" : "#1577b3");
+        if (persist) {
+          try {
+            window.localStorage.setItem("cosplay-planner-theme", isDark ? "dark" : "light");
+          } catch (_) {
+            // Theme switching still works for the current page.
+          }
+        }
+      }
+
+      setTheme(document.documentElement.dataset.theme, false);
+      toggle.addEventListener("click", function () {
+        setTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark", true);
+      });
+    })();
+  </script>
   {% block scripts %}{% endblock %}
 </body>
 </html>
