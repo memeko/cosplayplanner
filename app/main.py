@@ -45,8 +45,8 @@ from itsdangerous import BadSignature, TimestampSigner
 from markupsafe import Markup
 from passlib.context import CryptContext
 from PIL import Image, ImageDraw, ImageFont, ImageOps, UnidentifiedImageError
-from sqlalchemy import String, and_, cast, func, inspect, or_, select, text
-from sqlalchemy.exc import IntegrityError, OperationalError
+from sqlalchemy import String, and_, cast, delete, func, inspect, or_, select, text, update
+from sqlalchemy.exc import IntegrityError, OperationalError, SQLAlchemyError
 from sqlalchemy.orm import Session
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.gzip import GZipMiddleware
@@ -35949,11 +35949,30 @@ async def festivals_delete_all(festival_id: int, request: Request, db: Session =
     form = await request.form()
     next_url = safe_redirect_target(str(form.get("next", "")).strip(), "/festivals")
 
-    all_festivals = db.execute(select(Festival)).scalars().all()
-    target_items: list[Festival] = []
-    for item in all_festivals:
+    source_announcement_id = festival.source_announcement_id
+    candidate_filters = [Festival.id == festival.id]
+    if source_announcement_id:
+        candidate_filters.append(Festival.source_announcement_id == source_announcement_id)
+    if festival.import_source and festival.import_external_id:
+        candidate_filters.append(
+            and_(
+                Festival.import_source == festival.import_source,
+                Festival.import_external_id == festival.import_external_id,
+            )
+        )
+    if festival.event_date:
+        candidate_filters.append(Festival.event_date == festival.event_date)
+
+    candidate_items = db.execute(
+        select(Festival).where(or_(*candidate_filters))
+    ).scalars().all()
+    target_ids: set[int] = set()
+    for item in candidate_items:
+        if item.id == festival.id:
+            target_ids.add(int(item.id))
+            continue
         if festival.source_announcement_id and item.source_announcement_id == festival.source_announcement_id:
-            target_items.append(item)
+            target_ids.add(int(item.id))
             continue
         if (
             festival.import_source
@@ -35961,7 +35980,7 @@ async def festivals_delete_all(festival_id: int, request: Request, db: Session =
             and item.import_source == festival.import_source
             and item.import_external_id == festival.import_external_id
         ):
-            target_items.append(item)
+            target_ids.add(int(item.id))
             continue
         if festivals_look_like_duplicates(
             item.name,
@@ -35971,31 +35990,43 @@ async def festivals_delete_all(festival_id: int, request: Request, db: Session =
             festival.city,
             festival.event_date,
         ):
-            target_items.append(item)
+            target_ids.add(int(item.id))
 
-    target_ids = {int(item.id) for item in target_items if item.id}
-    if target_ids:
-        linked_applications = db.execute(
-            select(FestivalApplication).where(FestivalApplication.festival_id.in_(target_ids))
-        ).scalars().all()
-        for application in linked_applications:
-            db.delete(application)
+    deleted_count = len(target_ids)
+    try:
+        if target_ids:
+            # Explicitly clear optional links so this remains safe even in databases
+            # where foreign-key actions were not enabled when the tables were created.
+            for related_model in (EventManagementEvent, PhotoContestRequest, PhotoContest):
+                db.execute(
+                    update(related_model)
+                    .where(related_model.festival_id.in_(target_ids))
+                    .values(festival_id=None)
+                    .execution_options(synchronize_session=False)
+                )
+            db.execute(
+                delete(FestivalApplication)
+                .where(FestivalApplication.festival_id.in_(target_ids))
+                .execution_options(synchronize_session=False)
+            )
+            db.execute(
+                delete(Festival)
+                .where(Festival.id.in_(target_ids))
+                .execution_options(synchronize_session=False)
+            )
 
-    deleted_count = 0
-    seen_ids: set[int] = set()
-    for item in target_items:
-        if item.id in seen_ids:
-            continue
-        seen_ids.add(item.id)
-        db.delete(item)
-        deleted_count += 1
+        if source_announcement_id:
+            db.execute(
+                delete(FestivalAnnouncement)
+                .where(FestivalAnnouncement.id == source_announcement_id)
+                .execution_options(synchronize_session=False)
+            )
+        db.commit()
+    except SQLAlchemyError:
+        db.rollback()
+        add_flash(request, "Не удалось удалить фестиваль. Попробуйте ещё раз.", "error")
+        return redirect(next_url)
 
-    if festival.source_announcement_id:
-        source_announcement = db.get(FestivalAnnouncement, festival.source_announcement_id)
-        if source_announcement:
-            db.delete(source_announcement)
-
-    db.commit()
     add_flash(request, f"Фестиваль удалён у всех пользователей: {deleted_count}.", "info")
     return redirect(next_url)
 
