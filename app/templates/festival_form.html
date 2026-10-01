@@ -144,6 +144,10 @@
   .festival-review-body { margin: 0.65rem 0 0; white-space: pre-wrap; }
   .festival-review-form textarea { min-height: 7rem; }
   .festival-review-status { margin-top: 0.65rem; }
+  .reviewer-picker-list { max-height: 230px; overflow: auto; padding: .55rem; border: 1px solid rgba(184,200,255,.65); border-radius: 16px; background: rgba(255,255,255,.48); }
+  .reviewer-picker-option { display: flex; align-items: center; gap: .55rem; padding: .42rem .5rem; border-radius: 10px; }
+  .reviewer-picker-option:hover { background: rgba(184,200,255,.2); }
+  .reviewer-picker-option[hidden] { display: none; }
   @media (max-width: 780px) {
     .festival-nomination-row {
       grid-template-columns: 1fr;
@@ -255,15 +259,17 @@
           <input type="checkbox" name="accepts_applications" {% if form.accepts_applications %}checked{% endif %} />
           Принимать заявки
         </label>
-        <label class="top-offset">
-          Представители фестиваля, которым доступны заявки
-          <select name="application_reviewer_ids" multiple size="5">
-            {% for option_user in application_reviewer_options %}
-              <option value="{{ option_user.id }}" {% if option_user.id in form.application_reviewer_ids_json %}selected{% endif %}>@{{ option_user.cosplay_nick or option_user.username }}</option>
-            {% endfor %}
-          </select>
+        <label class="top-offset">Поиск представителя по нику
+          <input type="search" class="reviewer-picker-search" placeholder="Начните вводить ник…" autocomplete="off" />
         </label>
-        <p class="muted">Используйте Ctrl/Cmd, чтобы выбрать нескольких пользователей.</p>
+        <div class="reviewer-picker-list" data-reviewer-picker>
+          {% for option_user in application_reviewer_options %}
+            <label class="reviewer-picker-option" data-search="{{ (option_user.cosplay_nick or '')|lower }} {{ option_user.username|lower }}">
+              <input type="checkbox" name="application_reviewer_ids" value="{{ option_user.id }}" {% if option_user.id in form.application_reviewer_ids_json %}checked{% endif %} />
+              <span>@{{ option_user.cosplay_nick or option_user.username }}{% if option_user.cosplay_nick and option_user.cosplay_nick != option_user.username %} <span class="muted">({{ option_user.username }})</span>{% endif %}</span>
+            </label>
+          {% endfor %}
+        </div>
       </section>
 
       <div class="grid three-col">
@@ -659,6 +665,15 @@
 {% endif %}
 
 <script>
+  document.querySelectorAll('.reviewer-picker-search').forEach((input) => {
+    const list = input.parentElement.nextElementSibling;
+    input.addEventListener('input', () => {
+      const query = input.value.trim().toLocaleLowerCase('ru');
+      list.querySelectorAll('.reviewer-picker-option').forEach((option) => {
+        option.hidden = Boolean(query) && !String(option.dataset.search || '').includes(query);
+      });
+    });
+  });
   const isGoing = document.getElementById("is_going");
   const coproplayerWrap = document.getElementById("going_coproplayers_wrap");
   const nominationRows = document.getElementById("festival_nomination_rows");

@@ -45,7 +45,7 @@ from itsdangerous import BadSignature, TimestampSigner
 from markupsafe import Markup
 from passlib.context import CryptContext
 from PIL import Image, ImageDraw, ImageFont, ImageOps, UnidentifiedImageError
-from sqlalchemy import and_, func, inspect, or_, select, text
+from sqlalchemy import String, and_, cast, func, inspect, or_, select, text
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -4116,19 +4116,8 @@ def cached_character_birthdays_today(today: date) -> list[dict[str, Any]]:
         if (now - cached_at).total_seconds() < NETWORK_CACHE_TTL_SECONDS:
             return list(payload) if isinstance(payload, list) else []
 
-    fallback_payload: list[dict[str, Any]] = []
-    if not cached:
-        try:
-            # On a cold cache, return the localized payload immediately. Previously the
-            # first page view always received the non-localized fallback and users rarely
-            # saw the background refresh result without manually reloading the page.
-            fallback_payload = character_birthdays_today(today, include_localization=True)
-            NETWORK_CACHE[cache_key] = (datetime.utcnow(), fallback_payload)
-        except Exception:
-            fallback_payload = []
-
     with CHARACTER_BIRTHDAYS_REFRESH_LOCK:
-        should_refresh = bool(cached) and cache_key not in CHARACTER_BIRTHDAYS_REFRESHING
+        should_refresh = cache_key not in CHARACTER_BIRTHDAYS_REFRESHING
         if should_refresh:
             CHARACTER_BIRTHDAYS_REFRESHING.add(cache_key)
 
@@ -4151,7 +4140,9 @@ def cached_character_birthdays_today(today: date) -> list[dict[str, Any]]:
     if cached:
         _cached_at, stale_payload = cached
         return list(stale_payload) if isinstance(stale_payload, list) else []
-    return fallback_payload
+    # Network sources must never hold up the home page on a cold cache.
+    # The background refresh fills the block for the next request.
+    return []
 
 
 def event_matches_day(day_value: date, event: dict[str, Any]) -> bool:
@@ -34306,11 +34297,28 @@ def user_can_access_event_management_event(user: User | None, event: EventManage
     return bool(event_team_member_aliases(event).intersection(alias for alias in user_aliases if alias))
 
 
+def event_management_events_for_user(db: Session, user: User) -> list[EventManagementEvent]:
+    user_id = int(user.id)
+    team_json = cast(EventManagementEvent.team_rows_json, String)
+    candidates = db.execute(
+        select(EventManagementEvent)
+        .where(
+            or_(
+                EventManagementEvent.creator_user_id == user_id,
+                EventManagementEvent.leader_user_id == user_id,
+                team_json.like(f'%"user_id": {user_id}%'),
+                team_json.like(f'%"user_id":{user_id}%'),
+            )
+        )
+        .order_by(EventManagementEvent.updated_at.desc())
+    ).scalars().all()
+    return [event for event in candidates if user_can_access_event_management_event(user, event)]
+
+
 def user_is_mentioned_in_event_management(db: Session, user: User | None) -> bool:
     if not user:
         return False
-    events = db.execute(select(EventManagementEvent)).scalars().all()
-    return any(user_can_access_event_management_event(user, event) for event in events)
+    return bool(event_management_events_for_user(db, user))
 
 
 def grant_event_organizer_role_for_event_team(db: Session, event: EventManagementEvent) -> None:
@@ -34778,14 +34786,31 @@ def event_management_list(request: Request, db: Session = Depends(get_db)):
     user = current_user(request, db)
     if not user:
         return redirect("/login")
-    all_events = db.execute(select(EventManagementEvent).order_by(EventManagementEvent.updated_at.desc())).scalars().all()
-    events = [event for event in all_events if user_can_access_event_management_event(user, event)]
+    events = event_management_events_for_user(db, user)
+    reviewer_token = str(int(user.id))
+    reviewer_json = cast(Festival.application_reviewer_ids_json, String)
+    reviewer_candidates = db.execute(
+        select(Festival)
+        .where(
+            or_(
+                reviewer_json == f"[{reviewer_token}]",
+                reviewer_json.like(f"[{reviewer_token},%"),
+                reviewer_json.like(f"%, {reviewer_token},%"),
+                reviewer_json.like(f"%, {reviewer_token}]"),
+                reviewer_json.like(f"%,{reviewer_token},%"),
+                reviewer_json.like(f"%,{reviewer_token}]"),
+            )
+        )
+        .order_by(Festival.event_date, Festival.name)
+    ).scalars().all()
     review_festivals = [
-        item for item in db.execute(select(Festival).order_by(Festival.event_date, Festival.name)).scalars().all()
+        item for item in reviewer_candidates
         if user.id in {int(value) for value in as_list(item.application_reviewer_ids_json) if str(value).isdigit()}
     ]
     seen_keys: set[str] = set()
     festival_application_cards: list[dict[str, Any]] = []
+    grouped_festivals: list[tuple[Festival, list[int]]] = []
+    all_review_festival_ids: set[int] = set()
     for festival in review_festivals:
         key = str(festival.source_announcement_id or festival.id)
         if key in seen_keys:
@@ -34795,10 +34820,22 @@ def event_management_list(request: Request, db: Session = Depends(get_db)):
             item.id for item in review_festivals
             if (festival.source_announcement_id and item.source_announcement_id == festival.source_announcement_id) or item.id == festival.id
         ]
+        grouped_festivals.append((festival, sibling_ids))
+        all_review_festival_ids.update(sibling_ids)
+    applications_by_festival_id: dict[int, list[FestivalApplication]] = defaultdict(list)
+    if all_review_festival_ids:
         applications = db.execute(
-            select(FestivalApplication).where(FestivalApplication.festival_id.in_(sibling_ids)).order_by(FestivalApplication.created_at.desc())
+            select(FestivalApplication)
+            .where(FestivalApplication.festival_id.in_(all_review_festival_ids))
+            .order_by(FestivalApplication.created_at.desc())
         ).scalars().all()
-        festival_application_cards.append({"festival": festival, "applications": applications})
+        for application in applications:
+            applications_by_festival_id[int(application.festival_id)].append(application)
+    for festival, sibling_ids in grouped_festivals:
+        festival_application_cards.append({
+            "festival": festival,
+            "applications": [application for sibling_id in sibling_ids for application in applications_by_festival_id.get(sibling_id, [])],
+        })
     return template_response(
         request, "event_management_list.html", user=user, active_tab="event-management", events=events,
         festival_application_cards=festival_application_cards,
@@ -34898,10 +34935,7 @@ async def festival_application_create(festival_id: int, request: Request, db: Se
         "script": str(form.get("performance_script", "")).strip(),
         "light_script": str(form.get("performance_light_script", "")).strip(),
         "duration": str(form.get("performance_duration", "")).strip(),
-        "rehearsal_point": str(form.get("performance_rehearsal_point", "")).strip(),
-        "rehearsal_price": str(form.get("performance_rehearsal_price", "")).strip(),
-        "rehearsal_currency": str(form.get("performance_rehearsal_currency", "RUB")).strip(),
-        "rehearsal_count": str(form.get("performance_rehearsal_count", "")).strip(),
+        "rehearsal_video_url": str(form.get("performance_rehearsal_video_url", "")).strip(),
         "plan": str(form.get("performance_plan_json", "{}")).strip() or "{}",
     }
     application = FestivalApplication(
@@ -35886,6 +35920,11 @@ def festivals_delete(festival_id: int, request: Request, db: Session = Depends(g
         add_flash(request, "Карточку анонса нельзя удалять.", "error")
         return redirect("/festivals")
 
+    festival_applications = db.execute(
+        select(FestivalApplication).where(FestivalApplication.festival_id == festival.id)
+    ).scalars().all()
+    for application in festival_applications:
+        db.delete(application)
     db.delete(festival)
     db.commit()
 
@@ -35933,6 +35972,14 @@ async def festivals_delete_all(festival_id: int, request: Request, db: Session =
             festival.event_date,
         ):
             target_items.append(item)
+
+    target_ids = {int(item.id) for item in target_items if item.id}
+    if target_ids:
+        linked_applications = db.execute(
+            select(FestivalApplication).where(FestivalApplication.festival_id.in_(target_ids))
+        ).scalars().all()
+        for application in linked_applications:
+            db.delete(application)
 
     deleted_count = 0
     seen_ids: set[int] = set()

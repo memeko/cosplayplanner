@@ -5361,6 +5361,42 @@ html[data-theme="dark"] table:not(.landing-premium-table) :is(th, td) {
   border-color: rgba(211, 202, 229, 0.15);
 }
 
+html[data-theme="dark"] :is(.meta, .muted, label, legend, summary, .notes-block) {
+  color: #d3cedd;
+}
+
+html[data-theme="dark"] :is(.chip, .chip-check) {
+  background: rgba(92, 82, 119, 0.86);
+  border-color: rgba(213, 203, 239, 0.34);
+  color: #f8f5ff;
+}
+
+html[data-theme="dark"] :is(.chip-active, .chip-shared, .chip-source-cosplay-team) {
+  background: #59489a;
+  border-color: #aa96ef;
+  color: #fff;
+}
+
+html[data-theme="dark"] :is(.chip-alert, .festival-partner-banner) {
+  background: #633344;
+  border-color: #d98ba7;
+  color: #ffeaf1;
+}
+
+html[data-theme="dark"] :is(.card.planned, .card.planned-shared, .card.home-city-highlight, .card.nearest-city-highlight, .card.announcement-global, .card.partner-festival, .shared-project-card, .ticket-segment, .application-section, .reviewer-picker-list) {
+  color: var(--text);
+  background: linear-gradient(155deg, rgba(68, 63, 79, 0.96), rgba(42, 39, 50, 0.94));
+  border-color: rgba(204, 190, 239, 0.32);
+}
+
+html[data-theme="dark"] :is(.card.planned, .card.planned-shared, .card.home-city-highlight, .card.nearest-city-highlight, .card.announcement-global, .card.partner-festival, .shared-project-card) :is(h2, h3, h4, strong, p, .meta, .muted, .card-title-link) {
+  color: inherit;
+}
+
+html[data-theme="dark"] .reviewer-picker-option:hover {
+  background: rgba(183, 160, 255, 0.16);
+}
+
 html[data-theme="dark"] :is(.flash-info, .flash-success, .flash-warning) {
   background: rgba(67, 61, 80, 0.9);
   color: var(--text);
