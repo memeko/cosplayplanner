@@ -45,11 +45,66 @@
 {% endif %}
 
 <section class="section-head top-offset"><div><h2>Заявки на фестивали</h2><p class="muted">Карточки фестивалей, где вы указаны представителем.</p></div></section>
+<section class="box event-application-filters">
+  <form method="get" action="/event-management" class="grid two-col">
+    <label>
+      Название фестиваля
+      <input type="search" name="festival" value="{{ festival_name_filter }}" placeholder="Введите название" />
+    </label>
+    <label>
+      Ник подавшего заявку
+      <input type="search" name="applicant_nick" value="{{ applicant_nick_filter }}" placeholder="Введите ник" />
+    </label>
+    <label>
+      Номинация
+      <select name="nomination">
+        <option value="">Все номинации</option>
+        {% for value in nomination_options %}
+          <option value="{{ value }}" {% if nomination_filter == value %}selected{% endif %}>{{ value }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <fieldset class="event-application-status-filter">
+      <legend>Статусы заявок</legend>
+      <div class="event-application-status-options">
+        {% for value, label in application_status_labels.items() %}
+          <label class="inline-check">
+            <input type="checkbox" name="status" value="{{ value }}" {% if value in status_filters %}checked{% endif %} />
+            {{ label }}
+          </label>
+        {% endfor %}
+      </div>
+    </fieldset>
+    <div class="actions-inline event-application-filter-actions">
+      <button type="submit" class="btn btn-accent">Применить</button>
+      <a href="/event-management" class="btn">Сбросить</a>
+    </div>
+  </form>
+</section>
 {% if festival_application_cards %}
 <div class="cards-grid">
   {% for card in festival_application_cards %}
   <article class="card">
     <div class="row-between"><h3>{{ card.festival.name }}</h3><span class="chip">Заявок: {{ card.applications|length }}</span></div>
+    <details class="festival-broadcast-menu top-offset">
+      <summary class="btn btn-small">Рассылка участникам</summary>
+      <form method="post" action="/event-management/festivals/{{ card.festival.id }}/broadcast" class="grid one-col festival-broadcast-form">
+        <input type="hidden" name="next" value="{{ request.url.path }}{% if request.url.query %}?{{ request.url.query }}{% endif %}" />
+        <label>
+          Получатели
+          <select name="audience" required>
+            {% for value, label in application_broadcast_audiences.items() %}
+              <option value="{{ value }}">{{ label }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>
+          Сообщение
+          <textarea name="message" rows="4" maxlength="2000" required placeholder="Введите текст для участников"></textarea>
+        </label>
+        <button type="submit" class="btn btn-accent" onclick="return confirm('Отправить уведомление выбранной группе участников?');">Отправить уведомление</button>
+      </form>
+    </details>
     {% if card.applications %}
       {% for application in card.applications %}
       <div class="ticket-segment">
@@ -62,5 +117,17 @@
   </article>
   {% endfor %}
 </div>
-{% else %}<section class="box"><p class="muted">Вас пока не назначили представителем фестиваля для просмотра заявок.</p></section>{% endif %}
+{% else %}
+<section class="box">
+  <p class="muted">
+    {% if application_filters_active %}
+      Заявки по выбранным фильтрам не найдены.
+    {% elif has_review_festivals %}
+      Заявок пока нет.
+    {% else %}
+      Вас пока не назначили представителем фестиваля для просмотра заявок.
+    {% endif %}
+  </p>
+</section>
+{% endif %}
 {% endblock %}

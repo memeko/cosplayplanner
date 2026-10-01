@@ -101,7 +101,11 @@
 <div class="cards-grid">
   {% for contest in contests %}
     {% set status = status_by_contest_id.get(contest.id, 'open') %}
-    <article class="card">
+    <article class="card application-count-card">
+      {% if status == 'open' %}
+        {% set entry_count = entry_counts_by_contest_id.get(contest.id, 0) %}
+        <span class="application-count-badge" title="Подано заявок: {{ entry_count }}" aria-label="Подано заявок: {{ entry_count }}">{{ entry_count }}</span>
+      {% endif %}
       <div class="row-between">
         <h3>{{ contest.title }}</h3>
         <span class="chip">{{ photo_contest_status_label(status) }}</span>

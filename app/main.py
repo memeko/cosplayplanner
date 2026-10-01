@@ -1037,6 +1037,11 @@ FESTIVAL_APPLICATION_STATUS_LABELS = {
     "accepted": "Принято",
     "revision": "Требуется доработка",
 }
+FESTIVAL_APPLICATION_BROADCAST_AUDIENCES = {
+    "all": "Всем подавшим заявки",
+    "accepted": "Только принятым заявкам",
+    "rejected": "Только отклонённым заявкам",
+}
 MAX_FESTIVAL_APPLICATION_PHOTOS = 5
 
 PHOTO_CONTEST_REQUEST_STATUS_PENDING = "pending"
@@ -33539,6 +33544,50 @@ def festivals_list(request: Request, db: Session = Depends(get_db)):
     else:
         paginated_festivals = filtered[festival_page_start:festival_page_start + festival_page_size]
     festival_review_summaries_by_id, _ = festival_review_summary_map(db, paginated_festivals)
+    festival_application_counts_by_id: dict[int, int] = {}
+    application_festivals = [festival for festival in paginated_festivals if festival.accepts_applications]
+    direct_application_festival_ids = [
+        int(festival.id) for festival in application_festivals if not festival.source_announcement_id
+    ]
+    source_announcement_ids = {
+        int(festival.source_announcement_id)
+        for festival in application_festivals
+        if festival.source_announcement_id
+    }
+    direct_application_counts: dict[int, int] = {}
+    if direct_application_festival_ids:
+        direct_application_counts = {
+            int(row.festival_id): int(row.application_count)
+            for row in db.execute(
+                select(
+                    FestivalApplication.festival_id,
+                    func.count(FestivalApplication.id).label("application_count"),
+                )
+                .where(FestivalApplication.festival_id.in_(direct_application_festival_ids))
+                .group_by(FestivalApplication.festival_id)
+            ).all()
+        }
+    source_application_counts: dict[int, int] = {}
+    if source_announcement_ids:
+        source_application_counts = {
+            int(row.source_announcement_id): int(row.application_count)
+            for row in db.execute(
+                select(
+                    Festival.source_announcement_id,
+                    func.count(FestivalApplication.id).label("application_count"),
+                )
+                .join(FestivalApplication, FestivalApplication.festival_id == Festival.id)
+                .where(Festival.source_announcement_id.in_(source_announcement_ids))
+                .group_by(Festival.source_announcement_id)
+            ).all()
+        }
+    for festival in application_festivals:
+        if festival.source_announcement_id:
+            festival_application_counts_by_id[int(festival.id)] = source_application_counts.get(
+                int(festival.source_announcement_id), 0
+            )
+        else:
+            festival_application_counts_by_id[int(festival.id)] = direct_application_counts.get(int(festival.id), 0)
     festival_page_numbers = list(range(max(1, festival_current_page - 2), min(festival_total_pages, festival_current_page + 2) + 1))
     festival_pagination_params: dict[str, Any] = {}
     if festival_tab == "my":
@@ -33859,6 +33908,7 @@ def festivals_list(request: Request, db: Session = Depends(get_db)):
         festival_ticket_return_by_id=festival_ticket_return_by_id,
         festival_timing_by_id=festival_timing_by_id,
         festival_review_summaries_by_id=festival_review_summaries_by_id,
+        festival_application_counts_by_id=festival_application_counts_by_id,
         show_summary=show_summary,
         summary_rows=summary_rows,
         user_home_city=user.home_city or "",
@@ -34786,6 +34836,14 @@ def event_management_list(request: Request, db: Session = Depends(get_db)):
     user = current_user(request, db)
     if not user:
         return redirect("/login")
+    festival_name_filter = str(request.query_params.get("festival", "")).strip()
+    nomination_filter = str(request.query_params.get("nomination", "")).strip()
+    applicant_nick_filter = str(request.query_params.get("applicant_nick", "")).strip()
+    status_filters = [
+        value
+        for value in dict.fromkeys(request.query_params.getlist("status"))
+        if value in FESTIVAL_APPLICATION_STATUS_LABELS
+    ]
     events = event_management_events_for_user(db, user)
     reviewer_token = str(int(user.id))
     reviewer_json = cast(Festival.application_reviewer_ids_json, String)
@@ -34831,16 +34889,61 @@ def event_management_list(request: Request, db: Session = Depends(get_db)):
         ).scalars().all()
         for application in applications:
             applications_by_festival_id[int(application.festival_id)].append(application)
+    nomination_options = sorted(
+        {
+            application.nomination.strip()
+            for festival_applications in applications_by_festival_id.values()
+            for application in festival_applications
+            if application.nomination and application.nomination.strip()
+        },
+        key=str.casefold,
+    )
+    normalized_festival_name = festival_name_filter.casefold()
+    normalized_applicant_nick = applicant_nick_filter.casefold()
+    selected_statuses = set(status_filters)
+    has_application_filters = bool(nomination_filter or normalized_applicant_nick or selected_statuses)
     for festival, sibling_ids in grouped_festivals:
+        if normalized_festival_name and normalized_festival_name not in (festival.name or "").casefold():
+            continue
+        card_applications = [
+            application
+            for sibling_id in sibling_ids
+            for application in applications_by_festival_id.get(sibling_id, [])
+        ]
+        if nomination_filter:
+            card_applications = [
+                application for application in card_applications
+                if application.nomination == nomination_filter
+            ]
+        if selected_statuses:
+            card_applications = [
+                application for application in card_applications
+                if application.status in selected_statuses
+            ]
+        if normalized_applicant_nick:
+            card_applications = [
+                application for application in card_applications
+                if normalized_applicant_nick in (application.nick or "").casefold()
+            ]
+        if has_application_filters and not card_applications:
+            continue
         festival_application_cards.append({
             "festival": festival,
-            "applications": [application for sibling_id in sibling_ids for application in applications_by_festival_id.get(sibling_id, [])],
+            "applications": card_applications,
         })
     return template_response(
         request, "event_management_list.html", user=user, active_tab="event-management", events=events,
         festival_application_cards=festival_application_cards,
         can_create_event=is_event_organizer_user(user),
         application_status_labels=FESTIVAL_APPLICATION_STATUS_LABELS,
+        application_broadcast_audiences=FESTIVAL_APPLICATION_BROADCAST_AUDIENCES,
+        festival_name_filter=festival_name_filter,
+        nomination_filter=nomination_filter,
+        nomination_options=nomination_options,
+        applicant_nick_filter=applicant_nick_filter,
+        status_filters=status_filters,
+        has_review_festivals=bool(review_festivals),
+        application_filters_active=bool(festival_name_filter or has_application_filters),
     )
 
 
@@ -34849,6 +34952,18 @@ def user_can_review_festival_application(user: User, festival: Festival | None) 
         return False
     reviewer_ids = {int(value) for value in as_list(festival.application_reviewer_ids_json) if str(value).isdigit()}
     return user.id in reviewer_ids or can_manage_festival_globally(user)
+
+
+def festival_application_festival_ids(db: Session, festival: Festival) -> list[int]:
+    if not festival.source_announcement_id:
+        return [int(festival.id)]
+    return [
+        int(festival_id)
+        for festival_id in db.execute(
+            select(Festival.id).where(Festival.source_announcement_id == festival.source_announcement_id)
+        ).scalars().all()
+        if festival_id
+    ]
 
 
 async def save_festival_application_image(upload: UploadFile, prefix: str) -> str:
@@ -34989,6 +35104,63 @@ async def festival_application_status_update(application_id: int, request: Reque
     db.commit()
     add_flash(request, "Статус заявки обновлён, участнику отправлено уведомление.", "success")
     return redirect(f"/event-management/applications/{application.id}")
+
+
+@app.post("/event-management/festivals/{festival_id}/broadcast")
+async def festival_application_broadcast(festival_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    festival = db.get(Festival, festival_id)
+    if not festival or not user_can_review_festival_application(user, festival):
+        add_flash(request, "Рассылка для этого фестиваля недоступна.", "error")
+        return redirect("/event-management")
+
+    form = await request.form()
+    next_url = safe_redirect_target(str(form.get("next", "")).strip(), "/event-management")
+    audience = str(form.get("audience", "")).strip()
+    message_body = normalize_text_line_breaks(str(form.get("message", "")).strip())
+    if audience not in FESTIVAL_APPLICATION_BROADCAST_AUDIENCES:
+        add_flash(request, "Выберите получателей рассылки.", "error")
+        return redirect(next_url)
+    if not message_body:
+        add_flash(request, "Введите текст рассылки.", "error")
+        return redirect(next_url)
+    if len(message_body) > 2000:
+        add_flash(request, "Текст рассылки должен быть не длиннее 2000 символов.", "error")
+        return redirect(next_url)
+
+    application_ids = festival_application_festival_ids(db, festival)
+    recipient_query = select(FestivalApplication.applicant_user_id).where(
+        FestivalApplication.festival_id.in_(application_ids)
+    )
+    if audience == "accepted":
+        recipient_query = recipient_query.where(FestivalApplication.status == "accepted")
+    elif audience == "rejected":
+        recipient_query = recipient_query.where(FestivalApplication.status == "rejected")
+    recipient_ids = {
+        int(recipient_id)
+        for recipient_id in db.execute(recipient_query.distinct()).scalars().all()
+        if recipient_id
+    }
+    if not recipient_ids:
+        add_flash(request, "В выбранной группе пока нет получателей.", "warning")
+        return redirect(next_url)
+
+    notification_message = f"Сообщение от организаторов фестиваля «{festival.name}»: {message_body}"
+    db.add_all([
+        FestivalNotification(
+            user_id=recipient_id,
+            from_user_id=user.id,
+            source_card_id=None,
+            message=notification_message,
+            is_read=False,
+        )
+        for recipient_id in sorted(recipient_ids)
+    ])
+    db.commit()
+    add_flash(request, f"Рассылка отправлена. Получателей: {len(recipient_ids)}.", "success")
+    return redirect(next_url)
 
 
 @app.get("/event-management/new", response_class=HTMLResponse)
@@ -36923,7 +37095,6 @@ def photo_contest_list(request: Request, db: Session = Depends(get_db)):
         ).scalars().all()
         if item
     }
-
     status_by_contest_id: dict[int, str] = {}
     filtered_contests: list[PhotoContest] = []
     for contest in contests:
@@ -36934,6 +37105,21 @@ def photo_contest_list(request: Request, db: Session = Depends(get_db)):
         if participating_only and int(contest.id) not in user_entry_contest_ids:
             continue
         filtered_contests.append(contest)
+
+    entry_counts_by_contest_id: dict[int, int] = {}
+    filtered_contest_ids = [int(contest.id) for contest in filtered_contests]
+    if filtered_contest_ids:
+        entry_counts_by_contest_id = {
+            int(row.contest_id): int(row.entry_count)
+            for row in db.execute(
+                select(
+                    PhotoContestEntry.contest_id,
+                    func.count(PhotoContestEntry.id).label("entry_count"),
+                )
+                .where(PhotoContestEntry.contest_id.in_(filtered_contest_ids))
+                .group_by(PhotoContestEntry.contest_id)
+            ).all()
+        }
 
     pending_requests: list[PhotoContestRequest] = []
     if is_moderator_user(user):
@@ -36970,6 +37156,7 @@ def photo_contest_list(request: Request, db: Session = Depends(get_db)):
         participating_only=participating_only,
         status_by_contest_id=status_by_contest_id,
         user_entry_contest_ids=user_entry_contest_ids,
+        entry_counts_by_contest_id=entry_counts_by_contest_id,
         pending_requests=pending_requests,
         own_requests=own_requests,
         requesters_by_id=requesters_by_id,
