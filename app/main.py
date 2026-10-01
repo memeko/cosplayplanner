@@ -91,6 +91,7 @@ from .models import (
     Festival,
     FestivalAnnouncement,
     FestivalNotification,
+    FestivalReview,
     HomeNews,
     InProgressCard,
     InProgressMasterBoard,
@@ -1536,6 +1537,13 @@ def apply_schema_migrations() -> None:
             ("timing_event_start_time", "VARCHAR(8)"),
             ("timing_block_start_time", "VARCHAR(8)"),
         ],
+        "festival_reviews": [
+            ("is_anonymous", "BOOLEAN NOT NULL DEFAULT 0"),
+            ("status", "VARCHAR(32) NOT NULL DEFAULT 'approved'"),
+            ("reviewed_by_user_id", "INTEGER"),
+            ("reviewed_at", "DATETIME"),
+            ("updated_at", "DATETIME DEFAULT CURRENT_TIMESTAMP"),
+        ],
         "work_shift_days": [
             ("is_half_day", "BOOLEAN NOT NULL DEFAULT 0"),
         ],
@@ -1697,6 +1705,8 @@ def apply_schema_migrations() -> None:
             CommunityArticleFavorite.__table__.create(bind=conn, checkfirst=True)
         if "festival_announcements" not in existing_tables:
             FestivalAnnouncement.__table__.create(bind=conn, checkfirst=True)
+        if "festival_reviews" not in existing_tables:
+            FestivalReview.__table__.create(bind=conn, checkfirst=True)
         if "home_news" not in existing_tables:
             HomeNews.__table__.create(bind=conn, checkfirst=True)
         if "rehearsal_cards" not in existing_tables:
@@ -2582,6 +2592,10 @@ def can_manage_festival_globally(user: User | None) -> bool:
         normalize_username(user.cosplay_nick).casefold(),
     }
     return any(alias in FESTIVAL_GLOBAL_EDITOR_USERNAMES for alias in aliases if alias)
+
+
+def can_moderate_festival_reviews(user: User | None) -> bool:
+    return bool(user and (is_primary_admin_user(user) or can_manage_festival_globally(user) or can_edit_all_cards(user)))
 
 
 def can_edit_festival_icon(user: User | None) -> bool:
@@ -31928,6 +31942,66 @@ def festival_duplicate_group_key_for_item(festival: Festival) -> str:
     )
 
 
+def festival_review_summary_map(
+    db: Session,
+    festivals: list[Festival],
+) -> tuple[dict[int, dict[str, Any]], dict[int, str]]:
+    festival_keys_by_id = {
+        int(festival.id): festival_duplicate_group_key_for_item(festival)
+        for festival in festivals
+        if festival.id and festival_duplicate_group_key_for_item(festival)
+    }
+    unique_keys = sorted(set(festival_keys_by_id.values()))
+    if not unique_keys:
+        return {}, festival_keys_by_id
+
+    rows = db.execute(
+        select(
+            FestivalReview.festival_key,
+            func.avg(FestivalReview.stars),
+            func.count(FestivalReview.id),
+        )
+        .where(
+            FestivalReview.festival_key.in_(unique_keys),
+            FestivalReview.status == "approved",
+        )
+        .group_by(FestivalReview.festival_key)
+    ).all()
+    summaries_by_key = {
+        str(festival_key): {
+            "average": round(float(average or 0), 1),
+            "count": int(review_count or 0),
+        }
+        for festival_key, average, review_count in rows
+    }
+    return {
+        festival_id: summaries_by_key.get(festival_key, {"average": 0.0, "count": 0})
+        for festival_id, festival_key in festival_keys_by_id.items()
+    }, festival_keys_by_id
+
+
+def move_festival_reviews_to_key(db: Session, old_key: str, new_key: str) -> None:
+    if not old_key or not new_key or old_key == new_key:
+        return
+    old_reviews = db.execute(
+        select(FestivalReview).where(FestivalReview.festival_key == old_key)
+    ).scalars().all()
+    if not old_reviews:
+        return
+    existing_user_ids = {
+        int(user_id)
+        for user_id in db.execute(
+            select(FestivalReview.user_id).where(FestivalReview.festival_key == new_key)
+        ).scalars().all()
+    }
+    for review in old_reviews:
+        if review.user_id in existing_user_ids:
+            db.delete(review)
+            continue
+        review.festival_key = new_key
+        existing_user_ids.add(review.user_id)
+
+
 def find_similar_festival_name_candidates(
     db: Session,
     *,
@@ -33432,6 +33506,7 @@ def festivals_list(request: Request, db: Session = Depends(get_db)):
         ).scalars().all()
     else:
         paginated_festivals = filtered[festival_page_start:festival_page_start + festival_page_size]
+    festival_review_summaries_by_id, _ = festival_review_summary_map(db, paginated_festivals)
     festival_page_numbers = list(range(max(1, festival_current_page - 2), min(festival_total_pages, festival_current_page + 2) + 1))
     festival_pagination_params: dict[str, Any] = {}
     if festival_tab == "my":
@@ -33751,6 +33826,7 @@ def festivals_list(request: Request, db: Session = Depends(get_db)):
         festival_ticket_outbound_by_id=festival_ticket_outbound_by_id,
         festival_ticket_return_by_id=festival_ticket_return_by_id,
         festival_timing_by_id=festival_timing_by_id,
+        festival_review_summaries_by_id=festival_review_summaries_by_id,
         show_summary=show_summary,
         summary_rows=summary_rows,
         user_home_city=user.home_city or "",
@@ -35062,6 +35138,35 @@ def festivals_card_view(festival_id: int, request: Request, db: Session = Depend
         add_flash(request, "Фестиваль не найден.", "error")
         return redirect("/festivals")
 
+    festival_key = festival_duplicate_group_key_for_item(festival)
+    approved_reviews = db.execute(
+        select(FestivalReview)
+        .where(
+            FestivalReview.festival_key == festival_key,
+            FestivalReview.status == "approved",
+        )
+        .order_by(FestivalReview.updated_at.desc(), FestivalReview.id.desc())
+    ).scalars().all()
+    my_review = db.execute(
+        select(FestivalReview).where(
+            FestivalReview.festival_key == festival_key,
+            FestivalReview.user_id == user.id,
+        )
+    ).scalar_one_or_none()
+    pending_reviews: list[FestivalReview] = []
+    can_moderate_reviews = can_moderate_festival_reviews(user)
+    if can_moderate_reviews:
+        pending_reviews = db.execute(
+            select(FestivalReview)
+            .where(
+                FestivalReview.festival_key == festival_key,
+                FestivalReview.status == "pending",
+            )
+            .order_by(FestivalReview.created_at, FestivalReview.id)
+        ).scalars().all()
+    review_count = len(approved_reviews)
+    review_average = round(sum(item.stars for item in approved_reviews) / review_count, 1) if review_count else 0.0
+
     _, _, alias_options = build_user_alias_lookup(db)
     return template_response(
         request,
@@ -35082,9 +35187,129 @@ def festivals_card_view(festival_id: int, request: Request, db: Session = Depend
         can_upload_ticket_files=user_has_premium_status(db, user),
         max_festival_ticket_files=MAX_FESTIVAL_TICKET_FILES,
         ticket_transport_options=FESTIVAL_TICKET_TRANSPORT_OPTIONS,
+        festival_reviews=approved_reviews,
+        festival_review_average=review_average,
+        festival_review_count=review_count,
+        my_festival_review=my_review,
+        pending_festival_reviews=pending_reviews,
+        can_moderate_festival_reviews=can_moderate_reviews,
         view_mode=True,
         form_action=f"/festivals/{festival.id}/personal",
     )
+
+
+@app.post("/festivals/{festival_id}/reviews")
+async def festival_review_save(festival_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    festival = db.execute(
+        select(Festival).where(Festival.id == festival_id, Festival.user_id == user.id)
+    ).scalar_one_or_none()
+    if not festival:
+        add_flash(request, "Фестиваль не найден.", "error")
+        return redirect("/festivals")
+
+    form = await request.form()
+    body = normalize_text_line_breaks(str(form.get("body", "")).strip())
+    try:
+        stars = int(str(form.get("stars", "")).strip())
+    except ValueError:
+        stars = 0
+    if stars < 1 or stars > 5:
+        add_flash(request, "Поставьте фестивалю от 1 до 5 звёзд.", "error")
+        return redirect(f"/festivals/{festival.id}/card#festival-reviews")
+    if not body:
+        add_flash(request, "Напишите текст отзыва.", "error")
+        return redirect(f"/festivals/{festival.id}/card#festival-reviews")
+    if len(body) > 2000:
+        add_flash(request, "Отзыв слишком длинный: максимум 2000 символов.", "error")
+        return redirect(f"/festivals/{festival.id}/card#festival-reviews")
+
+    festival_key = festival_duplicate_group_key_for_item(festival)
+    if not festival_key:
+        add_flash(request, "Не удалось определить фестиваль для отзыва.", "error")
+        return redirect(f"/festivals/{festival.id}/card#festival-reviews")
+    is_anonymous = to_bool(form.get("is_anonymous", ""))
+    review = db.execute(
+        select(FestivalReview).where(
+            FestivalReview.festival_key == festival_key,
+            FestivalReview.user_id == user.id,
+        )
+    ).scalar_one_or_none()
+    if not review:
+        review = FestivalReview(festival_key=festival_key, user_id=user.id, stars=stars, body=body)
+        db.add(review)
+    review.stars = stars
+    review.body = body
+    review.is_anonymous = is_anonymous
+    review.status = "pending" if is_anonymous else "approved"
+    review.reviewed_by_user_id = None
+    review.reviewed_at = None
+    db.commit()
+
+    if is_anonymous:
+        add_flash(request, "Анонимный отзыв отправлен на модерацию.", "success")
+    else:
+        add_flash(request, "Отзыв опубликован и виден всем пользователям.", "success")
+    return redirect(f"/festivals/{festival.id}/card#festival-reviews")
+
+
+@app.post("/festivals/{festival_id}/reviews/{review_id}/moderate")
+async def festival_review_moderate(
+    festival_id: int,
+    review_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    if not can_moderate_festival_reviews(user):
+        add_flash(request, "Недостаточно прав для модерации отзывов.", "error")
+        return redirect(f"/festivals/{festival_id}/card#festival-reviews")
+
+    festival = db.get(Festival, festival_id)
+    review = db.get(FestivalReview, review_id)
+    festival_key = festival_duplicate_group_key_for_item(festival) if festival else ""
+    if not festival or not review or review.festival_key != festival_key or review.status != "pending":
+        add_flash(request, "Отзыв для модерации не найден.", "error")
+        return redirect(f"/festivals/{festival_id}/card#festival-reviews")
+
+    form = await request.form()
+    action = str(form.get("action", "")).strip().lower()
+    if action not in {"approve", "reject"}:
+        add_flash(request, "Неизвестное действие модерации.", "error")
+        return redirect(f"/festivals/{festival_id}/card#festival-reviews")
+    review.status = "approved" if action == "approve" else "rejected"
+    review.reviewed_by_user_id = user.id
+    review.reviewed_at = datetime.now(SITE_TIMEZONE)
+    db.commit()
+    add_flash(request, "Отзыв опубликован." if action == "approve" else "Отзыв отклонён.", "success")
+    return redirect(f"/festivals/{festival_id}/card#festival-reviews")
+
+
+@app.post("/festivals/{festival_id}/reviews/{review_id}/delete")
+def festival_review_delete(festival_id: int, review_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    festival = db.execute(
+        select(Festival).where(Festival.id == festival_id, Festival.user_id == user.id)
+    ).scalar_one_or_none()
+    review = db.get(FestivalReview, review_id)
+    festival_key = festival_duplicate_group_key_for_item(festival) if festival else ""
+    if not festival or not review or review.festival_key != festival_key:
+        add_flash(request, "Отзыв не найден.", "error")
+        return redirect("/festivals")
+    if review.user_id != user.id and not can_moderate_festival_reviews(user):
+        add_flash(request, "Удалить этот отзыв нельзя.", "error")
+        return redirect(f"/festivals/{festival.id}/card#festival-reviews")
+    db.delete(review)
+    db.commit()
+    add_flash(request, "Отзыв удалён.", "success")
+    return redirect(f"/festivals/{festival.id}/card#festival-reviews")
 
 
 def save_festival_from_form(
@@ -35293,6 +35518,9 @@ async def festivals_update(festival_id: int, request: Request, db: Session = Dep
                 icon_path=icon_path,
             )
             updated_festival_ids.add(item.id)
+        old_review_key = festival_duplicate_group_key(**identity_before_update)
+        new_review_key = festival_duplicate_group_key_for_item(festival)
+        move_festival_reviews_to_key(db, old_review_key, new_review_key)
 
     remember_options(
         db,

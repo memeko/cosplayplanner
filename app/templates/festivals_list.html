@@ -126,6 +126,16 @@
     border-radius: 999px;
     background: rgba(215, 228, 255, 0.7);
   }
+  .festival-rating-summary {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    margin: 0.5rem 0 0;
+    color: #5e5bff;
+    font-weight: 700;
+    text-decoration: none;
+  }
+  .festival-rating-summary .stars { color: #7b72ff; letter-spacing: 0.06em; }
   @media (max-width: 640px) {
     .festival-pagination {
       align-items: stretch;
@@ -445,6 +455,17 @@
       {% endif %}
     </p>
     <p class="meta">Дедлайн подачи: {{ festival.submission_deadline.strftime('%d-%m-%Y') if festival.submission_deadline else "—" }}</p>
+    {% set review_summary = festival_review_summaries_by_id.get(festival.id, {}) %}
+    <a href="/festivals/{{ festival.id }}/card#festival-reviews" class="festival-rating-summary">
+      <span class="stars" aria-hidden="true">★</span>
+      {% if review_summary.get('count', 0) %}
+        {% set review_count = review_summary.get('count', 0) %}
+        {{ '%.1f'|format(review_summary.get('average', 0)) }} из 5 · {{ review_count }}
+        {% if review_count % 10 == 1 and review_count % 100 != 11 %}отзыв{% elif review_count % 10 in [2, 3, 4] and review_count % 100 not in [12, 13, 14] %}отзыва{% else %}отзывов{% endif %}
+      {% else %}
+        Пока нет отзывов
+      {% endif %}
+    </a>
     {% set nomination_items = festival_nomination_items_by_id.get(festival.id, []) %}
     {% if nomination_items %}
       <p class="meta">Номинации:</p>

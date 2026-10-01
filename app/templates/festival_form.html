@@ -91,6 +91,59 @@
     margin-top: 0.6rem;
     background: #fff;
   }
+  .festival-reviews-heading { align-items: baseline; }
+  .festival-review-average {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    color: #5e5bff;
+    font-weight: 750;
+  }
+  .festival-review-stars {
+    color: #7b72ff;
+    letter-spacing: 0.08em;
+    white-space: nowrap;
+  }
+  .festival-star-picker {
+    display: inline-flex;
+    flex-direction: row-reverse;
+    justify-content: flex-end;
+    gap: 0.15rem;
+    margin-top: 0.35rem;
+  }
+  .festival-star-picker input {
+    position: absolute;
+    opacity: 0;
+    pointer-events: none;
+  }
+  .festival-star-picker label {
+    color: #b8c8ff;
+    cursor: pointer;
+    font-size: 2rem;
+    line-height: 1;
+    transition: color 0.16s ease, transform 0.16s ease;
+  }
+  .festival-star-picker label:hover,
+  .festival-star-picker label:hover ~ label,
+  .festival-star-picker input:checked ~ label {
+    color: #6c63ff;
+  }
+  .festival-star-picker label:hover { transform: translateY(-1px); }
+  .festival-star-picker input:focus-visible + label {
+    outline: 2px solid #5e5bff;
+    outline-offset: 3px;
+    border-radius: 4px;
+  }
+  .festival-review-card {
+    padding: 1rem;
+    border: 1px solid rgba(184, 200, 255, 0.72);
+    border-radius: 18px;
+    background: linear-gradient(180deg, rgba(255,255,255,0.94), rgba(240,247,255,0.88));
+  }
+  .festival-review-card + .festival-review-card { margin-top: 0.75rem; }
+  .festival-review-body { margin: 0.65rem 0 0; white-space: pre-wrap; }
+  .festival-review-form textarea { min-height: 7rem; }
+  .festival-review-status { margin-top: 0.65rem; }
   @media (max-width: 780px) {
     .festival-nomination-row {
       grid-template-columns: 1fr;
@@ -480,6 +533,103 @@
     <a href="/festivals" class="btn">Отмена</a>
   </div>
 </form>
+
+{% if view_mode %}
+<section class="box" id="festival-reviews">
+  <div class="row-between festival-reviews-heading">
+    <h2>Отзывы о фестивале</h2>
+    <div class="festival-review-average" aria-label="Средняя оценка {{ festival_review_average }} из 5">
+      <span class="festival-review-stars" aria-hidden="true">★</span>
+      {% if festival_review_count %}
+        {{ '%.1f'|format(festival_review_average) }} из 5 · {{ festival_review_count }}
+        {% if festival_review_count % 10 == 1 and festival_review_count % 100 != 11 %}отзыв{% elif festival_review_count % 10 in [2, 3, 4] and festival_review_count % 100 not in [12, 13, 14] %}отзыва{% else %}отзывов{% endif %}
+      {% else %}
+        Пока нет оценок
+      {% endif %}
+    </div>
+  </div>
+
+  <form method="post" action="/festivals/{{ festival_id }}/reviews" class="festival-review-form top-offset">
+    <fieldset>
+      <legend><strong>Ваша оценка</strong></legend>
+      <div class="festival-star-picker" aria-label="Оценка от 1 до 5 звёзд">
+        {% for score in [5, 4, 3, 2, 1] %}
+          <input type="radio" id="festival-review-star-{{ score }}" name="stars" value="{{ score }}" {% if my_festival_review and my_festival_review.stars == score %}checked{% endif %} required />
+          <label for="festival-review-star-{{ score }}" title="{{ score }} из 5">★</label>
+        {% endfor %}
+      </div>
+    </fieldset>
+    <label class="top-offset">
+      Отзыв
+      <textarea name="body" maxlength="2000" required placeholder="Расскажите об организации, площадке, программе и своих впечатлениях">{{ my_festival_review.body if my_festival_review else '' }}</textarea>
+    </label>
+    <label class="inline-check top-offset">
+      <input type="checkbox" name="is_anonymous" value="1" {% if my_festival_review and my_festival_review.is_anonymous %}checked{% endif %} />
+      Опубликовать анонимно
+    </label>
+    <p class="muted">Анонимные отзывы становятся видны всем только после проверки администратором или редактором.</p>
+    {% if my_festival_review and my_festival_review.status != 'approved' %}
+      <p class="flash {% if my_festival_review.status == 'pending' %}flash-info{% else %}flash-error{% endif %} festival-review-status">
+        {% if my_festival_review.status == 'pending' %}Ваш анонимный отзыв ожидает модерации.{% else %}Ваш отзыв отклонён. Вы можете изменить его и отправить снова.{% endif %}
+      </p>
+    {% endif %}
+    <div class="actions-inline top-offset">
+      <button type="submit" class="btn btn-accent">{{ 'Обновить отзыв' if my_festival_review else 'Опубликовать отзыв' }}</button>
+      {% if my_festival_review %}
+        <button type="submit" class="btn btn-danger" formaction="/festivals/{{ festival_id }}/reviews/{{ my_festival_review.id }}/delete" formnovalidate onclick="return confirm('Удалить ваш отзыв?');">Удалить отзыв</button>
+      {% endif %}
+    </div>
+  </form>
+
+  {% if can_moderate_festival_reviews and pending_festival_reviews %}
+    <div class="top-offset">
+      <h3>Ожидают модерации</h3>
+      {% for review in pending_festival_reviews %}
+        <article class="festival-review-card">
+          <div class="row-between">
+            <strong>Анонимный отзыв</strong>
+            <span class="festival-review-stars" aria-label="{{ review.stars }} из 5">{{ '★' * review.stars }}{{ '☆' * (5 - review.stars) }}</span>
+          </div>
+          <p class="festival-review-body">{{ review.body }}</p>
+          <form method="post" action="/festivals/{{ festival_id }}/reviews/{{ review.id }}/moderate" class="actions-inline top-offset">
+            <button type="submit" name="action" value="approve" class="btn btn-accent">Одобрить</button>
+            <button type="submit" name="action" value="reject" class="btn btn-danger">Отклонить</button>
+          </form>
+        </article>
+      {% endfor %}
+    </div>
+  {% endif %}
+
+  <div class="top-offset">
+    <h3>Отзывы пользователей</h3>
+    {% if festival_reviews %}
+      {% for review in festival_reviews %}
+        <article class="festival-review-card">
+          <div class="row-between">
+            <strong>
+              {% if review.is_anonymous %}
+                Анонимный пользователь
+              {% else %}
+                <span class="{% if user_is_special(review.user) %}nick-special{% endif %}">@{{ review.user.cosplay_nick or review.user.username }}</span>
+              {% endif %}
+            </strong>
+            <span class="festival-review-stars" aria-label="{{ review.stars }} из 5">{{ '★' * review.stars }}{{ '☆' * (5 - review.stars) }}</span>
+          </div>
+          <p class="festival-review-body">{{ review.body }}</p>
+          <p class="meta">{{ review.updated_at.strftime('%d-%m-%Y') if review.updated_at else '' }}</p>
+          {% if review.user_id == user.id or can_moderate_festival_reviews %}
+            <form method="post" action="/festivals/{{ festival_id }}/reviews/{{ review.id }}/delete" class="top-offset" onsubmit="return confirm('Удалить отзыв?');">
+              <button type="submit" class="btn btn-danger btn-small">Удалить</button>
+            </form>
+          {% endif %}
+        </article>
+      {% endfor %}
+    {% else %}
+      <p class="muted">Отзывов пока нет. Станьте первым, кто поделится впечатлениями.</p>
+    {% endif %}
+  </div>
+</section>
+{% endif %}
 
 <script>
   const isGoing = document.getElementById("is_going");

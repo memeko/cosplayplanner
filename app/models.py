@@ -71,6 +71,12 @@ class User(Base):
         cascade="all, delete-orphan",
     )
     festivals = relationship("Festival", back_populates="user", cascade="all, delete-orphan")
+    festival_reviews = relationship(
+        "FestivalReview",
+        back_populates="user",
+        cascade="all, delete-orphan",
+        foreign_keys="FestivalReview.user_id",
+    )
     event_management_events = relationship(
         "EventManagementEvent",
         back_populates="creator",
@@ -813,6 +819,28 @@ class Festival(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
     user = relationship("User", back_populates="festivals")
+
+
+class FestivalReview(Base):
+    __tablename__ = "festival_reviews"
+
+    id = Column(Integer, primary_key=True)
+    festival_key = Column(String(768), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    stars = Column(Integer, nullable=False)
+    body = Column(Text, nullable=False)
+    is_anonymous = Column(Boolean, nullable=False, default=False)
+    status = Column(String(32), nullable=False, default="approved", index=True)
+    reviewed_by_user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    reviewed_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    user = relationship("User", back_populates="festival_reviews", foreign_keys=[user_id])
+
+    __table_args__ = (
+        UniqueConstraint("festival_key", "user_id", name="uq_festival_review_user"),
+    )
 
 
 class EventManagementEvent(Base):
