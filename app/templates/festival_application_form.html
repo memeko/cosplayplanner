@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="section-head"><div><h1>Заявка на {{ festival.name }}</h1><p class="muted">Дедлайн: {{ festival.submission_deadline.strftime('%d-%m-%Y') if festival.submission_deadline else 'не указан' }}</p></div><a href="/festivals/{{ festival.id }}/card" class="btn">Назад</a></section>
+<style>
+  .application-section{border:1px solid rgba(184,200,255,.72);border-radius:22px;padding:1.15rem;background:linear-gradient(180deg,rgba(255,255,255,.96),rgba(240,247,255,.9));box-shadow:0 12px 40px rgba(80,100,180,.08)}
+  .consent-copy{display:block;color:#62728c;font-size:.9rem;margin:.35rem 0 1rem 1.7rem}.participant-row{display:grid;grid-template-columns:1fr 1fr auto;gap:.7rem;align-items:end;margin-top:.7rem}
+  @media(max-width:760px){.participant-row{grid-template-columns:1fr}}
+</style>
+<form method="post" enctype="multipart/form-data" class="grid one-col big-form">
+  <section class="application-section">
+    <h2>Образ и участник</h2>
+    <div class="grid two-col">
+      <label>Номинация *<select name="nomination" required><option value="">Выберите номинацию</option>{% for item in nomination_items %}<option value="{{ item.title }}">{{ item.title }}</option>{% endfor %}</select></label>
+      <label>Ник *<input name="nick" required value="{{ user.cosplay_nick or user.username }}"></label>
+      <label>Транскрипция ника *<input name="nick_transcription" required></label>
+      <label>Персонаж *<input name="character_name" required></label>
+      <label>Источник *<input name="source_name" required></label>
+      <label>Город *<input name="city" required value="{{ user.home_city or '' }}"></label>
+    </div>
+    <label>Что сделано в костюме самостоятельно?<textarea name="self_made" rows="5"></textarea></label>
+  </section>
+  <section class="application-section">
+    <h2>Дефиле</h2>
+    <div class="grid two-col"><label>Музыкальный трек<input name="performance_track" placeholder="Название или ссылка"></label><label>Видео-фон<input type="url" name="performance_video_bg_url" placeholder="https://..."></label><label>Длительность<input name="performance_duration" placeholder="мм:сс" pattern="[0-9]{1,2}:[0-5][0-9]"></label><label>Место репетиций<input name="performance_rehearsal_point"></label><label>Стоимость одной репетиции<input type="number" min="0" step="0.01" name="performance_rehearsal_price"></label><label>Валюта<select name="performance_rehearsal_currency"><option value="RUB">RUB</option><option value="USD">USD</option><option value="EUR">EUR</option></select></label><label>Количество репетиций<input type="number" min="0" name="performance_rehearsal_count"></label></div>
+    <label>Сценарий дефиле<textarea name="performance_script" rows="5"></textarea></label><label>Световой сценарий<textarea name="performance_light_script" rows="4"></textarea></label>
+    <input type="hidden" name="performance_plan_json" id="performance-plan-json" value="{}">
+    <details class="top-offset"><summary class="btn">Открыть конструктор дефиле</summary><div id="plan-rows" class="top-offset"></div><button type="button" class="btn" id="add-plan-row">Добавить сцену</button></details>
+  </section>
+  <section class="application-section">
+    <h2>Фотографии</h2>
+    <label>Фотографии участника/костюма (1–5) *<input type="file" name="costume_photos" accept="image/*" multiple required></label>
+    <label>Внешний вид персонажа (1 фото) *<input type="file" name="character_photo" accept="image/*" required></label>
+  </section>
+  <section class="application-section"><div class="row-between"><h2>Другие участники</h2><button type="button" class="btn" id="add-participant">Добавить участника</button></div><div id="participant-rows"></div></section>
+  <section class="application-section"><label>Комментарий<textarea name="comment" rows="5"></textarea></label>
+    <label class="inline-check"><input type="checkbox" name="rules_accepted" required> Регламент конкурса и правила фестиваля *</label><small class="consent-copy">Подавая заявку вы подтверждаете, что все участники данной заявки (включая помощников) внимательно ознакомлены с регламентом конкурса, правилами фестиваля, и принимают их.</small>
+    <label class="inline-check"><input type="checkbox" name="personal_data_accepted" required> Согласие на обработку персональных данных *</label><small class="consent-copy">В соответствии с п.1 ст.9 закона РФ от 27.07.2006 О персональных данных, все участники данной заявки (включая помощников) дают согласие на обработку их персональных данных любым законодательно разрешенным способом.</small>
+  </section>
+  <div class="actions-inline"><button class="btn btn-accent" type="submit">Отправить заявку</button><a class="btn" href="/festivals/{{ festival.id }}/card">Отмена</a></div>
+</form>
+<script>
+(()=>{const participants=document.getElementById('participant-rows');document.getElementById('add-participant').onclick=()=>{const row=document.createElement('div');row.className='participant-row';row.innerHTML='<label>Ник сокосплеера<input name="participant_nick"></label><label>Персонаж<input name="participant_character"></label><button type="button" class="btn btn-danger">Удалить</button>';row.querySelector('button').onclick=()=>row.remove();participants.append(row)};
+const plans=document.getElementById('plan-rows'),hidden=document.getElementById('performance-plan-json');function sync(){hidden.value=JSON.stringify([...plans.querySelectorAll('.participant-row')].map(r=>({time:r.querySelector('[data-k=time]').value,action:r.querySelector('[data-k=action]').value,light:r.querySelector('[data-k=light]').value})))}document.getElementById('add-plan-row').onclick=()=>{const row=document.createElement('div');row.className='participant-row';row.innerHTML='<label>Время<input data-k="time" placeholder="00:00"></label><label>Действие<input data-k="action" placeholder="Выход, поза, переход"></label><label>Свет<input data-k="light"></label><button type="button" class="btn btn-danger">Удалить</button>';row.querySelectorAll('input').forEach(i=>i.oninput=sync);row.querySelector('button').onclick=()=>{row.remove();sync()};plans.append(row);sync()};})();
+</script>
+{% endblock %}

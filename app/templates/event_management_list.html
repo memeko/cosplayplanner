@@ -3,7 +3,7 @@
 <section class="section-head">
   <h1>Ивент-менеджмент</h1>
   <div class="actions-inline">
-    <a href="/event-management/new" class="btn btn-accent">Создать новое событие</a>
+    {% if can_create_event %}<a href="/event-management/new" class="btn btn-accent">Создать новое событие</a>{% endif %}
   </div>
 </section>
 
@@ -38,9 +38,29 @@
 {% else %}
 <section class="box">
   <p class="muted">Событий пока нет. Создайте первую карточку для фестивальной команды.</p>
-  <div class="actions-inline top-offset">
+  {% if can_create_event %}<div class="actions-inline top-offset">
     <a href="/event-management/new" class="btn btn-accent">Создать новое событие</a>
-  </div>
+  </div>{% endif %}
 </section>
 {% endif %}
+
+<section class="section-head top-offset"><div><h2>Заявки на фестивали</h2><p class="muted">Карточки фестивалей, где вы указаны представителем.</p></div></section>
+{% if festival_application_cards %}
+<div class="cards-grid">
+  {% for card in festival_application_cards %}
+  <article class="card">
+    <div class="row-between"><h3>{{ card.festival.name }}</h3><span class="chip">Заявок: {{ card.applications|length }}</span></div>
+    {% if card.applications %}
+      {% for application in card.applications %}
+      <div class="ticket-segment">
+        <div class="row-between"><strong>{{ application.nick }} — {{ application.character_name }}</strong><span class="chip">{{ application_status_labels.get(application.status, application.status) }}</span></div>
+        <p class="meta">{{ application.nomination }} · {{ application.created_at.strftime('%d-%m-%Y') }}</p>
+        <a class="btn" href="/event-management/applications/{{ application.id }}">Открыть заявку</a>
+      </div>
+      {% endfor %}
+    {% else %}<p class="muted">Заявок пока нет.</p>{% endif %}
+  </article>
+  {% endfor %}
+</div>
+{% else %}<section class="box"><p class="muted">Вас пока не назначили представителем фестиваля для просмотра заявок.</p></section>{% endif %}
 {% endblock %}

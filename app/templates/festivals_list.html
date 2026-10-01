@@ -455,6 +455,15 @@
       {% endif %}
     </p>
     <p class="meta">Дедлайн подачи: {{ festival.submission_deadline.strftime('%d-%m-%Y') if festival.submission_deadline else "—" }}</p>
+    {% if festival.accepts_applications %}
+      <div class="actions-inline">
+        {% if festival.submission_deadline and festival.submission_deadline < today %}
+          <button type="button" class="btn" disabled>Приём заявок завершён</button>
+        {% else %}
+          <a href="/festivals/{{ festival.id }}/apply" class="btn btn-accent">Подать заявку</a>
+        {% endif %}
+      </div>
+    {% endif %}
     {% set review_summary = festival_review_summaries_by_id.get(festival.id, {}) %}
     <a href="/festivals/{{ festival.id }}/card#festival-reviews" class="festival-rating-summary">
       <span class="stars" aria-hidden="true">★</span>

@@ -89,6 +89,7 @@ from .models import (
     CosplanCard,
     EventManagementEvent,
     Festival,
+    FestivalApplication,
     FestivalAnnouncement,
     FestivalNotification,
     FestivalReview,
@@ -1030,6 +1031,14 @@ ANNOUNCEMENT_STATUS_PENDING = "pending"
 ANNOUNCEMENT_STATUS_APPROVED = "approved"
 ANNOUNCEMENT_STATUS_REJECTED = "rejected"
 
+FESTIVAL_APPLICATION_STATUS_LABELS = {
+    "review": "На рассмотрении",
+    "rejected": "Отказано",
+    "accepted": "Принято",
+    "revision": "Требуется доработка",
+}
+MAX_FESTIVAL_APPLICATION_PHOTOS = 5
+
 PHOTO_CONTEST_REQUEST_STATUS_PENDING = "pending"
 PHOTO_CONTEST_REQUEST_STATUS_APPROVED = "approved"
 PHOTO_CONTEST_REQUEST_STATUS_REJECTED = "rejected"
@@ -1536,6 +1545,12 @@ def apply_schema_migrations() -> None:
             ("timing_event_start_date", "DATE"),
             ("timing_event_start_time", "VARCHAR(8)"),
             ("timing_block_start_time", "VARCHAR(8)"),
+            ("accepts_applications", "BOOLEAN NOT NULL DEFAULT 0"),
+            ("application_reviewer_ids_json", "JSON NOT NULL DEFAULT '[]'"),
+        ],
+        "festival_announcements": [
+            ("accepts_applications", "BOOLEAN NOT NULL DEFAULT 0"),
+            ("application_reviewer_ids_json", "JSON NOT NULL DEFAULT '[]'"),
         ],
         "festival_reviews": [
             ("is_anonymous", "BOOLEAN NOT NULL DEFAULT 0"),
@@ -1707,6 +1722,8 @@ def apply_schema_migrations() -> None:
             FestivalAnnouncement.__table__.create(bind=conn, checkfirst=True)
         if "festival_reviews" not in existing_tables:
             FestivalReview.__table__.create(bind=conn, checkfirst=True)
+        if "festival_applications" not in existing_tables:
+            FestivalApplication.__table__.create(bind=conn, checkfirst=True)
         if "home_news" not in existing_tables:
             HomeNews.__table__.create(bind=conn, checkfirst=True)
         if "rehearsal_cards" not in existing_tables:
@@ -12964,6 +12981,8 @@ def festival_fields_for_mobile_sync() -> list[str]:
         "event_date",
         "event_end_date",
         "submission_deadline",
+        "accepts_applications",
+        "application_reviewer_ids_json",
         "nomination_1",
         "nomination_2",
         "nomination_3",
@@ -13057,6 +13076,7 @@ MOBILE_CARD_LIST_FIELDS = {
 }
 MOBILE_FESTIVAL_DATE_FIELDS = {"event_date", "event_end_date", "submission_deadline", "timing_event_start_date"}
 MOBILE_FESTIVAL_BOOL_FIELDS = {
+    "accepts_applications",
     "has_photo_cosplay",
     "is_partner_festival",
     "is_going",
@@ -13065,6 +13085,7 @@ MOBILE_FESTIVAL_BOOL_FIELDS = {
 }
 MOBILE_FESTIVAL_INT_FIELDS = {"source_announcement_id"}
 MOBILE_FESTIVAL_LIST_FIELDS = {
+    "application_reviewer_ids_json",
     "nominations_json",
     "planned_nominations_json",
     "going_coproplayers_json",
@@ -17173,6 +17194,8 @@ def get_festival_form_values(festival: Festival | None = None) -> dict[str, Any]
             "event_date": "",
             "event_end_date": "",
             "submission_deadline": "",
+            "accepts_applications": False,
+            "application_reviewer_ids_json": [],
             "nomination_rows": nomination_rows or [{"row_id": "festival-nomination-0", "title": "", "url": ""}],
             "nomination_items": nomination_items,
             "planned_nominations_json": [],
@@ -17201,6 +17224,8 @@ def get_festival_form_values(festival: Festival | None = None) -> dict[str, Any]
         "event_date": festival.event_date.isoformat() if festival.event_date else "",
         "event_end_date": festival.event_end_date.isoformat() if festival.event_end_date else "",
         "submission_deadline": festival.submission_deadline.isoformat() if festival.submission_deadline else "",
+        "accepts_applications": bool(getattr(festival, "accepts_applications", False)),
+        "application_reviewer_ids_json": [int(value) for value in as_list(getattr(festival, "application_reviewer_ids_json", [])) if str(value).isdigit()],
         "nomination_rows": nomination_rows or [{"row_id": "festival-nomination-0", "title": "", "url": ""}],
         "nomination_items": nomination_items,
         "planned_nominations_json": festival_selected_nomination_titles(festival),
@@ -17282,6 +17307,10 @@ def apply_festival_common_fields_from_form(
     festival.event_date = event_date
     festival.event_end_date = event_end_date
     festival.submission_deadline = parse_date(str(form.get("submission_deadline", "")))
+    festival.accepts_applications = to_bool(form.get("accepts_applications"))
+    festival.application_reviewer_ids_json = sorted({
+        int(value) for value in form.getlist("application_reviewer_ids") if str(value).isdigit()
+    })
     nomination_items = parse_festival_nomination_items_from_form(form)
     festival.nominations_json = nomination_items
     festival.nomination_1 = nomination_items[0]["title"] if len(nomination_items) > 0 else None
@@ -17356,6 +17385,8 @@ def get_festival_announcement_form_values(announcement: FestivalAnnouncement | N
             "event_date": "",
             "event_end_date": "",
             "submission_deadline": "",
+            "accepts_applications": False,
+            "application_reviewer_ids_json": [],
             "nomination_1": "",
             "nomination_2": "",
             "nomination_3": "",
@@ -17367,6 +17398,8 @@ def get_festival_announcement_form_values(announcement: FestivalAnnouncement | N
         "event_date": announcement.event_date.isoformat() if announcement.event_date else "",
         "event_end_date": announcement.event_end_date.isoformat() if announcement.event_end_date else "",
         "submission_deadline": announcement.submission_deadline.isoformat() if announcement.submission_deadline else "",
+        "accepts_applications": bool(getattr(announcement, "accepts_applications", False)),
+        "application_reviewer_ids_json": [int(value) for value in as_list(getattr(announcement, "application_reviewer_ids_json", [])) if str(value).isdigit()],
         "nomination_1": announcement.nomination_1 or "",
         "nomination_2": announcement.nomination_2 or "",
         "nomination_3": announcement.nomination_3 or "",
@@ -17391,6 +17424,12 @@ def save_festival_announcement_from_form(form: Any, announcement: FestivalAnnoun
     announcement.event_date = event_date
     announcement.event_end_date = event_end_date
     announcement.submission_deadline = parse_date(str(form.get("submission_deadline", "")))
+    announcement.accepts_applications = to_bool(form.get("accepts_applications"))
+    announcement.application_reviewer_ids_json = sorted({
+        int(value) for value in form.getlist("application_reviewer_ids") if str(value).isdigit()
+    })
+    if announcement.accepts_applications and not announcement.application_reviewer_ids_json:
+        announcement.application_reviewer_ids_json = [announcement.requester_user_id]
     announcement.nomination_1 = canonical_nomination_title(form.get("nomination_1")) or None
     announcement.nomination_2 = canonical_nomination_title(form.get("nomination_2")) or None
     announcement.nomination_3 = canonical_nomination_title(form.get("nomination_3")) or None
@@ -17426,6 +17465,8 @@ def propagate_approved_announcement(
                 event_date=announcement.event_date,
                 event_end_date=announcement.event_end_date,
                 submission_deadline=announcement.submission_deadline,
+                accepts_applications=bool(announcement.accepts_applications),
+                application_reviewer_ids_json=as_list(announcement.application_reviewer_ids_json),
                 nomination_1=announcement.nomination_1,
                 nomination_2=announcement.nomination_2,
                 nomination_3=announcement.nomination_3,
@@ -34734,13 +34775,186 @@ def event_management_context(db: Session, user: User, event: EventManagementEven
 
 @app.get("/event-management", response_class=HTMLResponse)
 def event_management_list(request: Request, db: Session = Depends(get_db)):
-    user_or_redirect = require_event_organizer(request, db)
-    if isinstance(user_or_redirect, RedirectResponse):
-        return user_or_redirect
-    user = user_or_redirect
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
     all_events = db.execute(select(EventManagementEvent).order_by(EventManagementEvent.updated_at.desc())).scalars().all()
     events = [event for event in all_events if user_can_access_event_management_event(user, event)]
-    return template_response(request, "event_management_list.html", user=user, active_tab="event-management", events=events)
+    review_festivals = [
+        item for item in db.execute(select(Festival).order_by(Festival.event_date, Festival.name)).scalars().all()
+        if user.id in {int(value) for value in as_list(item.application_reviewer_ids_json) if str(value).isdigit()}
+    ]
+    seen_keys: set[str] = set()
+    festival_application_cards: list[dict[str, Any]] = []
+    for festival in review_festivals:
+        key = str(festival.source_announcement_id or festival.id)
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        sibling_ids = [
+            item.id for item in review_festivals
+            if (festival.source_announcement_id and item.source_announcement_id == festival.source_announcement_id) or item.id == festival.id
+        ]
+        applications = db.execute(
+            select(FestivalApplication).where(FestivalApplication.festival_id.in_(sibling_ids)).order_by(FestivalApplication.created_at.desc())
+        ).scalars().all()
+        festival_application_cards.append({"festival": festival, "applications": applications})
+    return template_response(
+        request, "event_management_list.html", user=user, active_tab="event-management", events=events,
+        festival_application_cards=festival_application_cards,
+        can_create_event=is_event_organizer_user(user),
+        application_status_labels=FESTIVAL_APPLICATION_STATUS_LABELS,
+    )
+
+
+def user_can_review_festival_application(user: User, festival: Festival | None) -> bool:
+    if not festival:
+        return False
+    reviewer_ids = {int(value) for value in as_list(festival.application_reviewer_ids_json) if str(value).isdigit()}
+    return user.id in reviewer_ids or can_manage_festival_globally(user)
+
+
+async def save_festival_application_image(upload: UploadFile, prefix: str) -> str:
+    if not upload.filename or not (upload.content_type or "").lower().startswith("image/"):
+        raise ValueError("Загрузите изображение в поддерживаемом формате.")
+    raw = await upload.read(MAX_UPLOAD_INPUT_BYTES + 1)
+    if len(raw) > MAX_UPLOAD_INPUT_BYTES:
+        raise ValueError("Размер одного изображения не должен превышать 20 МБ.")
+    blob, _width, _height = compress_image_to_webp(raw, max_output_bytes=450 * 1024, max_width=1200)
+    filename = f"{prefix}-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:14]}.webp"
+    (media_storage_path() / filename).write_bytes(blob)
+    return f"/media/{filename}"
+
+
+@app.get("/festivals/{festival_id}/apply", response_class=HTMLResponse)
+def festival_application_new(festival_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    festival = db.execute(select(Festival).where(Festival.id == festival_id, Festival.user_id == user.id)).scalar_one_or_none()
+    if not festival or not festival.accepts_applications:
+        add_flash(request, "Фестиваль сейчас не принимает заявки.", "error")
+        return redirect("/festivals")
+    if festival.submission_deadline and datetime.now(SITE_TIMEZONE).date() > festival.submission_deadline:
+        add_flash(request, "Дедлайн подачи заявок уже прошёл.", "error")
+        return redirect(f"/festivals/{festival.id}/card")
+    return template_response(
+        request, "festival_application_form.html", user=user, active_tab="festivals", festival=festival,
+        nomination_items=festival_nomination_items(festival),
+    )
+
+
+@app.post("/festivals/{festival_id}/apply")
+async def festival_application_create(festival_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    festival = db.execute(select(Festival).where(Festival.id == festival_id, Festival.user_id == user.id)).scalar_one_or_none()
+    if not festival or not festival.accepts_applications or (festival.submission_deadline and datetime.now(SITE_TIMEZONE).date() > festival.submission_deadline):
+        add_flash(request, "Приём заявок закрыт.", "error")
+        return redirect("/festivals")
+    form = await request.form()
+    nomination = str(form.get("nomination", "")).strip()
+    allowed_nominations = {item["title"] for item in festival_nomination_items(festival)}
+    required = {
+        "Ник": str(form.get("nick", "")).strip(),
+        "Транскрипция ника": str(form.get("nick_transcription", "")).strip(),
+        "Персонаж": str(form.get("character_name", "")).strip(),
+        "Источник": str(form.get("source_name", "")).strip(),
+        "Город": str(form.get("city", "")).strip(),
+    }
+    missing = [label for label, value in required.items() if not value]
+    if nomination not in allowed_nominations:
+        missing.append("Номинация")
+    if missing:
+        add_flash(request, "Заполните обязательные поля: " + ", ".join(missing) + ".", "error")
+        return redirect(f"/festivals/{festival.id}/apply")
+    if not to_bool(form.get("rules_accepted")) or not to_bool(form.get("personal_data_accepted")):
+        add_flash(request, "Необходимо принять регламент и согласие на обработку персональных данных.", "error")
+        return redirect(f"/festivals/{festival.id}/apply")
+    photo_uploads = [item for item in form.getlist("costume_photos") if getattr(item, "filename", "") and hasattr(item, "read")]
+    character_upload = form.get("character_photo")
+    if not photo_uploads or len(photo_uploads) > MAX_FESTIVAL_APPLICATION_PHOTOS:
+        add_flash(request, "Загрузите от 1 до 5 фотографий участника/костюма.", "error")
+        return redirect(f"/festivals/{festival.id}/apply")
+    if not getattr(character_upload, "filename", "") or not hasattr(character_upload, "read"):
+        add_flash(request, "Загрузите изображение внешнего вида персонажа.", "error")
+        return redirect(f"/festivals/{festival.id}/apply")
+    try:
+        costume_paths = [await save_festival_application_image(item, "festival-application") for item in photo_uploads]
+        character_path = await save_festival_application_image(character_upload, "festival-character")
+    except ValueError as exc:
+        add_flash(request, str(exc), "error")
+        return redirect(f"/festivals/{festival.id}/apply")
+    participants = []
+    co_nicks, co_characters = form.getlist("participant_nick"), form.getlist("participant_character")
+    for index in range(max(len(co_nicks), len(co_characters))):
+        row = {"nick": str(co_nicks[index] if index < len(co_nicks) else "").strip(), "character": str(co_characters[index] if index < len(co_characters) else "").strip()}
+        if row["nick"] or row["character"]:
+            participants.append(row)
+    performance = {
+        "track": str(form.get("performance_track", "")).strip(),
+        "video_bg_url": str(form.get("performance_video_bg_url", "")).strip(),
+        "script": str(form.get("performance_script", "")).strip(),
+        "light_script": str(form.get("performance_light_script", "")).strip(),
+        "duration": str(form.get("performance_duration", "")).strip(),
+        "rehearsal_point": str(form.get("performance_rehearsal_point", "")).strip(),
+        "rehearsal_price": str(form.get("performance_rehearsal_price", "")).strip(),
+        "rehearsal_currency": str(form.get("performance_rehearsal_currency", "RUB")).strip(),
+        "rehearsal_count": str(form.get("performance_rehearsal_count", "")).strip(),
+        "plan": str(form.get("performance_plan_json", "{}")).strip() or "{}",
+    }
+    application = FestivalApplication(
+        festival_id=festival.id, applicant_user_id=user.id, nomination=nomination,
+        nick=required["Ник"], nick_transcription=required["Транскрипция ника"],
+        character_name=required["Персонаж"], source_name=required["Источник"], city=required["Город"],
+        self_made=str(form.get("self_made", "")).strip() or None, comment=str(form.get("comment", "")).strip() or None,
+        performance_json=performance, participants_json=participants, costume_photos_json=costume_paths,
+        character_photo_path=character_path, rules_accepted=True, personal_data_accepted=True, status="review",
+    )
+    db.add(application)
+    db.flush()
+    for reviewer_id in {int(value) for value in as_list(festival.application_reviewer_ids_json) if str(value).isdigit()}:
+        enqueue_notification_if_missing(db, user_id=reviewer_id, from_user_id=user.id, source_card_id=None, message=f"Новая заявка на фестиваль «{festival.name}» от {application.nick}.")
+    db.commit()
+    add_flash(request, "Заявка отправлена представителям фестиваля.", "success")
+    return redirect(f"/festivals/{festival.id}/card")
+
+
+@app.get("/event-management/applications/{application_id}", response_class=HTMLResponse)
+def festival_application_detail(application_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    application = db.get(FestivalApplication, application_id)
+    festival = db.get(Festival, application.festival_id) if application else None
+    if not application or not user_can_review_festival_application(user, festival):
+        add_flash(request, "Заявка недоступна.", "error")
+        return redirect("/event-management")
+    applicant = db.get(User, application.applicant_user_id)
+    return template_response(request, "festival_application_detail.html", user=user, active_tab="event-management", application=application, festival=festival, applicant=applicant, application_status_labels=FESTIVAL_APPLICATION_STATUS_LABELS)
+
+
+@app.post("/event-management/applications/{application_id}/status")
+async def festival_application_status_update(application_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    application = db.get(FestivalApplication, application_id)
+    festival = db.get(Festival, application.festival_id) if application else None
+    if not application or not user_can_review_festival_application(user, festival):
+        add_flash(request, "Заявка недоступна.", "error")
+        return redirect("/event-management")
+    form = await request.form()
+    status = str(form.get("status", "")).strip()
+    if status not in FESTIVAL_APPLICATION_STATUS_LABELS:
+        add_flash(request, "Неизвестный статус заявки.", "error")
+        return redirect(f"/event-management/applications/{application.id}")
+    application.status = status
+    enqueue_notification_if_missing(db, user_id=application.applicant_user_id, from_user_id=user.id, source_card_id=None, message=f"Статус заявки на фестиваль «{festival.name}» изменён: {FESTIVAL_APPLICATION_STATUS_LABELS[status]}.")
+    db.commit()
+    add_flash(request, "Статус заявки обновлён, участнику отправлено уведомление.", "success")
+    return redirect(f"/event-management/applications/{application.id}")
 
 
 @app.get("/event-management/new", response_class=HTMLResponse)
@@ -34929,6 +35143,7 @@ def festivals_announcements_new(request: Request, db: Session = Depends(get_db))
         editing=False,
         announcement_id=None,
         form=get_festival_announcement_form_values(),
+        application_reviewer_options=db.execute(select(User).order_by(User.username.asc())).scalars().all(),
         nomination_title_options=merge_unique_nomination_titles(DEFAULT_NOMINATIONS, get_options(db, user.id, "nomination")),
     )
 
@@ -35064,6 +35279,7 @@ def festivals_new(request: Request, db: Session = Depends(get_db)):
         editing=False,
         festival_id=None,
         form=get_festival_form_values(),
+        application_reviewer_options=db.execute(select(User).order_by(User.username.asc())).scalars().all(),
         nomination_title_options=merge_unique_nomination_titles(DEFAULT_NOMINATIONS, get_options(db, user.id, "nomination")),
         coproplayer_alias_options=merge_unique(alias_options, get_options(db, user.id, "coproplayer")),
         global_festival_edit_mode=False,
@@ -35109,6 +35325,7 @@ def festivals_edit(festival_id: int, request: Request, db: Session = Depends(get
         editing=True,
         festival_id=festival.id,
         form=get_festival_form_values(festival),
+        application_reviewer_options=db.execute(select(User).order_by(User.username.asc())).scalars().all(),
         nomination_title_options=merge_unique_nomination_titles(DEFAULT_NOMINATIONS, get_options(db, user.id, "nomination")),
         coproplayer_alias_options=merge_unique(alias_options, get_options(db, user.id, "coproplayer")),
         global_festival_edit_mode=global_festival_edit_mode,
@@ -35176,6 +35393,7 @@ def festivals_card_view(festival_id: int, request: Request, db: Session = Depend
         editing=True,
         festival_id=festival.id,
         form=get_festival_form_values(festival),
+        application_reviewer_options=db.execute(select(User).order_by(User.username.asc())).scalars().all(),
         nomination_title_options=merge_unique_nomination_titles(DEFAULT_NOMINATIONS, get_options(db, user.id, "nomination")),
         coproplayer_alias_options=merge_unique(alias_options, get_options(db, user.id, "coproplayer")),
         global_festival_edit_mode=False,
@@ -35329,6 +35547,8 @@ def save_festival_from_form(
         can_edit_icon=can_edit_festival_icon(user),
         icon_path=icon_path,
     )
+    if festival.accepts_applications and not as_list(festival.application_reviewer_ids_json):
+        festival.application_reviewer_ids_json = [user.id]
     can_edit_ticket_files = user_has_premium_status(db, user)
     ticket_file_paths: list[str] = []
     if can_edit_ticket_files:
@@ -35464,6 +35684,8 @@ async def festivals_update(festival_id: int, request: Request, db: Session = Dep
         can_edit_icon=can_edit_icon,
         icon_path=icon_path,
     )
+    if festival.accepts_applications and not as_list(festival.application_reviewer_ids_json):
+        festival.application_reviewer_ids_json = [user.id]
 
     raw_coproplayer_aliases: list[str] = []
     notify_count = 0

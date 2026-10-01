@@ -58,6 +58,22 @@
       {% endfor %}
     </datalist>
 
+    <section class="box top-offset">
+      <label class="inline-check">
+        <input type="checkbox" name="accepts_applications" {% if form.accepts_applications %}checked{% endif %} />
+        Принимать заявки
+      </label>
+      <label class="top-offset">
+        Представители фестиваля, которым отправляются заявки
+        <select name="application_reviewer_ids" multiple size="5">
+          {% for option_user in application_reviewer_options %}
+            <option value="{{ option_user.id }}" {% if option_user.id in form.application_reviewer_ids_json %}selected{% endif %}>@{{ option_user.cosplay_nick or option_user.username }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <p class="muted">Используйте Ctrl/Cmd, чтобы выбрать нескольких представителей.</p>
+    </section>
+
     <p class="muted">После отправки карточка попадёт на модерацию. После одобрения фестиваль появится у всех пользователей.</p>
   </section>
 

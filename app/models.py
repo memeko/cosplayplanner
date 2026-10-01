@@ -789,6 +789,8 @@ class Festival(Base):
     event_date = Column(Date, nullable=True)
     event_end_date = Column(Date, nullable=True)
     submission_deadline = Column(Date, nullable=True)
+    accepts_applications = Column(Boolean, nullable=False, default=False)
+    application_reviewer_ids_json = Column(JSON, nullable=False, default=list)
 
     nomination_1 = Column(String(255), nullable=True)
     nomination_2 = Column(String(255), nullable=True)
@@ -819,6 +821,34 @@ class Festival(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
     user = relationship("User", back_populates="festivals")
+
+
+class FestivalApplication(Base):
+    __tablename__ = "festival_applications"
+
+    id = Column(Integer, primary_key=True)
+    festival_id = Column(Integer, ForeignKey("festivals.id", ondelete="CASCADE"), nullable=False, index=True)
+    applicant_user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    nomination = Column(String(255), nullable=False)
+    nick = Column(String(255), nullable=False)
+    nick_transcription = Column(String(255), nullable=False)
+    character_name = Column(String(255), nullable=False)
+    source_name = Column(String(255), nullable=False)
+    self_made = Column(Text, nullable=True)
+    city = Column(String(255), nullable=False)
+    comment = Column(Text, nullable=True)
+    performance_json = Column(JSON, nullable=False, default=dict)
+    participants_json = Column(JSON, nullable=False, default=list)
+    costume_photos_json = Column(JSON, nullable=False, default=list)
+    character_photo_path = Column(String(255), nullable=False)
+    rules_accepted = Column(Boolean, nullable=False, default=False)
+    personal_data_accepted = Column(Boolean, nullable=False, default=False)
+    status = Column(String(32), nullable=False, default="review", index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    festival = relationship("Festival")
+    applicant = relationship("User", foreign_keys=[applicant_user_id])
 
 
 class FestivalReview(Base):
@@ -961,6 +991,8 @@ class FestivalAnnouncement(Base):
     event_date = Column(Date, nullable=True)
     event_end_date = Column(Date, nullable=True)
     submission_deadline = Column(Date, nullable=True)
+    accepts_applications = Column(Boolean, nullable=False, default=False)
+    application_reviewer_ids_json = Column(JSON, nullable=False, default=list)
     nomination_1 = Column(String(255), nullable=True)
     nomination_2 = Column(String(255), nullable=True)
     nomination_3 = Column(String(255), nullable=True)
