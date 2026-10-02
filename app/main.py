@@ -37649,7 +37649,10 @@ def photo_contest_detail(contest_id: int, request: Request, db: Session = Depend
         rows = grouped_entries.get(nomination_title, [])
         if not rows:
             continue
-        if normalize_photo_contest_visibility(contest.participant_visibility) == PHOTO_CONTEST_VISIBILITY_WINNERS:
+        if (
+            not can_manage
+            and normalize_photo_contest_visibility(contest.participant_visibility) == PHOTO_CONTEST_VISIBILITY_WINNERS
+        ):
             if contest_status != PHOTO_CONTEST_STATUS_FINISHED:
                 continue
             filtered_rows: list[dict[str, Any]] = []
@@ -37666,9 +37669,22 @@ def photo_contest_detail(contest_id: int, request: Request, db: Session = Depend
             continue
         visible_grouped_entries[nomination_title] = rows
 
-    show_participants_block = contest_status in {PHOTO_CONTEST_STATUS_JUDGING, PHOTO_CONTEST_STATUS_FINISHED}
-    if normalize_photo_contest_visibility(contest.participant_visibility) == PHOTO_CONTEST_VISIBILITY_WINNERS:
+    # The contest creator needs access to submitted works while applications are
+    # still open so they can premoderate the incoming material. Public visibility
+    # remains unchanged until judging/results.
+    show_participants_block = can_manage or contest_status in {
+        PHOTO_CONTEST_STATUS_JUDGING,
+        PHOTO_CONTEST_STATUS_FINISHED,
+    }
+    if (
+        not can_manage
+        and normalize_photo_contest_visibility(contest.participant_visibility) == PHOTO_CONTEST_VISIBILITY_WINNERS
+    ):
         show_participants_block = contest_status == PHOTO_CONTEST_STATUS_FINISHED
+    if not show_participants_block:
+        # Do not leak pre-judging photos and entry metadata through the modal JSON
+        # merely because the visible participant block is hidden in the template.
+        visible_grouped_entries = {}
 
     photo_modal_items: list[dict[str, Any]] = []
     for nomination_title in ordered_nomination_titles:
@@ -37712,5 +37728,6 @@ def photo_contest_detail(contest_id: int, request: Request, db: Session = Depend
         photo_contest_judging_label=photo_contest_judging_label,
         photo_contest_visibility_label=photo_contest_visibility_label,
         photo_contest_role_labels=PHOTO_CONTEST_ROLE_LABELS,
+        photo_contest_max_photo_file_mb=PHOTO_CONTEST_MAX_PHOTO_FILE_BYTES // (1024 * 1024),
         nomination_rows=normalize_photo_contest_nomination_rows(contest.nominations_json),
     )

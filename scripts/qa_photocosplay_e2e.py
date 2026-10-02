@@ -80,7 +80,9 @@ def run_scenario(db_path: Path) -> None:
         PhotoContestRequest,
         PhotoContestVote,
         SessionLocal,
+        User,
         app,
+        password_context,
     )
 
     today = date.today()
@@ -93,16 +95,18 @@ def run_scenario(db_path: Path) -> None:
 
     with TestClient(app) as client:
         def register(username: str, email: str, password: str = "pass1234") -> None:
-            post_form(
-                client,
-                "/register",
-                data={
-                    "username": username,
-                    "email": email,
-                    "password": password,
-                    "password_confirm": password,
-                },
-            )
+            # Registration requires a real email verification delivery. Seed
+            # isolated QA users directly and keep authentication itself covered
+            # through the public login route below.
+            with SessionLocal() as db:
+                db.add(
+                    User(
+                        username=username,
+                        email=email,
+                        password_hash=password_context.hash(password),
+                    )
+                )
+                db.commit()
 
         def login(login_value: str, password: str = "pass1234") -> None:
             post_form(client, "/login", data={"login": login_value, "password": password})
@@ -203,6 +207,20 @@ def run_scenario(db_path: Path) -> None:
 
         response = client.get("/photocosplay?participating_only=1")
         assert_ok("QA Фотокосплей 2026" in response.text, "Participating filter did not show contest")
+        logout()
+
+        # The creator can premoderate submissions before judging starts, while a
+        # regular viewer cannot see them yet.
+        login("contest_creator")
+        response = client.get(f"/photocosplay/{contest_id}")
+        assert_ok("Премодерация заявок" in response.text, "Creator premoderation block is missing")
+        assert_ok("@contest_participant" in response.text, "Creator cannot see the submitted entry")
+        assert_ok("максимальный размер каждого файла — 20 МБ" in response.text, "Per-file limit is missing")
+        logout()
+
+        login("contest_viewer")
+        response = client.get(f"/photocosplay/{contest_id}")
+        assert_ok("@contest_participant" not in response.text, "Viewer can see entries before judging")
         logout()
 
         # 5) Move contest to judging phase.

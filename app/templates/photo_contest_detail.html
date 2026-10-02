@@ -42,6 +42,15 @@
   .photo-work-vote .inline-check {
     margin: 0;
   }
+  .photo-upload-status {
+    min-height: 1.4em;
+  }
+  .photo-upload-status[data-kind="error"] {
+    color: #b4233f;
+  }
+  .photo-upload-status[data-kind="progress"] {
+    color: #5e5bff;
+  }
   .photo-modal {
     position: fixed;
     inset: 0;
@@ -100,7 +109,7 @@
 {% if submission_open %}
 <section class="box">
   <h2>Загрузка работы</h2>
-  <p class="muted">Фотографии загружаются без сжатия. Лимит: {{ contest.max_photos_per_participant or 1 }} фото.</p>
+  <p class="muted">Фотографии загружаются без сжатия. Можно выбрать до {{ contest.max_photos_per_participant or 1 }} фото, максимальный размер каждого файла — {{ photo_contest_max_photo_file_mb }} МБ.</p>
   {% if my_entry %}
     <p class="muted">У вас уже есть загруженная работа. Новая отправка заменит предыдущие фото.</p>
   {% endif %}
@@ -118,8 +127,9 @@
 
     <label>
       Фотографии *
-      <input type="file" name="photos" accept="image/*" multiple required />
+      <input type="file" name="photos" id="contest-photo-files" accept="image/jpeg,image/png,image/webp,image/gif,image/bmp,image/tiff" multiple required />
     </label>
+    <p class="muted photo-upload-status" id="contest-upload-status" role="status" aria-live="polite">Поддерживаются JPG, PNG, WEBP, GIF, BMP и TIFF.</p>
 
     <label>
       Фандом
@@ -198,7 +208,7 @@
     </label>
 
     <div class="actions-inline">
-      <button type="submit" class="btn btn-accent">Отправить работу</button>
+      <button type="submit" class="btn btn-accent" id="contest-submit-button">Отправить работу</button>
     </div>
   </form>
 </section>
@@ -207,7 +217,7 @@
 {% if show_participants_block %}
 <section class="box">
   <div class="row-between">
-    <h2>Участники</h2>
+    <h2>{% if can_manage and contest_status == 'open' %}Премодерация заявок{% else %}Участники{% endif %}</h2>
     {% if can_vote %}
       <span class="chip">Можно ставить отметки</span>
     {% endif %}
@@ -532,6 +542,67 @@
 
     function rowRowsCanRemove(container, selector) {
       return container.querySelectorAll(selector).length > 1;
+    }
+
+    const submitForm = document.getElementById("contest-submit-form");
+    const photoFilesInput = document.getElementById("contest-photo-files");
+    const submitButton = document.getElementById("contest-submit-button");
+    const uploadStatus = document.getElementById("contest-upload-status");
+    const maxFileBytes = {{ photo_contest_max_photo_file_mb }} * 1024 * 1024;
+    const maxFileCount = {{ contest.max_photos_per_participant or 1 }};
+
+    function setUploadStatus(message, kind) {
+      if (!uploadStatus) {
+        return;
+      }
+      uploadStatus.textContent = message;
+      uploadStatus.dataset.kind = kind || "";
+    }
+
+    function validateSelectedPhotos() {
+      if (!(photoFilesInput instanceof HTMLInputElement)) {
+        return true;
+      }
+      const files = Array.from(photoFilesInput.files || []);
+      if (files.length > maxFileCount) {
+        setUploadStatus(`Можно выбрать не более ${maxFileCount} фото.`, "error");
+        return false;
+      }
+      const oversizedFile = files.find((file) => file.size > maxFileBytes);
+      if (oversizedFile) {
+        setUploadStatus(`Файл «${oversizedFile.name}» больше {{ photo_contest_max_photo_file_mb }} МБ. Выберите файл меньшего размера.`, "error");
+        return false;
+      }
+      if (files.length) {
+        const totalMb = files.reduce((sum, file) => sum + file.size, 0) / (1024 * 1024);
+        setUploadStatus(`Выбрано файлов: ${files.length}. Общий размер: ${totalMb.toFixed(1)} МБ.`, "");
+      } else {
+        setUploadStatus("Поддерживаются JPG, PNG, WEBP, GIF, BMP и TIFF.", "");
+      }
+      return true;
+    }
+
+    if (photoFilesInput) {
+      photoFilesInput.addEventListener("change", validateSelectedPhotos);
+    }
+    if (submitForm && submitButton) {
+      submitForm.addEventListener("submit", function (event) {
+        if (!validateSelectedPhotos()) {
+          event.preventDefault();
+          photoFilesInput.focus();
+          return;
+        }
+        submitButton.disabled = true;
+        submitButton.textContent = "Загружаем…";
+        setUploadStatus(
+          "Не закрывайте страницу. Через VPN или при медленном соединении загрузка может занять больше времени.",
+          "progress"
+        );
+      });
+      window.addEventListener("pageshow", function () {
+        submitButton.disabled = false;
+        submitButton.textContent = "Отправить работу";
+      });
     }
   })();
 </script>
