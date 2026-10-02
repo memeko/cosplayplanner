@@ -16,6 +16,20 @@
     grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
     gap: 0.65rem;
   }
+  .contest-entry-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 240px), 320px));
+    gap: 0.85rem;
+    align-items: start;
+    justify-content: start;
+  }
+  .contest-entry-card {
+    margin-top: 0;
+    min-width: 0;
+  }
+  .contest-entry-card .photo-work-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
   .photo-work-item {
     border: 1px solid #d9e2ec;
     border-radius: 12px;
@@ -91,7 +105,8 @@
   <p class="meta">Прием работ: {{ contest.submission_start_date.strftime('%d-%m-%Y') if contest.submission_start_date else '—' }} — {{ contest.submission_end_date.strftime('%d-%m-%Y') if contest.submission_end_date else '—' }}</p>
   <p class="meta">Дата результатов: {{ contest.results_date.strftime('%d-%m-%Y') if contest.results_date else '—' }}</p>
   <p class="meta">Аффиляция с фестивалем: {{ contest.festival_name or 'Нет' }}</p>
-  <p class="meta">Макс. фото на участника: {{ contest.max_photos_per_participant or 1 }}</p>
+  <p class="meta">Макс. заявок от участника: {{ contest.max_entries_per_participant or 1 }}</p>
+  <p class="meta">Макс. фото в одной заявке: {{ contest.max_photos_per_participant or 1 }}</p>
   <p class="meta">Видимость участников: {{ photo_contest_visibility_label(contest.participant_visibility or 'all') }}</p>
   {% if contest.judging_format == 'closed' and contest.judges_json %}
     <p class="meta">Судьи: {{ contest.judges_json|join(', ') }}</p>
@@ -106,34 +121,41 @@
   {% endif %}
 </section>
 
-{% if submission_open %}
+{% if submission_form_visible %}
 <section class="box">
-  <h2>Загрузка работы</h2>
+  <h2>{% if edit_entry %}Редактирование заявки{% else %}Загрузка работы{% endif %}</h2>
   <p class="muted">Фотографии загружаются без сжатия. Можно выбрать до {{ contest.max_photos_per_participant or 1 }} фото, максимальный размер каждого файла — {{ photo_contest_max_photo_file_mb }} МБ.</p>
-  {% if my_entry %}
-    <p class="muted">У вас уже есть загруженная работа. Новая отправка заменит предыдущие фото.</p>
+  {% if form_entry %}
+    <p class="muted">Можно оставить фотографии без изменений или выбрать новые — тогда текущие фото будут заменены.</p>
   {% endif %}
 
   <form method="post" action="/photocosplay/{{ contest.id }}/submit" enctype="multipart/form-data" class="grid one-col top-offset" id="contest-submit-form">
+    {% if form_entry %}<input type="hidden" name="entry_id" value="{{ form_entry.id }}" />{% endif %}
     <label>
       Номинация *
       <select name="nomination_title" required>
         <option value="">Выберите номинацию</option>
         {% for nomination in nomination_rows %}
-          <option value="{{ nomination.title }}" {% if my_entry and my_entry.nomination_title == nomination.title %}selected{% endif %}>{{ nomination.title }}</option>
+          <option value="{{ nomination.title }}" {% if form_entry and form_entry.nomination_title == nomination.title %}selected{% endif %}>{{ nomination.title }}</option>
         {% endfor %}
       </select>
     </label>
 
-    <label>
-      Фотографии *
-      <input type="file" name="photos" id="contest-photo-files" accept="image/jpeg,image/png,image/webp,image/gif,image/bmp,image/tiff" multiple required />
-    </label>
-    <p class="muted photo-upload-status" id="contest-upload-status" role="status" aria-live="polite">Поддерживаются JPG, PNG, WEBP, GIF, BMP и TIFF.</p>
+    <div>
+      <strong>Фотографии *</strong>
+      <div id="contest-photo-inputs" class="grid one-col top-offset">
+        <label class="contest-photo-input-row">
+          Файл 1
+          <input type="file" name="photos" class="contest-photo-file" accept="image/jpeg,image/png,image/webp,image/gif,image/bmp,image/tiff" {% if not form_entry %}required{% endif %} />
+        </label>
+      </div>
+      <button type="button" class="btn top-offset" id="add-contest-photo-file">Загрузить ещё файл</button>
+    </div>
+    <p class="muted photo-upload-status" id="contest-upload-status" role="status" aria-live="polite">Добавляйте фотографии по одной. Поддерживаются JPG, PNG, WEBP, GIF, BMP и TIFF.</p>
 
     <label>
       Фандом
-      <input type="text" name="fandom" maxlength="255" value="{{ my_entry.fandom if my_entry and my_entry.fandom else '' }}" />
+      <input type="text" name="fandom" maxlength="255" value="{{ form_entry.fandom if form_entry and form_entry.fandom else '' }}" />
     </label>
 
     <div>
@@ -142,8 +164,8 @@
         <button type="button" class="btn" id="add-role-row">Добавить роль</button>
       </div>
       <div id="entry-role-rows" class="top-offset">
-        {% if my_entry and my_entry.roles_json %}
-          {% for row in my_entry.roles_json %}
+        {% if form_entry and form_entry.roles_json %}
+          {% for row in form_entry.roles_json %}
             <div class="photo-contest-entry-row grid three-col top-offset">
               <label>
                 Ник с сайта или ручной ввод
@@ -186,8 +208,8 @@
         <button type="button" class="btn" id="add-character-row">Добавить персонажа</button>
       </div>
       <div id="entry-character-rows" class="top-offset">
-        {% if my_entry and my_entry.characters_json %}
-          {% for character in my_entry.characters_json %}
+        {% if form_entry and form_entry.characters_json %}
+          {% for character in form_entry.characters_json %}
             <div class="actions-inline top-offset">
               <input type="text" name="entry_character" value="{{ character }}" maxlength="255" />
               <button type="button" class="btn btn-danger remove-character-row">Удалить</button>
@@ -208,24 +230,26 @@
     </label>
 
     <div class="actions-inline">
-      <button type="submit" class="btn btn-accent" id="contest-submit-button">Отправить работу</button>
+      <button type="submit" class="btn btn-accent" id="contest-submit-button">{% if form_entry %}Сохранить заявку{% else %}Отправить работу{% endif %}</button>
+      {% if edit_entry %}<a href="/photocosplay/{{ contest.id }}" class="btn">Отмена</a>{% endif %}
     </div>
   </form>
+</section>
+{% elif submission_open and my_entries %}
+<section class="box">
+  <h2>Лимит заявок достигнут</h2>
+  <p class="muted">Вы уже отправили {{ my_entries|length }} из {{ contest.max_entries_per_participant or 1 }} разрешённых заявок. Можно отредактировать или удалить одну из карточек ниже.</p>
 </section>
 {% endif %}
 
 {% if show_participants_block %}
 <section class="box">
   <div class="row-between">
-    <h2>{% if can_manage and contest_status == 'open' %}Премодерация заявок{% else %}Участники{% endif %}</h2>
+    <h2>{% if can_manage and contest_status == 'open' %}Премодерация заявок{% elif contest_status == 'open' %}Мои заявки{% else %}Участники{% endif %}</h2>
     {% if can_vote %}
       <span class="chip">Можно ставить отметки</span>
     {% endif %}
   </div>
-
-  {% if can_vote %}
-  <form method="post" action="/photocosplay/{{ contest.id }}/votes" class="top-offset">
-  {% endif %}
 
   {% set ns = namespace(has_any_entries=false) %}
   {% for nomination_title in ordered_nomination_titles %}
@@ -234,12 +258,12 @@
       {% set ns.has_any_entries = true %}
       <section class="box compact-box top-offset">
         <h3>{{ nomination_title }}</h3>
+        <div class="contest-entry-grid top-offset">
         {% for row in nomination_entries %}
           {% set participant = row.participant %}
           {% set entry = row.entry %}
           {% set brief = row.brief %}
-          <article class="card top-offset">
-            <p class="meta">Участник: {% if participant %}<span class="{% if user_is_special(participant) %}nick-special{% endif %}">@{{ participant.cosplay_nick or participant.username }}</span>{% else %}@unknown{% endif %}</p>
+          <article class="card contest-entry-card">
             {% if brief.cosplayers %}
               <p class="meta">Косплеер: {{ brief.cosplayers|join(', ') }}</p>
             {% endif %}
@@ -267,7 +291,7 @@
                     {% if can_vote %}
                       <div class="photo-work-vote">
                         <label class="inline-check">
-                          <input type="checkbox" name="photo_vote" value="{{ photo.id }}" {% if photo.id in user_voted_photo_ids %}checked{% endif %} />
+                          <input type="checkbox" name="photo_vote" value="{{ photo.id }}" form="contest-vote-form" {% if photo.id in user_voted_photo_ids %}checked{% endif %} />
                           Отметить работу
                         </label>
                       </div>
@@ -276,8 +300,17 @@
                 {% endfor %}
               </div>
             {% endif %}
+            {% if can_manage or (submission_open and entry.participant_user_id == user.id) %}
+              <div class="actions-inline top-offset">
+                <a href="/photocosplay/{{ contest.id }}?edit_entry_id={{ entry.id }}#contest-submit-form" class="btn btn-small">Редактировать</a>
+                <form method="post" action="/photocosplay/{{ contest.id }}/entries/{{ entry.id }}/delete" onsubmit="return confirm('Удалить эту заявку и все её фотографии?');">
+                  <button type="submit" class="btn btn-small btn-danger">Удалить</button>
+                </form>
+              </div>
+            {% endif %}
           </article>
         {% endfor %}
+        </div>
       </section>
     {% endif %}
   {% endfor %}
@@ -287,10 +320,10 @@
   {% endif %}
 
   {% if can_vote %}
+    <form method="post" action="/photocosplay/{{ contest.id }}/votes" id="contest-vote-form"></form>
     <div class="actions-inline top-offset">
-      <button type="submit" class="btn btn-accent">Сохранить отметки</button>
+      <button type="submit" class="btn btn-accent" form="contest-vote-form">Сохранить отметки</button>
     </div>
-  </form>
   {% endif %}
 </section>
 {% endif %}
@@ -545,11 +578,23 @@
     }
 
     const submitForm = document.getElementById("contest-submit-form");
-    const photoFilesInput = document.getElementById("contest-photo-files");
+    const photoInputsWrap = document.getElementById("contest-photo-inputs");
+    const addPhotoFileButton = document.getElementById("add-contest-photo-file");
     const submitButton = document.getElementById("contest-submit-button");
     const uploadStatus = document.getElementById("contest-upload-status");
     const maxFileBytes = {{ photo_contest_max_photo_file_mb }} * 1024 * 1024;
     const maxFileCount = {{ contest.max_photos_per_participant or 1 }};
+    const initialSubmitLabel = submitButton ? submitButton.textContent : "Сохранить заявку";
+    let filesArePreparing = false;
+    let filesPreparationFailed = false;
+
+    function photoInputs() {
+      return photoInputsWrap ? Array.from(photoInputsWrap.querySelectorAll(".contest-photo-file")) : [];
+    }
+
+    function selectedFiles() {
+      return photoInputs().flatMap((input) => Array.from(input.files || []));
+    }
 
     function setUploadStatus(message, kind) {
       if (!uploadStatus) {
@@ -560,10 +605,10 @@
     }
 
     function validateSelectedPhotos() {
-      if (!(photoFilesInput instanceof HTMLInputElement)) {
+      if (!photoInputsWrap) {
         return true;
       }
-      const files = Array.from(photoFilesInput.files || []);
+      const files = selectedFiles();
       if (files.length > maxFileCount) {
         setUploadStatus(`Можно выбрать не более ${maxFileCount} фото.`, "error");
         return false;
@@ -577,19 +622,86 @@
         const totalMb = files.reduce((sum, file) => sum + file.size, 0) / (1024 * 1024);
         setUploadStatus(`Выбрано файлов: ${files.length}. Общий размер: ${totalMb.toFixed(1)} МБ.`, "");
       } else {
-        setUploadStatus("Поддерживаются JPG, PNG, WEBP, GIF, BMP и TIFF.", "");
+        setUploadStatus("Добавляйте фотографии по одной. Поддерживаются JPG, PNG, WEBP, GIF, BMP и TIFF.", "");
       }
       return true;
     }
 
-    if (photoFilesInput) {
-      photoFilesInput.addEventListener("change", validateSelectedPhotos);
+    async function preparePhotoInput(photoInput) {
+        if (!(photoInput instanceof HTMLInputElement)) return;
+        filesPreparationFailed = false;
+        if (!validateSelectedPhotos() || !photoInput.files || !photoInput.files.length) {
+          return;
+        }
+        if (typeof DataTransfer === "undefined") {
+          setUploadStatus("Файлы выбраны. Не перемещайте и не удаляйте их до завершения загрузки.", "");
+          return;
+        }
+        filesArePreparing = true;
+        if (submitButton) submitButton.disabled = true;
+        setUploadStatus("Подготавливаем файлы к надёжной загрузке…", "progress");
+        try {
+          const preparedFiles = await Promise.all(Array.from(photoInput.files).map(async (file) => {
+            const bytes = await file.arrayBuffer();
+            return new File([bytes], file.name, { type: file.type, lastModified: file.lastModified });
+          }));
+          const transfer = new DataTransfer();
+          preparedFiles.forEach((file) => transfer.items.add(file));
+          photoInput.files = transfer.files;
+          validateSelectedPhotos();
+          setUploadStatus(`Выбрано файлов: ${selectedFiles().length}. Теперь временный файл Telegram можно закрыть.`, "");
+        } catch (error) {
+          filesPreparationFailed = true;
+          setUploadStatus("Не удалось прочитать выбранный файл. Сохраните его в «Фото» или «Загрузки» и выберите снова.", "error");
+        } finally {
+          filesArePreparing = false;
+          if (submitButton) submitButton.disabled = false;
+        }
+    }
+
+    if (photoInputsWrap) {
+      photoInputsWrap.addEventListener("change", function (event) {
+        preparePhotoInput(event.target);
+      });
+    }
+    if (addPhotoFileButton && photoInputsWrap) {
+      addPhotoFileButton.addEventListener("click", function () {
+        const inputCount = photoInputs().length;
+        if (inputCount >= maxFileCount) {
+          setUploadStatus(`В одной заявке можно загрузить не более ${maxFileCount} фото.`, "error");
+          return;
+        }
+        const label = document.createElement("label");
+        label.className = "contest-photo-input-row";
+        label.textContent = `Файл ${inputCount + 1}`;
+        const input = document.createElement("input");
+        input.type = "file";
+        input.name = "photos";
+        input.className = "contest-photo-file";
+        input.accept = "image/jpeg,image/png,image/webp,image/gif,image/bmp,image/tiff";
+        label.appendChild(input);
+        photoInputsWrap.appendChild(label);
+        input.click();
+        if (photoInputs().length >= maxFileCount) addPhotoFileButton.disabled = true;
+      });
+      if (maxFileCount <= 1) addPhotoFileButton.disabled = true;
     }
     if (submitForm && submitButton) {
       submitForm.addEventListener("submit", function (event) {
+        if (filesArePreparing || filesPreparationFailed) {
+          event.preventDefault();
+          setUploadStatus(
+            filesArePreparing
+              ? "Дождитесь завершения подготовки файлов."
+              : "Выберите файл повторно из «Фото» или «Загрузок».",
+            filesPreparationFailed ? "error" : "progress"
+          );
+          return;
+        }
         if (!validateSelectedPhotos()) {
           event.preventDefault();
-          photoFilesInput.focus();
+          const firstInput = photoInputs()[0];
+          if (firstInput) firstInput.focus();
           return;
         }
         submitButton.disabled = true;
@@ -601,7 +713,7 @@
       });
       window.addEventListener("pageshow", function () {
         submitButton.disabled = false;
-        submitButton.textContent = "Отправить работу";
+        submitButton.textContent = initialSubmitLabel;
       });
     }
   })();

@@ -1025,6 +1025,7 @@ class PhotoContestRequest(Base):
     judges_json = Column(JSON, nullable=False, default=list)
     rules_markdown = Column(Text, nullable=True)
     prizes_markdown = Column(Text, nullable=True)
+    max_entries_per_participant = Column(Integer, nullable=False, default=1)
     max_photos_per_participant = Column(Integer, nullable=False, default=1)
     participant_visibility = Column(String(32), nullable=False, default="all", index=True)  # all | winners
     status = Column(String(16), nullable=False, default="pending", index=True)  # pending | approved | rejected
@@ -1054,6 +1055,7 @@ class PhotoContest(Base):
     judges_json = Column(JSON, nullable=False, default=list)
     rules_markdown = Column(Text, nullable=True)
     prizes_markdown = Column(Text, nullable=True)
+    max_entries_per_participant = Column(Integer, nullable=False, default=1)
     max_photos_per_participant = Column(Integer, nullable=False, default=1)
     participant_visibility = Column(String(32), nullable=False, default="all", index=True)  # all | winners
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
@@ -1082,11 +1084,6 @@ class PhotoContestEntry(Base):
     contest = relationship("PhotoContest", back_populates="entries")
     participant = relationship("User", back_populates="photo_contest_entries")
     photos = relationship("PhotoContestEntryPhoto", back_populates="entry", cascade="all, delete-orphan")
-
-    __table_args__ = (
-        UniqueConstraint("contest_id", "participant_user_id", name="uq_photo_contest_entry_participant"),
-    )
-
 
 class PhotoContestEntryPhoto(Base):
     __tablename__ = "photo_contest_entry_photos"

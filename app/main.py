@@ -1082,6 +1082,7 @@ PHOTO_CONTEST_ROLE_OPTIONS = [
     PHOTO_CONTEST_ROLE_OTHER,
 ]
 PHOTO_CONTEST_MAX_PHOTOS_PER_PARTICIPANT_LIMIT = 30
+PHOTO_CONTEST_MAX_ENTRIES_PER_PARTICIPANT_LIMIT = 20
 PHOTO_CONTEST_MAX_NOMINATIONS = 20
 PHOTO_CONTEST_MAX_JUDGES = 50
 PHOTO_CONTEST_MAX_PHOTO_FILE_BYTES = 20 * 1024 * 1024
@@ -1638,6 +1639,12 @@ def apply_schema_migrations() -> None:
             ("import_external_id", "VARCHAR(128)"),
             ("import_url", "TEXT"),
         ],
+        "photo_contest_requests": [
+            ("max_entries_per_participant", "INTEGER NOT NULL DEFAULT 1"),
+        ],
+        "photo_contests": [
+            ("max_entries_per_participant", "INTEGER NOT NULL DEFAULT 1"),
+        ],
         "content_plan_posts": [
             ("shared_pair_id", "VARCHAR(64)"),
             ("shared_partner_user_id", "INTEGER"),
@@ -1897,6 +1904,64 @@ def apply_schema_migrations() -> None:
                 "ON in_progress_master_boards (card_id)"
             )
         )
+
+    # Older SQLite databases enforced one entry per participant at the schema
+    # level. Rebuild this small table once so contests can configure several
+    # independent applications per participant. Child photo/vote rows keep their
+    # entry ids unchanged.
+    raw_connection = engine.raw_connection()
+    try:
+        cursor = raw_connection.cursor()
+        table_row = cursor.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'photo_contest_entries'"
+        ).fetchone()
+        table_sql = str(table_row[0] or "") if table_row else ""
+        if "uq_photo_contest_entry_participant" in table_sql:
+            cursor.execute("PRAGMA foreign_keys = OFF")
+            cursor.execute("BEGIN IMMEDIATE")
+            cursor.execute(
+                """
+                CREATE TABLE photo_contest_entries_new (
+                    id INTEGER NOT NULL PRIMARY KEY,
+                    contest_id INTEGER NOT NULL REFERENCES photo_contests (id) ON DELETE CASCADE,
+                    participant_user_id INTEGER NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+                    nomination_title VARCHAR(255),
+                    fandom VARCHAR(255),
+                    characters_json JSON NOT NULL,
+                    roles_json JSON NOT NULL,
+                    agreed_to_rules BOOLEAN NOT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
+                )
+                """
+            )
+            cursor.execute(
+                """
+                INSERT INTO photo_contest_entries_new (
+                    id, contest_id, participant_user_id, nomination_title, fandom,
+                    characters_json, roles_json, agreed_to_rules, created_at, updated_at
+                )
+                SELECT id, contest_id, participant_user_id, nomination_title, fandom,
+                       characters_json, roles_json, agreed_to_rules, created_at, updated_at
+                FROM photo_contest_entries
+                """
+            )
+            cursor.execute("DROP TABLE photo_contest_entries")
+            cursor.execute("ALTER TABLE photo_contest_entries_new RENAME TO photo_contest_entries")
+            cursor.execute("CREATE INDEX ix_photo_contest_entries_contest_id ON photo_contest_entries (contest_id)")
+            cursor.execute("CREATE INDEX ix_photo_contest_entries_participant_user_id ON photo_contest_entries (participant_user_id)")
+            cursor.execute("CREATE INDEX ix_photo_contest_entries_nomination_title ON photo_contest_entries (nomination_title)")
+            raw_connection.commit()
+            cursor.execute("PRAGMA foreign_keys = ON")
+    except Exception:
+        raw_connection.rollback()
+        raise
+    finally:
+        try:
+            raw_connection.execute("PRAGMA foreign_keys = ON")
+        except sqlite3.Error:
+            pass
+        raw_connection.close()
 
 
 @app.on_event("startup")
@@ -36732,6 +36797,7 @@ def photo_contest_form_values(item: PhotoContest | PhotoContestRequest | None = 
             "judges_input": "",
             "rules_markdown": "",
             "prizes_markdown": "",
+            "max_entries_per_participant": 1,
             "max_photos_per_participant": 3,
             "participant_visibility": PHOTO_CONTEST_VISIBILITY_ALL,
         }
@@ -36748,6 +36814,7 @@ def photo_contest_form_values(item: PhotoContest | PhotoContestRequest | None = 
         "judges_input": ", ".join(as_list(getattr(item, "judges_json", []))),
         "rules_markdown": str(getattr(item, "rules_markdown", "") or ""),
         "prizes_markdown": str(getattr(item, "prizes_markdown", "") or ""),
+        "max_entries_per_participant": int(getattr(item, "max_entries_per_participant", 1) or 1),
         "max_photos_per_participant": int(getattr(item, "max_photos_per_participant", 1) or 1),
         "participant_visibility": normalize_photo_contest_visibility(getattr(item, "participant_visibility", "")),
     }
@@ -36943,6 +37010,15 @@ def parse_photo_contest_payload_from_form(
     if judging_format == PHOTO_CONTEST_JUDGING_CLOSED and not judges:
         return None, "Для закрытого судейства укажите хотя бы одного судью."
 
+    max_entries_per_participant = parse_positive_int(str(form.get("max_entries_per_participant", "")).strip())
+    if not max_entries_per_participant:
+        return None, "Максимальное количество заявок участника должно быть больше нуля."
+    if max_entries_per_participant > PHOTO_CONTEST_MAX_ENTRIES_PER_PARTICIPANT_LIMIT:
+        return (
+            None,
+            f"Максимум заявок на участника: {PHOTO_CONTEST_MAX_ENTRIES_PER_PARTICIPANT_LIMIT}.",
+        )
+
     max_photos_per_participant = parse_positive_int(str(form.get("max_photos_per_participant", "")).strip())
     if not max_photos_per_participant:
         return None, "Максимальное количество фотографий участника должно быть больше нуля."
@@ -36973,6 +37049,7 @@ def parse_photo_contest_payload_from_form(
         "judges_json": judges,
         "rules_markdown": normalize_text_line_breaks(str(form.get("rules_markdown", "")).strip())[:20000] or None,
         "prizes_markdown": normalize_text_line_breaks(str(form.get("prizes_markdown", "")).strip())[:20000] or None,
+        "max_entries_per_participant": int(max_entries_per_participant),
         "max_photos_per_participant": int(max_photos_per_participant),
         "participant_visibility": normalize_photo_contest_visibility(form.get("participant_visibility")),
     }
@@ -36991,6 +37068,7 @@ def apply_photo_contest_payload(target: PhotoContest | PhotoContestRequest, payl
     target.judges_json = payload["judges_json"]
     target.rules_markdown = payload["rules_markdown"]
     target.prizes_markdown = payload["prizes_markdown"]
+    target.max_entries_per_participant = int(payload["max_entries_per_participant"])
     target.max_photos_per_participant = int(payload["max_photos_per_participant"])
     target.participant_visibility = payload["participant_visibility"]
 
@@ -37265,6 +37343,7 @@ def photo_contest_request_approve(request_id: int, request: Request, db: Session
             "judges_json": as_list(contest_request.judges_json),
             "rules_markdown": contest_request.rules_markdown,
             "prizes_markdown": contest_request.prizes_markdown,
+            "max_entries_per_participant": max(1, int(contest_request.max_entries_per_participant or 1)),
             "max_photos_per_participant": max(1, int(contest_request.max_photos_per_participant or 1)),
             "participant_visibility": normalize_photo_contest_visibility(contest_request.participant_visibility),
         },
@@ -37406,11 +37485,24 @@ async def photo_contest_submit_work(contest_id: int, request: Request, db: Sessi
         add_flash(request, "Конкурс не найден.", "error")
         return redirect("/photocosplay")
 
-    if not photo_contest_submission_period_active(contest):
+    can_manage = photo_contest_can_manage(user, contest)
+    submission_open = photo_contest_submission_period_active(contest)
+    if not submission_open and not can_manage:
         add_flash(request, "Прием работ сейчас закрыт.", "error")
         return redirect(f"/photocosplay/{contest_id}")
 
     form = await request.form()
+    target_entry_id = parse_positive_int(str(form.get("entry_id", "")).strip())
+    entry = db.get(PhotoContestEntry, target_entry_id) if target_entry_id else None
+    if entry and int(entry.contest_id) != int(contest.id):
+        entry = None
+    if target_entry_id and not entry:
+        add_flash(request, "Заявка не найдена.", "error")
+        return redirect(f"/photocosplay/{contest_id}")
+    if entry and not (can_manage or int(entry.participant_user_id) == int(user.id)):
+        add_flash(request, "Недостаточно прав для редактирования этой заявки.", "error")
+        return redirect(f"/photocosplay/{contest_id}")
+
     if not to_bool(form.get("agree_rules")):
         add_flash(request, "Нужно согласиться с правилами конкурса.", "error")
         return redirect(f"/photocosplay/{contest_id}")
@@ -37440,28 +37532,42 @@ async def photo_contest_submit_work(contest_id: int, request: Request, db: Sessi
         for item in form.getlist("photos")
         if hasattr(item, "filename") and hasattr(item, "read")
     ]
-    saved_paths, save_error = await save_photo_contest_images(
-        files,
-        max(1, int(contest.max_photos_per_participant or 1)),
-    )
-    if save_error:
-        add_flash(request, save_error, "error")
+    saved_paths: list[str] = []
+    if files:
+        saved_paths, save_error = await save_photo_contest_images(
+            files,
+            max(1, int(contest.max_photos_per_participant or 1)),
+        )
+        if save_error:
+            add_flash(request, save_error, "error")
+            return redirect(f"/photocosplay/{contest_id}")
+    elif not entry:
+        add_flash(request, "Загрузите хотя бы одну фотографию.", "error")
         return redirect(f"/photocosplay/{contest_id}")
 
-    entry = db.execute(
-        select(PhotoContestEntry).where(
-            PhotoContestEntry.contest_id == contest.id,
-            PhotoContestEntry.participant_user_id == user.id,
-        )
-    ).scalar_one_or_none()
     if not entry:
+        existing_entry_count = int(
+            db.scalar(
+                select(func.count(PhotoContestEntry.id)).where(
+                    PhotoContestEntry.contest_id == contest.id,
+                    PhotoContestEntry.participant_user_id == user.id,
+                )
+            )
+            or 0
+        )
+        max_entries = max(1, int(contest.max_entries_per_participant or 1))
+        if existing_entry_count >= max_entries:
+            for path_value in saved_paths:
+                remove_media_file_by_path(path_value)
+            add_flash(request, f"Достигнут лимит заявок: {max_entries}.", "error")
+            return redirect(f"/photocosplay/{contest_id}")
         entry = PhotoContestEntry(
             contest_id=int(contest.id),
             participant_user_id=user.id,
         )
         db.add(entry)
         db.flush()
-    else:
+    elif saved_paths:
         for old_photo in list(entry.photos):
             remove_media_file_by_path(str(old_photo.file_path or ""))
             db.delete(old_photo)
@@ -37484,7 +37590,30 @@ async def photo_contest_submit_work(contest_id: int, request: Request, db: Sessi
         )
 
     db.commit()
-    add_flash(request, "Работа загружена.", "success")
+    add_flash(request, "Заявка сохранена.", "success")
+    return redirect(f"/photocosplay/{contest_id}")
+
+
+@app.post("/photocosplay/{contest_id}/entries/{entry_id}/delete")
+def photo_contest_delete_entry(contest_id: int, entry_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    contest = db.get(PhotoContest, contest_id)
+    entry = db.get(PhotoContestEntry, entry_id)
+    if not contest or not entry or int(entry.contest_id) != int(contest_id):
+        add_flash(request, "Заявка не найдена.", "error")
+        return redirect(f"/photocosplay/{contest_id}")
+    can_manage = photo_contest_can_manage(user, contest)
+    is_owner = int(entry.participant_user_id) == int(user.id)
+    if not can_manage and not (is_owner and photo_contest_submission_period_active(contest)):
+        add_flash(request, "Недостаточно прав для удаления этой заявки.", "error")
+        return redirect(f"/photocosplay/{contest_id}")
+    for photo in list(entry.photos):
+        remove_media_file_by_path(str(photo.file_path or ""))
+    db.delete(entry)
+    db.commit()
+    add_flash(request, "Заявка удалена.", "success")
     return redirect(f"/photocosplay/{contest_id}")
 
 
@@ -37642,7 +37771,19 @@ def photo_contest_detail(contest_id: int, request: Request, db: Session = Depend
     can_vote = photo_contest_can_vote(contest, user)
     submission_open = photo_contest_submission_period_active(contest)
     creator_user = users_by_id.get(int(contest.creator_user_id))
-    my_entry = next((item for item in entries if int(item.participant_user_id) == user.id), None)
+    my_entries = [item for item in entries if int(item.participant_user_id) == user.id]
+    requested_edit_entry_id = parse_positive_int(str(request.query_params.get("edit_entry_id", "")).strip())
+    edit_entry = entry_by_id.get(int(requested_edit_entry_id)) if requested_edit_entry_id else None
+    if edit_entry and not (
+        can_manage
+        or (submission_open and int(edit_entry.participant_user_id) == int(user.id))
+    ):
+        edit_entry = None
+    form_entry = edit_entry
+    user_can_add_entry = bool(
+        submission_open
+        and len(my_entries) < max(1, int(contest.max_entries_per_participant or 1))
+    )
 
     visible_grouped_entries: dict[str, list[dict[str, Any]]] = {}
     for nomination_title in ordered_nomination_titles:
@@ -37651,6 +37792,7 @@ def photo_contest_detail(contest_id: int, request: Request, db: Session = Depend
             continue
         if (
             not can_manage
+            and contest_status != PHOTO_CONTEST_STATUS_OPEN
             and normalize_photo_contest_visibility(contest.participant_visibility) == PHOTO_CONTEST_VISIBILITY_WINNERS
         ):
             if contest_status != PHOTO_CONTEST_STATUS_FINISHED:
@@ -37681,6 +37823,23 @@ def photo_contest_detail(contest_id: int, request: Request, db: Session = Depend
         and normalize_photo_contest_visibility(contest.participant_visibility) == PHOTO_CONTEST_VISIBILITY_WINNERS
     ):
         show_participants_block = contest_status == PHOTO_CONTEST_STATUS_FINISHED
+    if contest_status == PHOTO_CONTEST_STATUS_OPEN and not can_manage:
+        visible_grouped_entries = {
+            nomination_title: [
+                row
+                for row in rows
+                if int(row["entry"].participant_user_id) == int(user.id)
+            ]
+            for nomination_title, rows in visible_grouped_entries.items()
+        }
+        visible_grouped_entries = {
+            nomination_title: rows
+            for nomination_title, rows in visible_grouped_entries.items()
+            if rows
+        }
+    show_participants_block = show_participants_block or bool(
+        contest_status == PHOTO_CONTEST_STATUS_OPEN and my_entries
+    )
     if not show_participants_block:
         # Do not leak pre-judging photos and entry metadata through the modal JSON
         # merely because the visible participant block is hidden in the template.
@@ -37716,9 +37875,13 @@ def photo_contest_detail(contest_id: int, request: Request, db: Session = Depend
         can_manage=can_manage,
         can_vote=can_vote,
         submission_open=submission_open,
+        submission_form_visible=bool(edit_entry) or user_can_add_entry,
         show_participants_block=show_participants_block,
         creator_user=creator_user,
-        my_entry=my_entry,
+        my_entries=my_entries,
+        form_entry=form_entry,
+        edit_entry=edit_entry,
+        user_can_add_entry=user_can_add_entry,
         grouped_entries=visible_grouped_entries,
         ordered_nomination_titles=ordered_nomination_titles,
         vote_count_by_photo_id=vote_count_by_photo_id,

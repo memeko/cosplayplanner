@@ -141,6 +141,7 @@ def run_scenario(db_path: Path) -> None:
                 "judges_input": "",
                 "rules_markdown": "Тестовые **правила** конкурса.",
                 "prizes_markdown": "Тестовые призы.",
+                "max_entries_per_participant": "2",
                 "max_photos_per_participant": "2",
                 "participant_visibility": "all",
             },
@@ -207,6 +208,42 @@ def run_scenario(db_path: Path) -> None:
 
         response = client.get("/photocosplay?participating_only=1")
         assert_ok("QA Фотокосплей 2026" in response.text, "Participating filter did not show contest")
+        response = client.get(f"/photocosplay/{contest_id}")
+        assert_ok("Мои заявки" in response.text, "Participant cannot see own entry before judging")
+        assert_ok("Редактировать" in response.text, "Participant cannot edit own entry before judging")
+        post_form(
+            client,
+            f"/photocosplay/{contest_id}/submit",
+            data={
+                "nomination_title": "Групповой фотокосплей",
+                "fandom": "Second allowed entry",
+                "entry_person": ["contest_participant"],
+                "entry_role": ["cosplayer"],
+                "entry_character": ["A2"],
+                "agree_rules": "1",
+            },
+            files=[("photos", ("second.jpg", make_jpeg_bytes((110, 90, 180)), "image/jpeg"))],
+        )
+        post_form(
+            client,
+            f"/photocosplay/{contest_id}/submit",
+            data={
+                "nomination_title": "Групповой фотокосплей",
+                "fandom": "Rejected third entry",
+                "entry_person": ["contest_participant"],
+                "entry_role": ["cosplayer"],
+                "entry_character": ["9S"],
+                "agree_rules": "1",
+            },
+            files=[("photos", ("third.jpg", make_jpeg_bytes((80, 80, 80)), "image/jpeg"))],
+        )
+        with SessionLocal() as db:
+            participant_user = db.query(User).filter(User.username == "contest_participant").one()
+            participant_entries = db.query(PhotoContestEntry).filter(
+                PhotoContestEntry.contest_id == contest_id,
+                PhotoContestEntry.participant_user_id == participant_user.id,
+            ).all()
+            assert_ok(len(participant_entries) == 2, "Per-participant entry limit was not enforced")
         logout()
 
         # The creator can premoderate submissions before judging starts, while a
@@ -216,15 +253,61 @@ def run_scenario(db_path: Path) -> None:
         assert_ok("Премодерация заявок" in response.text, "Creator premoderation block is missing")
         assert_ok("@contest_participant" in response.text, "Creator cannot see the submitted entry")
         assert_ok("максимальный размер каждого файла — 20 МБ" in response.text, "Per-file limit is missing")
+        assert_ok("Участник:" not in response.text, "Participant label is still shown on preview cards")
+        post_form(
+            client,
+            f"/photocosplay/{contest_id}/submit",
+            data={
+                "entry_id": str(entry.id),
+                "nomination_title": "Одиночный фотокосплей",
+                "fandom": "NieR:Automata",
+                "entry_person": ["contest_participant", "friend_photo"],
+                "entry_role": ["cosplayer", "photographer"],
+                "entry_character": ["2B"],
+                "agree_rules": "1",
+            },
+        )
+        with SessionLocal() as db:
+            edited_entry = db.get(PhotoContestEntry, entry.id)
+            assert_ok(edited_entry is not None and edited_entry.fandom == "NieR:Automata", "Creator edit failed")
+            remaining_photos = db.query(PhotoContestEntryPhoto).filter(PhotoContestEntryPhoto.entry_id == entry.id).all()
+            assert_ok(len(remaining_photos) == 2, "Metadata edit unexpectedly replaced photos")
         logout()
 
         login("contest_viewer")
         response = client.get(f"/photocosplay/{contest_id}")
         assert_ok("@contest_participant" not in response.text, "Viewer can see entries before judging")
+        post_form(
+            client,
+            f"/photocosplay/{contest_id}/submit",
+            data={
+                "nomination_title": "Групповой фотокосплей",
+                "fandom": "Temporary entry",
+                "entry_person": ["contest_viewer"],
+                "entry_role": ["cosplayer"],
+                "entry_character": ["Tester"],
+                "agree_rules": "1",
+            },
+            files=[("photos", ("viewer.jpg", make_jpeg_bytes((100, 180, 120)), "image/jpeg"))],
+        )
+        response = client.get(f"/photocosplay/{contest_id}")
+        assert_ok("Temporary entry" in response.text, "Participant cannot see own new entry")
+        assert_ok("NieR:Automata" not in response.text, "Participant can see another entry before judging")
+        with SessionLocal() as db:
+            viewer_user = db.query(User).filter(User.username == "contest_viewer").one()
+            viewer_entry = db.query(PhotoContestEntry).filter(
+                PhotoContestEntry.contest_id == contest_id,
+                PhotoContestEntry.participant_user_id == viewer_user.id,
+            ).one()
+            viewer_entry_id = int(viewer_entry.id)
         logout()
 
-        # 5) Move contest to judging phase.
         login("contest_creator")
+        post_form(client, f"/photocosplay/{contest_id}/entries/{viewer_entry_id}/delete")
+        with SessionLocal() as db:
+            assert_ok(db.get(PhotoContestEntry, viewer_entry_id) is None, "Creator delete failed")
+
+        # 5) Move contest to judging phase.
         post_form(
             client,
             f"/photocosplay/{contest_id}/edit",
@@ -240,6 +323,7 @@ def run_scenario(db_path: Path) -> None:
                 "judges_input": "",
                 "rules_markdown": "Тестовые **правила** конкурса.",
                 "prizes_markdown": "Тестовые призы.",
+                "max_entries_per_participant": "2",
                 "max_photos_per_participant": "2",
                 "participant_visibility": "all",
             },
@@ -274,6 +358,7 @@ def run_scenario(db_path: Path) -> None:
                 "judges_input": "brfox_cosplay",
                 "rules_markdown": "Тестовые **правила** конкурса.",
                 "prizes_markdown": "Тестовые призы.",
+                "max_entries_per_participant": "2",
                 "max_photos_per_participant": "2",
                 "participant_visibility": "all",
             },
@@ -304,6 +389,7 @@ def run_scenario(db_path: Path) -> None:
                 "judges_input": "",
                 "rules_markdown": "Тестовые **правила** конкурса.",
                 "prizes_markdown": "Тестовые призы.",
+                "max_entries_per_participant": "2",
                 "max_photos_per_participant": "2",
                 "participant_visibility": "winners",
             },

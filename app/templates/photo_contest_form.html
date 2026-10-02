@@ -98,10 +98,16 @@
       <textarea name="prizes_markdown" rows="6" placeholder="Описание призов и условий получения...">{{ form.prizes_markdown }}</textarea>
     </label>
 
-    <label>
-      Максимальное количество фотографий участника *
-      <input type="number" name="max_photos_per_participant" min="1" max="30" value="{{ form.max_photos_per_participant }}" required />
-    </label>
+    <div class="grid two-col">
+      <label>
+        Максимальное количество заявок от участника *
+        <input type="number" name="max_entries_per_participant" min="1" max="20" value="{{ form.max_entries_per_participant }}" required />
+      </label>
+      <label>
+        Максимальное количество фотографий в одной заявке *
+        <input type="number" name="max_photos_per_participant" min="1" max="30" value="{{ form.max_photos_per_participant }}" required />
+      </label>
+    </div>
 
     <label>
       Видимость участников
