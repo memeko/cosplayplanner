@@ -1671,6 +1671,13 @@ textarea {
   margin-top: 7px;
 }
 
+.pigeon-forwarded-author {
+  margin-bottom: 6px;
+  color: var(--accent-strong);
+  font-size: 12px;
+  font-weight: 700;
+}
+
 .pigeon-forward-button {
   appearance: none;
   border: 0;

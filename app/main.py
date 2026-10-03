@@ -8795,6 +8795,18 @@ def is_external_bot_eligible_notification(message: str | None) -> bool:
         return True
     if "новый комментарий в вашем объявлении поиска" in lower:
         return True
+    if "статус заявки на фестиваль" in lower and any(
+        status in lower for status in ("принято", "отказано")
+    ):
+        return True
+    if "заявка на фотокосплей-конкурс одобрена" in lower:
+        return True
+    if "заявка на фотокосплей-конкурс отклонена" in lower:
+        return True
+    if "заявка на добавление мероприятия одобрена" in lower:
+        return True
+    if "заявка на добавление мероприятия отклонена" in lower:
+        return True
     return False
 
 
@@ -9114,10 +9126,14 @@ def format_external_bot_notification_message(message: str | None) -> str:
     text_value = (text_value or "").strip()
     if not text_value:
         return ""
-    pigeon_payload = parse_pigeon_message(text_value)
+    pigeon_payload = parse_pigeon_message_payload(text_value)
     if pigeon_payload:
-        sender_alias, body = pigeon_payload
+        sender_alias = str(pigeon_payload.get("sender_alias") or "")
+        body = str(pigeon_payload.get("body") or "")
+        forwarded_author_alias = str(pigeon_payload.get("forwarded_author_alias") or "").strip()
         body_text = replace_pixel_emoji_tokens_for_bots(body).strip() or "Без текста"
+        if forwarded_author_alias:
+            body_text = f"Переслано от @{forwarded_author_alias}\n{body_text}"
         return (
             f"Вам пришло сообщение от пользователя @{sender_alias} с текстом:\n\n{body_text}\n\n"
             "Чтобы ответить, отправьте: /reply ваш текст"
@@ -12041,6 +12057,7 @@ def encode_pigeon_message_meta(
     image_ref: str | None = None,
     project_card_id: int | None = None,
     project_label: str | None = None,
+    forwarded_author_alias: str | None = None,
 ) -> str:
     payload: dict[str, Any] = {}
     normalized_image = normalize_local_media_reference(image_ref)
@@ -12051,6 +12068,9 @@ def encode_pigeon_message_meta(
     normalized_label = sanitize_pigeon_project_label(project_label)
     if normalized_label:
         payload["plbl"] = normalized_label
+    normalized_forwarded_author = normalize_username(forwarded_author_alias)
+    if normalized_forwarded_author:
+        payload["fa"] = normalized_forwarded_author
     if not payload:
         return ""
     raw_json = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
@@ -12086,7 +12106,11 @@ def decode_pigeon_message_meta(encoded_value: str | None) -> dict[str, Any]:
     if normalized_label:
         normalized["plbl"] = normalized_label
 
-    if "img" not in normalized and "pcid" not in normalized:
+    normalized_forwarded_author = normalize_username(decoded.get("fa"))
+    if normalized_forwarded_author:
+        normalized["fa"] = normalized_forwarded_author
+
+    if "img" not in normalized and "pcid" not in normalized and "fa" not in normalized:
         return {}
 
     return normalized
@@ -12121,6 +12145,7 @@ def parse_pigeon_message_payload(message: str | None) -> dict[str, Any] | None:
     project_card_id = parse_positive_int(str(meta.get("pcid", "")).strip())
     project_url = f"/pigeons/project-link/{int(project_card_id)}" if project_card_id else ""
     project_label = sanitize_pigeon_project_label(meta.get("plbl"))
+    forwarded_author_alias = normalize_username(meta.get("fa"))
     if project_url and not project_label:
         project_label = "Проект «В работе»"
 
@@ -12131,6 +12156,7 @@ def parse_pigeon_message_payload(message: str | None) -> dict[str, Any] | None:
         "project_card_id": int(project_card_id) if project_card_id else None,
         "project_url": project_url,
         "project_label": project_label,
+        "forwarded_author_alias": forwarded_author_alias,
     }
 
 
@@ -12139,8 +12165,12 @@ def build_pigeon_message_preview(
     *,
     image_ref: str | None = None,
     project_label: str | None = None,
+    forwarded_author_alias: str | None = None,
 ) -> str:
     compact = " ".join(str(body_text or "").split()).strip()
+    normalized_forwarded_author = normalize_username(forwarded_author_alias)
+    if normalized_forwarded_author:
+        compact = f"Переслано от @{normalized_forwarded_author}: {compact}".rstrip()
     has_image = bool(normalize_local_media_reference(image_ref))
     has_project = bool(sanitize_pigeon_project_label(project_label))
     if compact:
@@ -12198,8 +12228,15 @@ def render_pigeon_message_body_html(
     image_ref: str | None = None,
     project_url: str | None = None,
     project_label: str | None = None,
+    forwarded_author_alias: str | None = None,
 ) -> Markup:
     parts: list[str] = []
+    normalized_forwarded_author = normalize_username(forwarded_author_alias)
+    if normalized_forwarded_author:
+        parts.append(
+            '<div class="pigeon-forwarded-author">Переслано от '
+            f'@{html.escape(normalized_forwarded_author)}</div>'
+        )
     normalized_body = str(body_text or "").strip()
     if normalized_body:
         parts.append(str(render_text_content(normalized_body)))
@@ -12268,6 +12305,7 @@ def send_pigeon_notification(
     linked_project_card: CosplanCard | None = None,
     forwarded_project_card_id: int | None = None,
     forwarded_project_label: str | None = None,
+    forwarded_author_alias: str | None = None,
 ) -> bool:
     sender_alias = preferred_user_alias(sender)
     normalized_body = str(message_body or "").strip()
@@ -12279,6 +12317,7 @@ def send_pigeon_notification(
             if linked_project_card
             else forwarded_project_label
         ),
+        forwarded_author_alias=forwarded_author_alias,
     )
     raw_payload = f"Курлык! (@{sender_alias}) {normalized_body}"
     if message_meta:
@@ -12395,6 +12434,7 @@ def build_pigeon_dialogs_for_user(db: Session, user: User) -> list[dict[str, Any
         image_ref = str(parsed.get("image_ref") or "").strip()
         project_url = str(parsed.get("project_url") or "").strip()
         project_label = str(parsed.get("project_label") or "").strip()
+        forwarded_author_alias = str(parsed.get("forwarded_author_alias") or "").strip()
         dialog = dialogs_by_user_id.setdefault(
             dialog_user_id,
             {
@@ -12423,6 +12463,7 @@ def build_pigeon_dialogs_for_user(db: Session, user: User) -> list[dict[str, Any
                     image_ref=image_ref,
                     project_url=project_url,
                     project_label=project_label,
+                    forwarded_author_alias=forwarded_author_alias,
                 ),
                 "image_ref": image_ref,
                 "project_url": project_url,
@@ -12440,6 +12481,7 @@ def build_pigeon_dialogs_for_user(db: Session, user: User) -> list[dict[str, Any
                 body_text,
                 image_ref=image_ref,
                 project_label=project_label,
+                forwarded_author_alias=forwarded_author_alias,
             )
             if len(preview) > 120:
                 preview = preview[:117].rstrip() + "..."
@@ -12586,6 +12628,7 @@ def get_latest_unread_pigeon(db: Session, user_id: int) -> dict[str, Any] | None
         image_ref = str(parsed.get("image_ref") or "").strip()
         project_url = str(parsed.get("project_url") or "").strip()
         project_label = str(parsed.get("project_label") or "").strip()
+        forwarded_author_alias = str(parsed.get("forwarded_author_alias") or "").strip()
         sender_user_id = parse_positive_int(str(note.from_user_id or "").strip())
         can_open_chat = bool(sender_user_id)
         chat_url = f"/pigeons?chat={sender_user_id}" if sender_user_id else "/pigeons"
@@ -12597,6 +12640,7 @@ def get_latest_unread_pigeon(db: Session, user_id: int) -> dict[str, Any] | None
                 body_text,
                 image_ref=image_ref,
                 project_label=project_label,
+                forwarded_author_alias=forwarded_author_alias,
             ),
             "body_html": str(
                 render_pigeon_message_body_html(
@@ -12604,6 +12648,7 @@ def get_latest_unread_pigeon(db: Session, user_id: int) -> dict[str, Any] | None
                     image_ref=image_ref,
                     project_url=project_url,
                     project_label=project_label,
+                    forwarded_author_alias=forwarded_author_alias,
                 )
             ),
             "created_at": (note.created_at.isoformat() if note.created_at else ""),
@@ -34221,19 +34266,27 @@ async def pigeons_forward_message(notification_id: int, request: Request, db: Se
         add_flash(request, "Чат для пересылки не найден.", "error")
         return redirect(next_url)
 
-    original_alias = str(source_payload.get("sender_alias") or "").strip()
+    original_alias = str(source_payload.get("forwarded_author_alias") or "").strip()
+    if not original_alias:
+        original_alias = str(source_payload.get("sender_alias") or "").strip()
     original_body = str(source_payload.get("body") or "").strip()
-    forwarded_body = f"Переслано от @{original_alias}"
-    if original_body:
-        forwarded_body = f"{forwarded_body}\n{original_body}"
+    legacy_forward_match = re.match(
+        r"^Переслано от @([^\s]+)\s*(?:\n|$)(.*)$",
+        original_body,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if legacy_forward_match and not source_payload.get("forwarded_author_alias"):
+        original_alias = normalize_username(legacy_forward_match.group(1)) or original_alias
+        original_body = str(legacy_forward_match.group(2) or "").strip()
     send_pigeon_notification(
         db,
         sender=user,
         recipient=recipient,
-        message_body=forwarded_body,
+        message_body=original_body,
         attachment_image_ref=str(source_payload.get("image_ref") or "").strip(),
         forwarded_project_card_id=parse_positive_int(str(source_payload.get("project_card_id") or "").strip()),
         forwarded_project_label=str(source_payload.get("project_label") or "").strip(),
+        forwarded_author_alias=original_alias,
     )
     db.commit()
 
