@@ -5308,7 +5308,7 @@ html[data-theme="dark"] {
   --line-strong: rgba(211, 202, 229, 0.24);
   --accent: #b7a0ff;
   --accent-2: #9678f4;
-  --danger: #ff9faa;
+  --danger: #812c35;
   --planned: rgba(87, 98, 66, 0.72);
   --planned-shared: rgba(104, 88, 57, 0.72);
   --home-city: rgba(120, 92, 171, 0.42);
@@ -5364,6 +5364,69 @@ html[data-theme="dark"] :is(.box, .card, .auth-card, .welcome-modal, .pigeon-pop
   box-shadow: var(--glass-shadow), var(--glass-highlight);
 }
 
+html[data-theme="dark"] :is(.pigeon-inbox, .pigeon-item, .pigeon-chat-sidebar, .pigeon-chat-phone, .pigeon-dialog-card) {
+  color: var(--text);
+  background: linear-gradient(155deg, rgba(57, 54, 66, 0.96), rgba(39, 37, 46, 0.94));
+  border-color: var(--line-strong);
+  box-shadow: var(--glass-shadow-soft), var(--glass-highlight-soft);
+}
+
+html[data-theme="dark"] .pigeon-chat-link {
+  color: var(--text);
+  background: rgba(52, 49, 61, 0.9);
+  border-color: rgba(211, 202, 229, 0.2);
+}
+
+html[data-theme="dark"] .pigeon-chat-link:hover {
+  background: rgba(76, 69, 92, 0.94);
+  border-color: rgba(183, 160, 255, 0.42);
+}
+
+html[data-theme="dark"] .pigeon-chat-link.active {
+  background: linear-gradient(145deg, rgba(104, 88, 140, 0.8), rgba(67, 59, 84, 0.92));
+  border-color: rgba(183, 160, 255, 0.56);
+}
+
+html[data-theme="dark"] :is(.pigeon-phone-head, .pigeon-phone-compose) {
+  color: var(--text);
+  background: rgba(45, 42, 52, 0.94);
+  border-color: rgba(211, 202, 229, 0.2);
+}
+
+html[data-theme="dark"] .pigeon-chat-label-tag {
+  color: #e2d9ff;
+  background: rgba(91, 75, 128, 0.72);
+  border-color: rgba(183, 160, 255, 0.42);
+}
+
+html[data-theme="dark"] .pigeon-chat-label-tag.is-empty {
+  color: var(--muted);
+  background: rgba(47, 44, 55, 0.86);
+}
+
+html[data-theme="dark"] .pigeon-thread-in .pigeon-thread-bubble {
+  color: var(--text);
+  background: rgba(58, 54, 67, 0.96);
+  border-color: rgba(211, 202, 229, 0.2);
+}
+
+html[data-theme="dark"] .pigeon-thread-out .pigeon-thread-bubble {
+  color: #f5f1ff;
+  background: linear-gradient(145deg, rgba(91, 76, 127, 0.94), rgba(68, 59, 91, 0.94));
+  border-color: rgba(183, 160, 255, 0.48);
+}
+
+html[data-theme="dark"] :is(.pigeon-thread-empty, .pigeon-message-attachment-image-link, .pigeon-chat-emoji-picker summary) {
+  color: var(--text);
+  background: rgba(48, 45, 56, 0.92);
+  border-color: rgba(183, 160, 255, 0.3);
+}
+
+html[data-theme="dark"] .pigeon-chat-avatar {
+  background: rgba(42, 39, 49, 0.96);
+  border-color: rgba(183, 160, 255, 0.36);
+}
+
 html[data-theme="dark"] :is(.card, .auth-card):hover {
   border-color: rgba(183, 160, 255, 0.42);
   box-shadow: 0 22px 46px rgba(0, 0, 0, 0.4), var(--glass-highlight);
@@ -5393,6 +5456,19 @@ html[data-theme="dark"] .btn:not(.btn-accent):not(.btn-danger) {
 html[data-theme="dark"] .btn:not(.btn-accent):not(.btn-danger):hover {
   background: rgba(89, 81, 108, 0.84);
   border-color: rgba(183, 160, 255, 0.46);
+}
+
+html[data-theme="dark"] .btn-danger {
+  color: #ffe9ed;
+  background: #812c35;
+  border-color: #a54d58;
+  box-shadow: 0 8px 20px rgba(44, 12, 18, 0.28);
+}
+
+html[data-theme="dark"] .btn-danger:hover {
+  color: #fff4f6;
+  background: #963944;
+  border-color: #bd6470;
 }
 
 html[data-theme="dark"] :is(.btn-accent, .community-tabs .tab.active, .community-tabs .tab:hover, .calendar-tabs .tab.active, .calendar-tabs .tab:hover, .festival-tabs .tab.active, .festival-tabs .tab:hover) {
