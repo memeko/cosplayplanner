@@ -12266,13 +12266,19 @@ def send_pigeon_notification(
     reply_to_notification_id: int | None = None,
     attachment_image_ref: str | None = None,
     linked_project_card: CosplanCard | None = None,
+    forwarded_project_card_id: int | None = None,
+    forwarded_project_label: str | None = None,
 ) -> bool:
     sender_alias = preferred_user_alias(sender)
     normalized_body = str(message_body or "").strip()
     message_meta = encode_pigeon_message_meta(
         image_ref=attachment_image_ref,
-        project_card_id=linked_project_card.id if linked_project_card else None,
-        project_label=pigeon_project_label_from_card(linked_project_card),
+        project_card_id=(linked_project_card.id if linked_project_card else forwarded_project_card_id),
+        project_label=(
+            pigeon_project_label_from_card(linked_project_card)
+            if linked_project_card
+            else forwarded_project_label
+        ),
     )
     raw_payload = f"Курлык! (@{sender_alias}) {normalized_body}"
     if message_meta:
@@ -12288,7 +12294,7 @@ def send_pigeon_notification(
             source_card_id=None,
             reply_to_notification_id=reply_to_notification_id,
             message=payload,
-            is_read=False,
+            is_read=bool(recipient.id == sender.id),
         )
     )
     return True
@@ -12347,7 +12353,21 @@ def build_pigeon_dialogs_for_user(db: Session, user: User) -> list[dict[str, Any
         .order_by(FestivalNotification.created_at.asc(), FestivalNotification.id.asc())
     ).scalars().all()
 
-    dialogs_by_user_id: dict[int, dict[str, Any]] = {}
+    dialogs_by_user_id: dict[int, dict[str, Any]] = {
+        int(user.id): {
+            "user_id": int(user.id),
+            "messages": [],
+            "unread_count": 0,
+            "last_notification_id": 0,
+            "last_preview": "Сохраняйте здесь важные сообщения",
+            "updated_at": None,
+            "last_day_label": "",
+            "chat_user": user,
+            "chat_alias": preferred_user_alias(user),
+            "chat_avatar_url": user_avatar_url(user),
+            "is_favorites": True,
+        }
+    }
 
     for note in notes:
         parsed = parse_pigeon_message_payload(note.message)
@@ -12357,7 +12377,10 @@ def build_pigeon_dialogs_for_user(db: Session, user: User) -> list[dict[str, Any
         direction = ""
         dialog_user_id: int | None = None
 
-        if note.from_user_id == user.id and note.user_id != user.id:
+        if note.from_user_id == user.id and note.user_id == user.id:
+            direction = "out"
+            dialog_user_id = int(user.id)
+        elif note.from_user_id == user.id and note.user_id != user.id:
             direction = "out"
             dialog_user_id = int(note.user_id)
         elif note.user_id == user.id and note.from_user_id and note.from_user_id != user.id:
@@ -12385,6 +12408,7 @@ def build_pigeon_dialogs_for_user(db: Session, user: User) -> list[dict[str, Any
                 "chat_user": None,
                 "chat_alias": "",
                 "chat_avatar_url": DEFAULT_AVATAR_PATH,
+                "is_favorites": False,
             },
         )
 
@@ -12424,9 +12448,6 @@ def build_pigeon_dialogs_for_user(db: Session, user: User) -> list[dict[str, Any
             dialog["updated_at"] = note.created_at
             dialog["last_day_label"] = pigeon_dialog_day_label(note.created_at, today_local=today_local)
 
-    if not dialogs_by_user_id:
-        return []
-
     chat_users = db.execute(
         select(User).where(User.id.in_(list(dialogs_by_user_id.keys())))
     ).scalars().all()
@@ -12440,9 +12461,15 @@ def build_pigeon_dialogs_for_user(db: Session, user: User) -> list[dict[str, Any
         dialog["chat_user"] = chat_user
         dialog["chat_alias"] = preferred_user_alias(chat_user)
         dialog["chat_avatar_url"] = user_avatar_url(chat_user)
+        dialog["is_favorites"] = bool(dialog_user_id == int(user.id))
         dialogs.append(dialog)
 
-    dialogs.sort(key=lambda item: int(item.get("last_notification_id") or 0), reverse=True)
+    dialogs.sort(
+        key=lambda item: (
+            0 if item.get("is_favorites") else 1,
+            -int(item.get("last_notification_id") or 0),
+        )
+    )
     return dialogs
 
 
@@ -12453,6 +12480,19 @@ def build_pigeon_alias_options(db: Session, user: User) -> list[str]:
         [alias for alias in alias_options if alias and alias.casefold() not in own_aliases],
         key=lambda value: value.casefold(),
     )
+
+
+def build_pigeon_forward_targets(db: Session, user: User) -> list[dict[str, Any]]:
+    users = db.execute(select(User).order_by(User.username.asc(), User.id.asc())).scalars().all()
+    targets = [
+        {
+            "user_id": int(item.id),
+            "label": "Избранное" if int(item.id) == int(user.id) else f"@{preferred_user_alias(item)}",
+            "is_favorites": bool(int(item.id) == int(user.id)),
+        }
+        for item in users
+    ]
+    return sorted(targets, key=lambda item: (0 if item["is_favorites"] else 1, item["label"].casefold()))
 
 
 def parse_pigeon_chat_label_entry(raw_value: str | None) -> tuple[int, str] | None:
@@ -18032,7 +18072,7 @@ def pigeons_messenger(request: Request, db: Session = Depends(get_db)):
         else:
             compose_recipient_alias = compose_alias_raw
 
-    if selected_chat_user_id and selected_chat_user_id != user.id:
+    if selected_chat_user_id:
         if mark_pigeon_dialog_as_read(db, user.id, selected_chat_user_id):
             db.commit()
 
@@ -18064,6 +18104,7 @@ def pigeons_messenger(request: Request, db: Session = Depends(get_db)):
         unread_chat_total=unread_chat_total,
         latest_pigeon_id=latest_pigeon_id,
         pigeon_alias_options=build_pigeon_alias_options(db, user),
+        pigeon_forward_targets=build_pigeon_forward_targets(db, user),
         pigeon_project_attachment_options=project_attachment_options,
         pigeon_compose_recipient_alias=compose_recipient_alias,
         pigeon_open_new_dialog=open_new_dialog,
@@ -34117,10 +34158,6 @@ async def notifications_send_pigeon(request: Request, db: Session = Depends(get_
     if not recipient:
         add_flash(request, "Пользователь с таким ником не найден.", "error")
         return redirect(next_url)
-    if recipient.id == user.id:
-        add_flash(request, "Нельзя отправить голубя самому себе.", "error")
-        return redirect(next_url)
-
     if next_target_raw in {"", "/pigeons"}:
         next_url = f"/pigeons?chat={recipient.id}"
     else:
@@ -34147,7 +34184,61 @@ async def notifications_send_pigeon(request: Request, db: Session = Depends(get_
     )
     db.commit()
 
-    add_flash(request, f"Птица отправлена пользователю @{preferred_user_alias(recipient)}.", "success")
+    destination_label = "в Избранное" if recipient.id == user.id else f"пользователю @{preferred_user_alias(recipient)}"
+    add_flash(request, f"Птица отправлена {destination_label}.", "success")
+    return redirect(next_url)
+
+
+@app.post("/pigeons/messages/{notification_id}/forward")
+async def pigeons_forward_message(notification_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    form = await request.form()
+    next_url = safe_redirect_target(str(form.get("next", "")).strip(), "/pigeons")
+    recipient_user_id = parse_positive_int(str(form.get("recipient_user_id", "")).strip())
+    if not recipient_user_id:
+        add_flash(request, "Выберите чат для пересылки.", "error")
+        return redirect(next_url)
+
+    source_note = db.execute(
+        select(FestivalNotification).where(
+            FestivalNotification.id == int(notification_id),
+            or_(
+                FestivalNotification.user_id == int(user.id),
+                FestivalNotification.from_user_id == int(user.id),
+            ),
+        )
+    ).scalar_one_or_none()
+    source_payload = parse_pigeon_message_payload(source_note.message) if source_note else None
+    if not source_note or not source_payload:
+        add_flash(request, "Сообщение для пересылки не найдено.", "error")
+        return redirect(next_url)
+
+    recipient = db.get(User, int(recipient_user_id))
+    if not recipient:
+        add_flash(request, "Чат для пересылки не найден.", "error")
+        return redirect(next_url)
+
+    original_alias = str(source_payload.get("sender_alias") or "").strip()
+    original_body = str(source_payload.get("body") or "").strip()
+    forwarded_body = f"Переслано от @{original_alias}"
+    if original_body:
+        forwarded_body = f"{forwarded_body}\n{original_body}"
+    send_pigeon_notification(
+        db,
+        sender=user,
+        recipient=recipient,
+        message_body=forwarded_body,
+        attachment_image_ref=str(source_payload.get("image_ref") or "").strip(),
+        forwarded_project_card_id=parse_positive_int(str(source_payload.get("project_card_id") or "").strip()),
+        forwarded_project_label=str(source_payload.get("project_label") or "").strip(),
+    )
+    db.commit()
+
+    destination_label = "в Избранное" if recipient.id == user.id else f"пользователю @{preferred_user_alias(recipient)}"
+    add_flash(request, f"Сообщение переслано {destination_label}.", "success")
     return redirect(next_url)
 
 

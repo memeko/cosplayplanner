@@ -22,14 +22,14 @@
           {% for chat in chats %}
             <a
               href="/pigeons?chat={{ chat.user_id }}"
-              class="pigeon-chat-link {% if selected_chat and selected_chat.user_id == chat.user_id %}active{% endif %}"
-              data-search-text="{{ (('@' ~ chat.chat_alias) ~ ' ' ~ chat.chat_alias ~ ' ' ~ (chat.last_preview or '') ~ ' ' ~ (chat.chat_custom_label or ''))|lower }}"
+              class="pigeon-chat-link {% if chat.is_favorites %}pigeon-chat-link-favorites{% endif %} {% if selected_chat and selected_chat.user_id == chat.user_id %}active{% endif %}"
+              data-search-text="{{ ((('Избранное ' if chat.is_favorites else '@' ~ chat.chat_alias ~ ' ') ~ chat.chat_alias ~ ' ' ~ (chat.last_preview or '') ~ ' ' ~ (chat.chat_custom_label or '')))|lower }}"
             >
               <span class="pigeon-chat-avatar">
-                <img src="{{ chat.chat_avatar_url }}" alt="@{{ chat.chat_alias }}" loading="lazy" />
+                <img src="{{ chat.chat_avatar_url }}" alt="{% if chat.is_favorites %}Избранное{% else %}@{{ chat.chat_alias }}{% endif %}" loading="lazy" />
               </span>
               <span class="pigeon-chat-summary-main">
-                <strong>@{{ chat.chat_alias }}</strong>
+                <strong>{% if chat.is_favorites %}★ Избранное{% else %}@{{ chat.chat_alias }}{% endif %}</strong>
                 <span class="muted">{{ chat.last_preview or "Без текста" }}</span>
               </span>
               <span class="pigeon-chat-summary-meta">
@@ -52,11 +52,14 @@
         <section class="pigeon-chat-phone">
           <header class="pigeon-phone-head">
             <span class="pigeon-chat-avatar">
-              <img src="{{ selected_chat.chat_avatar_url }}" alt="@{{ selected_chat.chat_alias }}" loading="lazy" />
+              <img src="{{ selected_chat.chat_avatar_url }}" alt="{% if selected_chat.is_favorites %}Избранное{% else %}@{{ selected_chat.chat_alias }}{% endif %}" loading="lazy" />
             </span>
             <div class="pigeon-phone-user">
-              <h2>@{{ selected_chat.chat_alias }}</h2>
+              <h2>{% if selected_chat.is_favorites %}★ Избранное{% else %}@{{ selected_chat.chat_alias }}{% endif %}</h2>
               <p class="muted small-note">
+                {% if selected_chat.is_favorites %}
+                  Ваш личный чат для важных сообщений
+                {% else %}
                 <span
                   id="pigeon-chat-label-tag"
                   class="pigeon-chat-label-tag {% if not selected_chat.chat_custom_label %}is-empty{% endif %}"
@@ -71,10 +74,11 @@
                     Метка не задана
                   {% endif %}
                 </span>
+                {% endif %}
               </p>
             </div>
           </header>
-          <form
+          {% if not selected_chat.is_favorites %}<form
             method="post"
             action="/pigeons/chat-label"
             id="pigeon-chat-label-form"
@@ -92,7 +96,7 @@
               placeholder="Своя метка, например: друг или вигмейкер"
             />
             <button type="submit" class="btn btn-small">Сохранить метку</button>
-          </form>
+          </form>{% endif %}
 
           {% if selected_chat.messages %}
             <div class="pigeon-thread-messages top-offset" id="pigeon-active-thread">
@@ -100,7 +104,15 @@
                 <article class="pigeon-thread-item pigeon-thread-{{ message.direction }}">
                   <div class="pigeon-thread-bubble">
                     <div class="notes-block">{{ message.body_html }}</div>
-                    <p class="pigeon-thread-time">{{ message.created_at.strftime('%d-%m %H:%M') if message.created_at else "—" }}</p>
+                    <div class="pigeon-message-meta-row">
+                      <button
+                        type="button"
+                        class="pigeon-forward-button"
+                        data-message-id="{{ message.id }}"
+                        data-message-preview="{{ message.body|truncate(90, true)|e }}"
+                      >Переслать</button>
+                      <span class="pigeon-thread-time">{{ message.created_at.strftime('%d-%m %H:%M') if message.created_at else "—" }}</span>
+                    </div>
                   </div>
                 </article>
               {% endfor %}
@@ -172,6 +184,28 @@
     </div>
   </div>
 </section>
+
+<div id="pigeon-forward-modal" class="pigeon-dialog-modal" hidden>
+  <div class="pigeon-dialog-card">
+    <button type="button" id="pigeon-close-forward" class="btn btn-small pigeon-dialog-close" aria-label="Закрыть">✕</button>
+    <h2>Переслать сообщение</h2>
+    <p id="pigeon-forward-preview" class="muted top-offset"></p>
+    <form method="post" id="pigeon-forward-form" class="grid one-col top-offset">
+      <input type="hidden" name="next" value="/pigeons?chat={{ selected_chat.user_id if selected_chat else '' }}" />
+      <label>
+        Куда переслать
+        <select name="recipient_user_id" required>
+          {% for target in pigeon_forward_targets %}
+            <option value="{{ target.user_id }}">{% if target.is_favorites %}★ {% endif %}{{ target.label }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <div class="actions-inline">
+        <button type="submit" class="btn btn-accent">Переслать</button>
+      </div>
+    </form>
+  </div>
+</div>
 
 <div id="pigeon-new-dialog-modal" class="pigeon-dialog-modal" hidden>
   <div class="pigeon-dialog-card">
@@ -363,6 +397,33 @@
     const chatSearchInput = document.getElementById('pigeon-chat-search-input');
     const chatSearchEmpty = document.getElementById('pigeon-chat-search-empty');
     const chatLinks = Array.from(document.querySelectorAll('.pigeon-chat-link'));
+    const forwardModal = document.getElementById('pigeon-forward-modal');
+    const forwardForm = document.getElementById('pigeon-forward-form');
+    const forwardPreview = document.getElementById('pigeon-forward-preview');
+    const closeForwardBtn = document.getElementById('pigeon-close-forward');
+
+    function closeForwardModal() {
+      if (forwardModal) forwardModal.hidden = true;
+    }
+
+    document.querySelectorAll('.pigeon-forward-button').forEach((button) => {
+      button.addEventListener('click', function () {
+        if (!forwardModal || !forwardForm) return;
+        const messageId = button.getAttribute('data-message-id');
+        if (!messageId) return;
+        forwardForm.action = `/pigeons/messages/${encodeURIComponent(messageId)}/forward`;
+        if (forwardPreview) {
+          forwardPreview.textContent = button.getAttribute('data-message-preview') || 'Сообщение с вложением';
+        }
+        forwardModal.hidden = false;
+      });
+    });
+    if (closeForwardBtn) closeForwardBtn.addEventListener('click', closeForwardModal);
+    if (forwardModal) {
+      forwardModal.addEventListener('click', function (event) {
+        if (event.target === forwardModal) closeForwardModal();
+      });
+    }
 
     function openNewDialogModal() {
       if (!newDialogModal) return;
@@ -396,6 +457,9 @@
     document.addEventListener('keydown', function (event) {
       if (event.key === 'Escape' && newDialogModal && !newDialogModal.hidden) {
         closeNewDialogModal();
+      }
+      if (event.key === 'Escape' && forwardModal && !forwardModal.hidden) {
+        closeForwardModal();
       }
     });
 

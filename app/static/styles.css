@@ -1657,10 +1657,38 @@ textarea {
 }
 
 .pigeon-thread-time {
-  margin: 7px 0 0;
+  margin: 0;
   font-size: 11px;
   color: var(--muted);
   text-align: right;
+}
+
+.pigeon-message-meta-row {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 10px;
+  margin-top: 7px;
+}
+
+.pigeon-forward-button {
+  appearance: none;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.pigeon-forward-button:hover {
+  color: var(--accent-strong);
+  text-decoration: underline;
+}
+
+.pigeon-chat-link-favorites strong {
+  color: var(--accent-strong);
 }
 
 .pigeon-thread-in {
@@ -5425,6 +5453,40 @@ html[data-theme="dark"] :is(.pigeon-thread-empty, .pigeon-message-attachment-ima
 html[data-theme="dark"] .pigeon-chat-avatar {
   background: rgba(42, 39, 49, 0.96);
   border-color: rgba(183, 160, 255, 0.36);
+}
+
+html[data-theme="dark"] :is(
+  .rehearsal-item,
+  .comment-card,
+  .comment-reply,
+  .master-price-row,
+  .master-deadline-row,
+  .related-progress-item,
+  .budget-list li,
+  .news-item,
+  .calendar-list li,
+  .avatar-vh10,
+  .user-profile-slider-frame,
+  .profile-avatar-crop-wrap,
+  .profile-avatar-preview-wrap canvas,
+  .emoji-picker-btn,
+  .card-expand summary,
+  .telegram-editor-note
+) {
+  color: var(--text);
+  background: rgba(45, 42, 52, 0.94);
+  border-color: rgba(211, 202, 229, 0.2);
+  box-shadow: var(--glass-highlight-soft);
+}
+
+html[data-theme="dark"] .comment-card.comment-client {
+  color: var(--text);
+  background: rgba(64, 58, 79, 0.96);
+  border-color: rgba(183, 160, 255, 0.34);
+}
+
+html[data-theme="dark"] .comment-reply {
+  border-left-color: rgba(183, 160, 255, 0.56);
 }
 
 html[data-theme="dark"] :is(.card, .auth-card):hover {
