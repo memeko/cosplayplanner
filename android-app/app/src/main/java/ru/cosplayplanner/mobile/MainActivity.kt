@@ -116,7 +116,7 @@ private fun Workspace(state: MobileUiState, dark: Boolean, onDark: (Boolean) -> 
 @Composable
 private fun PlansScreen(cards: List<CosplanCardEntity>, onSave: (CosplanCardEntity?, Map<String, Any?>) -> Unit) {
     var selected by remember { mutableStateOf<CosplanCardEntity?>(null) }; var creating by remember { mutableStateOf(false) }
-    if (selected != null || creating) return CardEditor(selected, onBack = { selected = null; creating = false }, onSave = { card, data -> onSave(card, data); selected = null; creating = false })
+    if (selected != null || creating) return FullCardEditor(selected, onBack = { selected = null; creating = false }, onSave = { card, data -> onSave(card, data); selected = null; creating = false })
     Box(Modifier.fillMaxSize()) {
         if (cards.isEmpty()) Empty("Создайте первый косплан") else LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) { items(cards, key = { it.id }) { card ->
             val data = remember(card.payloadJson) { JSONObject(card.payloadJson) }; val percent = data.optInt("status_percent", 0)
@@ -173,7 +173,7 @@ private fun CardEditor(card: CosplanCardEntity?, onBack: () -> Unit, onSave: (Co
 }
 
 @Composable
-private fun SettingSwitch(label: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+fun SettingSwitch(label: String, checked: Boolean, onChange: (Boolean) -> Unit) {
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) { Text(label, modifier = Modifier.weight(1f)); Switch(checked, onChange) }
 }
 
