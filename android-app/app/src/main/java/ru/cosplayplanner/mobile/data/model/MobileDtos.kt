@@ -8,6 +8,14 @@ data class MobileBootstrapResponse(
     val user: MobileUserDto,
     val cards: List<MobileCardDto>,
     val festivals: List<MobileFestivalDto>,
+    @Json(name = "in_progress") val inProgress: List<MobileInProgressDto> = emptyList(),
+)
+
+data class MobileInProgressDto(
+    val id: Long,
+    @Json(name = "card_id") val cardId: Long,
+    @Json(name = "updated_at") val updatedAt: String?,
+    val payload: Map<String, Any?>,
 )
 
 data class MobileUserDto(
@@ -34,6 +42,29 @@ data class MobileSyncRequest(
     val cards: List<SyncEntityRequest>,
     val festivals: List<SyncEntityRequest>,
 )
+
+data class MobileLoginRequest(val login: String, val password: String)
+data class MobileLoginResponse(val ok: Boolean, val user: MobileUserDto?, val detail: String?)
+
+data class MobileInProgressSyncRequest(val items: List<SyncEntityRequest>)
+data class MobileInProgressSyncResponse(
+    val ok: Boolean,
+    @Json(name = "server_time") val serverTime: String?,
+    val items: List<SyncEntityResult>,
+)
+
+data class PigeonMessageDto(
+    val id: Long,
+    @Json(name = "chat_user_id") val chatUserId: Long,
+    @Json(name = "chat_alias") val chatAlias: String,
+    val direction: String,
+    val body: String,
+    @Json(name = "created_at") val createdAt: String?,
+    @Json(name = "is_read") val isRead: Boolean,
+)
+data class PigeonInboxResponse(val ok: Boolean, val messages: List<PigeonMessageDto>)
+data class PigeonSendRequest(@Json(name = "recipient_alias") val recipientAlias: String, val message: String)
+data class PigeonSendResponse(val ok: Boolean, val detail: String?, val message: PigeonMessageDto?)
 
 data class SyncEntityRequest(
     @Json(name = "client_uid") val clientUid: String,

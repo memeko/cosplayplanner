@@ -6,6 +6,7 @@ import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.RoomDatabase
+import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface UserDao {
@@ -20,6 +21,12 @@ interface CardDao {
 
     @Query("SELECT * FROM cosplan_cards")
     suspend fun getAll(): List<CosplanCardEntity>
+
+    @Query("SELECT * FROM cosplan_cards ORDER BY updated_at DESC")
+    fun observeAll(): Flow<List<CosplanCardEntity>>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(item: CosplanCardEntity)
 }
 
 @Dao
@@ -29,6 +36,27 @@ interface FestivalDao {
 
     @Query("SELECT * FROM festivals")
     suspend fun getAll(): List<FestivalEntity>
+
+    @Query("SELECT * FROM festivals WHERE (event_date BETWEEN :today AND :until) OR is_going = 1 ORDER BY event_date")
+    fun observeOfflineWindow(today: String, until: String): Flow<List<FestivalEntity>>
+}
+
+@Dao
+interface InProgressDao {
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertAll(items: List<InProgressEntity>)
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(item: InProgressEntity)
+    @Query("SELECT * FROM in_progress_cards ORDER BY updated_at DESC")
+    fun observeAll(): Flow<List<InProgressEntity>>
+}
+
+@Dao
+interface PigeonDao {
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertAll(items: List<PigeonMessageEntity>)
+    @Query("SELECT * FROM pigeon_messages ORDER BY created_at DESC")
+    fun observeAll(): Flow<List<PigeonMessageEntity>>
 }
 
 @Dao
@@ -59,8 +87,10 @@ interface SyncConflictDao {
         FestivalEntity::class,
         SyncQueueEntity::class,
         SyncConflictEntity::class,
+        InProgressEntity::class,
+        PigeonMessageEntity::class,
     ],
-    version = 2,
+    version = 3,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -69,4 +99,6 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun festivalDao(): FestivalDao
     abstract fun syncQueueDao(): SyncQueueDao
     abstract fun syncConflictDao(): SyncConflictDao
+    abstract fun inProgressDao(): InProgressDao
+    abstract fun pigeonDao(): PigeonDao
 }

@@ -1,202 +1,117 @@
 package ru.cosplayplanner.mobile.data
 
-import com.squareup.moshi.Types
 import com.squareup.moshi.Moshi
+import com.squareup.moshi.Types
+import java.time.LocalDate
+import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
-import ru.cosplayplanner.mobile.data.local.AppDatabase
-import ru.cosplayplanner.mobile.data.local.CosplanCardEntity
-import ru.cosplayplanner.mobile.data.local.FestivalEntity
-import ru.cosplayplanner.mobile.data.local.SyncConflictEntity
-import ru.cosplayplanner.mobile.data.local.SyncQueueEntity
-import ru.cosplayplanner.mobile.data.local.UserProfileEntity
-import ru.cosplayplanner.mobile.data.model.MobileSyncRequest
-import ru.cosplayplanner.mobile.data.model.SyncEntityResult
-import ru.cosplayplanner.mobile.data.model.SyncEntityRequest
+import kotlinx.coroutines.flow.Flow
+import ru.cosplayplanner.mobile.data.local.*
+import ru.cosplayplanner.mobile.data.model.*
 import ru.cosplayplanner.mobile.data.remote.MobileApi
 
 @Singleton
 class SyncRepository @Inject constructor(
     private val api: MobileApi,
     private val db: AppDatabase,
-    private val moshi: Moshi,
+    moshi: Moshi,
 ) {
-    private val rawMapAdapter = moshi.adapter(Map::class.java)
-    private val rawAnyAdapter = moshi.adapter(Any::class.java).serializeNulls()
-    private val typedMapAdapter = moshi.adapter<Map<String, Any?>>(
-        Types.newParameterizedType(
-            Map::class.java,
-            String::class.java,
-            Any::class.java,
-        ),
+    private val mapAdapter = moshi.adapter<Map<String, Any?>>(
+        Types.newParameterizedType(Map::class.java, String::class.java, Any::class.java),
     )
+
+    fun cards(): Flow<List<CosplanCardEntity>> = db.cardDao().observeAll()
+    fun inProgress(): Flow<List<InProgressEntity>> = db.inProgressDao().observeAll()
+    fun pigeons(): Flow<List<PigeonMessageEntity>> = db.pigeonDao().observeAll()
+    fun festivals(): Flow<List<FestivalEntity>> {
+        val today = LocalDate.now()
+        return db.festivalDao().observeOfflineWindow(today.toString(), today.plusDays(30).toString())
+    }
+
+    suspend fun login(login: String, password: String): MobileLoginResponse {
+        val normalizedLogin = login.trim()
+        val mobileResponse = api.mobileLogin(MobileLoginRequest(normalizedLogin, password))
+        if (mobileResponse.isSuccessful) {
+            return mobileResponse.body() ?: MobileLoginResponse(false, null, "Сервер вернул пустой ответ.")
+        }
+        if (mobileResponse.code() != 404) {
+            return MobileLoginResponse(false, null, "Ошибка авторизации: HTTP ${mobileResponse.code()}")
+        }
+
+        // Compatibility path for servers where mobile bootstrap is deployed,
+        // but the dedicated JSON login endpoint has not been released yet.
+        val webResponse = api.webLogin(normalizedLogin, password)
+        val finalPath = webResponse.raw().request.url.encodedPath
+        val success = webResponse.isSuccessful && finalPath != "/login"
+        return MobileLoginResponse(
+            ok = success,
+            user = null,
+            detail = if (success) null else "Неверный логин или пароль.",
+        )
+    }
 
     suspend fun bootstrap(since: String? = null) {
         val response = api.bootstrap(since)
         if (!response.ok) return
+        db.userDao().upsert(UserProfileEntity(response.user.id, response.user.username, response.user.cosplayNick, response.user.email, response.user.homeCity))
+        db.cardDao().upsertAll(response.cards.map { CosplanCardEntity(it.id, it.updatedAt, mapAdapter.toJson(it.payload)) })
+        db.festivalDao().upsertAll(response.festivals.map {
+            FestivalEntity(it.id, it.updatedAt, mapAdapter.toJson(it.payload), it.payload["event_date"] as? String, it.payload["is_going"] as? Boolean ?: false)
+        })
+        db.inProgressDao().upsertAll(response.inProgress.map { InProgressEntity(it.id, it.cardId, it.updatedAt, mapAdapter.toJson(it.payload)) })
+    }
 
-        db.userDao().upsert(
-            UserProfileEntity(
-                id = response.user.id,
-                username = response.user.username,
-                cosplayNick = response.user.cosplayNick,
-                email = response.user.email,
-                homeCity = response.user.homeCity,
-            ),
-        )
+    suspend fun editCard(item: CosplanCardEntity, updates: Map<String, Any?>) {
+        val payload = (mapAdapter.fromJson(item.payloadJson) ?: emptyMap()).toMutableMap().apply { putAll(updates) }
+        db.cardDao().upsert(item.copy(payloadJson = mapAdapter.toJson(payload)))
+        enqueue("card", item.id, item.updatedAt, payload)
+    }
 
-        db.cardDao().upsertAll(
-            response.cards.map {
-                CosplanCardEntity(
-                    id = it.id,
-                    updatedAt = it.updatedAt,
-                    payloadJson = typedMapAdapter.toJson(it.payload),
-                )
-            },
-        )
+    suspend fun editInProgress(item: InProgressEntity, updates: Map<String, Any?>) {
+        val payload = (mapAdapter.fromJson(item.payloadJson) ?: emptyMap()).toMutableMap().apply { putAll(updates) }
+        db.inProgressDao().upsert(item.copy(payloadJson = mapAdapter.toJson(payload)))
+        enqueue("in_progress", item.id, item.updatedAt, payload)
+    }
 
-        db.festivalDao().upsertAll(
-            response.festivals.map {
-                FestivalEntity(
-                    id = it.id,
-                    updatedAt = it.updatedAt,
-                    payloadJson = typedMapAdapter.toJson(it.payload),
-                )
-            },
-        )
+    private suspend fun enqueue(scope: String, id: Long, baseUpdatedAt: String?, payload: Map<String, Any?>) {
+        db.syncQueueDao().upsert(SyncQueueEntity(UUID.randomUUID().toString(), scope, id, baseUpdatedAt, mapAdapter.toJson(payload), System.currentTimeMillis()))
+    }
+
+    suspend fun syncNow() {
+        pushPendingChanges()
+        bootstrap()
+        refreshPigeons()
     }
 
     suspend fun pushPendingChanges() {
-        val queue = db.syncQueueDao().getBatch(limit = 100)
+        val queue = db.syncQueueDao().getBatch(100)
         if (queue.isEmpty()) return
-
-        val cardOps = mutableListOf<SyncEntityRequest>()
-        val festivalOps = mutableListOf<SyncEntityRequest>()
-
-        for (item in queue) {
-            val payload = rawMapAdapter.fromJson(item.payload) as? Map<String, Any?> ?: emptyMap()
-            val request = SyncEntityRequest(
-                clientUid = item.clientUid,
-                id = item.entityId,
-                baseUpdatedAt = item.baseUpdatedAt,
-                force = false,
-                resolution = "client_wins",
-                payload = payload,
-            )
-            if (item.scope == "card") {
-                cardOps += request
-            } else if (item.scope == "festival") {
-                festivalOps += request
-            }
+        fun request(item: SyncQueueEntity) = SyncEntityRequest(item.clientUid, item.entityId, item.baseUpdatedAt, true, "client_wins", mapAdapter.fromJson(item.payload) ?: emptyMap())
+        val done = linkedSetOf<String>()
+        val normal = queue.filter { it.scope != "in_progress" }
+        if (normal.isNotEmpty()) {
+            val response = api.sync(MobileSyncRequest(normal.filter { it.scope == "card" }.map(::request), normal.filter { it.scope == "festival" }.map(::request)))
+            if (response.ok) (response.cards + response.festivals).filter { it.status in setOf("applied", "skipped_server_wins") }.mapNotNullTo(done) { it.clientUid }
         }
-
-        val response = api.sync(
-            MobileSyncRequest(
-                cards = cardOps,
-                festivals = festivalOps,
-            ),
-        )
-        if (!response.ok) return
-
-        val queueIdsToDelete = linkedSetOf<String>()
-        var shouldRefreshLocalSnapshot = false
-
-        shouldRefreshLocalSnapshot = handleSyncResults(
-            scope = "card",
-            results = response.cards,
-            queueIdsToDelete = queueIdsToDelete,
-        ) || shouldRefreshLocalSnapshot
-        shouldRefreshLocalSnapshot = handleSyncResults(
-            scope = "festival",
-            results = response.festivals,
-            queueIdsToDelete = queueIdsToDelete,
-        ) || shouldRefreshLocalSnapshot
-
-        if (queueIdsToDelete.isNotEmpty()) {
-            db.syncQueueDao().deleteByIds(queueIdsToDelete.toList())
+        val progress = queue.filter { it.scope == "in_progress" }
+        if (progress.isNotEmpty()) {
+            val response = api.syncInProgress(MobileInProgressSyncRequest(progress.map(::request)))
+            if (response.ok) response.items.filter { it.status in setOf("applied", "skipped_server_wins") }.mapNotNullTo(done) { it.clientUid }
         }
-        if (shouldRefreshLocalSnapshot) {
-            // Pull the latest server version so festival and card snapshots stay aligned.
-            bootstrap()
-        }
+        if (done.isNotEmpty()) db.syncQueueDao().deleteByIds(done.toList())
     }
 
-    private suspend fun handleSyncResults(
-        scope: String,
-        results: List<SyncEntityResult>,
-        queueIdsToDelete: MutableSet<String>,
-    ): Boolean {
-        var shouldRefresh = false
-        for (result in results) {
-            val clientUid = result.clientUid ?: continue
-            when (result.status) {
-                "applied" -> {
-                    queueIdsToDelete += clientUid
-                    shouldRefresh = true
-                }
-
-                "conflict" -> {
-                    db.syncConflictDao().upsert(
-                        SyncConflictEntity(
-                            clientUid = clientUid,
-                            scope = scope,
-                            entityId = result.id,
-                            message = result.message,
-                            conflictFieldsJson = rawAnyAdapter.toJson(result.conflictFields ?: emptyList<String>()),
-                            serverRecordJson = rawAnyAdapter.toJson(result.serverRecord ?: emptyMap<String, Any?>()),
-                            incomingPayloadJson = rawAnyAdapter.toJson(result.incomingPayload ?: emptyMap<String, Any?>()),
-                            suggestedHybridPayloadJson = rawAnyAdapter.toJson(
-                                result.suggestedHybridPayload ?: emptyMap<String, Any?>(),
-                            ),
-                            createdAt = System.currentTimeMillis(),
-                        ),
-                    )
-                    queueIdsToDelete += clientUid
-                    shouldRefresh = true
-                }
-
-                "skipped_server_wins" -> {
-                    queueIdsToDelete += clientUid
-                    shouldRefresh = true
-                }
-            }
-        }
-        return shouldRefresh
+    suspend fun refreshPigeons() {
+        val response = api.pigeons()
+        if (response.ok) db.pigeonDao().upsertAll(response.messages.map { PigeonMessageEntity(it.id, it.chatUserId, it.chatAlias, it.direction, it.body, it.createdAt, it.isRead) })
     }
 
-    suspend fun enqueueLocalCardChange(
-        clientUid: String,
-        entityId: Long?,
-        baseUpdatedAt: String?,
-        payload: String,
-    ) {
-        db.syncQueueDao().upsert(
-            SyncQueueEntity(
-                clientUid = clientUid,
-                scope = "card",
-                entityId = entityId,
-                baseUpdatedAt = baseUpdatedAt,
-                payload = payload,
-                createdAt = System.currentTimeMillis(),
-            ),
-        )
+    suspend fun sendPigeon(alias: String, body: String) {
+        val response = api.sendPigeon(PigeonSendRequest(alias.trim(), body.trim()))
+        if (!response.ok) error(response.detail ?: "Не удалось отправить голубя")
+        refreshPigeons()
     }
 
-    suspend fun enqueueLocalFestivalChange(
-        clientUid: String,
-        entityId: Long?,
-        baseUpdatedAt: String?,
-        payload: String,
-    ) {
-        db.syncQueueDao().upsert(
-            SyncQueueEntity(
-                clientUid = clientUid,
-                scope = "festival",
-                entityId = entityId,
-                baseUpdatedAt = baseUpdatedAt,
-                payload = payload,
-                createdAt = System.currentTimeMillis(),
-            ),
-        )
-    }
+    fun decode(json: String): Map<String, Any?> = mapAdapter.fromJson(json) ?: emptyMap()
 }

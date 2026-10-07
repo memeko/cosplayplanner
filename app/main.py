@@ -18818,6 +18818,42 @@ def users_search_api(request: Request, q: str = "", limit: int = 8, db: Session 
     return {"items": values}
 
 
+def serialize_in_progress_for_mobile(item: InProgressCard) -> dict[str, Any]:
+    return {
+        "id": int(item.id),
+        "card_id": int(item.cosplan_card_id),
+        "updated_at": mobile_iso_datetime(item.updated_at),
+        "payload": {
+            "checklist_json": as_list(item.checklist_json),
+            "task_rows_json": as_list(item.task_rows_json),
+            "is_frozen": bool(item.is_frozen),
+        },
+    }
+
+
+@app.post("/api/mobile/login")
+async def mobile_login_api(request: Request, db: Session = Depends(get_db)) -> dict[str, Any]:
+    try:
+        payload = await request.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Некорректный JSON.") from exc
+    login_value = str((payload or {}).get("login") or "").strip()
+    password = str((payload or {}).get("password") or "")
+    user = db.execute(
+        select(User).where(or_(User.username == login_value, User.email == login_value.lower()))
+    ).scalar_one_or_none()
+    if not user or not password_context.verify(password, user.password_hash):
+        return {"ok": False, "user": None, "detail": "Неверный логин или пароль."}
+    request.session["user_id"] = user.id
+    return {"ok": True, "user": serialize_user_for_mobile(user), "detail": None}
+
+
+@app.post("/api/mobile/logout")
+def mobile_logout_api(request: Request) -> dict[str, Any]:
+    request.session.pop("user_id", None)
+    return {"ok": True}
+
+
 @app.get("/api/mobile/bootstrap")
 def mobile_bootstrap_api(request: Request, since: str = "", db: Session = Depends(get_db)) -> dict[str, Any]:
     user = current_user(request, db)
@@ -18836,13 +18872,20 @@ def mobile_bootstrap_api(request: Request, since: str = "", db: Session = Depend
         .where(Festival.user_id == user.id)
         .order_by(Festival.updated_at.desc(), Festival.id.desc())
     )
+    progress_stmt = (
+        select(InProgressCard)
+        .where(InProgressCard.user_id == user.id)
+        .order_by(InProgressCard.updated_at.desc(), InProgressCard.id.desc())
+    )
 
     if since_dt is not None:
         cards_stmt = cards_stmt.where(CosplanCard.updated_at >= since_dt)
         festivals_stmt = festivals_stmt.where(Festival.updated_at >= since_dt)
+        progress_stmt = progress_stmt.where(InProgressCard.updated_at >= since_dt)
 
     cards = db.execute(cards_stmt).scalars().all()
     festivals = db.execute(festivals_stmt).scalars().all()
+    progress_rows = db.execute(progress_stmt).scalars().all()
 
     return {
         "ok": True,
@@ -18851,11 +18894,104 @@ def mobile_bootstrap_api(request: Request, since: str = "", db: Session = Depend
         "user": serialize_user_for_mobile(user),
         "cards": [serialize_card_for_mobile(item) for item in cards],
         "festivals": [serialize_festival_for_mobile(item) for item in festivals],
+        "in_progress": [serialize_in_progress_for_mobile(item) for item in progress_rows],
         "counts": {
             "cards": len(cards),
             "festivals": len(festivals),
+            "in_progress": len(progress_rows),
         },
     }
+
+
+@app.post("/api/mobile/in-progress/sync")
+async def mobile_in_progress_sync_api(request: Request, db: Session = Depends(get_db)) -> dict[str, Any]:
+    user = current_user(request, db)
+    if not user:
+        raise HTTPException(status_code=401, detail="Требуется авторизация.")
+    payload = await request.json()
+    raw_items = payload.get("items", []) if isinstance(payload, dict) else []
+    results: list[dict[str, Any]] = []
+    changed = False
+    for raw in raw_items if isinstance(raw_items, list) else []:
+        item = raw if isinstance(raw, dict) else {}
+        client_uid = str(item.get("client_uid") or "").strip()
+        row_id = parse_positive_int(str(item.get("id") or ""))
+        row = db.get(InProgressCard, row_id) if row_id else None
+        if not row or int(row.user_id) != int(user.id):
+            results.append({"status": "error", "client_uid": client_uid, "id": row_id, "message": "Карточка не найдена."})
+            continue
+        incoming = item.get("payload") if isinstance(item.get("payload"), dict) else {}
+        base_updated_at = parse_mobile_datetime(item.get("base_updated_at"))
+        force = to_bool(item.get("force"))
+        if base_updated_at and row.updated_at and not mobile_time_equal(base_updated_at, row.updated_at) and not force:
+            server_record = serialize_in_progress_for_mobile(row)
+            results.append({
+                "status": "conflict", "client_uid": client_uid, "id": int(row.id),
+                "message": "Карточка изменена на сервере.",
+                "conflict_fields": [key for key in ("checklist_json", "task_rows_json", "is_frozen") if key in incoming and not mobile_values_equal(incoming.get(key), server_record["payload"].get(key))],
+                "server_record": server_record, "incoming_payload": incoming,
+                "suggested_hybrid_payload": {**server_record["payload"], **incoming},
+            })
+            continue
+        if "checklist_json" in incoming:
+            row.checklist_json = as_list(incoming.get("checklist_json"))
+        if "task_rows_json" in incoming:
+            row.task_rows_json = as_list(incoming.get("task_rows_json"))
+        if "is_frozen" in incoming:
+            row.is_frozen = to_bool(incoming.get("is_frozen"))
+        changed = True
+        db.flush()
+        results.append({"status": "applied", "client_uid": client_uid, "id": int(row.id), "message": None})
+    if changed:
+        db.commit()
+    return {"ok": True, "server_time": mobile_iso_datetime(datetime.utcnow()), "items": results}
+
+
+def mobile_pigeon_messages(db: Session, user: User) -> list[dict[str, Any]]:
+    messages: list[dict[str, Any]] = []
+    for dialog in build_pigeon_dialogs_for_user(db, user):
+        chat_user_id = int(dialog.get("user_id") or 0)
+        chat_alias = str(dialog.get("chat_alias") or "")
+        for message in dialog.get("messages", []):
+            messages.append({
+                "id": int(message.get("id") or 0), "chat_user_id": chat_user_id,
+                "chat_alias": chat_alias, "direction": str(message.get("direction") or "in"),
+                "body": str(message.get("body") or ""),
+                "created_at": mobile_iso_datetime(message.get("created_at")),
+                "is_read": bool(message.get("is_read")),
+            })
+    return sorted(messages, key=lambda item: item["id"])
+
+
+@app.get("/api/mobile/pigeons")
+def mobile_pigeons_api(request: Request, db: Session = Depends(get_db)) -> dict[str, Any]:
+    user = current_user(request, db)
+    if not user:
+        raise HTTPException(status_code=401, detail="Требуется авторизация.")
+    return {"ok": True, "messages": mobile_pigeon_messages(db, user)}
+
+
+@app.post("/api/mobile/pigeons")
+async def mobile_send_pigeon_api(request: Request, db: Session = Depends(get_db)) -> dict[str, Any]:
+    user = current_user(request, db)
+    if not user:
+        raise HTTPException(status_code=401, detail="Требуется авторизация.")
+    payload = await request.json()
+    alias = str((payload or {}).get("recipient_alias") or "").strip()
+    body = str((payload or {}).get("message") or "").strip()
+    if not alias or not body:
+        return {"ok": False, "detail": "Укажите получателя и сообщение.", "message": None}
+    if len(body) > 1500:
+        return {"ok": False, "detail": "Сообщение длиннее 1500 символов.", "message": None}
+    alias_to_username, users_by_username, _ = build_user_alias_lookup(db)
+    canonical = resolve_alias_to_username(alias, alias_to_username)
+    recipient = users_by_username.get(canonical.casefold())
+    if not recipient:
+        return {"ok": False, "detail": "Пользователь с таким ником не найден.", "message": None}
+    send_pigeon_notification(db, sender=user, recipient=recipient, message_body=body)
+    db.commit()
+    sent = next((item for item in reversed(mobile_pigeon_messages(db, user)) if item["chat_user_id"] == int(recipient.id) and item["direction"] == "out"), None)
+    return {"ok": True, "detail": None, "message": sent}
 
 
 @app.post("/api/mobile/sync")

@@ -25,6 +25,27 @@ data class FestivalEntity(
     @PrimaryKey val id: Long,
     @ColumnInfo(name = "updated_at") val updatedAt: String?,
     @ColumnInfo(name = "payload_json") val payloadJson: String,
+    @ColumnInfo(name = "event_date") val eventDate: String?,
+    @ColumnInfo(name = "is_going") val isGoing: Boolean,
+)
+
+@Entity(tableName = "in_progress_cards")
+data class InProgressEntity(
+    @PrimaryKey val id: Long,
+    @ColumnInfo(name = "card_id") val cardId: Long,
+    @ColumnInfo(name = "updated_at") val updatedAt: String?,
+    @ColumnInfo(name = "payload_json") val payloadJson: String,
+)
+
+@Entity(tableName = "pigeon_messages")
+data class PigeonMessageEntity(
+    @PrimaryKey val id: Long,
+    @ColumnInfo(name = "chat_user_id") val chatUserId: Long,
+    @ColumnInfo(name = "chat_alias") val chatAlias: String,
+    val direction: String,
+    val body: String,
+    @ColumnInfo(name = "created_at") val createdAt: String?,
+    @ColumnInfo(name = "is_read") val isRead: Boolean,
 )
 
 @Entity(tableName = "sync_queue")

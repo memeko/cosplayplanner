@@ -16,9 +16,7 @@ class MobileSyncWorker @AssistedInject constructor(
 ) : CoroutineWorker(appContext, workerParams) {
     override suspend fun doWork(): Result {
         return try {
-            // Pull server-side updates (including festivals), then push pending local ops.
-            syncRepository.bootstrap()
-            syncRepository.pushPendingChanges()
+            syncRepository.syncNow()
             Result.success()
         } catch (_: Exception) {
             Result.retry()
