@@ -18917,10 +18917,34 @@ async def mobile_in_progress_sync_api(request: Request, db: Session = Depends(ge
         client_uid = str(item.get("client_uid") or "").strip()
         row_id = parse_positive_int(str(item.get("id") or ""))
         row = db.get(InProgressCard, row_id) if row_id else None
+        incoming = item.get("payload") if isinstance(item.get("payload"), dict) else {}
+        if not row_id:
+            card_id = parse_positive_int(str(incoming.get("card_id") or ""))
+            card = db.execute(
+                select(CosplanCard).where(CosplanCard.id == card_id, CosplanCard.user_id == user.id)
+            ).scalar_one_or_none() if card_id else None
+            if not card:
+                results.append({"status": "error", "client_uid": client_uid, "id": None, "message": "Косплан для процесса не найден."})
+                continue
+            existing = db.execute(
+                select(InProgressCard).where(
+                    InProgressCard.user_id == user.id,
+                    InProgressCard.cosplan_card_id == card.id,
+                )
+            ).scalar_one_or_none()
+            row = existing or InProgressCard(
+                user_id=user.id,
+                cosplan_card_id=card.id,
+                checklist_json=[],
+                task_rows_json=[],
+                is_frozen=False,
+            )
+            if not existing:
+                db.add(row)
+                db.flush()
         if not row or int(row.user_id) != int(user.id):
             results.append({"status": "error", "client_uid": client_uid, "id": row_id, "message": "Карточка не найдена."})
             continue
-        incoming = item.get("payload") if isinstance(item.get("payload"), dict) else {}
         base_updated_at = parse_mobile_datetime(item.get("base_updated_at"))
         force = to_bool(item.get("force"))
         if base_updated_at and row.updated_at and not mobile_time_equal(base_updated_at, row.updated_at) and not force:

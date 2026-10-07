@@ -48,8 +48,11 @@ class MobileViewModel @Inject constructor(private val repository: SyncRepository
     }
     fun sync() = launchNetwork { repository.syncNow(); session.value = true }
     fun sendPigeon(alias: String, text: String) = launchNetwork { repository.sendPigeon(alias, text) }
-    fun updateCard(item: CosplanCardEntity, percent: Int) = viewModelScope.launch { repository.editCard(item, mapOf("status_percent" to percent.coerceIn(0, 100))) }
-    fun updateProgress(item: InProgressEntity, frozen: Boolean) = viewModelScope.launch { repository.editInProgress(item, mapOf("is_frozen" to frozen)) }
+    fun saveCard(item: CosplanCardEntity?, payload: Map<String, Any?>) = viewModelScope.launch {
+        if (item == null) repository.createCard(payload) else repository.editCard(item, payload)
+    }
+    fun saveProgress(item: InProgressEntity, payload: Map<String, Any?>) = viewModelScope.launch { repository.editInProgress(item, payload) }
+    fun createProgress(cardId: Long) = viewModelScope.launch { repository.createInProgress(cardId) }
     fun clearError() { error.value = null }
     private fun launchNetwork(block: suspend () -> Unit) = viewModelScope.launch {
         busy.value = true; error.value = null

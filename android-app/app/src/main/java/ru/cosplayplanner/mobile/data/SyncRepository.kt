@@ -65,17 +65,37 @@ class SyncRepository @Inject constructor(
     suspend fun editCard(item: CosplanCardEntity, updates: Map<String, Any?>) {
         val payload = (mapAdapter.fromJson(item.payloadJson) ?: emptyMap()).toMutableMap().apply { putAll(updates) }
         db.cardDao().upsert(item.copy(payloadJson = mapAdapter.toJson(payload)))
-        enqueue("card", item.id, item.updatedAt, payload)
+        enqueueOrReplaceLocal("card", item.id, item.updatedAt, payload)
+    }
+
+    suspend fun createCard(payload: Map<String, Any?>) {
+        val localId = -System.currentTimeMillis()
+        db.cardDao().upsert(CosplanCardEntity(localId, null, mapAdapter.toJson(payload)))
+        enqueue("card", localId, null, payload)
     }
 
     suspend fun editInProgress(item: InProgressEntity, updates: Map<String, Any?>) {
         val payload = (mapAdapter.fromJson(item.payloadJson) ?: emptyMap()).toMutableMap().apply { putAll(updates) }
         db.inProgressDao().upsert(item.copy(payloadJson = mapAdapter.toJson(payload)))
-        enqueue("in_progress", item.id, item.updatedAt, payload)
+        enqueueOrReplaceLocal("in_progress", item.id, item.updatedAt, payload)
+    }
+
+    suspend fun createInProgress(cardId: Long) {
+        val localId = -System.currentTimeMillis()
+        val payload = mapOf<String, Any?>("card_id" to cardId, "checklist_json" to emptyList<Any>(), "task_rows_json" to emptyList<Any>(), "is_frozen" to false)
+        db.inProgressDao().upsert(InProgressEntity(localId, cardId, null, mapAdapter.toJson(payload)))
+        enqueue("in_progress", localId, null, payload)
     }
 
     private suspend fun enqueue(scope: String, id: Long, baseUpdatedAt: String?, payload: Map<String, Any?>) {
         db.syncQueueDao().upsert(SyncQueueEntity(UUID.randomUUID().toString(), scope, id, baseUpdatedAt, mapAdapter.toJson(payload), System.currentTimeMillis()))
+    }
+
+    private suspend fun enqueueOrReplaceLocal(scope: String, id: Long, baseUpdatedAt: String?, payload: Map<String, Any?>) {
+        val existing = if (id < 0) db.syncQueueDao().findForLocalEntity(scope, id) else null
+        db.syncQueueDao().upsert(
+            SyncQueueEntity(existing?.clientUid ?: UUID.randomUUID().toString(), scope, id, baseUpdatedAt, mapAdapter.toJson(payload), existing?.createdAt ?: System.currentTimeMillis()),
+        )
     }
 
     suspend fun syncNow() {
@@ -87,17 +107,24 @@ class SyncRepository @Inject constructor(
     suspend fun pushPendingChanges() {
         val queue = db.syncQueueDao().getBatch(100)
         if (queue.isEmpty()) return
-        fun request(item: SyncQueueEntity) = SyncEntityRequest(item.clientUid, item.entityId, item.baseUpdatedAt, true, "client_wins", mapAdapter.fromJson(item.payload) ?: emptyMap())
+        fun request(item: SyncQueueEntity) = SyncEntityRequest(item.clientUid, item.entityId?.takeIf { it > 0 }, item.baseUpdatedAt, true, "client_wins", mapAdapter.fromJson(item.payload) ?: emptyMap())
         val done = linkedSetOf<String>()
         val normal = queue.filter { it.scope != "in_progress" }
         if (normal.isNotEmpty()) {
             val response = api.sync(MobileSyncRequest(normal.filter { it.scope == "card" }.map(::request), normal.filter { it.scope == "festival" }.map(::request)))
-            if (response.ok) (response.cards + response.festivals).filter { it.status in setOf("applied", "skipped_server_wins") }.mapNotNullTo(done) { it.clientUid }
+            if (response.ok) {
+                val applied = (response.cards + response.festivals).filter { it.status in setOf("applied", "skipped_server_wins") }
+                applied.mapNotNullTo(done) { it.clientUid }
+                normal.filter { it.entityId != null && it.entityId < 0 && it.clientUid in done }.forEach { db.cardDao().deleteById(it.entityId!!) }
+            }
         }
         val progress = queue.filter { it.scope == "in_progress" }
         if (progress.isNotEmpty()) {
             val response = api.syncInProgress(MobileInProgressSyncRequest(progress.map(::request)))
-            if (response.ok) response.items.filter { it.status in setOf("applied", "skipped_server_wins") }.mapNotNullTo(done) { it.clientUid }
+            if (response.ok) {
+                response.items.filter { it.status in setOf("applied", "skipped_server_wins") }.mapNotNullTo(done) { it.clientUid }
+                progress.filter { it.entityId != null && it.entityId < 0 && it.clientUid in done }.forEach { db.inProgressDao().deleteById(it.entityId!!) }
+            }
         }
         if (done.isNotEmpty()) db.syncQueueDao().deleteByIds(done.toList())
     }

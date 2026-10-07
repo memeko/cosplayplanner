@@ -27,6 +27,9 @@ interface CardDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(item: CosplanCardEntity)
+
+    @Query("DELETE FROM cosplan_cards WHERE id = :id")
+    suspend fun deleteById(id: Long)
 }
 
 @Dao
@@ -37,7 +40,7 @@ interface FestivalDao {
     @Query("SELECT * FROM festivals")
     suspend fun getAll(): List<FestivalEntity>
 
-    @Query("SELECT * FROM festivals WHERE (event_date BETWEEN :today AND :until) OR is_going = 1 ORDER BY event_date")
+    @Query("SELECT * FROM festivals WHERE (event_date BETWEEN :today AND :until) OR (is_going = 1 AND (event_date IS NULL OR event_date >= :today)) ORDER BY event_date")
     fun observeOfflineWindow(today: String, until: String): Flow<List<FestivalEntity>>
 }
 
@@ -49,6 +52,8 @@ interface InProgressDao {
     suspend fun upsert(item: InProgressEntity)
     @Query("SELECT * FROM in_progress_cards ORDER BY updated_at DESC")
     fun observeAll(): Flow<List<InProgressEntity>>
+    @Query("DELETE FROM in_progress_cards WHERE id = :id")
+    suspend fun deleteById(id: Long)
 }
 
 @Dao
@@ -66,6 +71,9 @@ interface SyncQueueDao {
 
     @Query("SELECT * FROM sync_queue ORDER BY created_at ASC LIMIT :limit")
     suspend fun getBatch(limit: Int = 50): List<SyncQueueEntity>
+
+    @Query("SELECT * FROM sync_queue WHERE scope = :scope AND entity_id = :entityId ORDER BY created_at DESC LIMIT 1")
+    suspend fun findForLocalEntity(scope: String, entityId: Long): SyncQueueEntity?
 
     @Query("DELETE FROM sync_queue WHERE clientUid IN (:ids)")
     suspend fun deleteByIds(ids: List<String>)
