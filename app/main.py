@@ -17404,9 +17404,28 @@ def find_matching_festivals_for_global_update(
     city: str | None,
     event_date: date | None,
 ) -> list[Festival]:
-    all_festivals = db.execute(select(Festival)).scalars().all()
+    candidate_filters = []
+    if source_announcement_id:
+        candidate_filters.append(Festival.source_announcement_id == source_announcement_id)
+    if import_source and import_external_id:
+        candidate_filters.append(
+            and_(
+                Festival.import_source == import_source,
+                Festival.import_external_id == import_external_id,
+            )
+        )
+    # Manually created duplicates can only match when both dates are present
+    # and equal, so there is no reason to materialize unrelated festival rows.
+    if event_date:
+        candidate_filters.append(Festival.event_date == event_date)
+    if not candidate_filters:
+        return []
+
+    candidate_festivals = db.execute(
+        select(Festival).where(or_(*candidate_filters))
+    ).scalars().all()
     target_items: list[Festival] = []
-    for item in all_festivals:
+    for item in candidate_festivals:
         if source_announcement_id and item.source_announcement_id == source_announcement_id:
             target_items.append(item)
             continue
