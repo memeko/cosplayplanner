@@ -2526,6 +2526,7 @@ textarea {
 
 .home-citadel-promo-trigger {
   appearance: none;
+  display: block;
   width: 100%;
   padding: 0;
   overflow: hidden;
@@ -2534,6 +2535,7 @@ textarea {
   background: #101010;
   color: #fff;
   cursor: pointer;
+  text-decoration: none;
   box-shadow: 0 14px 28px rgba(22, 34, 66, 0.2);
   transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
 }
