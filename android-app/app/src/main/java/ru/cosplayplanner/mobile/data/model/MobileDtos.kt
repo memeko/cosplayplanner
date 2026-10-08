@@ -9,7 +9,12 @@ data class MobileBootstrapResponse(
     val cards: List<MobileCardDto>,
     val festivals: List<MobileFestivalDto>,
     @Json(name = "in_progress") val inProgress: List<MobileInProgressDto> = emptyList(),
+    @Json(name = "calendar_events") val calendarEvents: List<MobileCalendarEventDto> = emptyList(),
+    @Json(name = "content_posts") val contentPosts: List<MobileContentPostDto> = emptyList(),
 )
+
+data class MobileCalendarEventDto(val id: Long, val date: String, val time: String?, val title: String, val city: String?, val details: String?, @Json(name = "updated_at") val updatedAt: String?)
+data class MobileContentPostDto(val id: Long, val date: String, val time: String?, val title: String, val description: String?, val socials: List<String>, val rubric: String, val status: String, val published: Boolean, @Json(name = "updated_at") val updatedAt: String?)
 
 data class MobileInProgressDto(
     val id: Long,
@@ -61,6 +66,7 @@ data class PigeonMessageDto(
     val body: String,
     @Json(name = "created_at") val createdAt: String?,
     @Json(name = "is_read") val isRead: Boolean,
+    @Json(name = "emoji_urls") val emojiUrls: Map<String, String> = emptyMap(),
 )
 data class PigeonInboxResponse(val ok: Boolean, val messages: List<PigeonMessageDto>)
 data class PigeonSendRequest(@Json(name = "recipient_alias") val recipientAlias: String, val message: String)

@@ -107,7 +107,7 @@ fun FullCardEditor(card: CosplanCardEntity?, onBack: () -> Unit, onSave: (Cospla
         validationError?.let { message -> item { Text(message, color = MaterialTheme.colorScheme.error) } }
         fullCardSections.forEach { section ->
             item(key = "head-${section.title}") { FilledTonalButton({ expanded[section.title] = expanded[section.title] != true }, modifier = Modifier.fillMaxWidth()) { Text(section.title, modifier = Modifier.weight(1f)); Icon(if (expanded[section.title] == true) Icons.Default.ExpandLess else Icons.Default.ExpandMore, null) } }
-            if (expanded[section.title] == true) items(section.fields, key = { it.key }) { field -> FullFieldEditor(field, values) }
+            if (expanded[section.title] == true) items(section.fields.filter { fieldVisible(it.key, values) }, key = { it.key }) { field -> FullFieldEditor(field, values) }
         }
         item {
             Button({
@@ -129,6 +129,12 @@ private fun FullFieldEditor(field: FullField, values: MutableMap<String, Any?>) 
         FullFieldKind.Boolean -> SettingSwitch(field.label, values[field.key] as? Boolean ?: false) { values[field.key] = it }
         FullFieldKind.Choice -> Column { Text(field.label, style = MaterialTheme.typography.labelLarge); Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) { field.options.forEach { (key, label) -> FilterChip(selected = values[field.key]?.toString() == key, onClick = { values[field.key] = key }, label = { Text(label) }) } } }
         else -> {
+            if (field.kind == FullFieldKind.Json) {
+                Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = .55f))) {
+                    Text("⚠ Расширенное поле. Ошибка в структуре может повредить данные карточки. Рекомендуется заполнять его на сайте.", modifier = Modifier.padding(12.dp), color = MaterialTheme.colorScheme.onErrorContainer, style = MaterialTheme.typography.bodySmall)
+                }
+                Spacer(Modifier.height(6.dp))
+            }
             var text by remember(field.key) { mutableStateOf(valueToEditorText(values[field.key], field.kind)) }
             OutlinedTextField(
                 value = text,
@@ -140,6 +146,25 @@ private fun FullFieldEditor(field: FullField, values: MutableMap<String, Any?>) 
             )
         }
     }
+}
+
+private fun fieldVisible(key: String, values: Map<String, Any?>): Boolean {
+    val costume = values["costume_type"]?.toString()
+    val sewing = values["sewing_type"]?.toString()
+    if (key in setOf("sewing_type", "sewing_fabric", "sewing_hardware", "sewing_pattern", "sewing_mockup", "sewing_fitting", "sewing_details", "costume_executor", "costume_deadline", "costume_prepayment", "costume_postpayment", "costume_fabric_price", "costume_hardware_price", "costume_fabric_rows_json", "costume_hardware_rows_json") && costume != "sew") return false
+    if (key in setOf("sewing_fabric", "sewing_hardware", "sewing_pattern", "sewing_mockup", "sewing_fitting", "sewing_details", "costume_fabric_price", "costume_hardware_price", "costume_fabric_rows_json", "costume_hardware_rows_json") && sewing != "self") return false
+    if (key in setOf("costume_executor", "costume_prepayment", "costume_postpayment") && sewing != "outsourced") return false
+    if (key in setOf("costume_bought", "costume_link", "costume_buy_price") && costume != "buy") return false
+    if (key in setOf("lenses_color", "lenses_comment", "lenses_price", "lenses_currency") && values["lenses_enabled"] != true) return false
+    val wig = values["wig_type"]?.toString()
+    if (key in setOf("wigmaker_name", "wig_price", "wig_deadline") && wig != "wigmaker") return false
+    if (key in setOf("wig_link", "wig_buy_price") && wig != "buy") return false
+    if (key in setOf("wig_no_buy_from", "wig_restyle") && wig != "no_buy") return false
+    val craft = values["craft_type"]?.toString()
+    if (key in setOf("craft_master", "craft_price", "craft_deadline") && craft != "order") return false
+    if (key in setOf("craft_material_price", "craft_parts_json") && craft != "self") return false
+    if (key in setOf("project_leader", "cosbands_json", "project_deadline", "related_cards_json", "project_characters_json", "coproplayers_json", "coproplayer_nicks_json") && values["plan_type"]?.toString() != "project") return false
+    return true
 }
 
 private fun valueToEditorText(value: Any?, kind: FullFieldKind): String = when {

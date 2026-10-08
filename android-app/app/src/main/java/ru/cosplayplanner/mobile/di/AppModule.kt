@@ -58,6 +58,7 @@ object AppModule {
     fun provideDatabase(@ApplicationContext context: Context): AppDatabase {
         return Room.databaseBuilder(context, AppDatabase::class.java, "cosplay_mobile.db")
             .addMigrations(MIGRATION_2_3)
+            .addMigrations(MIGRATION_3_4)
             .build()
     }
 
@@ -67,6 +68,13 @@ object AppModule {
             db.execSQL("ALTER TABLE festivals ADD COLUMN is_going INTEGER NOT NULL DEFAULT 0")
             db.execSQL("CREATE TABLE IF NOT EXISTS in_progress_cards (id INTEGER NOT NULL, card_id INTEGER NOT NULL, updated_at TEXT, payload_json TEXT NOT NULL, PRIMARY KEY(id))")
             db.execSQL("CREATE TABLE IF NOT EXISTS pigeon_messages (id INTEGER NOT NULL, chat_user_id INTEGER NOT NULL, chat_alias TEXT NOT NULL, direction TEXT NOT NULL, body TEXT NOT NULL, created_at TEXT, is_read INTEGER NOT NULL, PRIMARY KEY(id))")
+        }
+    }
+    private val MIGRATION_3_4 = object : Migration(3, 4) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL("ALTER TABLE pigeon_messages ADD COLUMN emoji_json TEXT NOT NULL DEFAULT '{}'")
+            db.execSQL("CREATE TABLE IF NOT EXISTS calendar_events (id INTEGER NOT NULL, date TEXT NOT NULL, time TEXT, title TEXT NOT NULL, city TEXT, details TEXT, updated_at TEXT, PRIMARY KEY(id))")
+            db.execSQL("CREATE TABLE IF NOT EXISTS content_posts (id INTEGER NOT NULL, date TEXT NOT NULL, time TEXT, title TEXT NOT NULL, description TEXT, socials_json TEXT NOT NULL, rubric TEXT NOT NULL, status TEXT NOT NULL, published INTEGER NOT NULL, updated_at TEXT, PRIMARY KEY(id))")
         }
     }
 }

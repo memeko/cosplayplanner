@@ -59,6 +59,7 @@ dependencies {
     implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.emoji2:emoji2:1.5.0")
     implementation("androidx.emoji2:emoji2-bundled:1.5.0")
+    implementation("io.coil-kt:coil-compose:2.7.0")
 
     implementation("androidx.work:work-runtime-ktx:2.10.0")
     implementation("androidx.hilt:hilt-work:1.2.0")

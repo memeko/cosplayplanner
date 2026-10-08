@@ -18831,6 +18831,15 @@ def serialize_in_progress_for_mobile(item: InProgressCard) -> dict[str, Any]:
     }
 
 
+def serialize_calendar_event_for_mobile(item: PersonalCalendarEvent) -> dict[str, Any]:
+    return {"id": int(item.id), "date": mobile_iso_date(item.event_date), "time": item.event_time, "title": item.title, "city": item.event_city, "details": item.details, "updated_at": mobile_iso_datetime(item.updated_at)}
+
+
+def serialize_content_post_for_mobile(item: ContentPlanPost) -> dict[str, Any]:
+    published = any((item.telegram_published_at, item.vk_published_at, item.pinterest_published_at, item.threads_published_at, item.rednote_published_at))
+    return {"id": int(item.id), "date": mobile_iso_date(item.publish_date), "time": item.publish_time, "title": item.title, "description": item.description, "socials": as_list(item.socials_json), "rubric": item.rubric, "status": item.status, "published": published, "telegram_published_at": mobile_iso_datetime(item.telegram_published_at), "vk_published_at": mobile_iso_datetime(item.vk_published_at), "pinterest_published_at": mobile_iso_datetime(item.pinterest_published_at), "threads_published_at": mobile_iso_datetime(item.threads_published_at), "rednote_published_at": mobile_iso_datetime(item.rednote_published_at), "updated_at": mobile_iso_datetime(item.updated_at)}
+
+
 @app.post("/api/mobile/login")
 async def mobile_login_api(request: Request, db: Session = Depends(get_db)) -> dict[str, Any]:
     try:
@@ -18877,15 +18886,21 @@ def mobile_bootstrap_api(request: Request, since: str = "", db: Session = Depend
         .where(InProgressCard.user_id == user.id)
         .order_by(InProgressCard.updated_at.desc(), InProgressCard.id.desc())
     )
+    calendar_stmt = select(PersonalCalendarEvent).where(PersonalCalendarEvent.user_id == user.id).order_by(PersonalCalendarEvent.event_date, PersonalCalendarEvent.event_time)
+    content_stmt = select(ContentPlanPost).where(ContentPlanPost.user_id == user.id).order_by(ContentPlanPost.publish_date, ContentPlanPost.publish_time)
 
     if since_dt is not None:
         cards_stmt = cards_stmt.where(CosplanCard.updated_at >= since_dt)
         festivals_stmt = festivals_stmt.where(Festival.updated_at >= since_dt)
         progress_stmt = progress_stmt.where(InProgressCard.updated_at >= since_dt)
+        calendar_stmt = calendar_stmt.where(PersonalCalendarEvent.updated_at >= since_dt)
+        content_stmt = content_stmt.where(ContentPlanPost.updated_at >= since_dt)
 
     cards = db.execute(cards_stmt).scalars().all()
     festivals = db.execute(festivals_stmt).scalars().all()
     progress_rows = db.execute(progress_stmt).scalars().all()
+    calendar_rows = db.execute(calendar_stmt).scalars().all()
+    content_rows = db.execute(content_stmt).scalars().all()
 
     return {
         "ok": True,
@@ -18895,10 +18910,14 @@ def mobile_bootstrap_api(request: Request, since: str = "", db: Session = Depend
         "cards": [serialize_card_for_mobile(item) for item in cards],
         "festivals": [serialize_festival_for_mobile(item) for item in festivals],
         "in_progress": [serialize_in_progress_for_mobile(item) for item in progress_rows],
+        "calendar_events": [serialize_calendar_event_for_mobile(item) for item in calendar_rows],
+        "content_posts": [serialize_content_post_for_mobile(item) for item in content_rows],
         "counts": {
             "cards": len(cards),
             "festivals": len(festivals),
             "in_progress": len(progress_rows),
+            "calendar_events": len(calendar_rows),
+            "content_posts": len(content_rows),
         },
     }
 
@@ -18977,10 +18996,16 @@ def mobile_pigeon_messages(db: Session, user: User) -> list[dict[str, Any]]:
         chat_user_id = int(dialog.get("user_id") or 0)
         chat_alias = str(dialog.get("chat_alias") or "")
         for message in dialog.get("messages", []):
+            body = str(message.get("body") or "")
+            emoji_urls: dict[str, str] = {}
+            for code in re.findall(r"\[\[emoji:([a-z0-9-]+)\]\]", body, flags=re.IGNORECASE):
+                emoji = PIXEL_EMOJI_BY_CODE.get(code.casefold())
+                if emoji:
+                    emoji_urls[code.casefold()] = f"{SITE_URL}{emoji['url']}"
             messages.append({
                 "id": int(message.get("id") or 0), "chat_user_id": chat_user_id,
                 "chat_alias": chat_alias, "direction": str(message.get("direction") or "in"),
-                "body": str(message.get("body") or ""),
+                "body": body, "emoji_urls": emoji_urls,
                 "created_at": mobile_iso_datetime(message.get("created_at")),
                 "is_read": bool(message.get("is_read")),
             })

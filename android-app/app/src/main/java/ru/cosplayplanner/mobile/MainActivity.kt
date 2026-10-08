@@ -28,6 +28,7 @@ import dagger.hilt.android.AndroidEntryPoint
 import java.util.concurrent.TimeUnit
 import org.json.JSONArray
 import org.json.JSONObject
+import coil.compose.AsyncImage
 import ru.cosplayplanner.mobile.data.local.*
 import ru.cosplayplanner.mobile.sync.MobileSyncWorker
 
@@ -88,7 +89,7 @@ private fun LoginScreen(busy: Boolean, error: String?, onLogin: (String, String)
     }
 }
 
-private enum class Tab(val title: String) { Plans("Коспланы"), Progress("В процессе"), Festivals("Фестивали"), Pigeons("Голуби") }
+private enum class Tab(val title: String) { Plans("Коспланы"), Progress("В процессе"), Festivals("Фестивали"), Calendar("Календарь"), Pigeons("Голуби") }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -96,13 +97,14 @@ private fun Workspace(state: MobileUiState, dark: Boolean, onDark: (Boolean) -> 
     var tab by remember { mutableStateOf(Tab.Plans) }
     Scaffold(
         topBar = { TopAppBar(title = { Column { Text("Cosplay Planner", fontWeight = FontWeight.Bold); Text(if (state.syncing) "Синхронизация…" else "Данные доступны офлайн", style = MaterialTheme.typography.labelSmall) } }, actions = { IconButton(onSync) { Icon(Icons.Default.Sync, "Синхронизировать") }; IconButton({ onDark(!dark) }) { Icon(if (dark) Icons.Default.LightMode else Icons.Default.DarkMode, "Тема") } }) },
-        bottomBar = { NavigationBar { Tab.entries.forEach { item -> NavigationBarItem(selected = tab == item, onClick = { tab = item }, icon = { Icon(when(item) { Tab.Plans -> Icons.Default.Style; Tab.Progress -> Icons.Default.Checklist; Tab.Festivals -> Icons.Default.Event; Tab.Pigeons -> Icons.Default.Send }, null) }, label = { Text(item.title) }) } } },
+        bottomBar = { NavigationBar { Tab.entries.forEach { item -> NavigationBarItem(selected = tab == item, onClick = { tab = item }, icon = { Icon(when(item) { Tab.Plans -> Icons.Default.Style; Tab.Progress -> Icons.Default.Checklist; Tab.Festivals -> Icons.Default.Event; Tab.Calendar -> Icons.Default.CalendarMonth; Tab.Pigeons -> Icons.Default.Send }, null) }, label = { Text(item.title) }) } } },
     ) { padding ->
         Box(Modifier.padding(padding).fillMaxSize()) {
             when (tab) {
                 Tab.Plans -> PlansScreen(state.cards, onSaveCard)
-                Tab.Progress -> ProgressScreen(state.progress, state.cards, onSaveProgress, onCreateProgress)
-                Tab.Festivals -> FestivalsScreen(state.festivals)
+                Tab.Progress -> ProgressScreen(state.progress, state.cards, onSaveProgress, onCreateProgress, onSaveCard)
+                Tab.Festivals -> FestivalsScreen(state.festivals, state.homeCity)
+                Tab.Calendar -> CalendarScreen(state.calendarEvents, state.contentPosts)
                 Tab.Pigeons -> PigeonsScreen(state.pigeons, onSend)
             }
             state.error?.let { AssistChip({}, { Text(it) }, modifier = Modifier.align(Alignment.TopCenter).padding(8.dp), leadingIcon = { Icon(Icons.Default.CloudOff, null) }) }
@@ -127,10 +129,12 @@ private fun PlansScreen(cards: List<CosplanCardEntity>, onSave: (CosplanCardEnti
 }
 
 @Composable
-private fun ProgressScreen(rows: List<InProgressEntity>, cards: List<CosplanCardEntity>, onSave: (InProgressEntity, Map<String, Any?>) -> Unit, onCreate: (Long) -> Unit) {
+private fun ProgressScreen(rows: List<InProgressEntity>, cards: List<CosplanCardEntity>, onSave: (InProgressEntity, Map<String, Any?>) -> Unit, onCreate: (Long) -> Unit, onSaveCard: (CosplanCardEntity?, Map<String, Any?>) -> Unit) {
     var selected by remember { mutableStateOf<InProgressEntity?>(null) }; var choosing by remember { mutableStateOf(false) }
+    var editingCard by remember { mutableStateOf<CosplanCardEntity?>(null) }
     val cardsById = remember(cards) { cards.associateBy { it.id } }
-    selected?.let { row -> return ProgressEditor(row, cardTitle(cardsById[row.cardId]), onBack = { selected = null }, onSave = { data -> onSave(row, data); selected = null }) }
+    editingCard?.let { card -> return FullCardEditor(card, onBack = { editingCard = null }, onSave = { item, data -> onSaveCard(item, data); editingCard = null }) }
+    selected?.let { row -> return ProgressEditor(row, cardTitle(cardsById[row.cardId]), onBack = { selected = null }, onOpenCard = { editingCard = cardsById[row.cardId] }, onSave = { data -> onSave(row, data); selected = null }) }
     if (choosing) return SelectProgressCard(cards.filter { card -> rows.none { it.cardId == card.id } }, onBack = { choosing = false }, onSelect = { onCreate(it.id); choosing = false })
     Box(Modifier.fillMaxSize()) {
         if (rows.isEmpty()) Empty("Добавьте косплан в работу") else LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) { items(rows, key = { it.id }) { row ->
@@ -185,8 +189,10 @@ private fun SelectProgressCard(cards: List<CosplanCardEntity>, onBack: () -> Uni
     }
 }
 
+private data class ProgressTask(val text: String, val assignee: String = "", val done: Boolean = false)
+
 @Composable
-private fun ProgressEditor(row: InProgressEntity, title: String, onBack: () -> Unit, onSave: (Map<String, Any?>) -> Unit) {
+private fun ProgressEditor(row: InProgressEntity, title: String, onBack: () -> Unit, onOpenCard: () -> Unit, onSave: (Map<String, Any?>) -> Unit) {
     val source = remember(row.payloadJson) { JSONObject(row.payloadJson) }
     var active by remember(row.id) { mutableStateOf(!source.optBoolean("is_frozen", false)) }
     val checklist = remember(row.id) {
@@ -195,27 +201,56 @@ private fun ProgressEditor(row: InProgressEntity, title: String, onBack: () -> U
             for (i in 0 until values.length()) { val item = values.optJSONObject(i); if (item != null) add(item.optString("text") to item.optBoolean("done")) }
         }
     }
+    val oldTasks = remember(row.id) {
+        mutableStateListOf<ProgressTask>().apply {
+            val values = source.optJSONArray("task_rows_json") ?: JSONArray()
+            for (i in 0 until values.length()) { val item = values.optJSONObject(i); if (item != null) { val text = item.optString("task", item.optString("text")); if (text.isNotBlank()) add(ProgressTask(text, item.optString("assignee", item.optString("responsible")), item.optBoolean("done"))) } }
+        }
+    }
     var newTask by remember { mutableStateOf("") }
     Column(Modifier.fillMaxSize()) {
-        Row(Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) { IconButton(onBack) { Icon(Icons.Default.ArrowBack, "Назад") }; Column(Modifier.weight(1f)) { Text(title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.ExtraBold); Text("Карточка прогресса", color = MaterialTheme.colorScheme.onSurfaceVariant) } }
+        Row(Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) { IconButton(onBack) { Icon(Icons.Default.ArrowBack, "Назад") }; Column(Modifier.weight(1f)) { Text(title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.ExtraBold); Text("Карточка прогресса", color = MaterialTheme.colorScheme.onSurfaceVariant) }; TextButton(onOpenCard) { Text("К косплану") } }
         LazyColumn(Modifier.weight(1f).padding(horizontal = 18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             item { GlassCard { SettingSwitch("Активен", active) { active = it }; Text(if (active) "Проект отображается среди активных" else "Проект приостановлен", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall) } }
             item { Text("Чек-лист", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold) }
             items(checklist.size) { index -> val item = checklist[index]; Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp)) { Row(Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) { Checkbox(item.second, { checklist[index] = item.first to it }); Text(item.first, modifier = Modifier.weight(1f)); IconButton({ checklist.removeAt(index) }) { Icon(Icons.Default.DeleteOutline, "Удалить") } } } }
             item { Row(verticalAlignment = Alignment.CenterVertically) { OutlinedTextField(newTask, { newTask = it }, label = { Text("Новая задача") }, modifier = Modifier.weight(1f)); IconButton({ if (newTask.isNotBlank()) { checklist += newTask.trim() to false; newTask = "" } }) { Icon(Icons.Default.AddCircle, "Добавить") } } }
-            item { Button({ onSave(mapOf("is_frozen" to !active, "checklist_json" to checklist.map { mapOf("text" to it.first, "done" to it.second) })) }, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Default.Save, null); Spacer(Modifier.width(8.dp)); Text("Сохранить прогресс") } }
+            if (oldTasks.isNotEmpty()) item { Text("Задачи проекта", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold) }
+            items(oldTasks.size) { index -> val task = oldTasks[index]; Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp)) { Row(Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) { Checkbox(task.done, { oldTasks[index] = task.copy(done = it) }); Column(Modifier.weight(1f)) { Text(task.text); if (task.assignee.isNotBlank()) Text("@${task.assignee}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary) }; IconButton({ oldTasks.removeAt(index) }) { Icon(Icons.Default.DeleteOutline, "Удалить") } } } }
+            item { Button({ onSave(mapOf("is_frozen" to !active, "checklist_json" to checklist.map { mapOf("text" to it.first, "done" to it.second) }, "task_rows_json" to oldTasks.map { mapOf("task" to it.text, "assignee" to it.assignee, "done" to it.done) })) }, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Default.Save, null); Spacer(Modifier.width(8.dp)); Text("Сохранить прогресс") } }
             item { Spacer(Modifier.height(30.dp)) }
         }
     }
 }
 
 @Composable
-private fun FestivalsScreen(rows: List<FestivalEntity>) {
+private fun FestivalsScreen(rows: List<FestivalEntity>, homeCity: String?) {
     if (rows.isEmpty()) return Empty("Нет фестивалей на ближайшие 30 дней")
-    LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) { item { Text("Ближайшие 30 дней и все отмеченные «Я иду»", color = MaterialTheme.colorScheme.onSurfaceVariant) }; items(rows, key = { it.id }) { row ->
+    val (local, other) = remember(rows, homeCity) { rows.partition { row -> homeCity?.let { JSONObject(row.payloadJson).text("city")?.equals(it, ignoreCase = true) } == true } }
+    LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        if (local.isNotEmpty()) { item { Text("В вашем городе", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.ExtraBold); Text(homeCity.orEmpty(), color = MaterialTheme.colorScheme.primary) }; festivalItems(local) }
+        item { Text("Ближайшие фестивали", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.ExtraBold); Text("Ближайшие 30 дней и будущие «Я иду»", color = MaterialTheme.colorScheme.onSurfaceVariant) }; festivalItems(other)
+    }
+}
+
+private fun androidx.compose.foundation.lazy.LazyListScope.festivalItems(rows: List<FestivalEntity>) {
+    items(rows, key = { it.id }) { row ->
         val data = JSONObject(row.payloadJson); val name = data.text("name") ?: "Фестиваль"; val city = data.text("city")
         GlassCard { Row(verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Default.AutoAwesome, null, tint = MaterialTheme.colorScheme.primary); Spacer(Modifier.width(12.dp)); Column(Modifier.weight(1f)) { Text(name, fontWeight = FontWeight.Bold); Text(listOfNotNull(city, row.eventDate ?: "Дата уточняется").joinToString(" · ")) }; if (row.isGoing) AssistChip({}, { Text("Я иду") }) } }
-    } }
+    }
+}
+
+@Composable
+private fun CalendarScreen(events: List<CalendarEventEntity>, posts: List<ContentPostEntity>) {
+    var content by remember { mutableStateOf(false) }
+    Column(Modifier.fillMaxSize()) {
+        SingleChoiceSegmentedButtonRow(Modifier.padding(16.dp).fillMaxWidth()) { SegmentedButton(!content, { content = false }, SegmentedButtonDefaults.itemShape(0, 2)) { Text("События") }; SegmentedButton(content, { content = true }, SegmentedButtonDefaults.itemShape(1, 2)) { Text("Контент-план") } }
+        if (!content) {
+            if (events.isEmpty()) Empty("В календаре пока нет событий") else LazyColumn(Modifier.padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) { items(events, key = { it.id }) { event -> GlassCard { Text(event.title, fontWeight = FontWeight.Bold); Text(listOfNotNull(event.date, event.time, event.city).joinToString(" · "), color = MaterialTheme.colorScheme.primary); event.details?.takeIf { it.isNotBlank() }?.let { Text(it) } } } }
+        } else {
+            if (posts.isEmpty()) Empty("Контент-план пока не настроен на сайте") else LazyColumn(Modifier.padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) { items(posts, key = { it.id }) { post -> GlassCard { Row { Column(Modifier.weight(1f)) { Text(post.title, fontWeight = FontWeight.Bold); Text(listOfNotNull(post.date, post.time, post.rubric).joinToString(" · "), color = MaterialTheme.colorScheme.onSurfaceVariant) }; AssistChip({}, { Text(if (post.published) "Опубликован" else post.status) }, leadingIcon = { Icon(if (post.published) Icons.Default.CheckCircle else Icons.Default.Schedule, null) }) }; post.description?.takeIf { it.isNotBlank() }?.let { Text(it, maxLines = 3) } } } }
+        }
+    }
 }
 
 @Composable
@@ -244,7 +279,7 @@ private fun PigeonsScreen(messages: List<PigeonMessageEntity>, onSend: (String, 
                     Card(Modifier.fillMaxWidth().clickable { selectedChatId = latest.chatUserId }, shape = RoundedCornerShape(24.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .72f))) {
                         Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                             Surface(shape = RoundedCornerShape(18.dp), color = MaterialTheme.colorScheme.primaryContainer, modifier = Modifier.size(52.dp)) { Box(contentAlignment = Alignment.Center) { Icon(Icons.Default.Send, null, tint = MaterialTheme.colorScheme.primary) } }
-                            Spacer(Modifier.width(14.dp)); Column(Modifier.weight(1f)) { Text(if (latest.chatUserId == 0L) "Избранное" else "@${latest.chatAlias}", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium); Text(latest.body.ifBlank { "Вложение" }, maxLines = 1, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                            Spacer(Modifier.width(14.dp)); Column(Modifier.weight(1f)) { Text(if (latest.chatUserId == 0L) "Избранное" else "@${latest.chatAlias}", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium); Text(latest.body.replace(Regex("\\[\\[emoji:[^]]+]]"), "✨").ifBlank { "Вложение" }, maxLines = 1, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                             Icon(Icons.Default.ChevronRight, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
@@ -277,11 +312,22 @@ private fun PigeonConversation(messages: List<PigeonMessageEntity>, onBack: () -
                 val outgoing = message.direction == "out"
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = if (outgoing) Arrangement.End else Arrangement.Start) {
                     Surface(shape = RoundedCornerShape(20.dp), color = if (outgoing) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant, modifier = Modifier.widthIn(max = 300.dp)) {
-                        Column(Modifier.padding(horizontal = 16.dp, vertical = 11.dp)) { Text(message.body); message.createdAt?.let { Text(it.take(16).replace('T', ' '), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) } }
+                        Column(Modifier.padding(horizontal = 16.dp, vertical = 11.dp)) { RichPigeonBody(message); message.createdAt?.let { Text(it.take(16).replace('T', ' '), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) } }
                     }
                 }
             }
         }
         Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) { OutlinedTextField(body, { body = it }, placeholder = { Text("Написать сообщение…") }, modifier = Modifier.weight(1f), maxLines = 4); Spacer(Modifier.width(8.dp)); FilledIconButton({ if (body.isNotBlank()) { onSend(chat.chatAlias, body); body = "" } }, enabled = body.isNotBlank()) { Icon(Icons.Default.Send, "Отправить") } }
     }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun RichPigeonBody(message: PigeonMessageEntity) {
+    val urls = remember(message.emojiJson) { runCatching { JSONObject(message.emojiJson).let { json -> json.keys().asSequence().associateWith { json.optString(it) } } }.getOrDefault(emptyMap()) }
+    val token = Regex("\\[\\[emoji:([a-z0-9-]+)]]", RegexOption.IGNORE_CASE)
+    val parts = remember(message.body) {
+        buildList<Pair<String, String?>> { var cursor = 0; token.findAll(message.body).forEach { match -> if (match.range.first > cursor) add(message.body.substring(cursor, match.range.first) to null); add("" to match.groupValues[1].lowercase()); cursor = match.range.last + 1 }; if (cursor < message.body.length) add(message.body.substring(cursor) to null) }
+    }
+    FlowRow(verticalArrangement = Arrangement.Center) { parts.forEach { (text, code) -> if (code == null) Text(text) else AsyncImage(model = urls[code], contentDescription = code, modifier = Modifier.size(26.dp)) } }
 }

@@ -14,6 +14,9 @@ data class MobileUiState(
     val progress: List<InProgressEntity> = emptyList(),
     val festivals: List<FestivalEntity> = emptyList(),
     val pigeons: List<PigeonMessageEntity> = emptyList(),
+    val calendarEvents: List<CalendarEventEntity> = emptyList(),
+    val contentPosts: List<ContentPostEntity> = emptyList(),
+    val homeCity: String? = null,
     val signedIn: Boolean = false,
     val syncing: Boolean = false,
     val error: String? = null,
@@ -25,7 +28,7 @@ class MobileViewModel @Inject constructor(private val repository: SyncRepository
     private val busy = MutableStateFlow(false)
     private val error = MutableStateFlow<String?>(null)
     val state: StateFlow<MobileUiState> = combine(
-        repository.cards(), repository.inProgress(), repository.festivals(), repository.pigeons(),
+        repository.cards(), repository.inProgress(), repository.festivals(), repository.pigeons(), repository.calendarEvents(), repository.contentPosts(), repository.homeCity,
         session, busy, error,
     ) { values ->
         @Suppress("UNCHECKED_CAST")
@@ -34,9 +37,8 @@ class MobileViewModel @Inject constructor(private val repository: SyncRepository
             progress = values[1] as List<InProgressEntity>,
             festivals = values[2] as List<FestivalEntity>,
             pigeons = values[3] as List<PigeonMessageEntity>,
-            signedIn = values[4] as Boolean,
-            syncing = values[5] as Boolean,
-            error = values[6] as String?,
+            calendarEvents = values[4] as List<CalendarEventEntity>, contentPosts = values[5] as List<ContentPostEntity>, homeCity = values[6] as String?,
+            signedIn = values[7] as Boolean, syncing = values[8] as Boolean, error = values[9] as String?,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), MobileUiState())
 

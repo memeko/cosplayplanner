@@ -65,6 +65,14 @@ interface PigeonDao {
 }
 
 @Dao
+interface CalendarDao {
+    @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun upsertEvents(items: List<CalendarEventEntity>)
+    @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun upsertPosts(items: List<ContentPostEntity>)
+    @Query("SELECT * FROM calendar_events ORDER BY date, time") fun observeEvents(): Flow<List<CalendarEventEntity>>
+    @Query("SELECT * FROM content_posts ORDER BY date, time") fun observePosts(): Flow<List<ContentPostEntity>>
+}
+
+@Dao
 interface SyncQueueDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(item: SyncQueueEntity)
@@ -97,8 +105,10 @@ interface SyncConflictDao {
         SyncConflictEntity::class,
         InProgressEntity::class,
         PigeonMessageEntity::class,
+        CalendarEventEntity::class,
+        ContentPostEntity::class,
     ],
-    version = 3,
+    version = 4,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -109,4 +119,5 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun syncConflictDao(): SyncConflictDao
     abstract fun inProgressDao(): InProgressDao
     abstract fun pigeonDao(): PigeonDao
+    abstract fun calendarDao(): CalendarDao
 }

@@ -7,6 +7,8 @@ import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import ru.cosplayplanner.mobile.data.local.*
 import ru.cosplayplanner.mobile.data.model.*
 import ru.cosplayplanner.mobile.data.remote.MobileApi
@@ -20,10 +22,15 @@ class SyncRepository @Inject constructor(
     private val mapAdapter = moshi.adapter<Map<String, Any?>>(
         Types.newParameterizedType(Map::class.java, String::class.java, Any::class.java),
     )
+    private val anyAdapter = moshi.adapter(Any::class.java)
+    private val _homeCity = MutableStateFlow<String?>(null)
+    val homeCity: StateFlow<String?> = _homeCity
 
     fun cards(): Flow<List<CosplanCardEntity>> = db.cardDao().observeAll()
     fun inProgress(): Flow<List<InProgressEntity>> = db.inProgressDao().observeAll()
     fun pigeons(): Flow<List<PigeonMessageEntity>> = db.pigeonDao().observeAll()
+    fun calendarEvents(): Flow<List<CalendarEventEntity>> = db.calendarDao().observeEvents()
+    fun contentPosts(): Flow<List<ContentPostEntity>> = db.calendarDao().observePosts()
     fun festivals(): Flow<List<FestivalEntity>> {
         val today = LocalDate.now()
         return db.festivalDao().observeOfflineWindow(today.toString(), today.plusDays(30).toString())
@@ -55,11 +62,14 @@ class SyncRepository @Inject constructor(
         val response = api.bootstrap(since)
         if (!response.ok) return
         db.userDao().upsert(UserProfileEntity(response.user.id, response.user.username, response.user.cosplayNick, response.user.email, response.user.homeCity))
+        _homeCity.value = response.user.homeCity
         db.cardDao().upsertAll(response.cards.map { CosplanCardEntity(it.id, it.updatedAt, mapAdapter.toJson(it.payload)) })
         db.festivalDao().upsertAll(response.festivals.map {
             FestivalEntity(it.id, it.updatedAt, mapAdapter.toJson(it.payload), it.payload["event_date"] as? String, it.payload["is_going"] as? Boolean ?: false)
         })
         db.inProgressDao().upsertAll(response.inProgress.map { InProgressEntity(it.id, it.cardId, it.updatedAt, mapAdapter.toJson(it.payload)) })
+        db.calendarDao().upsertEvents(response.calendarEvents.map { CalendarEventEntity(it.id, it.date, it.time, it.title, it.city, it.details, it.updatedAt) })
+        db.calendarDao().upsertPosts(response.contentPosts.map { ContentPostEntity(it.id, it.date, it.time, it.title, it.description, anyAdapter.toJson(it.socials), it.rubric, it.status, it.published, it.updatedAt) })
     }
 
     suspend fun editCard(item: CosplanCardEntity, updates: Map<String, Any?>) {
@@ -131,7 +141,7 @@ class SyncRepository @Inject constructor(
 
     suspend fun refreshPigeons() {
         val response = api.pigeons()
-        if (response.ok) db.pigeonDao().upsertAll(response.messages.map { PigeonMessageEntity(it.id, it.chatUserId, it.chatAlias, it.direction, it.body, it.createdAt, it.isRead) })
+        if (response.ok) db.pigeonDao().upsertAll(response.messages.map { PigeonMessageEntity(it.id, it.chatUserId, it.chatAlias, it.direction, it.body, it.createdAt, it.isRead, anyAdapter.toJson(it.emojiUrls)) })
     }
 
     suspend fun sendPigeon(alias: String, body: String) {

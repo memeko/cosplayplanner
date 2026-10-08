@@ -46,7 +46,14 @@ data class PigeonMessageEntity(
     val body: String,
     @ColumnInfo(name = "created_at") val createdAt: String?,
     @ColumnInfo(name = "is_read") val isRead: Boolean,
+    @ColumnInfo(name = "emoji_json") val emojiJson: String = "{}",
 )
+
+@Entity(tableName = "calendar_events")
+data class CalendarEventEntity(@PrimaryKey val id: Long, val date: String, val time: String?, val title: String, val city: String?, val details: String?, @ColumnInfo(name = "updated_at") val updatedAt: String?)
+
+@Entity(tableName = "content_posts")
+data class ContentPostEntity(@PrimaryKey val id: Long, val date: String, val time: String?, val title: String, val description: String?, @ColumnInfo(name = "socials_json") val socialsJson: String, val rubric: String, val status: String, val published: Boolean, @ColumnInfo(name = "updated_at") val updatedAt: String?)
 
 @Entity(tableName = "sync_queue")
 data class SyncQueueEntity(
