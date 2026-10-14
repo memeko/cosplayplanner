@@ -79,6 +79,7 @@ data class SyncEntityRequest(
     val force: Boolean,
     val resolution: String,
     val payload: Map<String, Any?>,
+    val deleted: Boolean = false,
 )
 
 data class MobileSyncResponse(

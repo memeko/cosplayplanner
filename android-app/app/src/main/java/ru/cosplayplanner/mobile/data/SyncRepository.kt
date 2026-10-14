@@ -29,8 +29,8 @@ class SyncRepository @Inject constructor(
     fun cards(): Flow<List<CosplanCardEntity>> = db.cardDao().observeAll()
     fun inProgress(): Flow<List<InProgressEntity>> = db.inProgressDao().observeAll()
     fun pigeons(): Flow<List<PigeonMessageEntity>> = db.pigeonDao().observeAll()
-    fun calendarEvents(): Flow<List<CalendarEventEntity>> = db.calendarDao().observeEvents()
-    fun contentPosts(): Flow<List<ContentPostEntity>> = db.calendarDao().observePosts()
+    fun calendarEvents(): Flow<List<CalendarEventEntity>> = db.calendarDao().observeEvents(LocalDate.now().toString())
+    fun contentPosts(): Flow<List<ContentPostEntity>> = db.calendarDao().observePosts(LocalDate.now().toString())
     fun festivals(): Flow<List<FestivalEntity>> {
         val today = LocalDate.now()
         return db.festivalDao().observeOfflineWindow(today.toString(), today.plusDays(30).toString())
@@ -61,15 +61,19 @@ class SyncRepository @Inject constructor(
     suspend fun bootstrap(since: String? = null) {
         val response = api.bootstrap(since)
         if (!response.ok) return
+        val pendingCardDeletes = db.syncQueueDao().entityIdsForScope("card_delete").toSet()
         db.userDao().upsert(UserProfileEntity(response.user.id, response.user.username, response.user.cosplayNick, response.user.email, response.user.homeCity))
         _homeCity.value = response.user.homeCity
-        db.cardDao().upsertAll(response.cards.map { CosplanCardEntity(it.id, it.updatedAt, mapAdapter.toJson(it.payload)) })
+        db.cardDao().upsertAll(response.cards.filterNot { it.id in pendingCardDeletes }.map { CosplanCardEntity(it.id, it.updatedAt, mapAdapter.toJson(it.payload)) })
         db.festivalDao().upsertAll(response.festivals.map {
             FestivalEntity(it.id, it.updatedAt, mapAdapter.toJson(it.payload), it.payload["event_date"] as? String, it.payload["is_going"] as? Boolean ?: false)
         })
         db.inProgressDao().upsertAll(response.inProgress.map { InProgressEntity(it.id, it.cardId, it.updatedAt, mapAdapter.toJson(it.payload)) })
         db.calendarDao().upsertEvents(response.calendarEvents.map { CalendarEventEntity(it.id, it.date, it.time, it.title, it.city, it.details, it.updatedAt) })
         db.calendarDao().upsertPosts(response.contentPosts.map { ContentPostEntity(it.id, it.date, it.time, it.title, it.description, anyAdapter.toJson(it.socials), it.rubric, it.status, it.published, it.updatedAt) })
+        val today = LocalDate.now().toString()
+        db.calendarDao().deletePastEvents(today)
+        db.calendarDao().deletePastPosts(today)
     }
 
     suspend fun editCard(item: CosplanCardEntity, updates: Map<String, Any?>) {
@@ -82,6 +86,17 @@ class SyncRepository @Inject constructor(
         val localId = -System.currentTimeMillis()
         db.cardDao().upsert(CosplanCardEntity(localId, null, mapAdapter.toJson(payload)))
         enqueue("card", localId, null, payload)
+    }
+
+    suspend fun deleteCard(item: CosplanCardEntity) {
+        db.cardDao().deleteById(item.id)
+        db.inProgressDao().deleteByCardId(item.id)
+        if (item.id < 0) {
+            db.syncQueueDao().deleteForEntity("card", item.id)
+        } else {
+            db.syncQueueDao().deleteForEntity("card", item.id)
+            enqueue("card_delete", item.id, item.updatedAt, emptyMap())
+        }
     }
 
     suspend fun editInProgress(item: InProgressEntity, updates: Map<String, Any?>) {
@@ -117,15 +132,15 @@ class SyncRepository @Inject constructor(
     suspend fun pushPendingChanges() {
         val queue = db.syncQueueDao().getBatch(100)
         if (queue.isEmpty()) return
-        fun request(item: SyncQueueEntity) = SyncEntityRequest(item.clientUid, item.entityId?.takeIf { it > 0 }, item.baseUpdatedAt, true, "client_wins", mapAdapter.fromJson(item.payload) ?: emptyMap())
+        fun request(item: SyncQueueEntity) = SyncEntityRequest(item.clientUid, item.entityId?.takeIf { it > 0 }, item.baseUpdatedAt, true, "client_wins", mapAdapter.fromJson(item.payload) ?: emptyMap(), item.scope == "card_delete")
         val done = linkedSetOf<String>()
         val normal = queue.filter { it.scope != "in_progress" }
         if (normal.isNotEmpty()) {
-            val response = api.sync(MobileSyncRequest(normal.filter { it.scope == "card" }.map(::request), normal.filter { it.scope == "festival" }.map(::request)))
+            val response = api.sync(MobileSyncRequest(normal.filter { it.scope in setOf("card", "card_delete") }.map(::request), normal.filter { it.scope == "festival" }.map(::request)))
             if (response.ok) {
                 val applied = (response.cards + response.festivals).filter { it.status in setOf("applied", "skipped_server_wins") }
                 applied.mapNotNullTo(done) { it.clientUid }
-                normal.filter { it.entityId != null && it.entityId < 0 && it.clientUid in done }.forEach { db.cardDao().deleteById(it.entityId!!) }
+                normal.filter { it.scope == "card" && it.entityId != null && it.entityId < 0 && it.clientUid in done }.forEach { db.cardDao().deleteById(it.entityId!!) }
             }
         }
         val progress = queue.filter { it.scope == "in_progress" }

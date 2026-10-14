@@ -66,7 +66,7 @@ private fun CosplayPlannerApp(vm: MobileViewModel = hiltViewModel()) {
             if (!entered && !state.signedIn && state.cards.isEmpty() && state.progress.isEmpty()) {
                 LoginScreen(state.syncing, state.error, onLogin = vm::login, onOffline = { entered = true })
             } else {
-                Workspace(state, dark, onDark = { dark = it }, onSync = vm::sync, onSend = vm::sendPigeon, onSaveCard = vm::saveCard, onSaveProgress = vm::saveProgress, onCreateProgress = vm::createProgress)
+                Workspace(state, dark, onDark = { dark = it }, onSync = vm::sync, onSend = vm::sendPigeon, onSaveCard = vm::saveCard, onDeleteCard = vm::deleteCard, onSaveProgress = vm::saveProgress, onCreateProgress = vm::createProgress)
             }
         }
     }
@@ -93,7 +93,7 @@ private enum class Tab(val title: String) { Plans("Коспланы"), Progress(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun Workspace(state: MobileUiState, dark: Boolean, onDark: (Boolean) -> Unit, onSync: () -> Unit, onSend: (String, String) -> Unit, onSaveCard: (CosplanCardEntity?, Map<String, Any?>) -> Unit, onSaveProgress: (InProgressEntity, Map<String, Any?>) -> Unit, onCreateProgress: (Long) -> Unit) {
+private fun Workspace(state: MobileUiState, dark: Boolean, onDark: (Boolean) -> Unit, onSync: () -> Unit, onSend: (String, String) -> Unit, onSaveCard: (CosplanCardEntity?, Map<String, Any?>) -> Unit, onDeleteCard: (CosplanCardEntity) -> Unit, onSaveProgress: (InProgressEntity, Map<String, Any?>) -> Unit, onCreateProgress: (Long) -> Unit) {
     var tab by remember { mutableStateOf(Tab.Plans) }
     Scaffold(
         topBar = { TopAppBar(title = { Column { Text("Cosplay Planner", fontWeight = FontWeight.Bold); Text(if (state.syncing) "Синхронизация…" else "Данные доступны офлайн", style = MaterialTheme.typography.labelSmall) } }, actions = { IconButton(onSync) { Icon(Icons.Default.Sync, "Синхронизировать") }; IconButton({ onDark(!dark) }) { Icon(if (dark) Icons.Default.LightMode else Icons.Default.DarkMode, "Тема") } }) },
@@ -101,7 +101,7 @@ private fun Workspace(state: MobileUiState, dark: Boolean, onDark: (Boolean) -> 
     ) { padding ->
         Box(Modifier.padding(padding).fillMaxSize()) {
             when (tab) {
-                Tab.Plans -> PlansScreen(state.cards, onSaveCard)
+                Tab.Plans -> PlansScreen(state.cards, onSaveCard, onDeleteCard)
                 Tab.Progress -> ProgressScreen(state.progress, state.cards, onSaveProgress, onCreateProgress, onSaveCard)
                 Tab.Festivals -> FestivalsScreen(state.festivals, state.homeCity)
                 Tab.Calendar -> CalendarScreen(state.calendarEvents, state.contentPosts)
@@ -116,9 +116,9 @@ private fun Workspace(state: MobileUiState, dark: Boolean, onDark: (Boolean) -> 
 @Composable private fun GlassCard(content: @Composable ColumnScope.() -> Unit) = Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(24.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .72f))) { Column(Modifier.padding(18.dp), content = content) }
 
 @Composable
-private fun PlansScreen(cards: List<CosplanCardEntity>, onSave: (CosplanCardEntity?, Map<String, Any?>) -> Unit) {
+private fun PlansScreen(cards: List<CosplanCardEntity>, onSave: (CosplanCardEntity?, Map<String, Any?>) -> Unit, onDelete: (CosplanCardEntity) -> Unit) {
     var selected by remember { mutableStateOf<CosplanCardEntity?>(null) }; var creating by remember { mutableStateOf(false) }
-    if (selected != null || creating) return FullCardEditor(selected, onBack = { selected = null; creating = false }, onSave = { card, data -> onSave(card, data); selected = null; creating = false })
+    if (selected != null || creating) return FullCardEditor(selected, onBack = { selected = null; creating = false }, onSave = { card, data -> onSave(card, data); selected = null; creating = false }, onDelete = { card -> onDelete(card); selected = null })
     Box(Modifier.fillMaxSize()) {
         if (cards.isEmpty()) Empty("Создайте первый косплан") else LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) { items(cards, key = { it.id }) { card ->
             val data = remember(card.payloadJson) { JSONObject(card.payloadJson) }; val percent = data.optInt("status_percent", 0)

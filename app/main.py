@@ -13612,6 +13612,28 @@ def process_mobile_card_sync_item(raw_item: Any, *, user: User, db: Session) -> 
     item = raw_item if isinstance(raw_item, dict) else {}
     client_uid = str(item.get("client_uid", "")).strip()
     record_id = parse_positive_int(str(item.get("id", "")))
+    if to_bool(item.get("deleted")):
+        card = db.execute(
+            select(CosplanCard).where(CosplanCard.id == record_id, CosplanCard.user_id == user.id)
+        ).scalar_one_or_none() if record_id else None
+        if not card:
+            return {"_applied": True, "status": "applied", "client_uid": client_uid, "id": record_id}
+        if not card.is_shared_copy:
+            shared_copies = db.execute(select(CosplanCard).where(CosplanCard.source_card_id == card.id, CosplanCard.is_shared_copy.is_(True))).scalars().all()
+            for shared_copy in shared_copies:
+                delete_card_with_runtime_dependents(db, shared_copy)
+            notifications = db.execute(select(FestivalNotification).where(FestivalNotification.source_card_id == card.id)).scalars().all()
+            for notification in notifications:
+                db.delete(notification)
+        rehearsal_entries = db.execute(select(RehearsalEntry).where(RehearsalEntry.cosplan_card_id == card.id)).scalars().all()
+        for rehearsal_entry in rehearsal_entries:
+            db.delete(rehearsal_entry)
+        rehearsal_cards = db.execute(select(RehearsalCard).where(RehearsalCard.cosplan_card_id == card.id)).scalars().all()
+        for rehearsal_card in rehearsal_cards:
+            db.delete(rehearsal_card)
+        delete_card_with_runtime_dependents(db, card)
+        db.flush()
+        return {"_applied": True, "status": "applied", "client_uid": client_uid, "id": record_id}
     force = to_bool(item.get("force"))
     resolution = str(item.get("resolution", "client_wins")).strip().lower() or "client_wins"
     incoming_partial_payload = normalize_mobile_card_payload(item.get("payload"))
@@ -18905,8 +18927,9 @@ def mobile_bootstrap_api(request: Request, since: str = "", db: Session = Depend
         .where(InProgressCard.user_id == user.id)
         .order_by(InProgressCard.updated_at.desc(), InProgressCard.id.desc())
     )
-    calendar_stmt = select(PersonalCalendarEvent).where(PersonalCalendarEvent.user_id == user.id).order_by(PersonalCalendarEvent.event_date, PersonalCalendarEvent.event_time)
-    content_stmt = select(ContentPlanPost).where(ContentPlanPost.user_id == user.id).order_by(ContentPlanPost.publish_date, ContentPlanPost.publish_time)
+    today = date.today()
+    calendar_stmt = select(PersonalCalendarEvent).where(PersonalCalendarEvent.user_id == user.id, PersonalCalendarEvent.event_date >= today).order_by(PersonalCalendarEvent.event_date, PersonalCalendarEvent.event_time)
+    content_stmt = select(ContentPlanPost).where(ContentPlanPost.user_id == user.id, ContentPlanPost.publish_date >= today).order_by(ContentPlanPost.publish_date, ContentPlanPost.publish_time)
 
     if since_dt is not None:
         cards_stmt = cards_stmt.where(CosplanCard.updated_at >= since_dt)

@@ -54,6 +54,8 @@ interface InProgressDao {
     fun observeAll(): Flow<List<InProgressEntity>>
     @Query("DELETE FROM in_progress_cards WHERE id = :id")
     suspend fun deleteById(id: Long)
+    @Query("DELETE FROM in_progress_cards WHERE card_id = :cardId")
+    suspend fun deleteByCardId(cardId: Long)
 }
 
 @Dao
@@ -68,8 +70,10 @@ interface PigeonDao {
 interface CalendarDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun upsertEvents(items: List<CalendarEventEntity>)
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun upsertPosts(items: List<ContentPostEntity>)
-    @Query("SELECT * FROM calendar_events ORDER BY date, time") fun observeEvents(): Flow<List<CalendarEventEntity>>
-    @Query("SELECT * FROM content_posts ORDER BY date, time") fun observePosts(): Flow<List<ContentPostEntity>>
+    @Query("SELECT * FROM calendar_events WHERE date >= :today ORDER BY date, time") fun observeEvents(today: String): Flow<List<CalendarEventEntity>>
+    @Query("SELECT * FROM content_posts WHERE date >= :today ORDER BY date, time") fun observePosts(today: String): Flow<List<ContentPostEntity>>
+    @Query("DELETE FROM calendar_events WHERE date < :today") suspend fun deletePastEvents(today: String)
+    @Query("DELETE FROM content_posts WHERE date < :today") suspend fun deletePastPosts(today: String)
 }
 
 @Dao
@@ -82,6 +86,12 @@ interface SyncQueueDao {
 
     @Query("SELECT * FROM sync_queue WHERE scope = :scope AND entity_id = :entityId ORDER BY created_at DESC LIMIT 1")
     suspend fun findForLocalEntity(scope: String, entityId: Long): SyncQueueEntity?
+
+    @Query("SELECT entity_id FROM sync_queue WHERE scope = :scope AND entity_id IS NOT NULL")
+    suspend fun entityIdsForScope(scope: String): List<Long>
+
+    @Query("DELETE FROM sync_queue WHERE scope = :scope AND entity_id = :entityId")
+    suspend fun deleteForEntity(scope: String, entityId: Long)
 
     @Query("DELETE FROM sync_queue WHERE clientUid IN (:ids)")
     suspend fun deleteByIds(ids: List<String>)

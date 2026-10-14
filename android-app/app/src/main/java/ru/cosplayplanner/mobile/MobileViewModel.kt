@@ -53,6 +53,7 @@ class MobileViewModel @Inject constructor(private val repository: SyncRepository
     fun saveCard(item: CosplanCardEntity?, payload: Map<String, Any?>) = viewModelScope.launch {
         if (item == null) repository.createCard(payload) else repository.editCard(item, payload)
     }
+    fun deleteCard(item: CosplanCardEntity) = viewModelScope.launch { repository.deleteCard(item) }
     fun saveProgress(item: InProgressEntity, payload: Map<String, Any?>) = viewModelScope.launch { repository.editInProgress(item, payload) }
     fun createProgress(cardId: Long) = viewModelScope.launch { repository.createInProgress(cardId) }
     fun clearError() { error.value = null }

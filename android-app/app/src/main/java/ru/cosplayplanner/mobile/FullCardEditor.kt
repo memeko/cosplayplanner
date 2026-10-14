@@ -9,6 +9,7 @@ import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Save
+import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -96,11 +97,23 @@ private val fullCardSections = listOf(
 )
 
 @Composable
-fun FullCardEditor(card: CosplanCardEntity?, onBack: () -> Unit, onSave: (CosplanCardEntity?, Map<String, Any?>) -> Unit) {
+fun FullCardEditor(card: CosplanCardEntity?, onBack: () -> Unit, onSave: (CosplanCardEntity?, Map<String, Any?>) -> Unit, onDelete: ((CosplanCardEntity) -> Unit)? = null) {
     val original = remember(card?.payloadJson) { jsonObjectToMap(card?.payloadJson?.let(::JSONObject) ?: JSONObject()) }
     val values = remember(card?.id) { mutableStateMapOf<String, Any?>().apply { putAll(original) } }
     val expanded = remember { mutableStateMapOf("Основное" to true) }
     var validationError by remember { mutableStateOf<String?>(null) }
+    var confirmDelete by remember { mutableStateOf(false) }
+
+    if (confirmDelete && card != null) {
+        AlertDialog(
+            onDismissRequest = { confirmDelete = false },
+            icon = { Icon(Icons.Default.DeleteOutline, null) },
+            title = { Text("Удалить косплан?") },
+            text = { Text("Карточка и связанный с ней прогресс будут удалены. После синхронизации отменить это действие будет нельзя.") },
+            confirmButton = { Button({ confirmDelete = false; onDelete?.invoke(card) }) { Text("Удалить") } },
+            dismissButton = { TextButton({ confirmDelete = false }) { Text("Отмена") } },
+        )
+    }
 
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         item { Row(Modifier.padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) { IconButton(onBack) { Icon(Icons.Default.ArrowBack, "Назад") }; Column { Text(if (card == null) "Новый косплан" else "Полная карточка", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.ExtraBold); Text("Все поля синхронизируются с сайтом", color = MaterialTheme.colorScheme.onSurfaceVariant) } } }
@@ -118,6 +131,11 @@ fun FullCardEditor(card: CosplanCardEntity?, onBack: () -> Unit, onSave: (Cospla
                     onSave(card, values.toMap().toMutableMap().apply { this["character_name"] = name; this["status_percent"] = ((this["status_percent"] as? Number)?.toInt() ?: this["status_percent"]?.toString()?.toIntOrNull() ?: 0).coerceIn(0, 100) })
                 }
             }, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Default.Save, null); Spacer(Modifier.width(8.dp)); Text("Сохранить полную карточку") }
+        }
+        if (card != null && onDelete != null) item {
+            OutlinedButton({ confirmDelete = true }, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error)) {
+                Icon(Icons.Default.DeleteOutline, null); Spacer(Modifier.width(8.dp)); Text("Удалить карточку")
+            }
         }
         item { Spacer(Modifier.height(48.dp)) }
     }
