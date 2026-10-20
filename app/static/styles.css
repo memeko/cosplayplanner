@@ -2478,8 +2478,7 @@ textarea {
 .home-citadel-promo {
   position: relative;
   display: grid;
-  grid-template-columns: minmax(210px, 0.72fr) minmax(0, 1.8fr);
-  gap: 22px;
+  grid-template-columns: minmax(0, 1fr);
   align-items: center;
   margin-bottom: 18px;
   padding: 20px;
