@@ -14,3 +14,7 @@ android-app/.gradle/
 android-app/build/
 android-app/**/build/
 android-app/local.properties
+*.jks
+*.keystore
+android-app/keystore.properties
+releases/
