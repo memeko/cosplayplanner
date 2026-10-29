@@ -35,6 +35,18 @@
   </div>
 </section>
 
+{% if (card.plan_type or '') == 'project' %}
+<nav class="cosplan-section-pager" aria-label="Разделы карточки проекта">
+  <button type="button" class="btn cosplan-page-prev" aria-label="Предыдущий раздел">Назад</button>
+  <label class="cosplan-page-jump">
+    <span>Быстрый переход</span>
+    <select aria-label="Перейти к разделу карточки"></select>
+  </label>
+  <span class="cosplan-page-counter" aria-live="polite"></span>
+  <button type="button" class="btn btn-accent cosplan-page-next">Дальше</button>
+</nav>
+{% endif %}
+
 <section class="box">
   {% set status_value = card_status_percent or 0 %}
   {% if card_owner and card_owner.id != user.id %}
@@ -654,4 +666,80 @@
     <p class="muted">Комментирование доступно участнику и руководителю проекта.</p>
   {% endif %}
 </section>
+{% if (card.plan_type or '') == 'project' %}
+<style>
+  .cosplan-section-pager {
+    position: sticky;
+    top: 10px;
+    z-index: 12;
+    display: grid;
+    grid-template-columns: auto minmax(180px, 1fr) auto auto;
+    align-items: end;
+    gap: 10px;
+    margin: 0 0 14px;
+    padding: 12px;
+    border: 1px solid rgba(184, 200, 255, .82);
+    border-radius: 20px;
+    background: rgba(248, 251, 255, .9);
+    box-shadow: 0 12px 32px rgba(80, 100, 180, .12);
+    backdrop-filter: blur(16px);
+  }
+  .cosplan-page-jump { margin: 0; }
+  .cosplan-page-jump span { display: block; margin-bottom: 4px; color: var(--muted); font-size: .78rem; }
+  .cosplan-page-jump select { width: 100%; min-width: 0; }
+  .cosplan-page-counter { align-self: center; color: var(--muted); white-space: nowrap; font-size: .88rem; }
+  .cosplan-paged-section[hidden] { display: none !important; }
+  .cosplan-paged-section { animation: cosplan-page-in .2s ease-out; }
+  @keyframes cosplan-page-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+  @media (max-width: 640px) {
+    .cosplan-section-pager { grid-template-columns: 1fr 1fr; top: 6px; }
+    .cosplan-page-jump { grid-column: 1 / -1; grid-row: 1; }
+    .cosplan-page-counter { grid-column: 1 / -1; text-align: center; }
+    .cosplan-section-pager .btn { width: 100%; min-height: 44px; }
+  }
+  @media (prefers-reduced-motion: reduce) { .cosplan-paged-section { animation: none; } }
+</style>
+<script>
+  (() => {
+    const pager = document.querySelector('.cosplan-section-pager');
+    if (!pager) return;
+    const sections = Array.from(document.querySelectorAll('main.container > section.box'));
+    if (!sections.length) { pager.hidden = true; return; }
+    const jump = pager.querySelector('select');
+    const counter = pager.querySelector('.cosplan-page-counter');
+    const prev = pager.querySelector('.cosplan-page-prev');
+    const next = pager.querySelector('.cosplan-page-next');
+    let current = 0;
+
+    const titleFor = (section, index) => {
+      const heading = section.querySelector('h2, h3');
+      if (heading && heading.textContent.trim()) return heading.textContent.trim();
+      if (section.querySelector('.card-disclaimer')) return 'Проверка дат';
+      return index === 0 ? 'Обзор проекта' : `Раздел ${index + 1}`;
+    };
+    sections.forEach((section, index) => {
+      section.classList.add('cosplan-paged-section');
+      const option = document.createElement('option');
+      option.value = String(index);
+      option.textContent = `${index + 1}. ${titleFor(section, index)}`;
+      jump.append(option);
+    });
+    const show = (index, focusPager = false) => {
+      current = Math.max(0, Math.min(index, sections.length - 1));
+      sections.forEach((section, sectionIndex) => { section.hidden = sectionIndex !== current; });
+      jump.value = String(current);
+      counter.textContent = `${current + 1} из ${sections.length}`;
+      prev.disabled = current === 0;
+      next.textContent = current === sections.length - 1 ? 'К началу' : 'Дальше';
+      if (focusPager) pager.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      history.replaceState(null, '', `#section-${current + 1}`);
+    };
+    jump.addEventListener('change', () => show(Number(jump.value), true));
+    prev.addEventListener('click', () => show(current - 1, true));
+    next.addEventListener('click', () => show(current === sections.length - 1 ? 0 : current + 1, true));
+    const hashMatch = location.hash.match(/^#section-(\d+)$/);
+    show(hashMatch ? Number(hashMatch[1]) - 1 : 0);
+  })();
+</script>
+{% endif %}
 {% endblock %}

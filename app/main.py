@@ -450,6 +450,25 @@ TITLE_STATUS_FILTER_LABELS = {
     TITLE_STATUS_IN_PROGRESS: "В процессе",
     TITLE_STATUS_DONE: "Завершено",
 }
+
+CHECKLIST_STATUS_TODO = "todo"
+CHECKLIST_STATUS_IN_PROGRESS = "in_progress"
+CHECKLIST_STATUS_REVIEW = "review"
+CHECKLIST_STATUS_DONE = "done"
+CHECKLIST_STATUS_LABELS = {
+    CHECKLIST_STATUS_TODO: "Надо сделать",
+    CHECKLIST_STATUS_IN_PROGRESS: "В процессе",
+    CHECKLIST_STATUS_REVIEW: "Требует проверки",
+    CHECKLIST_STATUS_DONE: "Сделал",
+}
+
+
+def normalize_checklist_status(item: dict[str, Any] | None) -> str:
+    item = item or {}
+    status = str(item.get("status") or "").strip()
+    if status in CHECKLIST_STATUS_LABELS:
+        return status
+    return CHECKLIST_STATUS_DONE if bool(item.get("done")) else CHECKLIST_STATUS_TODO
 TITLE_WATCH_RELEASE_TYPE_COMPLETED = "completed"
 TITLE_WATCH_RELEASE_TYPE_ONGOING = "ongoing"
 TITLE_WATCH_RELEASE_TYPE_NO_TRANSLATION = "no_translation"
@@ -23653,6 +23672,9 @@ def in_progress_list(request: Request, db: Session = Depends(get_db)):
     fandom_filter = str(request.query_params.get("fandom", "")).strip()
     character_filter_query = character_filter.casefold()
     fandom_filter_query = fandom_filter.casefold()
+    progress_view = str(request.query_params.get("view", "cards")).strip()
+    if progress_view not in {"cards", "kanban", "timeline"}:
+        progress_view = "cards"
     active_project_counters = get_in_progress_active_project_counters(db, user)
 
     if scope == IN_PROGRESS_SCOPE_MASTER:
@@ -23973,6 +23995,42 @@ def in_progress_list(request: Request, db: Session = Depends(get_db)):
         for entry in leader_entries:
             leader_rehearsals_by_card[entry.cosplan_card_id].append(entry)
 
+    checklist_board: dict[str, list[dict[str, Any]]] = {
+        status: [] for status in CHECKLIST_STATUS_LABELS
+    }
+    checklist_timeline: list[dict[str, Any]] = []
+    for row in safe_progress_items:
+        card = row.cosplan_card
+        if not card:
+            continue
+        for item_index, raw_item in enumerate(as_list(row.checklist_json)):
+            if not isinstance(raw_item, dict):
+                continue
+            text_value = str(raw_item.get("text") or "").strip()
+            if not text_value:
+                continue
+            status = normalize_checklist_status(raw_item)
+            board_item = {
+                "progress_id": row.id,
+                "item_index": item_index,
+                "text": text_value,
+                "status": status,
+                "card_id": card.id,
+                "card_name": card.character_name or "Без названия",
+                "deadline": card.project_deadline,
+                "is_frozen": bool(row.is_frozen),
+            }
+            checklist_board[status].append(board_item)
+            checklist_timeline.append(board_item)
+    checklist_timeline.sort(
+        key=lambda item: (
+            item["deadline"] is None,
+            item["deadline"] or date.max,
+            str(item["card_name"]).casefold(),
+            item["item_index"],
+        )
+    )
+
     return template_response(
         request,
         "in_progress.html",
@@ -23990,6 +24048,10 @@ def in_progress_list(request: Request, db: Session = Depends(get_db)):
         shared_coproplayer_emojis_by_progress=shared_coproplayer_emojis_by_progress,
         character_filter=character_filter,
         fandom_filter=fandom_filter,
+        progress_view=progress_view,
+        checklist_board=checklist_board,
+        checklist_timeline=checklist_timeline,
+        checklist_status_labels=CHECKLIST_STATUS_LABELS,
         rehearsal_status_labels={
             REHEARSAL_STATUS_PROPOSED: rehearsal_status_label(REHEARSAL_STATUS_PROPOSED),
             REHEARSAL_STATUS_ACCEPTED: rehearsal_status_label(REHEARSAL_STATUS_ACCEPTED),
@@ -24017,7 +24079,7 @@ async def in_progress_checklist_add(progress_id: int, request: Request, db: Sess
     item_text = str(form.get("item_text", "")).strip()
     if item_text:
         items = list(progress.checklist_json or [])
-        items.append({"text": item_text, "done": False})
+        items.append({"text": item_text, "done": False, "status": CHECKLIST_STATUS_TODO})
         progress.checklist_json = items
         db.commit()
         add_flash(request, "Пункт добавлен.", "success")
@@ -24041,12 +24103,48 @@ def in_progress_checklist_toggle(progress_id: int, item_index: int, request: Req
     items = list(progress.checklist_json or [])
     if 0 <= item_index < len(items):
         item = dict(items[item_index])
-        item["done"] = not bool(item.get("done"))
+        next_done = normalize_checklist_status(item) != CHECKLIST_STATUS_DONE
+        item["done"] = next_done
+        item["status"] = CHECKLIST_STATUS_DONE if next_done else CHECKLIST_STATUS_TODO
         items[item_index] = item
         progress.checklist_json = items
         db.commit()
 
     return redirect("/in-progress")
+
+
+@app.post("/in-progress/{progress_id}/checklist/status/{item_index}")
+async def in_progress_checklist_status(progress_id: int, item_index: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    progress = db.execute(
+        select(InProgressCard).where(InProgressCard.id == progress_id, InProgressCard.user_id == user.id)
+    ).scalar_one_or_none()
+    if not progress:
+        add_flash(request, "Карточка «В работе» не найдена.", "error")
+        return redirect("/in-progress")
+
+    form = await request.form()
+    status = str(form.get("status") or "").strip()
+    if status not in CHECKLIST_STATUS_LABELS:
+        add_flash(request, "Неизвестный статус дела.", "error")
+        return redirect("/in-progress?view=kanban")
+
+    items = list(progress.checklist_json or [])
+    if 0 <= item_index < len(items) and isinstance(items[item_index], dict):
+        item = dict(items[item_index])
+        item["status"] = status
+        item["done"] = status == CHECKLIST_STATUS_DONE
+        items[item_index] = item
+        progress.checklist_json = items
+        db.commit()
+
+    next_url = str(form.get("next") or "/in-progress?view=kanban")
+    if not next_url.startswith("/in-progress"):
+        next_url = "/in-progress?view=kanban"
+    return redirect(next_url)
 
 
 @app.post("/in-progress/{progress_id}/checklist/delete/{item_index}")

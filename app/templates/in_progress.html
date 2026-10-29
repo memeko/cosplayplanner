@@ -4,6 +4,12 @@
   <h1>В работе</h1>
   <a href="/cosplan" class="btn">Добавить из косплана</a>
 </section>
+
+<nav class="calendar-tabs progress-view-tabs" aria-label="Отображение проектов">
+  <a href="/in-progress?scope=cosplayer&view=cards{% if character_filter %}&character={{ character_filter|urlencode }}{% endif %}{% if fandom_filter %}&fandom={{ fandom_filter|urlencode }}{% endif %}" class="tab {% if progress_view == 'cards' %}active{% endif %}">Карточки</a>
+  <a href="/in-progress?scope=cosplayer&view=kanban{% if character_filter %}&character={{ character_filter|urlencode }}{% endif %}{% if fandom_filter %}&fandom={{ fandom_filter|urlencode }}{% endif %}" class="tab {% if progress_view == 'kanban' %}active{% endif %}">Все дела</a>
+  <a href="/in-progress?scope=cosplayer&view=timeline{% if character_filter %}&character={{ character_filter|urlencode }}{% endif %}{% if fandom_filter %}&fandom={{ fandom_filter|urlencode }}{% endif %}" class="tab {% if progress_view == 'timeline' %}active{% endif %}">Таймлайн</a>
+</nav>
 <nav class="calendar-tabs">
   <a href="/in-progress?scope=cosplayer" class="tab {% if (in_progress_scope or 'cosplayer') == 'cosplayer' %}active{% endif %}">Косплеер ({{ cosplayer_active_projects_count or 0 }})</a>
   <a href="/in-progress?scope=master" class="tab {% if (in_progress_scope or 'cosplayer') == 'master' %}active{% endif %}">Мастер ({{ master_active_projects_count or 0 }})</a>
@@ -12,6 +18,7 @@
 <section class="box compact-box">
   <form method="get" action="/in-progress" class="grid two-col">
     <input type="hidden" name="scope" value="cosplayer" />
+    <input type="hidden" name="view" value="{{ progress_view }}" />
     <label>
       Персонаж
       <input type="text" name="character" value="{{ character_filter or '' }}" placeholder="Имя персонажа" />
@@ -28,6 +35,7 @@
 </section>
 
 <style>
+  .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
   .tasks-table {
     width: 100%;
     border-collapse: collapse;
@@ -121,9 +129,122 @@
       justify-content: flex-end;
     }
   }
+
+  .kanban-board {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(260px, 1fr));
+    gap: 12px;
+    overflow-x: auto;
+    padding: 2px 2px 12px;
+    scroll-snap-type: x proximity;
+  }
+  .kanban-column {
+    min-height: 280px;
+    padding: 14px;
+    border: 1px solid rgba(184, 200, 255, 0.8);
+    border-radius: 22px;
+    background: linear-gradient(180deg, rgba(255,255,255,.9), rgba(234,242,255,.76));
+    box-shadow: 0 12px 32px rgba(80, 100, 180, .1);
+    scroll-snap-align: start;
+  }
+  .kanban-column-head { display: flex; justify-content: space-between; gap: 8px; align-items: center; margin-bottom: 12px; }
+  .kanban-column-head h2 { margin: 0; font-size: 1rem; }
+  .kanban-project { margin-bottom: 14px; }
+  .kanban-project-title { display: block; margin: 0 0 7px; color: var(--text); font-size: .82rem; }
+  .kanban-task {
+    padding: 11px;
+    margin-bottom: 8px;
+    border: 1px solid rgba(184, 200, 255, .7);
+    border-radius: 14px;
+    background: rgba(255,255,255,.82);
+  }
+  .kanban-task p { margin: 0 0 9px; }
+  .kanban-status-form select { width: 100%; font-size: .82rem; }
+  .timeline-list { position: relative; margin-left: 10px; padding-left: 28px; border-left: 2px solid #b8c8ff; }
+  .timeline-entry { position: relative; margin-bottom: 16px; }
+  .timeline-entry::before { content: ""; position: absolute; left: -36px; top: 18px; width: 14px; height: 14px; border-radius: 50%; background: #6c63ff; box-shadow: 0 0 0 5px rgba(108,99,255,.14); }
+  .timeline-card { padding: 14px 16px; border-radius: 18px; border: 1px solid rgba(184,200,255,.78); background: rgba(255,255,255,.76); }
+  .timeline-card p { margin: 6px 0 0; }
+  html[data-theme="dark"] .kanban-column {
+    color: #f4f7ff;
+    border-color: rgba(184, 200, 255, .28);
+    background: linear-gradient(180deg, rgba(43, 43, 63, .96), rgba(31, 34, 51, .94));
+  }
+  html[data-theme="dark"] .kanban-project-title { color: #d7e4ff; }
+  html[data-theme="dark"] .kanban-task {
+    color: #f4f7ff;
+    border-color: rgba(184, 200, 255, .22);
+    background: rgba(72, 73, 98, .76);
+  }
+  html[data-theme="dark"] .timeline-card {
+    color: #f4f7ff;
+    border-color: rgba(184, 200, 255, .24);
+    background: rgba(43, 43, 63, .88);
+  }
+  @media (max-width: 780px) {
+    .kanban-board { grid-template-columns: repeat(4, minmax(84vw, 1fr)); }
+    .progress-view-tabs { flex-wrap: nowrap; overflow-x: auto; }
+    .progress-view-tabs .tab { white-space: nowrap; }
+  }
 </style>
 
 {% if progress_items %}
+{% if progress_view == "kanban" %}
+<section class="kanban-board" aria-label="Канбан всех дел">
+  {% for status, label in checklist_status_labels.items() %}
+    {% set column_items = checklist_board.get(status, []) %}
+    <section class="kanban-column">
+      <div class="kanban-column-head">
+        <h2>{{ label }}</h2>
+        <span class="chip">{{ column_items|length }}</span>
+      </div>
+      {% for project_group in column_items|groupby("card_name") %}
+        <div class="kanban-project">
+          <a class="kanban-project-title" href="/cosplan/{{ project_group.list[0].card_id }}"><strong>{{ project_group.grouper }}</strong></a>
+          {% for item in project_group.list %}
+            <article class="kanban-task">
+              <p>{{ item.text }}</p>
+              <form method="post" action="/in-progress/{{ item.progress_id }}/checklist/status/{{ item.item_index }}" class="kanban-status-form">
+                <input type="hidden" name="next" value="/in-progress?scope=cosplayer&view=kanban" />
+                <label class="sr-only" for="kanban-status-{{ item.progress_id }}-{{ item.item_index }}">Статус дела</label>
+                <select id="kanban-status-{{ item.progress_id }}-{{ item.item_index }}" name="status" onchange="this.form.submit()">
+                  {% for option_status, option_label in checklist_status_labels.items() %}
+                    <option value="{{ option_status }}" {% if item.status == option_status %}selected{% endif %}>{{ option_label }}</option>
+                  {% endfor %}
+                </select>
+              </form>
+            </article>
+          {% endfor %}
+        </div>
+      {% else %}
+        <p class="muted">В этой колонке пока нет дел.</p>
+      {% endfor %}
+    </section>
+  {% endfor %}
+</section>
+{% elif progress_view == "timeline" %}
+<section class="box">
+  <div class="row-between"><h2>Таймлайн дел</h2><span class="chip">{{ checklist_timeline|length }}</span></div>
+  {% if checklist_timeline %}
+    <div class="timeline-list top-offset">
+      {% for item in checklist_timeline %}
+        <article class="timeline-entry">
+          <div class="timeline-card">
+            <div class="row-between">
+              <a href="/cosplan/{{ item.card_id }}"><strong>{{ item.card_name }}</strong></a>
+              <span class="chip">{{ item.deadline.strftime('%d-%m-%Y') if item.deadline else "Без дедлайна" }}</span>
+            </div>
+            <p>{{ item.text }}</p>
+            <p class="meta">{{ checklist_status_labels.get(item.status, item.status) }}</p>
+          </div>
+        </article>
+      {% endfor %}
+    </div>
+  {% else %}
+    <p class="muted">Добавьте пункты в чеклисты карточек — они появятся на таймлайне.</p>
+  {% endif %}
+</section>
+{% else %}
 <div class="cards-grid">
   {% for row in progress_items %}
   {% set card = row.cosplan_card %}
@@ -309,6 +430,7 @@
   </article>
   {% endfor %}
 </div>
+{% endif %}
 {% else %}
 <section class="box">
   <p class="muted">Нет карточек в работе. Добавьте их из вкладки «Косплан».</p>
