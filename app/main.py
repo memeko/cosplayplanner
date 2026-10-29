@@ -461,6 +461,14 @@ CHECKLIST_STATUS_LABELS = {
     CHECKLIST_STATUS_REVIEW: "Требует проверки",
     CHECKLIST_STATUS_DONE: "Сделал",
 }
+CHECKLIST_TAG_LABELS = {
+    "craft": "крафт",
+    "styling": "укладка",
+    "sewing": "пошив",
+    "purchase": "покупка",
+    "3d": "3D",
+    "media": "медиа",
+}
 
 
 def normalize_checklist_status(item: dict[str, Any] | None) -> str:
@@ -469,6 +477,16 @@ def normalize_checklist_status(item: dict[str, Any] | None) -> str:
     if status in CHECKLIST_STATUS_LABELS:
         return status
     return CHECKLIST_STATUS_DONE if bool(item.get("done")) else CHECKLIST_STATUS_TODO
+
+
+def normalize_checklist_tags(values: Any) -> list[str]:
+    return list(
+        dict.fromkeys(
+            str(value).strip().casefold()
+            for value in as_list(values)
+            if str(value).strip().casefold() in CHECKLIST_TAG_LABELS
+        )
+    )
 TITLE_WATCH_RELEASE_TYPE_COMPLETED = "completed"
 TITLE_WATCH_RELEASE_TYPE_ONGOING = "ongoing"
 TITLE_WATCH_RELEASE_TYPE_NO_TRANSLATION = "no_translation"
@@ -23363,12 +23381,21 @@ def normalize_master_task_rows(rows: list[Any]) -> list[dict[str, Any]]:
         if isinstance(raw_row, dict):
             text_value = str(raw_row.get("text", "")).strip()
             done_value = to_bool(raw_row.get("done"))
+            status_value = normalize_checklist_status(raw_row)
+            tags_value = normalize_checklist_tags(raw_row.get("tags"))
         else:
             text_value = str(raw_row).strip()
             done_value = False
+            status_value = CHECKLIST_STATUS_TODO
+            tags_value = []
         if not text_value:
             continue
-        normalized.append({"text": text_value, "done": done_value})
+        normalized.append({
+            "text": text_value,
+            "done": status_value == CHECKLIST_STATUS_DONE or done_value,
+            "status": status_value,
+            "tags": tags_value,
+        })
     return normalized
 
 
@@ -23679,6 +23706,9 @@ def in_progress_list(request: Request, db: Session = Depends(get_db)):
 
     if scope == IN_PROGRESS_SCOPE_MASTER:
         master_search_query = str(request.query_params.get("q", "")).strip()
+        master_view = str(request.query_params.get("master_view", "cards")).strip()
+        if master_view not in {"cards", "kanban"}:
+            master_view = "cards"
         master_archive_scope = normalize_master_archive_scope(request.query_params.get("archive_scope"))
         master_sort_by = normalize_master_card_sort(request.query_params.get("sort_by"))
         master_role = normalize_master_role(request.query_params.get("master_role"))
@@ -23836,12 +23866,49 @@ def in_progress_list(request: Request, db: Session = Depends(get_db)):
         master_executor_url = build_master_role_url(MASTER_VIEW_ROLE_EXECUTOR)
         master_customer_url = build_master_role_url(MASTER_VIEW_ROLE_CUSTOMER)
         master_reset_url = f"/in-progress?{urlencode({'scope': IN_PROGRESS_SCOPE_MASTER, 'master_role': master_role})}"
+        def build_master_view_url(target_view: str) -> str:
+            params: dict[str, str] = {
+                "scope": IN_PROGRESS_SCOPE_MASTER,
+                "master_role": master_role,
+                "master_view": target_view,
+                "archive_scope": master_archive_scope,
+                "sort_by": master_sort_by,
+            }
+            if master_search_query:
+                params["q"] = master_search_query
+            if character_filter:
+                params["character"] = character_filter
+            if fandom_filter:
+                params["fandom"] = fandom_filter
+            return f"/in-progress?{urlencode(params)}"
+
+        master_cards_view_url = build_master_view_url("cards")
+        master_kanban_view_url = build_master_view_url("kanban")
         master_card_query = urlencode(
             {
                 "master_role": master_role,
                 "archive_scope": master_archive_scope,
             }
         )
+
+        master_checklist_board: dict[str, list[dict[str, Any]]] = {
+            status: [] for status in CHECKLIST_STATUS_LABELS
+        }
+        for card in master_cards:
+            for task_index, task in enumerate(normalize_master_task_rows(as_list(card.task_rows_json))):
+                status = normalize_checklist_status(task)
+                master_checklist_board[status].append(
+                    {
+                        "card_id": card.id,
+                        "card_name": card.name or "Без названия",
+                        "task_index": task_index,
+                        "text": task["text"],
+                        "status": status,
+                        "tags": normalize_checklist_tags(task.get("tags")),
+                        "deadline": card.deadline_date,
+                        "can_edit": card.id in can_edit_ids,
+                    }
+                )
 
         return template_response(
             request,
@@ -23868,7 +23935,13 @@ def in_progress_list(request: Request, db: Session = Depends(get_db)):
             master_executor_url=master_executor_url,
             master_customer_url=master_customer_url,
             master_reset_url=master_reset_url,
+            master_cards_view_url=master_cards_view_url,
+            master_kanban_view_url=master_kanban_view_url,
             master_card_query=master_card_query,
+            master_view=master_view,
+            master_checklist_board=master_checklist_board,
+            checklist_status_labels=CHECKLIST_STATUS_LABELS,
+            checklist_tag_labels=CHECKLIST_TAG_LABELS,
             character_filter=character_filter,
             fandom_filter=fandom_filter,
             master_cards_total=total_cards_count,
@@ -24015,6 +24088,7 @@ def in_progress_list(request: Request, db: Session = Depends(get_db)):
                 "item_index": item_index,
                 "text": text_value,
                 "status": status,
+                "tags": normalize_checklist_tags(raw_item.get("tags")),
                 "card_id": card.id,
                 "card_name": card.character_name or "Без названия",
                 "deadline": card.project_deadline,
@@ -24052,6 +24126,7 @@ def in_progress_list(request: Request, db: Session = Depends(get_db)):
         checklist_board=checklist_board,
         checklist_timeline=checklist_timeline,
         checklist_status_labels=CHECKLIST_STATUS_LABELS,
+        checklist_tag_labels=CHECKLIST_TAG_LABELS,
         rehearsal_status_labels={
             REHEARSAL_STATUS_PROPOSED: rehearsal_status_label(REHEARSAL_STATUS_PROPOSED),
             REHEARSAL_STATUS_ACCEPTED: rehearsal_status_label(REHEARSAL_STATUS_ACCEPTED),
@@ -24145,6 +24220,30 @@ async def in_progress_checklist_status(progress_id: int, item_index: int, reques
     if not next_url.startswith("/in-progress"):
         next_url = "/in-progress?view=kanban"
     return redirect(next_url)
+
+
+@app.post("/in-progress/{progress_id}/checklist/tags/{item_index}")
+async def in_progress_checklist_tags(progress_id: int, item_index: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        raise HTTPException(status_code=401, detail="Требуется авторизация.")
+    progress = db.execute(
+        select(InProgressCard).where(InProgressCard.id == progress_id, InProgressCard.user_id == user.id)
+    ).scalar_one_or_none()
+    if not progress:
+        raise HTTPException(status_code=404, detail="Карточка «В работе» не найдена.")
+
+    form = await request.form()
+    tags = normalize_checklist_tags(form.getlist("tags"))
+    items = list(progress.checklist_json or [])
+    if not (0 <= item_index < len(items)) or not isinstance(items[item_index], dict):
+        raise HTTPException(status_code=404, detail="Дело не найдено.")
+    item = dict(items[item_index])
+    item["tags"] = tags
+    items[item_index] = item
+    progress.checklist_json = items
+    db.commit()
+    return {"ok": True, "tags": tags}
 
 
 @app.post("/in-progress/{progress_id}/checklist/delete/{item_index}")
@@ -24645,7 +24744,7 @@ async def in_progress_master_task_add(card_id: int, request: Request, db: Sessio
         return redirect(f"/in-progress/master/{card_id}")
 
     rows = normalize_master_task_rows(as_list(card.task_rows_json))
-    rows.append({"text": item_text, "done": False})
+    rows.append({"text": item_text, "done": False, "status": CHECKLIST_STATUS_TODO, "tags": []})
     card.task_rows_json = rows
     db.commit()
     add_flash(request, "Задача добавлена.", "success")
@@ -24673,11 +24772,54 @@ def in_progress_master_task_toggle(
 
     rows = normalize_master_task_rows(as_list(card.task_rows_json))
     if 0 <= task_index < len(rows):
-        rows[task_index]["done"] = not bool(rows[task_index].get("done"))
+        next_done = normalize_checklist_status(rows[task_index]) != CHECKLIST_STATUS_DONE
+        rows[task_index]["done"] = next_done
+        rows[task_index]["status"] = CHECKLIST_STATUS_DONE if next_done else CHECKLIST_STATUS_TODO
         card.task_rows_json = rows
         db.commit()
 
     return redirect(f"/in-progress/master/{card_id}")
+
+
+@app.post("/in-progress/master/{card_id}/tasks/status/{task_index}")
+async def in_progress_master_task_status(card_id: int, task_index: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        raise HTTPException(status_code=401, detail="Требуется авторизация.")
+    card = db.get(InProgressMasterCard, card_id)
+    if not card or not can_edit_in_progress_master_card(user, card):
+        raise HTTPException(status_code=403, detail="Недостаточно прав для редактирования.")
+    form = await request.form()
+    status = str(form.get("status") or "").strip()
+    if status not in CHECKLIST_STATUS_LABELS:
+        raise HTTPException(status_code=400, detail="Неизвестный статус дела.")
+    rows = normalize_master_task_rows(as_list(card.task_rows_json))
+    if not 0 <= task_index < len(rows):
+        raise HTTPException(status_code=404, detail="Дело не найдено.")
+    rows[task_index]["status"] = status
+    rows[task_index]["done"] = status == CHECKLIST_STATUS_DONE
+    card.task_rows_json = rows
+    db.commit()
+    return {"ok": True, "status": status}
+
+
+@app.post("/in-progress/master/{card_id}/tasks/tags/{task_index}")
+async def in_progress_master_task_tags(card_id: int, task_index: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        raise HTTPException(status_code=401, detail="Требуется авторизация.")
+    card = db.get(InProgressMasterCard, card_id)
+    if not card or not can_edit_in_progress_master_card(user, card):
+        raise HTTPException(status_code=403, detail="Недостаточно прав для редактирования.")
+    form = await request.form()
+    tags = normalize_checklist_tags(form.getlist("tags"))
+    rows = normalize_master_task_rows(as_list(card.task_rows_json))
+    if not 0 <= task_index < len(rows):
+        raise HTTPException(status_code=404, detail="Дело не найдено.")
+    rows[task_index]["tags"] = tags
+    card.task_rows_json = rows
+    db.commit()
+    return {"ok": True, "tags": tags}
 
 
 @app.post("/in-progress/master/{card_id}/tasks/delete/{task_index}")

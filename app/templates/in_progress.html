@@ -12,7 +12,7 @@
 </nav>
 <nav class="calendar-tabs">
   <a href="/in-progress?scope=cosplayer" class="tab {% if (in_progress_scope or 'cosplayer') == 'cosplayer' %}active{% endif %}">Косплеер ({{ cosplayer_active_projects_count or 0 }})</a>
-  <a href="/in-progress?scope=master" class="tab {% if (in_progress_scope or 'cosplayer') == 'master' %}active{% endif %}">Мастер ({{ master_active_projects_count or 0 }})</a>
+  <a href="/in-progress?scope=master" class="tab {% if (in_progress_scope or 'cosplayer') == 'master' %}active{% endif %}">Заказы ({{ master_active_projects_count or 0 }})</a>
 </nav>
 
 <section class="box compact-box">
@@ -159,7 +159,18 @@
     background: rgba(255,255,255,.82);
   }
   .kanban-task p { margin: 0 0 9px; }
-  .kanban-status-form select { width: 100%; font-size: .82rem; }
+  .kanban-task-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+  .kanban-task-head p { flex: 1; }
+  .kanban-drag-handle { width: 32px; height: 32px; flex: 0 0 32px; display: grid; place-items: center; padding: 0; color: #62728c; border: 0; border-radius: 10px; background: rgba(215,228,255,.64); cursor: grab; touch-action: none; }
+  .kanban-drag-handle:active { cursor: grabbing; }
+  .kanban-drag-handle svg { width: 21px; height: 21px; fill: none; stroke: currentColor; stroke-width: 3.2; stroke-linecap: round; }
+  .kanban-task.is-dragging { opacity: .62; transform: rotate(1deg) scale(.98); }
+  .kanban-column.is-drop-target { outline: 3px solid rgba(108,99,255,.5); outline-offset: -3px; }
+  .kanban-task-tags { display: flex; flex-wrap: wrap; gap: 5px; }
+  .task-tag, .tag-filter { border: 1px solid rgba(184,200,255,.78); border-radius: 999px; padding: 5px 9px; color: #344a6b; background: rgba(234,242,255,.72); font: inherit; font-size: .72rem; line-height: 1; cursor: pointer; }
+  .task-tag.active, .tag-filter.active { color: #fff; border-color: transparent; background: linear-gradient(140deg, #6c63ff, #7b72ff); box-shadow: 0 5px 12px rgba(94,91,255,.22); }
+  .kanban-filters { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; margin: 0 0 12px; padding: 10px 12px; border: 1px solid rgba(184,200,255,.55); border-radius: 16px; background: rgba(255,255,255,.45); }
+  .kanban-task[hidden], .kanban-project:has(.kanban-task:not([hidden])) + .kanban-empty-filter { display: none; }
   .timeline-list { position: relative; margin-left: 10px; padding-left: 28px; border-left: 2px solid #b8c8ff; }
   .timeline-entry { position: relative; margin-bottom: 16px; }
   .timeline-entry::before { content: ""; position: absolute; left: -36px; top: 18px; width: 14px; height: 14px; border-radius: 50%; background: #6c63ff; box-shadow: 0 0 0 5px rgba(108,99,255,.14); }
@@ -176,6 +187,9 @@
     border-color: rgba(184, 200, 255, .22);
     background: rgba(72, 73, 98, .76);
   }
+  html[data-theme="dark"] :is(.task-tag, .tag-filter) { color: #d7e4ff; border-color: rgba(184,200,255,.25); background: rgba(79,80,108,.72); }
+  html[data-theme="dark"] :is(.task-tag.active, .tag-filter.active) { color: #fff; background: linear-gradient(140deg, #6c63ff, #7b72ff); }
+  html[data-theme="dark"] .kanban-drag-handle { color: #d7e4ff; background: rgba(94,91,255,.22); }
   html[data-theme="dark"] .timeline-card {
     color: #f4f7ff;
     border-color: rgba(184, 200, 255, .24);
@@ -190,29 +204,37 @@
 
 {% if progress_items %}
 {% if progress_view == "kanban" %}
+<section class="kanban-filters" aria-label="Фильтр дел по тегам">
+  <strong>Категории</strong>
+  <button type="button" class="tag-filter active" data-filter-tag="all">Все</button>
+  {% for tag, tag_label in checklist_tag_labels.items() %}
+    <button type="button" class="tag-filter" data-filter-tag="{{ tag }}">#{{ tag_label }}</button>
+  {% endfor %}
+</section>
 <section class="kanban-board" aria-label="Канбан всех дел">
   {% for status, label in checklist_status_labels.items() %}
     {% set column_items = checklist_board.get(status, []) %}
-    <section class="kanban-column">
+    <section class="kanban-column" data-status="{{ status }}">
       <div class="kanban-column-head">
         <h2>{{ label }}</h2>
         <span class="chip">{{ column_items|length }}</span>
       </div>
       {% for project_group in column_items|groupby("card_name") %}
-        <div class="kanban-project">
+        <div class="kanban-project" data-card-id="{{ project_group.list[0].card_id }}">
           <a class="kanban-project-title" href="/cosplan/{{ project_group.list[0].card_id }}"><strong>{{ project_group.grouper }}</strong></a>
           {% for item in project_group.list %}
-            <article class="kanban-task">
-              <p>{{ item.text }}</p>
-              <form method="post" action="/in-progress/{{ item.progress_id }}/checklist/status/{{ item.item_index }}" class="kanban-status-form">
-                <input type="hidden" name="next" value="/in-progress?scope=cosplayer&view=kanban" />
-                <label class="sr-only" for="kanban-status-{{ item.progress_id }}-{{ item.item_index }}">Статус дела</label>
-                <select id="kanban-status-{{ item.progress_id }}-{{ item.item_index }}" name="status" onchange="this.form.submit()">
-                  {% for option_status, option_label in checklist_status_labels.items() %}
-                    <option value="{{ option_status }}" {% if item.status == option_status %}selected{% endif %}>{{ option_label }}</option>
-                  {% endfor %}
-                </select>
-              </form>
+            <article class="kanban-task" draggable="true" data-card-id="{{ item.card_id }}" data-card-name="{{ item.card_name }}" data-card-url="/cosplan/{{ item.card_id }}" data-tags="{{ item.tags|join(',') }}" data-status-url="/in-progress/{{ item.progress_id }}/checklist/status/{{ item.item_index }}" data-tags-url="/in-progress/{{ item.progress_id }}/checklist/tags/{{ item.item_index }}">
+              <div class="kanban-task-head">
+                <p>{{ item.text }}</p>
+                <button type="button" class="kanban-drag-handle" aria-label="Перетащить дело" title="Перетащить между колонками">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6h.01M15 6h.01M9 12h.01M15 12h.01M9 18h.01M15 18h.01" /></svg>
+                </button>
+              </div>
+              <div class="kanban-task-tags" aria-label="Метки дела">
+                {% for tag, tag_label in checklist_tag_labels.items() %}
+                  <button type="button" class="task-tag {% if tag in item.tags %}active{% endif %}" data-tag="{{ tag }}">#{{ tag_label }}</button>
+                {% endfor %}
+              </div>
             </article>
           {% endfor %}
         </div>
@@ -440,5 +462,135 @@
     <a href="/festivals" class="btn">Фестивали</a>
   </div>
 </section>
+{% endif %}
+{% if progress_view == "kanban" %}
+<script>
+(() => {
+  const board = document.querySelector('.kanban-board');
+  if (!board) return;
+  let draggedTask = null;
+  let activeTag = 'all';
+
+  const taskTags = (task) => (task.dataset.tags || '').split(',').filter(Boolean);
+  const updateCounts = () => {
+    board.querySelectorAll('.kanban-column').forEach((column) => {
+      const visibleCount = Array.from(column.querySelectorAll('.kanban-task')).filter((task) => !task.hidden).length;
+      const count = column.querySelector('.kanban-column-head .chip');
+      if (count) count.textContent = String(visibleCount);
+    });
+  };
+  const applyFilter = () => {
+    board.querySelectorAll('.kanban-task').forEach((task) => {
+      task.hidden = activeTag !== 'all' && !taskTags(task).includes(activeTag);
+    });
+    board.querySelectorAll('.kanban-project').forEach((group) => {
+      group.hidden = !group.querySelector('.kanban-task:not([hidden])');
+    });
+    updateCounts();
+  };
+  document.querySelectorAll('[data-filter-tag]').forEach((button) => {
+    button.addEventListener('click', () => {
+      activeTag = button.dataset.filterTag || 'all';
+      document.querySelectorAll('[data-filter-tag]').forEach((item) => item.classList.toggle('active', item === button));
+      applyFilter();
+    });
+  });
+
+  const destinationGroup = (column, task) => {
+    let group = column.querySelector(`.kanban-project[data-card-id="${task.dataset.cardId}"]`);
+    if (group) return group;
+    group = document.createElement('div');
+    group.className = 'kanban-project';
+    group.dataset.cardId = task.dataset.cardId;
+    const link = document.createElement('a');
+    link.className = 'kanban-project-title';
+    link.href = task.dataset.cardUrl;
+    const strong = document.createElement('strong');
+    strong.textContent = task.dataset.cardName;
+    link.append(strong);
+    group.append(link);
+    column.append(group);
+    return group;
+  };
+  const persistMove = async (task, column) => {
+    const status = column.dataset.status;
+    if (!status || task.closest('.kanban-column') === column) return;
+    const body = new URLSearchParams({status});
+    const response = await fetch(task.dataset.statusUrl, {method: 'POST', body, credentials: 'same-origin'});
+    if (!response.ok) throw new Error('Не удалось изменить статус');
+    const oldGroup = task.closest('.kanban-project');
+    destinationGroup(column, task).append(task);
+    if (oldGroup && !oldGroup.querySelector('.kanban-task')) oldGroup.remove();
+    applyFilter();
+  };
+  const clearTargets = () => board.querySelectorAll('.kanban-column').forEach((column) => column.classList.remove('is-drop-target'));
+
+  board.querySelectorAll('.kanban-task').forEach((task) => {
+    task.addEventListener('dragstart', (event) => {
+      draggedTask = task;
+      task.classList.add('is-dragging');
+      event.dataTransfer.effectAllowed = 'move';
+    });
+    task.addEventListener('dragend', () => {
+      task.classList.remove('is-dragging');
+      draggedTask = null;
+      clearTargets();
+    });
+    task.querySelectorAll('.task-tag').forEach((button) => {
+      button.addEventListener('click', async () => {
+        button.classList.toggle('active');
+        const tags = Array.from(task.querySelectorAll('.task-tag.active')).map((item) => item.dataset.tag);
+        const body = new URLSearchParams();
+        tags.forEach((tag) => body.append('tags', tag));
+        try {
+          const response = await fetch(task.dataset.tagsUrl, {method: 'POST', body, credentials: 'same-origin'});
+          if (!response.ok) throw new Error();
+          task.dataset.tags = tags.join(',');
+          applyFilter();
+        } catch (_) {
+          button.classList.toggle('active');
+        }
+      });
+    });
+
+    const handle = task.querySelector('.kanban-drag-handle');
+    let touchDrag = false;
+    handle.addEventListener('pointerdown', (event) => {
+      if (event.pointerType === 'mouse') return;
+      touchDrag = true;
+      draggedTask = task;
+      task.classList.add('is-dragging');
+      handle.setPointerCapture(event.pointerId);
+    });
+    handle.addEventListener('pointermove', (event) => {
+      if (!touchDrag) return;
+      clearTargets();
+      document.elementFromPoint(event.clientX, event.clientY)?.closest('.kanban-column')?.classList.add('is-drop-target');
+    });
+    handle.addEventListener('pointerup', async (event) => {
+      if (!touchDrag) return;
+      touchDrag = false;
+      const column = document.elementFromPoint(event.clientX, event.clientY)?.closest('.kanban-column');
+      task.classList.remove('is-dragging');
+      clearTargets();
+      if (column) await persistMove(task, column).catch(() => {});
+      draggedTask = null;
+    });
+  });
+  board.querySelectorAll('.kanban-column').forEach((column) => {
+    column.addEventListener('dragover', (event) => {
+      if (!draggedTask) return;
+      event.preventDefault();
+      clearTargets();
+      column.classList.add('is-drop-target');
+    });
+    column.addEventListener('drop', async (event) => {
+      event.preventDefault();
+      clearTargets();
+      if (draggedTask) await persistMove(draggedTask, column).catch(() => {});
+    });
+  });
+})();
+</script>
 {% endif %}
 {% endblock %}

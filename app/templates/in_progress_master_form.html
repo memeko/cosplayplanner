@@ -7,7 +7,7 @@
 
 <nav class="calendar-tabs">
   <a href="/in-progress?scope=cosplayer" class="tab {% if (in_progress_scope or 'cosplayer') == 'cosplayer' %}active{% endif %}">Косплеер</a>
-  <a href="/in-progress?scope=master" class="tab {% if (in_progress_scope or 'cosplayer') == 'master' %}active{% endif %}">Мастер</a>
+  <a href="/in-progress?scope=master" class="tab {% if (in_progress_scope or 'cosplayer') == 'master' %}active{% endif %}">Заказы</a>
 </nav>
 
 <form method="post" action="{{ '/in-progress/master/' ~ card_id ~ '/edit' if editing else '/in-progress/master/new' }}" class="grid one-col big-form">

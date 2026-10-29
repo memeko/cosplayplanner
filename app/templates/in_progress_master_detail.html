@@ -23,7 +23,7 @@
 
 <nav class="calendar-tabs">
   <a href="/in-progress?scope=cosplayer" class="tab {% if (in_progress_scope or 'cosplayer') == 'cosplayer' %}active{% endif %}">Косплеер</a>
-  <a href="/in-progress?scope=master" class="tab {% if (in_progress_scope or 'cosplayer') == 'master' %}active{% endif %}">Мастер</a>
+  <a href="/in-progress?scope=master" class="tab {% if (in_progress_scope or 'cosplayer') == 'master' %}active{% endif %}">Заказы</a>
 </nav>
 
 <nav class="calendar-tabs">
@@ -80,9 +80,10 @@
   {% endif %}
 </section>
 
-{% if task_rows %}
+{% if task_rows or can_edit_master_card %}
 <section class="box">
   <h3>Список задач</h3>
+  {% if task_rows %}
   <ul class="checklist top-offset">
     {% for row in task_rows %}
       <li>
@@ -102,6 +103,9 @@
       </li>
     {% endfor %}
   </ul>
+  {% else %}
+    <p class="muted top-offset">Задач пока нет. Добавьте первое дело — оно появится в канбане мастера.</p>
+  {% endif %}
   {% if can_edit_master_card %}
     <form method="post" action="/in-progress/master/{{ card.id }}/tasks/add" class="actions-inline top-offset">
       <input type="text" name="item_text" placeholder="Новая задача" required />

@@ -1,0 +1,89 @@
+<script>
+(() => {
+  const board = document.querySelector('.kanban-board');
+  if (!board) return;
+  let draggedTask = null;
+  let activeTag = 'all';
+  const taskTags = (task) => (task.dataset.tags || '').split(',').filter(Boolean);
+  const updateCounts = () => board.querySelectorAll('.kanban-column').forEach((column) => {
+    const count = column.querySelector('.kanban-column-head .chip');
+    if (count) count.textContent = String(Array.from(column.querySelectorAll('.kanban-task')).filter((task) => !task.hidden).length);
+  });
+  const applyFilter = () => {
+    board.querySelectorAll('.kanban-task').forEach((task) => { task.hidden = activeTag !== 'all' && !taskTags(task).includes(activeTag); });
+    board.querySelectorAll('.kanban-project').forEach((group) => { group.hidden = !group.querySelector('.kanban-task:not([hidden])'); });
+    updateCounts();
+  };
+  document.querySelectorAll('[data-filter-tag]').forEach((button) => button.addEventListener('click', () => {
+    activeTag = button.dataset.filterTag || 'all';
+    document.querySelectorAll('[data-filter-tag]').forEach((item) => item.classList.toggle('active', item === button));
+    applyFilter();
+  }));
+  const destinationGroup = (column, task) => {
+    let group = column.querySelector(`.kanban-project[data-card-id="${task.dataset.cardId}"]`);
+    if (group) return group;
+    group = document.createElement('div');
+    group.className = 'kanban-project';
+    group.dataset.cardId = task.dataset.cardId;
+    const link = document.createElement('a');
+    link.className = 'kanban-project-title';
+    link.href = task.dataset.cardUrl;
+    const strong = document.createElement('strong');
+    strong.textContent = task.dataset.cardName;
+    link.append(strong);
+    group.append(link);
+    column.append(group);
+    return group;
+  };
+  const persistMove = async (task, column) => {
+    const status = column.dataset.status;
+    if (!status || task.closest('.kanban-column') === column) return;
+    const response = await fetch(task.dataset.statusUrl, {method: 'POST', body: new URLSearchParams({status}), credentials: 'same-origin'});
+    if (!response.ok) throw new Error('status');
+    const oldGroup = task.closest('.kanban-project');
+    destinationGroup(column, task).append(task);
+    if (oldGroup && !oldGroup.querySelector('.kanban-task')) oldGroup.remove();
+    applyFilter();
+  };
+  const clearTargets = () => board.querySelectorAll('.kanban-column').forEach((column) => column.classList.remove('is-drop-target'));
+  board.querySelectorAll('.kanban-task').forEach((task) => {
+    task.addEventListener('dragstart', (event) => { draggedTask = task; task.classList.add('is-dragging'); event.dataTransfer.effectAllowed = 'move'; });
+    task.addEventListener('dragend', () => { task.classList.remove('is-dragging'); draggedTask = null; clearTargets(); });
+    task.querySelectorAll('.task-tag').forEach((button) => button.addEventListener('click', async () => {
+      button.classList.toggle('active');
+      const tags = Array.from(task.querySelectorAll('.task-tag.active')).map((item) => item.dataset.tag);
+      const body = new URLSearchParams();
+      tags.forEach((tag) => body.append('tags', tag));
+      try {
+        const response = await fetch(task.dataset.tagsUrl, {method: 'POST', body, credentials: 'same-origin'});
+        if (!response.ok) throw new Error('tags');
+        task.dataset.tags = tags.join(',');
+        applyFilter();
+      } catch (_) { button.classList.toggle('active'); }
+    }));
+    const handle = task.querySelector('.kanban-drag-handle');
+    let touchDrag = false;
+    handle.addEventListener('pointerdown', (event) => {
+      if (event.pointerType === 'mouse') return;
+      touchDrag = true; draggedTask = task; task.classList.add('is-dragging'); handle.setPointerCapture(event.pointerId);
+    });
+    handle.addEventListener('pointermove', (event) => {
+      if (!touchDrag) return;
+      clearTargets();
+      document.elementFromPoint(event.clientX, event.clientY)?.closest('.kanban-column')?.classList.add('is-drop-target');
+    });
+    handle.addEventListener('pointerup', async (event) => {
+      if (!touchDrag) return;
+      touchDrag = false;
+      const column = document.elementFromPoint(event.clientX, event.clientY)?.closest('.kanban-column');
+      task.classList.remove('is-dragging'); clearTargets();
+      if (column) await persistMove(task, column).catch(() => {});
+      draggedTask = null;
+    });
+  });
+  board.querySelectorAll('.kanban-column').forEach((column) => {
+    column.addEventListener('dragover', (event) => { if (!draggedTask) return; event.preventDefault(); clearTargets(); column.classList.add('is-drop-target'); });
+    column.addEventListener('drop', async (event) => { event.preventDefault(); clearTargets(); if (draggedTask) await persistMove(draggedTask, column).catch(() => {}); });
+  });
+})();
+</script>

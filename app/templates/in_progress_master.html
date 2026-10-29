@@ -14,8 +14,15 @@
 
 <nav class="calendar-tabs">
   <a href="/in-progress?scope=cosplayer" class="tab {% if (in_progress_scope or 'cosplayer') == 'cosplayer' %}active{% endif %}">Косплеер</a>
-  <a href="/in-progress?scope=master" class="tab {% if (in_progress_scope or 'cosplayer') == 'master' %}active{% endif %}">Мастер</a>
+  <a href="/in-progress?scope=master" class="tab {% if (in_progress_scope or 'cosplayer') == 'master' %}active{% endif %}">Заказы</a>
 </nav>
+
+{% if master_is_executor_view %}
+<nav class="calendar-tabs progress-view-tabs" aria-label="Отображение дел мастера">
+  <a href="{{ master_cards_view_url }}" class="tab {% if master_view == 'cards' %}active{% endif %}">Карточки</a>
+  <a href="{{ master_kanban_view_url }}" class="tab {% if master_view == 'kanban' %}active{% endif %}">Все дела</a>
+</nav>
+{% endif %}
 
 <nav class="calendar-tabs">
   <a href="{{ master_executor_url }}" class="tab {% if (master_role or 'executor') == 'executor' %}active{% endif %}">{{ master_role_labels.get('executor', 'Мастер') }}</a>
@@ -26,6 +33,7 @@
   <form method="get" action="/in-progress" class="grid two-col">
     <input type="hidden" name="scope" value="master" />
     <input type="hidden" name="master_role" value="{{ master_role or 'executor' }}" />
+    <input type="hidden" name="master_view" value="{{ master_view or 'cards' }}" />
     <label>
       Поиск
       <input type="text" name="q" value="{{ master_search_query or '' }}" placeholder="Название, тайтл, заказчик, исполнитель" />
@@ -66,7 +74,58 @@
   </p>
 </section>
 
-{% if master_cards %}
+{% if master_is_executor_view and master_view == 'kanban' %}
+<style>
+  .orders-kanban { display: grid; grid-template-columns: repeat(4, minmax(260px, 1fr)); gap: 12px; overflow-x: auto; padding: 2px 2px 12px; scroll-snap-type: x proximity; }
+  .orders-kanban .kanban-column { min-height: 280px; padding: 14px; border: 1px solid rgba(184,200,255,.8); border-radius: 22px; background: linear-gradient(180deg, rgba(255,255,255,.9), rgba(234,242,255,.76)); scroll-snap-align: start; }
+  .kanban-column-head, .kanban-task-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+  .kanban-column-head { margin-bottom: 12px; }
+  .kanban-column-head h2 { margin: 0; font-size: 1rem; }
+  .kanban-project { margin-bottom: 14px; }
+  .kanban-project-title { display: block; margin-bottom: 7px; font-size: .82rem; }
+  .kanban-task { padding: 11px; margin-bottom: 8px; border: 1px solid rgba(184,200,255,.7); border-radius: 14px; background: rgba(255,255,255,.82); }
+  .kanban-task p { flex: 1; margin: 0 0 9px; }
+  .kanban-drag-handle { width: 32px; height: 32px; flex: 0 0 32px; display: grid; place-items: center; padding: 0; color: #62728c; border: 0; border-radius: 10px; background: rgba(215,228,255,.64); cursor: grab; touch-action: none; }
+  .kanban-drag-handle svg { width: 21px; height: 21px; fill: none; stroke: currentColor; stroke-width: 3.2; stroke-linecap: round; }
+  .kanban-task.is-dragging { opacity: .62; transform: rotate(1deg) scale(.98); }
+  .kanban-column.is-drop-target { outline: 3px solid rgba(108,99,255,.5); outline-offset: -3px; }
+  .kanban-task-tags, .kanban-filters { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+  .kanban-filters { margin-bottom: 12px; padding: 10px 12px; border: 1px solid rgba(184,200,255,.55); border-radius: 16px; background: rgba(255,255,255,.45); }
+  .task-tag, .tag-filter { border: 1px solid rgba(184,200,255,.78); border-radius: 999px; padding: 5px 9px; color: #344a6b; background: rgba(234,242,255,.72); font: inherit; font-size: .72rem; line-height: 1; cursor: pointer; }
+  .task-tag.active, .tag-filter.active { color: #fff; border-color: transparent; background: linear-gradient(140deg, #6c63ff, #7b72ff); }
+  html[data-theme="dark"] .orders-kanban .kanban-column { color: #f4f7ff; border-color: rgba(184,200,255,.28); background: linear-gradient(180deg, rgba(43,43,63,.96), rgba(31,34,51,.94)); }
+  html[data-theme="dark"] .kanban-task { color: #f4f7ff; border-color: rgba(184,200,255,.22); background: rgba(72,73,98,.76); }
+  html[data-theme="dark"] :is(.task-tag,.tag-filter) { color: #d7e4ff; border-color: rgba(184,200,255,.25); background: rgba(79,80,108,.72); }
+  html[data-theme="dark"] :is(.task-tag.active,.tag-filter.active) { color: #fff; background: linear-gradient(140deg,#6c63ff,#7b72ff); }
+  @media (max-width: 780px) { .orders-kanban { grid-template-columns: repeat(4, minmax(84vw, 1fr)); } }
+</style>
+<section class="kanban-filters" aria-label="Фильтр дел мастера по тегам">
+  <strong>Категории</strong>
+  <button type="button" class="tag-filter active" data-filter-tag="all">Все</button>
+  {% for tag, tag_label in checklist_tag_labels.items() %}<button type="button" class="tag-filter" data-filter-tag="{{ tag }}">#{{ tag_label }}</button>{% endfor %}
+</section>
+<section class="kanban-board orders-kanban" aria-label="Канбан дел мастера">
+  {% for status, label in checklist_status_labels.items() %}
+    {% set column_items = master_checklist_board.get(status, []) %}
+    <section class="kanban-column" data-status="{{ status }}">
+      <div class="kanban-column-head"><h2>{{ label }}</h2><span class="chip">{{ column_items|length }}</span></div>
+      {% for project_group in column_items|groupby('card_name') %}
+        <div class="kanban-project" data-card-id="{{ project_group.list[0].card_id }}">
+          <a class="kanban-project-title" href="/in-progress/master/{{ project_group.list[0].card_id }}?{{ master_card_query }}"><strong>{{ project_group.grouper }}</strong></a>
+          {% for item in project_group.list %}
+            <article class="kanban-task" draggable="true" data-card-id="{{ item.card_id }}" data-card-name="{{ item.card_name }}" data-card-url="/in-progress/master/{{ item.card_id }}?{{ master_card_query }}" data-tags="{{ item.tags|join(',') }}" data-status-url="/in-progress/master/{{ item.card_id }}/tasks/status/{{ item.task_index }}" data-tags-url="/in-progress/master/{{ item.card_id }}/tasks/tags/{{ item.task_index }}">
+              <div class="kanban-task-head"><p>{{ item.text }}</p><button type="button" class="kanban-drag-handle" aria-label="Перетащить дело"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6h.01M15 6h.01M9 12h.01M15 12h.01M9 18h.01M15 18h.01" /></svg></button></div>
+              <div class="kanban-task-tags" aria-label="Метки дела">
+                {% for tag, tag_label in checklist_tag_labels.items() %}<button type="button" class="task-tag {% if tag in item.tags %}active{% endif %}" data-tag="{{ tag }}">#{{ tag_label }}</button>{% endfor %}
+              </div>
+            </article>
+          {% endfor %}
+        </div>
+      {% else %}<p class="muted">В этой колонке пока нет дел.</p>{% endfor %}
+    </section>
+  {% endfor %}
+</section>
+{% elif master_cards %}
   <div class="cards-grid top-offset">
     {% for card in master_cards %}
       {% set status_value = card.status_percent or 0 %}
@@ -127,4 +186,5 @@
 {% else %}
   <p class="muted top-offset">Карточек по заданным фильтрам не найдено.</p>
 {% endif %}
+{% if master_is_executor_view and master_view == 'kanban' %}{% include "_task_kanban_behavior.html" %}{% endif %}
 {% endblock %}

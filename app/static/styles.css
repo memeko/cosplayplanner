@@ -5611,6 +5611,17 @@ html[data-theme="dark"] .home-favorite-icon {
   color: #d0c2ff;
 }
 
+html[data-theme="dark"] .home-week-list li {
+  color: #eeeaf5;
+  background: linear-gradient(155deg, rgba(65, 60, 78, 0.82), rgba(43, 40, 51, 0.86));
+  border-color: rgba(211, 202, 229, 0.2);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+html[data-theme="dark"] .home-week-list time {
+  color: #d8ccff;
+}
+
 html[data-theme="dark"] .application-count-badge {
   border-color: #e8e0ff;
   background: linear-gradient(145deg, #c1afff, #8d70ec);
