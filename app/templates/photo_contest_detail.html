@@ -31,10 +31,11 @@
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
   .photo-work-item {
-    border: 1px solid #d9e2ec;
+    border: 0;
     border-radius: 12px;
     padding: 0.45rem;
-    background: rgba(255, 255, 255, 0.66);
+    background: #3c3253;
+    box-shadow: 7px 7px 15px rgba(25, 19, 39, 0.48), -6px -6px 14px rgba(104, 87, 139, 0.34);
   }
   .photo-work-thumb {
     width: 100%;
@@ -99,6 +100,9 @@
     background: #f4f6fb;
     border-radius: 10px;
     border: 1px solid #d9e2ec;
+  }
+  html[data-theme="dark"] .photo-modal-image {
+    background: #0d0e0e;
   }
 </style>
 

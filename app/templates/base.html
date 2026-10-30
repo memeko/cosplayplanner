@@ -136,7 +136,7 @@
   </header>
 
   <main class="container">
-    {% if flash and flash.kind != "welcome" %}
+    {% if flash and flash.kind not in ["welcome", "photo_success"] %}
       <div class="flash flash-{{ flash.kind }}">{{ flash.text }}</div>
     {% endif %}
 
@@ -160,14 +160,52 @@
         </div>
       </div>
     {% endif %}
+    {% if flash and flash.kind == "photo_success" %}
+      <div class="welcome-overlay" id="photo-success-modal">
+        <div class="welcome-modal photo-success-modal" role="dialog" aria-modal="true" aria-labelledby="photo-success-title">
+          <button type="button" class="btn btn-small welcome-close" onclick="document.getElementById('photo-success-modal').style.display='none'" aria-label="Закрыть">✕</button>
+          <h2 id="photo-success-title">✨ Поздравляем!</h2>
+          <p>{{ flash.text }}</p>
+          <p class="muted">Работа принята и появилась в списке заявок конкурса.</p>
+          <button type="button" class="btn btn-accent top-offset" onclick="document.getElementById('photo-success-modal').style.display='none'">Отлично</button>
+        </div>
+      </div>
+    {% endif %}
     {% block content %}{% endblock %}
   </main>
   {% if request.url.path == "/" %}
   <footer class="site-footnote">
-    По вопросам и предложениям: Братец Лис
+    <span>По вопросам и предложениям: Братец Лис</span>
     <a href="https://t.me/brfox_cosplay" target="_blank" rel="noreferrer" class="btn btn-small btn-platform">Телеграм</a>
     <a href="mailto:remydes@vk.com" class="btn btn-small">remydes@vk.com</a>
+    {% if user %}<button type="button" class="btn btn-small btn-accent" id="support-pigeon-open">Написать в поддержку</button>{% endif %}
   </footer>
+  {% if request.url.path == "/" and user %}
+  <div class="welcome-overlay" id="support-pigeon-overlay" hidden>
+    <div class="welcome-modal support-pigeon-modal" role="dialog" aria-modal="true" aria-labelledby="support-pigeon-title">
+      <button type="button" class="btn btn-small welcome-close" id="support-pigeon-close" aria-label="Закрыть">✕</button>
+      <h2 id="support-pigeon-title">Написать в поддержку</h2>
+      <p class="muted">Голубь будет отправлен пользователю @brfox_cosplay.</p>
+      <form method="post" action="/notifications/pigeon" class="grid one-col top-offset">
+        <input type="hidden" name="recipient_alias" value="brfox_cosplay" />
+        <input type="hidden" name="next" value="/" />
+        <label>Сообщение<textarea name="message" rows="6" maxlength="1500" required placeholder="Опишите вопрос или предложение"></textarea></label>
+        <button type="submit" class="btn btn-accent">Отправить голубя</button>
+      </form>
+    </div>
+  </div>
+  <script>
+    (function () {
+      const overlay = document.getElementById("support-pigeon-overlay");
+      const openButton = document.getElementById("support-pigeon-open");
+      const closeButton = document.getElementById("support-pigeon-close");
+      if (!overlay || !openButton || !closeButton) return;
+      openButton.addEventListener("click", () => { overlay.hidden = false; overlay.querySelector("textarea")?.focus(); });
+      closeButton.addEventListener("click", () => { overlay.hidden = true; });
+      overlay.addEventListener("click", (event) => { if (event.target === overlay) overlay.hidden = true; });
+    })();
+  </script>
+  {% endif %}
   {% endif %}
 
   {% if user %}

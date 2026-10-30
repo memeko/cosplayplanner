@@ -22,6 +22,65 @@
 </section>
 {% endif %}
 
+<section class="box admin-announcement-editor" id="admin-home-announcement-editor">
+  <div class="admin-section-head">
+    <div>
+      <span class="chip">Главная страница</span>
+      <h2>Редактор объявления</h2>
+    </div>
+    <a href="/#home-news" class="btn btn-small">Открыть главную</a>
+  </div>
+  <p class="muted top-offset">Подготовьте текст и короткую плашку. Справа отображается итоговый вид объявления.</p>
+  <div class="admin-announcement-layout top-offset">
+    <form method="post" action="/admin/home-announcements" class="grid one-col" id="admin-announcement-form">
+      <label>
+        Текст плашки
+        <input type="text" name="plaque_text" maxlength="80" placeholder="Например: Важное объявление" id="admin-announcement-plaque" />
+      </label>
+      <label>
+        Цвет плашки
+        <select name="plaque_tone" id="admin-announcement-tone">
+          <option value="violet">Кристальный фиолетовый</option>
+          <option value="blue">Лунный голубой</option>
+          <option value="mint">Мятный</option>
+          <option value="gold">Звёздный золотой</option>
+        </select>
+      </label>
+      <label>
+        Текст объявления
+        <textarea name="body" rows="8" maxlength="8000" required placeholder="Введите текст объявления…" id="admin-announcement-body"></textarea>
+        <span class="meta"><span id="admin-announcement-count">0</span> / 8000 символов</span>
+      </label>
+      <p class="muted">Ссылки вида https://example.com станут кликабельными на главной.</p>
+      <div class="actions-inline wrap">
+        <button type="submit" class="btn btn-accent">Опубликовать на главной</button>
+        <button type="reset" class="btn">Очистить</button>
+      </div>
+    </form>
+    <div>
+      <p class="meta">Предпросмотр</p>
+      <article class="news-item admin-announcement-preview top-offset" id="admin-announcement-preview">
+        <span class="news-plaque news-plaque-violet" id="admin-announcement-preview-plaque">Важное объявление</span>
+        <div class="news-body" id="admin-announcement-preview-body">Здесь появится текст объявления.</div>
+      </article>
+    </div>
+  </div>
+  {% if admin_home_announcements %}
+  <details class="top-offset">
+    <summary>Последние объявления ({{ admin_home_announcements|length }})</summary>
+    <div class="news-list top-offset">
+      {% for item in admin_home_announcements %}
+      <article class="news-item">
+        {% if item.plaque_text %}<span class="news-plaque news-plaque-{{ item.plaque_tone or 'violet' }}">{{ item.plaque_text }}</span>{% endif %}
+        <p class="news-meta">{{ item.created_at.strftime('%d-%m-%Y %H:%M') if item.created_at else '—' }}</p>
+        <div class="news-body">{{ item.body|render_text }}</div>
+      </article>
+      {% endfor %}
+    </div>
+  </details>
+  {% endif %}
+</section>
+
 <section class="box admin-broadcast-card" id="admin-broadcast">
   <div class="admin-section-head">
     <div>
@@ -103,6 +162,29 @@
     </div>
   </form>
 </section>
+
+<script>
+  (function () {
+    const form = document.getElementById("admin-announcement-form");
+    const plaque = document.getElementById("admin-announcement-plaque");
+    const tone = document.getElementById("admin-announcement-tone");
+    const body = document.getElementById("admin-announcement-body");
+    const previewPlaque = document.getElementById("admin-announcement-preview-plaque");
+    const previewBody = document.getElementById("admin-announcement-preview-body");
+    const count = document.getElementById("admin-announcement-count");
+    if (!form || !plaque || !tone || !body || !previewPlaque || !previewBody || !count) return;
+    const update = () => {
+      const plaqueText = plaque.value.trim();
+      previewPlaque.textContent = plaqueText || "Важное объявление";
+      previewPlaque.className = `news-plaque news-plaque-${tone.value}`;
+      previewBody.textContent = body.value.trim() || "Здесь появится текст объявления.";
+      count.textContent = String(body.value.length);
+    };
+    form.addEventListener("input", update);
+    form.addEventListener("reset", () => window.setTimeout(update, 0));
+    update();
+  })();
+</script>
 
 <details class="box calendar-spoiler" id="admin-notifications">
   <summary>
@@ -208,6 +290,39 @@
   {% endif %}
   </div>
 </details>
+
+<section class="box" id="admin-user-tools">
+  <h2>Пользователи</h2>
+  <p class="muted top-offset">Найдите аккаунт по логину или косплейному нику. Основной администратор может назначить ему новый пароль.</p>
+  <form method="get" action="/admin/dashboard#admin-user-tools" class="grid two-col top-offset">
+    <label>
+      Поиск по нику
+      <input type="text" name="admin_user_search" value="{{ admin_user_search }}" list="admin-user-alias-options" placeholder="@nickname" required />
+      <datalist id="admin-user-alias-options">
+        {% for alias in premium_alias_options %}<option value="{{ alias }}"></option>{% endfor %}
+      </datalist>
+    </label>
+    <div class="actions-inline"><button type="submit" class="btn btn-accent">Найти</button></div>
+  </form>
+  {% if admin_user_search and not searched_admin_user %}
+    <p class="flash flash-warning top-offset">Пользователь с таким ником не найден.</p>
+  {% elif searched_admin_user %}
+    <article class="card top-offset admin-user-result">
+      <h3>@{{ searched_admin_user.cosplay_nick or searched_admin_user.username }}</h3>
+      <p class="meta">Логин: {{ searched_admin_user.username }} · Email: {{ searched_admin_user.email }} · ID: {{ searched_admin_user.id }}</p>
+      {% if can_manage_premium_users %}
+      <form method="post" action="/admin/users/password" class="grid two-col top-offset" onsubmit="return confirm('Назначить пользователю новый пароль?');">
+        <input type="hidden" name="target_user_id" value="{{ searched_admin_user.id }}" />
+        <label>Новый пароль<input type="password" name="new_password" minlength="8" autocomplete="new-password" required /></label>
+        <label>Повтор нового пароля<input type="password" name="new_password_confirm" minlength="8" autocomplete="new-password" required /></label>
+        <div class="actions-inline"><button type="submit" class="btn btn-accent">Сменить пароль</button></div>
+      </form>
+      {% else %}
+      <p class="muted top-offset">Смена пароля доступна только основному администратору.</p>
+      {% endif %}
+    </article>
+  {% endif %}
+</section>
 
 <section class="box">
   <h2>Премиум-пользователи</h2>

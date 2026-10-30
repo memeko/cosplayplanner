@@ -710,6 +710,61 @@
     </div>
   </details>
 
+  <details class="box top-offset calendar-spoiler" id="content-pinterest-trends">
+    <summary>Ключевые слова Pinterest Trends</summary>
+    <div class="calendar-spoiler-body">
+      <p class="muted">
+        Подберите актуальные поисковые запросы для страны или региональной выборки. Результаты можно скопировать как ключевые слова или хештеги и сразу добавить в текст поста.
+      </p>
+      {% if not pinterest_settings.connected %}
+        <div class="notes-block telegram-editor-note telegram-editor-note-warning">
+          Сначала подключите Pinterest в блоке «Социальные сети»: Trends использует тот же официальный OAuth.
+        </div>
+      {% endif %}
+      <form id="content_pinterest_trends_form" class="grid one-col top-offset" data-endpoint="/my-calendar/content/pinterest/trends">
+        <input type="hidden" name="content_scope" value="{{ content_scope }}" />
+        {% if content_owner_id %}<input type="hidden" name="content_owner_id" value="{{ content_owner_id }}" />{% endif %}
+        <div>
+          <p class="muted">Страны и регионы — до 6 за один запрос</p>
+          <div class="chips-wrap pinterest-trends-regions">
+            {% for region_code, region_label in pinterest_trends_regions.items() %}
+              <label class="chip-check">
+                <input type="checkbox" name="regions" value="{{ region_code }}" {% if region_code == 'US' %}checked{% endif %} />
+                {{ region_label }}
+              </label>
+            {% endfor %}
+          </div>
+        </div>
+        <div class="grid two-col">
+          <label>
+            Тип тренда
+            <select name="trend_type">
+              {% for trend_type, trend_label in pinterest_trends_types.items() %}
+                <option value="{{ trend_type }}">{{ trend_label }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>
+            Количество результатов
+            <select name="limit">
+              {% for trends_limit in [10, 20, 30, 50] %}
+                <option value="{{ trends_limit }}" {% if trends_limit == 20 %}selected{% endif %}>Топ-{{ trends_limit }}</option>
+              {% endfor %}
+            </select>
+          </label>
+        </div>
+        <div class="actions-inline wrap">
+          <button type="submit" class="btn btn-accent" id="content_pinterest_trends_fetch_btn" {% if not pinterest_settings.connected %}disabled{% endif %}>Получить тренды</button>
+          <button type="button" class="btn" id="content_pinterest_trends_copy_keywords_btn" disabled>Копировать ключевые слова</button>
+          <button type="button" class="btn" id="content_pinterest_trends_copy_tags_btn" disabled>Копировать хештеги</button>
+          <button type="button" class="btn" id="content_pinterest_trends_insert_btn" disabled>Добавить в текст поста</button>
+          <span class="muted" id="content_pinterest_trends_status"></span>
+        </div>
+        <div id="content_pinterest_trends_results" class="pinterest-trends-results" hidden></div>
+      </form>
+    </div>
+  </details>
+
   <details class="box top-offset calendar-spoiler" id="content-ai-assistant">
     <summary>ИИ-помощник</summary>
     <div class="calendar-spoiler-body">
@@ -1841,6 +1896,139 @@
       rubricSelect.addEventListener('change', syncRubricTag);
     }
 
+    function initializePinterestTrends() {
+      const form = document.getElementById('content_pinterest_trends_form');
+      if (!form) return;
+      const resultsNode = document.getElementById('content_pinterest_trends_results');
+      const statusNode = document.getElementById('content_pinterest_trends_status');
+      const fetchButton = document.getElementById('content_pinterest_trends_fetch_btn');
+      const copyKeywordsButton = document.getElementById('content_pinterest_trends_copy_keywords_btn');
+      const copyTagsButton = document.getElementById('content_pinterest_trends_copy_tags_btn');
+      const insertButton = document.getElementById('content_pinterest_trends_insert_btn');
+      let trends = [];
+
+      const setStatus = (text, isError = false) => {
+        if (!statusNode) return;
+        statusNode.textContent = text || '';
+        statusNode.style.color = isError ? '#b91c1c' : '';
+      };
+
+      const selectedTrends = () => trends.filter((_item, index) => {
+        const checkbox = resultsNode?.querySelector(`[data-trend-index="${index}"]`);
+        return checkbox && checkbox.checked;
+      });
+
+      const updateButtons = () => {
+        const hasSelected = selectedTrends().length > 0;
+        [copyKeywordsButton, copyTagsButton, insertButton].forEach((button) => {
+          if (button) button.disabled = !hasSelected;
+        });
+      };
+
+      const growthLabel = (item) => {
+        const value = item.pct_growth_mom;
+        if (typeof value !== 'number') return '';
+        return `${value >= 0 ? '+' : ''}${value}% за месяц`;
+      };
+
+      const render = () => {
+        if (!resultsNode) return;
+        resultsNode.replaceChildren();
+        trends.forEach((item, index) => {
+          const label = document.createElement('label');
+          label.className = 'pinterest-trend-row';
+          const checkbox = document.createElement('input');
+          checkbox.type = 'checkbox';
+          checkbox.checked = true;
+          checkbox.dataset.trendIndex = String(index);
+          checkbox.addEventListener('change', updateButtons);
+          const main = document.createElement('span');
+          main.className = 'pinterest-trend-main';
+          const keyword = document.createElement('strong');
+          keyword.textContent = String(item.keyword || '');
+          const meta = document.createElement('small');
+          meta.className = 'muted';
+          const regionCount = Array.isArray(item.regions) ? item.regions.length : 0;
+          meta.textContent = [String(item.hashtag || ''), growthLabel(item), regionCount > 1 ? `совпало в ${regionCount} регионах` : ''].filter(Boolean).join(' · ');
+          main.append(keyword, meta);
+          label.append(checkbox, main);
+          resultsNode.append(label);
+        });
+        resultsNode.hidden = trends.length === 0;
+        updateButtons();
+      };
+
+      const copyText = async (mode) => {
+        const selected = selectedTrends();
+        const value = mode === 'tags'
+          ? selected.map((item) => String(item.hashtag || '')).filter(Boolean).join(' ')
+          : selected.map((item) => String(item.keyword || '')).filter(Boolean).join(', ');
+        if (!value) {
+          setStatus('Выберите хотя бы один результат.', true);
+          return '';
+        }
+        try {
+          await navigator.clipboard.writeText(value);
+          setStatus(mode === 'tags' ? 'Хештеги скопированы.' : 'Ключевые слова скопированы.');
+        } catch (_error) {
+          setStatus('Не удалось скопировать автоматически.', true);
+        }
+        return value;
+      };
+
+      form.addEventListener('submit', async function (event) {
+        event.preventDefault();
+        const selectedRegions = form.querySelectorAll('input[name="regions"]:checked');
+        if (!selectedRegions.length) {
+          setStatus('Выберите хотя бы одну страну или регион.', true);
+          return;
+        }
+        if (selectedRegions.length > 6) {
+          setStatus('Можно выбрать не более 6 регионов.', true);
+          return;
+        }
+        setStatus('Запрашиваем Pinterest Trends...');
+        if (fetchButton) fetchButton.disabled = true;
+        try {
+          const response = await fetch(form.dataset.endpoint || '/my-calendar/content/pinterest/trends', {
+            method: 'POST',
+            body: new FormData(form),
+            credentials: 'same-origin'
+          });
+          const payload = await response.json().catch(() => ({}));
+          if (!response.ok || payload.ok === false) {
+            throw new Error(String(payload.detail || 'Pinterest Trends временно недоступен.'));
+          }
+          trends = Array.isArray(payload.trends) ? payload.trends : [];
+          render();
+          const warnings = Array.isArray(payload.warnings) ? payload.warnings.length : 0;
+          setStatus(trends.length ? `Найдено: ${trends.length}${warnings ? ` · предупреждений: ${warnings}` : ''}` : 'По выбранным параметрам тренды не найдены.');
+        } catch (error) {
+          trends = [];
+          render();
+          setStatus(error instanceof Error ? error.message : 'Pinterest Trends временно недоступен.', true);
+        } finally {
+          if (fetchButton) fetchButton.disabled = false;
+        }
+      });
+
+      copyKeywordsButton?.addEventListener('click', () => copyText('keywords'));
+      copyTagsButton?.addEventListener('click', () => copyText('tags'));
+      insertButton?.addEventListener('click', function () {
+        const textarea = document.getElementById('telegram_body_html');
+        const tags = selectedTrends().map((item) => String(item.hashtag || '')).filter(Boolean).join(' ');
+        if (!textarea || !tags) {
+          setStatus('Выберите хотя бы один результат.', true);
+          return;
+        }
+        const separator = textarea.value.trim() ? '\n\n' : '';
+        textarea.value = `${textarea.value}${separator}${tags}`;
+        textarea.dispatchEvent(new Event('input', { bubbles: true }));
+        textarea.focus();
+        setStatus('Хештеги добавлены в текст поста.');
+      });
+    }
+
     function initializeContentAiAssistant() {
       const form = document.getElementById('content_ai_assistant_form');
       if (!form) return;
@@ -2209,6 +2397,7 @@
       setStatus('Редактор готов. Загрузите фото.');
     }
 
+    initializePinterestTrends();
     initializeContentAiAssistant();
     initializeContentPhotoEditor();
 

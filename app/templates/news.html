@@ -138,7 +138,7 @@
   {% endif %}
 </section>
 
-<section class="box top-offset">
+<section class="box top-offset" id="home-news">
   <h2>Реклама ТГК-канала</h2>
   {% if premium_channel_ad %}
     <div class="top-offset" style="display:flex; gap:0.9rem; align-items:flex-start;">
@@ -181,6 +181,9 @@
     <div class="news-list top-offset">
       {% for item in news_items %}
         <article class="news-item">
+          {% if item.plaque_text %}
+            <span class="news-plaque news-plaque-{{ item.plaque_tone or 'violet' }}">{{ item.plaque_text }}</span>
+          {% endif %}
           <p class="news-meta">
             {{ item.created_at.strftime('%d-%m-%Y %H:%M') if item.created_at else "—" }}
             {% if item.updated_at and item.created_at and item.updated_at != item.created_at %}

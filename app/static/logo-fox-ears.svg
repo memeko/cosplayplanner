@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="logo-title logo-description">
+  <title id="logo-title">Cosplay Planner</title>
+  <desc id="logo-description">Фиолетовая кристальная падающая звезда с большим пушистым шлейфом</desc>
+  <defs>
+    <linearGradient id="tail-fill" x1="38" y1="96" x2="338" y2="320" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#B8C8FF" stop-opacity="0.05"/>
+      <stop offset="0.28" stop-color="#9A8CFF" stop-opacity="0.5"/>
+      <stop offset="0.7" stop-color="#7B72FF" stop-opacity="0.9"/>
+      <stop offset="1" stop-color="#EAF2FF"/>
+    </linearGradient>
+    <linearGradient id="tail-light" x1="72" y1="120" x2="334" y2="310" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF" stop-opacity="0"/>
+      <stop offset="0.5" stop-color="#D7E4FF" stop-opacity="0.68"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0.96"/>
+    </linearGradient>
+    <radialGradient id="star-fill" cx="0" cy="0" r="1" gradientTransform="translate(340 304) rotate(135) scale(148)" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF"/>
+      <stop offset="0.26" stop-color="#EEF3FF"/>
+      <stop offset="0.58" stop-color="#B8C8FF"/>
+      <stop offset="0.82" stop-color="#7B72FF"/>
+      <stop offset="1" stop-color="#4B42D8"/>
+    </radialGradient>
+    <filter id="tail-shadow" x="-30%" y="-30%" width="170%" height="180%">
+      <feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="#4438B8" flood-opacity="0.22"/>
+    </filter>
+    <filter id="star-glow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="9" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <!-- A broad, layered trail with a soft curl, inspired by a fluffy fox tail. -->
+  <g filter="url(#tail-shadow)">
+    <path d="M347 319C273 285 238 229 183 179 137 137 82 117 37 142c53 4 82 29 94 57-42-20-78-12-101 15 62-2 89 21 103 49-36-9-64 2-82 28 77-12 124 14 166 55 44 43 79 50 130 36Z" fill="url(#tail-fill)"/>
+    <path d="M335 312C269 275 232 223 184 188 142 157 101 150 68 164c44 14 72 40 86 69-32-10-59-4-77 13 67 5 103 38 143 79 35 36 69 45 116 32Z" fill="url(#tail-light)" opacity="0.82"/>
+    <path d="M82 207c53 7 91 39 133 82 40 42 77 62 124 60" fill="none" stroke="#FFFFFF" stroke-width="8" stroke-linecap="round" opacity="0.66"/>
+    <path d="m119 230 7 17 17 7-17 7-7 17-7-17-17-7 17-7Z" fill="#FFFFFF" opacity="0.9"/>
+    <circle cx="178" cy="292" r="7" fill="#EAF2FF" opacity="0.84"/>
+  </g>
+
+  <!-- The crystal star stays in front and anchors the full composition. -->
+  <g filter="url(#star-glow)">
+    <path d="m349 204 31 79 84 6-65 54 21 82-71-45-72 45 22-82-66-54 84-6Z" fill="url(#star-fill)" stroke="#FFFFFF" stroke-width="10" stroke-linejoin="round"/>
+    <path d="m349 204 1 176-51-37Z" fill="#FFFFFF" opacity="0.54"/>
+    <path d="m349 204 50 139-49 37Z" fill="#6C63FF" opacity="0.24"/>
+    <path d="m233 289 117 4 114-4" fill="none" stroke="#FFFFFF" stroke-width="5" stroke-linecap="round" opacity="0.74"/>
+    <circle cx="349" cy="293" r="13" fill="#FFFFFF" opacity="0.96"/>
+  </g>
+</svg>

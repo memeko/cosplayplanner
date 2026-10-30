@@ -33,21 +33,6 @@
       Я – СММ-менеджер
     </label>
     <p class="muted">Для такого аккаунта после регистрации будут доступны главная страница, профиль и отдельный сервис «Контент-план».</p>
-    <label>
-      Код подтверждения из письма
-      <input
-        type="text"
-        name="email_verification_code"
-        inputmode="numeric"
-        pattern="[0-9]{6}"
-        autocomplete="one-time-code"
-        placeholder="6 цифр"
-      />
-      <small class="muted">
-        Сначала отправьте форму без кода. Мы пришлем код на email; после этого введите его здесь и снова нажмите кнопку.
-        Код действует {{ registration_code_minutes }} минут.
-      </small>
-    </label>
     <p class="muted register-policy-note">
       При регистрации соглашаюсь с
       <a href="/privacy-policy" target="_blank" rel="noreferrer">Политикой обработки персональных данных</a>.
@@ -55,8 +40,25 @@
     <div class="flash flash-info register-progress-note" id="register-progress-note" hidden>
       Регистрируем аккаунт, это может занять несколько секунд.
     </div>
-    <button type="submit" class="btn btn-accent" id="register-submit">Получить код / создать аккаунт</button>
+    <p class="flash flash-error" id="register-error" hidden></p>
+    <button type="submit" class="btn btn-accent" id="register-submit">Получить код</button>
   </form>
+
+  <div class="welcome-overlay" id="register-code-overlay" hidden>
+    <div class="welcome-modal register-code-modal" role="dialog" aria-modal="true" aria-labelledby="register-code-title">
+      <button type="button" class="btn btn-small welcome-close" id="register-code-close" aria-label="Закрыть">✕</button>
+      <h2 id="register-code-title">Подтвердите email</h2>
+      <p class="muted" id="register-code-message">Введите шестизначный код из письма.</p>
+      <form id="register-code-form" class="grid one-col top-offset">
+        <label>
+          Код подтверждения
+          <input type="text" name="email_verification_code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" placeholder="6 цифр" required />
+        </label>
+        <p class="flash flash-error" id="register-code-error" hidden></p>
+        <button type="submit" class="btn btn-accent" id="register-code-submit">Создать аккаунт</button>
+      </form>
+    </div>
+  </div>
 
   {% if vkid_enabled %}
   <div class="top-offset" id="vk-register-wrapper">
@@ -160,18 +162,76 @@
     const form = document.getElementById("register-form");
     const submitButton = document.getElementById("register-submit");
     const progressNote = document.getElementById("register-progress-note");
-    if (!form || !submitButton || !progressNote) {
+    const errorNode = document.getElementById("register-error");
+    const overlay = document.getElementById("register-code-overlay");
+    const codeForm = document.getElementById("register-code-form");
+    const codeInput = codeForm && codeForm.elements.email_verification_code;
+    const codeError = document.getElementById("register-code-error");
+    const codeMessage = document.getElementById("register-code-message");
+    const codeSubmit = document.getElementById("register-code-submit");
+    const closeButton = document.getElementById("register-code-close");
+    if (!form || !submitButton || !progressNote || !overlay || !codeForm) {
       return;
     }
 
-    form.addEventListener("submit", function () {
-      if (submitButton.disabled) {
-        return;
-      }
+    let registrationData = null;
+    const showError = (node, message) => {
+      if (!node) return;
+      node.textContent = message || "Не удалось выполнить запрос.";
+      node.hidden = false;
+    };
+    const requestJson = async (url, data) => {
+      const response = await fetch(url, { method: "POST", body: data, credentials: "same-origin" });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || !payload.ok) throw new Error(payload.error || "Не удалось выполнить запрос.");
+      return payload;
+    };
+
+    form.addEventListener("submit", async function (event) {
+      event.preventDefault();
+      if (submitButton.disabled) return;
+      if (errorNode) errorNode.hidden = true;
       submitButton.disabled = true;
       submitButton.textContent = "Отправляем...";
       progressNote.hidden = false;
+      registrationData = new FormData(form);
+      try {
+        const payload = await requestJson("/register/request-code", new FormData(form));
+        codeMessage.textContent = payload.message || "Введите шестизначный код из письма.";
+        overlay.hidden = false;
+        codeInput.value = "";
+        codeInput.focus();
+      } catch (error) {
+        showError(errorNode, error.message);
+      } finally {
+        submitButton.disabled = false;
+        submitButton.textContent = "Получить код";
+        progressNote.hidden = true;
+      }
     });
+
+    codeForm.addEventListener("submit", async function (event) {
+      event.preventDefault();
+      if (!registrationData || codeSubmit.disabled) return;
+      if (codeError) codeError.hidden = true;
+      codeSubmit.disabled = true;
+      codeSubmit.textContent = "Проверяем...";
+      const verifyData = new FormData();
+      registrationData.forEach((value, key) => verifyData.append(key, value));
+      verifyData.set("email_verification_code", codeInput.value.trim());
+      try {
+        const payload = await requestJson("/register/verify-code", verifyData);
+        window.location.assign(payload.redirect || "/cosplan");
+      } catch (error) {
+        showError(codeError, error.message);
+        codeInput.focus();
+      } finally {
+        codeSubmit.disabled = false;
+        codeSubmit.textContent = "Создать аккаунт";
+      }
+    });
+
+    closeButton.addEventListener("click", () => { overlay.hidden = true; });
   })();
 </script>
 {% endblock %}

@@ -750,6 +750,32 @@ PINTEREST_OAUTH_SCOPES = [
     ).split(",")
     if scope.strip()
 ]
+PINTEREST_TRENDS_REGIONS: dict[str, str] = {
+    "US": "США",
+    "CA": "Канада",
+    "DE": "Германия",
+    "FR": "Франция",
+    "ES": "Испания",
+    "IT": "Италия",
+    "DE+AT+CH": "Германия, Австрия и Швейцария",
+    "GB+IE": "Великобритания и Ирландия",
+    "IT+ES+PT+GR+MT": "Южная Европа",
+    "PL+RO+HU+SK+CZ": "Восточная Европа",
+    "SE+DK+FI+NO": "Скандинавия",
+    "NL+BE+LU": "Бенилюкс",
+    "AR": "Аргентина",
+    "BR": "Бразилия",
+    "CO": "Колумбия",
+    "MX": "Мексика",
+    "MX+AR+CO+CL": "Испаноязычная Латинская Америка",
+    "AU+NZ": "Австралия и Новая Зеландия",
+}
+PINTEREST_TRENDS_TYPES: dict[str, str] = {
+    "growing": "Быстро растущие",
+    "monthly": "Популярные за месяц",
+    "yearly": "Популярные за год",
+    "seasonal": "Сезонные",
+}
 PINTEREST_OAUTH_STATE_MAX_AGE_SECONDS = max(
     300,
     min(86400, int(os.getenv("PINTEREST_OAUTH_STATE_MAX_AGE_SECONDS", "3600"))),
@@ -1409,6 +1435,10 @@ def apply_schema_migrations() -> None:
             ("vk_screen_name", "VARCHAR(255)"),
             ("yandex_user_id", "VARCHAR(64)"),
             ("avatar_path", "VARCHAR(255)"),
+        ],
+        "home_news": [
+            ("plaque_text", "VARCHAR(80)"),
+            ("plaque_tone", "VARCHAR(24) NOT NULL DEFAULT 'violet'"),
         ],
         "cosplan_cards": [
             ("costume_bought", "BOOLEAN NOT NULL DEFAULT 0"),
@@ -5889,6 +5919,63 @@ def get_content_pinterest_settings(user: User, db: Session) -> dict[str, Any]:
     }
 
 
+def pinterest_keyword_hashtag(keyword: str) -> str:
+    normalized = re.sub(r"[^\w]+", " ", str(keyword or "").strip(), flags=re.UNICODE)
+    parts = [part for part in normalized.split() if part]
+    return f"#{''.join(parts)}" if parts else ""
+
+
+def extract_pinterest_trends(payload: Any, region: str) -> list[dict[str, Any]]:
+    if not isinstance(payload, dict) or not isinstance(payload.get("trends"), list):
+        return []
+    result: list[dict[str, Any]] = []
+    for rank, item in enumerate(payload["trends"], start=1):
+        if not isinstance(item, dict):
+            continue
+        keyword = str(item.get("keyword") or "").strip()
+        if not keyword:
+            continue
+        result.append(
+            {
+                "keyword": keyword,
+                "hashtag": pinterest_keyword_hashtag(keyword),
+                "rank": rank,
+                "regions": [region],
+                "pct_growth_wow": item.get("pct_growth_wow"),
+                "pct_growth_mom": item.get("pct_growth_mom"),
+                "pct_growth_yoy": item.get("pct_growth_yoy"),
+            }
+        )
+    return result
+
+
+def merge_pinterest_trends(region_results: list[list[dict[str, Any]]], limit: int) -> list[dict[str, Any]]:
+    merged: dict[str, dict[str, Any]] = {}
+    for trends in region_results:
+        for item in trends:
+            keyword = str(item.get("keyword") or "").strip()
+            key = keyword.casefold()
+            if not key:
+                continue
+            existing = merged.get(key)
+            if not existing:
+                merged[key] = {**item, "score": 1 / max(1, int(item.get("rank") or 1))}
+                continue
+            existing["score"] = float(existing.get("score") or 0) + 1 / max(1, int(item.get("rank") or 1))
+            existing["rank"] = min(int(existing.get("rank") or 999), int(item.get("rank") or 999))
+            existing["regions"] = list(dict.fromkeys([*existing.get("regions", []), *item.get("regions", [])]))
+            for growth_key in ("pct_growth_wow", "pct_growth_mom", "pct_growth_yoy"):
+                candidates = [value for value in (existing.get(growth_key), item.get(growth_key)) if isinstance(value, (int, float))]
+                existing[growth_key] = max(candidates) if candidates else None
+    ordered = sorted(
+        merged.values(),
+        key=lambda item: (-len(item.get("regions", [])), -float(item.get("score") or 0), int(item.get("rank") or 999)),
+    )
+    for item in ordered:
+        item.pop("score", None)
+    return ordered[:limit]
+
+
 def mask_secret_value(value: str | None) -> str:
     raw = (value or "").strip()
     if len(raw) <= 8:
@@ -9214,6 +9301,10 @@ def dispatch_telegram_notifications() -> None:
 
             must_commit = False
             for note in notifications:
+                if note.from_user_id is not None and int(note.from_user_id) == int(note.user_id):
+                    note.telegram_sent_at = now_utc
+                    must_commit = True
+                    continue
                 if not is_telegram_eligible_notification(note.message):
                     note.telegram_sent_at = now_utc
                     must_commit = True
@@ -10569,6 +10660,10 @@ def dispatch_vk_bot_notifications() -> None:
 
             must_commit = False
             for note in notifications:
+                if note.from_user_id is not None and int(note.from_user_id) == int(note.user_id):
+                    note.vk_sent_at = now_utc
+                    must_commit = True
+                    continue
                 if not is_external_bot_eligible_notification(note.message):
                     note.vk_sent_at = now_utc
                     must_commit = True
@@ -15729,7 +15824,9 @@ def build_unique_username(db: Session, preferred: str, fallback_seed: str) -> st
 
     candidate = base
     counter = 2
-    while db.execute(select(User.id).where(User.username == candidate)).first() is not None:
+    while db.execute(
+        select(User.id).where(or_(User.username == candidate, User.cosplay_nick == candidate))
+    ).first() is not None:
         suffix = f"_{counter}"
         candidate = f"{base[: max(1, 100 - len(suffix))]}{suffix}"
         counter += 1
@@ -15951,8 +16048,10 @@ def upsert_user_by_yandex(db: Session, yandex_profile: dict[str, Any]) -> User:
         email_value = email_candidate
         if not email_value or db.execute(select(User.id).where(User.email == email_value)).first() is not None:
             email_value = build_unique_provider_email(db, "yandex", yandex_user_id)
+        generated_username = build_unique_username(db, preferred=preferred_name, fallback_seed=yandex_user_id)
         user = User(
-            username=build_unique_username(db, preferred=preferred_name, fallback_seed=yandex_user_id),
+            username=generated_username,
+            cosplay_nick=generated_username,
             email=email_value,
             password_hash=password_context.hash(secrets.token_urlsafe(24)),
             yandex_user_id=yandex_user_id,
@@ -18494,7 +18593,12 @@ async def register_submit(request: Request, db: Session = Depends(get_db)):
             add_flash(request, "Данные регистрации изменились. Отправьте новый код подтверждения.", "error")
             return redirect(f"/register?email={quote(email)}")
         pending_is_smm_manager = bool(pending.is_smm_manager)
-        user = User(username=pending.username, email=pending.email, password_hash=pending.password_hash)
+        user = User(
+            username=pending.username,
+            cosplay_nick=pending.username,
+            email=pending.email,
+            password_hash=pending.password_hash,
+        )
         db.add(user)
         db.flush()
         if pending.telegram_secret_code_hash:
@@ -18555,6 +18659,110 @@ async def register_submit(request: Request, db: Session = Depends(get_db)):
         "success",
     )
     return redirect(f"/register?email={quote(email)}")
+
+
+def registration_form_values(form: Any) -> dict[str, Any]:
+    return {
+        "username": str(form.get("username", "")).strip(),
+        "email": normalize_email(form.get("email")),
+        "password": str(form.get("password", "")),
+        "password_confirm": str(form.get("password_confirm", "")),
+        "telegram_secret_code": str(form.get("telegram_secret_code", "")).strip(),
+        "is_smm_manager": str(form.get("is_smm_manager", "")).strip().lower() in {"1", "true", "on", "yes"},
+    }
+
+
+def validate_registration_form(db: Session, values: dict[str, Any]) -> str:
+    username = str(values["username"])
+    email = str(values["email"])
+    password = str(values["password"])
+    if not username or not email or not password:
+        return "Заполните все обязательные поля."
+    if not email_has_allowed_domain(email):
+        return allowed_email_domain_message()
+    if password != str(values["password_confirm"]):
+        return "Пароли не совпадают."
+    if values["telegram_secret_code"] and len(str(values["telegram_secret_code"])) < 6:
+        return "Секретный код для ботов должен быть не короче 6 символов."
+    exists_stmt = select(User).where(or_(User.username == username, User.email == email, User.cosplay_nick == username))
+    if db.execute(exists_stmt).scalar_one_or_none():
+        return "Пользователь с таким логином или email уже существует."
+    return ""
+
+
+@app.post("/register/request-code")
+async def register_request_code(request: Request, db: Session = Depends(get_db)) -> JSONResponse:
+    form = await request.form()
+    values = registration_form_values(form)
+    error_text = validate_registration_form(db, values)
+    if error_text:
+        return JSONResponse({"ok": False, "error": error_text}, status_code=400)
+    if not smtp_is_configured():
+        return JSONResponse({"ok": False, "error": "Подтверждение email сейчас недоступно. Попробуйте позже."}, status_code=503)
+    try:
+        raw_code = create_or_update_pending_registration(
+            db,
+            username=values["username"],
+            email=values["email"],
+            password=values["password"],
+            telegram_secret_code=values["telegram_secret_code"],
+            is_smm_manager=values["is_smm_manager"],
+        )
+        if not send_registration_code_email(to_email=values["email"], code=raw_code):
+            db.rollback()
+            return JSONResponse({"ok": False, "error": "Не удалось отправить код подтверждения."}, status_code=502)
+        db.commit()
+    except ValueError as exc:
+        db.rollback()
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    return JSONResponse({
+        "ok": True,
+        "email": values["email"],
+        "message": f"Код отправлен на {values['email']} и действует {REGISTRATION_CODE_MINUTES} минут.",
+    })
+
+
+@app.post("/register/verify-code")
+async def register_verify_code(request: Request, db: Session = Depends(get_db)) -> JSONResponse:
+    form = await request.form()
+    values = registration_form_values(form)
+    code = normalize_registration_code(form.get("email_verification_code"))
+    if not re.fullmatch(r"\d{6}", code):
+        return JSONResponse({"ok": False, "error": "Введите шестизначный код из письма."}, status_code=400)
+    error_text = validate_registration_form(db, values)
+    if error_text:
+        return JSONResponse({"ok": False, "error": error_text}, status_code=400)
+    pending = find_pending_registration_by_code(db, email=values["email"], code=code)
+    if not pending:
+        return JSONResponse({"ok": False, "error": "Неверный или устаревший код подтверждения."}, status_code=400)
+    if pending.username != values["username"] or not password_context.verify(values["password"], pending.password_hash):
+        return JSONResponse({"ok": False, "error": "Данные регистрации изменились. Запросите новый код."}, status_code=400)
+
+    pending_is_smm_manager = bool(pending.is_smm_manager)
+    user = User(username=pending.username, cosplay_nick=pending.username, email=pending.email, password_hash=pending.password_hash)
+    db.add(user)
+    db.flush()
+    if pending.telegram_secret_code_hash:
+        user.telegram_secret_code_hash = pending.telegram_secret_code_hash
+        user.telegram_secret_code_updated_at = datetime.utcnow()
+    if pending_is_smm_manager:
+        set_user_option_value(db, user.id, SMM_MANAGER_ROLE_GROUP, "1")
+    db.delete(pending)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        return JSONResponse({"ok": False, "error": "Пользователь с таким логином или email уже существует."}, status_code=409)
+    threading.Thread(
+        target=propagate_registration_seed_data,
+        args=(int(user.id),),
+        name=f"register-seed-{user.id}",
+        daemon=True,
+    ).start()
+    request.session["user_id"] = user.id
+    add_flash(request, "Email подтверждён. Спасибо за регистрацию!", "welcome")
+    redirect_url = "/my-calendar?view=content&content_scope=client" if pending_is_smm_manager else "/cosplan"
+    return JSONResponse({"ok": True, "redirect": redirect_url})
 
 
 @app.get("/login", response_class=HTMLResponse)
@@ -20432,6 +20640,7 @@ def admin_dashboard(
     notifications_page: int = 1,
     notifications_recipient: str = "",
     notifications_sender: str = "",
+    admin_user_search: str = "",
     db: Session = Depends(get_db),
 ):
     user = current_user(request, db)
@@ -20449,6 +20658,10 @@ def admin_dashboard(
         sender_filter=notifications_sender,
     )
     premium_user_rows = build_premium_user_rows(db)
+    searched_admin_user = resolve_user_by_alias(db, admin_user_search) if admin_user_search.strip() else None
+    admin_home_announcements = db.execute(
+        select(HomeNews).order_by(HomeNews.created_at.desc(), HomeNews.id.desc()).limit(8)
+    ).scalars().all()
     notifications_pagination_params = [
         (key, value)
         for key, value in request.query_params.multi_items()
@@ -20482,6 +20695,9 @@ def admin_dashboard(
         can_manage_card_global_editors=is_primary_admin_user(user),
         card_global_editor_rows=build_card_global_editor_rows(db),
         card_global_editor_alias_options=build_premium_alias_options(db),
+        admin_user_search=admin_user_search,
+        searched_admin_user=searched_admin_user,
+        admin_home_announcements=admin_home_announcements,
         admin_broadcast_token=broadcast_token,
         admin_broadcast_audience_options=ADMIN_BROADCAST_AUDIENCE_OPTIONS,
         admin_broadcast_channel_options=ADMIN_BROADCAST_CHANNEL_OPTIONS,
@@ -20492,6 +20708,70 @@ def admin_dashboard(
         **dashboard,
         **notifications_block,
     )
+
+
+@app.post("/admin/home-announcements")
+async def admin_create_home_announcement(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    if not can_view_admin_dashboard(user):
+        add_flash(request, "Недостаточно прав для публикации объявления.", "error")
+        return redirect("/profile")
+    form = await request.form()
+    body = str(form.get("body", "")).strip()
+    plaque_text = str(form.get("plaque_text", "")).strip()
+    plaque_tone = str(form.get("plaque_tone", "violet")).strip().casefold()
+    if not body:
+        add_flash(request, "Введите текст объявления.", "error")
+        return redirect("/admin/dashboard#admin-home-announcement-editor")
+    if len(body) > 8000:
+        add_flash(request, "Текст объявления слишком длинный (до 8000 символов).", "error")
+        return redirect("/admin/dashboard#admin-home-announcement-editor")
+    if len(plaque_text) > 80:
+        add_flash(request, "Текст плашки слишком длинный (до 80 символов).", "error")
+        return redirect("/admin/dashboard#admin-home-announcement-editor")
+    if plaque_tone not in {"violet", "blue", "mint", "gold"}:
+        plaque_tone = "violet"
+    db.add(HomeNews(
+        author_id=user.id,
+        body=body,
+        plaque_text=plaque_text or None,
+        plaque_tone=plaque_tone,
+    ))
+    db.commit()
+    add_flash(request, "Объявление опубликовано на главной.", "success")
+    return redirect("/admin/dashboard#admin-home-announcement-editor")
+
+
+@app.post("/admin/users/password")
+async def admin_change_user_password(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    if not is_primary_admin_user(user):
+        add_flash(request, "Смена пароля доступна только основному администратору.", "error")
+        return redirect("/admin/dashboard")
+    form = await request.form()
+    target_user_id = parse_positive_int(str(form.get("target_user_id", "")).strip())
+    new_password = str(form.get("new_password", ""))
+    new_password_confirm = str(form.get("new_password_confirm", ""))
+    target_user = db.get(User, target_user_id) if target_user_id else None
+    if not target_user:
+        add_flash(request, "Пользователь не найден.", "error")
+        return redirect("/admin/dashboard#admin-user-tools")
+    target_alias = preferred_user_alias(target_user)
+    target_url = f"/admin/dashboard?admin_user_search={quote(target_alias)}#admin-user-tools"
+    if len(new_password) < 8:
+        add_flash(request, "Новый пароль должен содержать не менее 8 символов.", "error")
+        return redirect(target_url)
+    if new_password != new_password_confirm:
+        add_flash(request, "Пароли не совпадают.", "error")
+        return redirect(target_url)
+    target_user.password_hash = password_context.hash(new_password)
+    db.commit()
+    add_flash(request, f"Пароль пользователя @{target_alias} изменён.", "success")
+    return redirect(target_url)
 
 
 @app.get("/admin/broadcasts/preview")
@@ -26332,6 +26612,8 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
         rednote_settings=rednote_settings,
         threads_settings=threads_settings,
         pinterest_settings=pinterest_settings,
+        pinterest_trends_regions=PINTEREST_TRENDS_REGIONS,
+        pinterest_trends_types=PINTEREST_TRENDS_TYPES,
         telegram_settings_masked={
             "bot_token": mask_secret_value(telegram_settings.get("bot_token")) if content_can_manage_connections else "",
             "channels_text": telegram_settings.get("channels_text", "") if content_can_manage_connections else "",
@@ -26955,6 +27237,62 @@ async def my_calendar_content_ai_assistant_query(request: Request, db: Session =
         "remaining_today": int(usage_after.get("remaining_today") or 0),
         "daily_limit": int(usage_after.get("daily_limit") or CONTENT_AI_ASSISTANT_DAILY_LIMIT),
         "model": MISTRAL_FREE_MODEL,
+    }
+
+
+@app.post("/my-calendar/content/pinterest/trends")
+async def my_calendar_content_pinterest_trends(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return JSONResponse(status_code=401, content={"detail": "Требуется авторизация."})
+    access_redirect = ensure_content_plan_access(request, user, db)
+    if access_redirect:
+        return JSONResponse(status_code=403, content={"detail": "Контент-план недоступен для этого пользователя."})
+
+    form = await request.form()
+    content_owner, owner_redirect = ensure_content_owner_for_action(request, user, db, form=form)
+    if owner_redirect or not content_owner:
+        return JSONResponse(status_code=400, content={"detail": "Контент-план не выбран."})
+
+    requested_regions = [str(value or "").strip().upper() for value in form.getlist("regions")]
+    regions = list(dict.fromkeys(region for region in requested_regions if region in PINTEREST_TRENDS_REGIONS))
+    if not regions:
+        return JSONResponse(status_code=400, content={"detail": "Выберите хотя бы одну страну или регион."})
+    if len(regions) > 6:
+        return JSONResponse(status_code=400, content={"detail": "За один запрос можно выбрать не более 6 регионов."})
+
+    trend_type = str(form.get("trend_type") or "growing").strip().casefold()
+    if trend_type not in PINTEREST_TRENDS_TYPES:
+        return JSONResponse(status_code=400, content={"detail": "Неизвестный тип тренда."})
+    try:
+        limit = max(1, min(50, int(str(form.get("limit") or "20"))))
+    except ValueError:
+        limit = 20
+
+    region_results: list[list[dict[str, Any]]] = []
+    errors: list[str] = []
+    for region in regions:
+        try:
+            payload = pinterest_authorized_api_call(
+                db,
+                content_owner.id,
+                "GET",
+                f"/trends/keywords/{region}/top/{trend_type}",
+                params={"limit": limit},
+            )
+            region_results.append(extract_pinterest_trends(payload, region))
+        except RuntimeError as exc:
+            errors.append(f"{PINTEREST_TRENDS_REGIONS[region]}: {exc}")
+
+    trends = merge_pinterest_trends(region_results, limit)
+    if not trends and errors:
+        return JSONResponse(status_code=502, content={"detail": "Не удалось получить тренды: " + "; ".join(errors)})
+    return {
+        "ok": True,
+        "trends": trends,
+        "regions": [{"code": region, "label": PINTEREST_TRENDS_REGIONS[region]} for region in regions],
+        "trend_type": trend_type,
+        "warnings": errors,
     }
 
 
@@ -38201,7 +38539,7 @@ async def photo_contest_submit_work(contest_id: int, request: Request, db: Sessi
         )
 
     db.commit()
-    add_flash(request, "Заявка сохранена.", "success")
+    add_flash(request, "Заявка успешно загружена!", "photo_success")
     return redirect(f"/photocosplay/{contest_id}")
 
 
