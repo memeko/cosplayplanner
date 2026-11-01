@@ -181,7 +181,7 @@
     {% if user %}<button type="button" class="btn btn-small btn-accent" id="support-pigeon-open">Написать в поддержку</button>{% endif %}
   </footer>
   {% if request.url.path == "/" and user %}
-  <div class="welcome-overlay" id="support-pigeon-overlay" hidden>
+  <div class="support-pigeon-overlay" id="support-pigeon-overlay" hidden aria-hidden="true">
     <div class="welcome-modal support-pigeon-modal" role="dialog" aria-modal="true" aria-labelledby="support-pigeon-title">
       <button type="button" class="btn btn-small welcome-close" id="support-pigeon-close" aria-label="Закрыть">✕</button>
       <h2 id="support-pigeon-title">Написать в поддержку</h2>
@@ -200,9 +200,26 @@
       const openButton = document.getElementById("support-pigeon-open");
       const closeButton = document.getElementById("support-pigeon-close");
       if (!overlay || !openButton || !closeButton) return;
-      openButton.addEventListener("click", () => { overlay.hidden = false; overlay.querySelector("textarea")?.focus(); });
-      closeButton.addEventListener("click", () => { overlay.hidden = true; });
-      overlay.addEventListener("click", (event) => { if (event.target === overlay) overlay.hidden = true; });
+      const openOverlay = () => {
+        overlay.hidden = false;
+        overlay.setAttribute("aria-hidden", "false");
+        overlay.classList.add("is-open");
+        overlay.querySelector("textarea")?.focus();
+      };
+      const closeOverlay = () => {
+        overlay.classList.remove("is-open");
+        overlay.hidden = true;
+        overlay.setAttribute("aria-hidden", "true");
+        openButton.focus();
+      };
+      overlay.hidden = true;
+      overlay.setAttribute("aria-hidden", "true");
+      openButton.addEventListener("click", openOverlay);
+      closeButton.addEventListener("click", closeOverlay);
+      overlay.addEventListener("click", (event) => { if (event.target === overlay) closeOverlay(); });
+      document.addEventListener("keydown", (event) => {
+        if (event.key === "Escape" && overlay.classList.contains("is-open")) closeOverlay();
+      });
     })();
   </script>
   {% endif %}

@@ -4575,6 +4575,20 @@ body.landing-page main.container {
 .welcome-overlay[hidden] { display: none; }
 .register-code-modal { width: min(480px, 100%); }
 .support-pigeon-modal { width: min(620px, 100%); }
+.support-pigeon-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(10, 20, 34, 0.42);
+  backdrop-filter: blur(7px);
+  -webkit-backdrop-filter: blur(7px);
+}
+.support-pigeon-overlay.is-open { display: flex; }
+.support-pigeon-overlay[hidden] { display: none !important; }
 
 .site-footnote a,
 .site-footnote a:visited,
