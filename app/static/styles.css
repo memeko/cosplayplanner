@@ -5776,6 +5776,11 @@ html[data-theme="dark"] :is(.flash-info, .flash-success, .flash-warning) {
   border-color: rgba(183, 160, 255, 0.3);
 }
 
+html[data-theme="dark"] .flash-error {
+  background: #463c3d;
+  color: var(--text);
+}
+
 html[data-theme="dark"] a:not(.brand):not(.landing-brand):not(.landing-login):not(.landing-signup):not(.landing-manifesto):not(.btn) {
   color: #c8b8ff;
 }

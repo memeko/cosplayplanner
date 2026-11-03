@@ -974,7 +974,8 @@ telegram_worker_lock = threading.Lock()
 telegram_worker_thread: threading.Thread | None = None
 content_telegram_worker_lock = threading.Lock()
 content_telegram_worker_thread: threading.Thread | None = None
-content_vk_last_sync_monotonic = 0.0
+# Do not start a potentially long wall backfill during application startup.
+content_vk_last_sync_monotonic = time.monotonic()
 vk_bot_auth_state_lock = threading.Lock()
 vk_bot_auth_state: dict[str, dict[str, str]] = {}
 vk_bot_worker_lock = threading.Lock()
@@ -9892,6 +9893,7 @@ def sync_external_vk_wall_posts_for_user_with_report(db: Session, user: User) ->
             report["errors"].append(f"{title or owner_id}: не указан API-токен.")
             continue
         cutoff_timestamp = int(time.time()) - (CONTENT_TELEGRAM_CHANNEL_POST_RETENTION_DAYS * 86400)
+        remote_posts: dict[str, tuple[datetime, str]] = {}
         for page_index in range(CONTENT_VK_WALL_SYNC_MAX_PAGES):
             try:
                 payload = vk_content_api_call(
@@ -9926,25 +9928,34 @@ def sync_external_vk_wall_posts_for_user_with_report(db: Session, user: User) ->
                     continue
                 published_at = datetime.utcfromtimestamp(timestamp_value)
                 message_text = str(item.get("text") or "").strip() or "Пост без текста"
-                existing = db.execute(
-                    select(ContentChannelPost).where(
-                        ContentChannelPost.user_id == user_id,
-                        ContentChannelPost.platform == "vk",
-                        ContentChannelPost.chat_id == owner_id,
-                        ContentChannelPost.message_id == post_id,
-                    )
-                ).scalar_one_or_none()
-                if existing:
-                    changed = False
-                    for attr, value in (("chat_title", title), ("message_text", message_text), ("published_at", published_at)):
-                        if getattr(existing, attr) != value:
-                            setattr(existing, attr, value)
-                            changed = True
-                    if changed:
-                        report["updated_posts"] += 1
-                        report["changed"] = True
-                    continue
-                db.add(ContentChannelPost(
+                remote_posts[post_id] = (published_at, message_text)
+            if reached_cutoff or len(items) < CONTENT_VK_WALL_POST_LIMIT:
+                break
+
+        if not remote_posts:
+            continue
+        existing_rows = db.execute(
+            select(ContentChannelPost).where(
+                ContentChannelPost.user_id == user_id,
+                ContentChannelPost.platform == "vk",
+                ContentChannelPost.chat_id == owner_id,
+                ContentChannelPost.message_id.in_(list(remote_posts)),
+            )
+        ).scalars().all()
+        existing_by_message_id = {str(row.message_id): row for row in existing_rows}
+        for post_id, (published_at, message_text) in remote_posts.items():
+            existing = existing_by_message_id.get(post_id)
+            if existing:
+                changed = False
+                for attr, value in (("chat_title", title), ("message_text", message_text), ("published_at", published_at)):
+                    if getattr(existing, attr) != value:
+                        setattr(existing, attr, value)
+                        changed = True
+                if changed:
+                    report["updated_posts"] += 1
+                    report["changed"] = True
+                continue
+            db.add(ContentChannelPost(
                     user_id=user_id,
                     platform="vk",
                     chat_id=owner_id,
@@ -9952,11 +9963,9 @@ def sync_external_vk_wall_posts_for_user_with_report(db: Session, user: User) ->
                     message_id=post_id,
                     message_text=message_text,
                     published_at=published_at,
-                ))
-                report["added_posts"] += 1
-                report["changed"] = True
-            if reached_cutoff or len(items) < CONTENT_VK_WALL_POST_LIMIT:
-                break
+            ))
+            report["added_posts"] += 1
+            report["changed"] = True
     return report
 
 
@@ -20799,6 +20808,18 @@ def build_admin_dashboard_stats(db: Session) -> dict[str, Any]:
     }
 
 
+def load_admin_home_announcements(db: Session) -> list[HomeNews]:
+    query = select(HomeNews).order_by(HomeNews.created_at.desc(), HomeNews.id.desc()).limit(8)
+    try:
+        return list(db.execute(query).scalars().all())
+    except OperationalError as exc:
+        if "no such column" not in str(exc).lower():
+            raise
+        db.rollback()
+        apply_schema_migrations()
+        return list(db.execute(query).scalars().all())
+
+
 @app.get("/admin/dashboard", response_class=HTMLResponse)
 def admin_dashboard(
     request: Request,
@@ -20828,9 +20849,7 @@ def admin_dashboard(
     )
     premium_user_rows = build_premium_user_rows(db)
     searched_admin_user = resolve_user_by_alias(db, admin_user_search) if admin_user_search.strip() else None
-    admin_home_announcements = db.execute(
-        select(HomeNews).order_by(HomeNews.created_at.desc(), HomeNews.id.desc()).limit(8)
-    ).scalars().all()
+    admin_home_announcements = load_admin_home_announcements(db)
     notifications_pagination_params = [
         (key, value)
         for key, value in request.query_params.multi_items()
