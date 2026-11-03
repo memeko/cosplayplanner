@@ -585,6 +585,12 @@ CALDAV_LAST_SYNC_GROUP = "caldav_last_sync"
 CALDAV_IMPORT_MARKER = "[caldav-sync]"
 CONTENT_VK_TOKEN_GROUP = "content_vk_api_token"
 CONTENT_VK_GROUP_GROUP = "content_vk_group"
+CONTENT_VK_WALL_POST_LIMIT = max(5, min(100, int(os.getenv("CONTENT_VK_WALL_POST_LIMIT", "100"))))
+CONTENT_VK_WALL_SYNC_MAX_PAGES = max(1, min(100, int(os.getenv("CONTENT_VK_WALL_SYNC_MAX_PAGES", "20"))))
+CONTENT_VK_WALL_SYNC_INTERVAL_SECONDS = max(
+    60,
+    min(86400, int(os.getenv("CONTENT_VK_WALL_SYNC_INTERVAL", "900"))),
+)
 CONTENT_PINTEREST_ACCESS_TOKEN_GROUP = "content_pinterest_access_token"
 CONTENT_PINTEREST_REFRESH_TOKEN_GROUP = "content_pinterest_refresh_token"
 CONTENT_PINTEREST_SCOPE_GROUP = "content_pinterest_scope"
@@ -968,6 +974,7 @@ telegram_worker_lock = threading.Lock()
 telegram_worker_thread: threading.Thread | None = None
 content_telegram_worker_lock = threading.Lock()
 content_telegram_worker_thread: threading.Thread | None = None
+content_vk_last_sync_monotonic = 0.0
 vk_bot_auth_state_lock = threading.Lock()
 vk_bot_auth_state: dict[str, dict[str, str]] = {}
 vk_bot_worker_lock = threading.Lock()
@@ -1439,6 +1446,7 @@ def apply_schema_migrations() -> None:
         "home_news": [
             ("plaque_text", "VARCHAR(80)"),
             ("plaque_tone", "VARCHAR(24) NOT NULL DEFAULT 'violet'"),
+            ("image_url", "TEXT"),
         ],
         "cosplan_cards": [
             ("costume_bought", "BOOLEAN NOT NULL DEFAULT 0"),
@@ -5406,6 +5414,18 @@ def get_content_vk_settings(user: User, db: Session) -> dict[str, Any]:
         "groups_masked_text": format_content_vk_group_lines(groups, masked_tokens=True),
         "groups": groups,
     }
+
+
+def match_content_rubric_by_text(message_text: str | None, rubric_tags: dict[str, str]) -> str:
+    """Return the rubric whose configured hashtag occurs in imported post text."""
+    normalized_text = str(message_text or "")
+    if not normalized_text:
+        return ""
+    for rubric, raw_tag in rubric_tags.items():
+        tag = normalize_content_rubric_tag(raw_tag).lstrip("#")
+        if tag and re.search(rf"(?<![\w#])#{re.escape(tag)}(?!\w)", normalized_text, flags=re.IGNORECASE):
+            return str(rubric or "").strip()
+    return ""
 
 
 def get_content_rednote_settings(user: User, db: Session) -> dict[str, Any]:
@@ -9852,6 +9872,94 @@ def sync_external_telegram_channel_posts_for_user(db: Session, user: User) -> bo
     )
 
 
+def sync_external_vk_wall_posts_for_user_with_report(db: Session, user: User) -> dict[str, Any]:
+    """Import owner-authored posts from configured VK community walls."""
+    report: dict[str, Any] = {"changed": False, "added_posts": 0, "updated_posts": 0, "errors": []}
+    user_id = parse_positive_int(str(getattr(user, "id", "") or ""))
+    if not user_id:
+        report["errors"].append("Некорректный пользователь.")
+        return report
+    groups = get_content_vk_groups(db, user_id, get_secret_user_option_value(db, user_id, CONTENT_VK_TOKEN_GROUP))
+    if not groups:
+        report["errors"].append("Не настроены VK-сообщества.")
+        return report
+
+    for group in groups:
+        owner_id = str(group.get("owner_id") or "").strip()
+        token = str(group.get("api_token") or "").strip()
+        title = str(group.get("title") or group.get("screen_name") or owner_id).strip()[:255]
+        if not owner_id or not token:
+            report["errors"].append(f"{title or owner_id}: не указан API-токен.")
+            continue
+        cutoff_timestamp = int(time.time()) - (CONTENT_TELEGRAM_CHANNEL_POST_RETENTION_DAYS * 86400)
+        for page_index in range(CONTENT_VK_WALL_SYNC_MAX_PAGES):
+            try:
+                payload = vk_content_api_call(
+                    token,
+                    "wall.get",
+                    {
+                        "owner_id": owner_id,
+                        "filter": "owner",
+                        "count": CONTENT_VK_WALL_POST_LIMIT,
+                        "offset": page_index * CONTENT_VK_WALL_POST_LIMIT,
+                    },
+                )
+            except RuntimeError as exc:
+                report["errors"].append(f"{title or owner_id}: {exc}")
+                break
+            items = payload.get("items") if isinstance(payload, dict) else []
+            if not isinstance(items, list) or not items:
+                break
+            reached_cutoff = False
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                post_id = str(item.get("id") or "").strip()
+                try:
+                    timestamp_value = int(item.get("date") or 0)
+                except (TypeError, ValueError):
+                    timestamp_value = 0
+                if timestamp_value and timestamp_value < cutoff_timestamp:
+                    reached_cutoff = True
+                    continue
+                if not post_id or timestamp_value <= 0:
+                    continue
+                published_at = datetime.utcfromtimestamp(timestamp_value)
+                message_text = str(item.get("text") or "").strip() or "Пост без текста"
+                existing = db.execute(
+                    select(ContentChannelPost).where(
+                        ContentChannelPost.user_id == user_id,
+                        ContentChannelPost.platform == "vk",
+                        ContentChannelPost.chat_id == owner_id,
+                        ContentChannelPost.message_id == post_id,
+                    )
+                ).scalar_one_or_none()
+                if existing:
+                    changed = False
+                    for attr, value in (("chat_title", title), ("message_text", message_text), ("published_at", published_at)):
+                        if getattr(existing, attr) != value:
+                            setattr(existing, attr, value)
+                            changed = True
+                    if changed:
+                        report["updated_posts"] += 1
+                        report["changed"] = True
+                    continue
+                db.add(ContentChannelPost(
+                    user_id=user_id,
+                    platform="vk",
+                    chat_id=owner_id,
+                    chat_title=title,
+                    message_id=post_id,
+                    message_text=message_text,
+                    published_at=published_at,
+                ))
+                report["added_posts"] += 1
+                report["changed"] = True
+            if reached_cutoff or len(items) < CONTENT_VK_WALL_POST_LIMIT:
+                break
+    return report
+
+
 def cleanup_external_telegram_channel_posts_for_user(db: Session, user_id: int) -> bool:
     if user_id <= 0:
         return False
@@ -10044,6 +10152,38 @@ def sync_external_telegram_channel_posts() -> None:
 
         if has_changes:
             db.commit()
+
+
+def sync_external_vk_wall_posts() -> None:
+    with SessionLocal() as db:
+        user_ids = [
+            int(item)
+            for item in db.execute(
+                select(func.distinct(UserOption.user_id)).where(UserOption.group == CONTENT_VK_GROUP_GROUP)
+            ).scalars().all()
+            if item
+        ]
+        if not user_ids:
+            return
+        users = db.execute(select(User).where(User.id.in_(user_ids))).scalars().all()
+        has_changes = False
+        for user in users:
+            try:
+                report = sync_external_vk_wall_posts_for_user_with_report(db, user)
+                has_changes = bool(report.get("changed")) or has_changes
+            except Exception:
+                continue
+        if has_changes:
+            db.commit()
+
+
+def sync_external_vk_wall_posts_if_due() -> None:
+    global content_vk_last_sync_monotonic
+    now_monotonic = time.monotonic()
+    if now_monotonic - content_vk_last_sync_monotonic < CONTENT_VK_WALL_SYNC_INTERVAL_SECONDS:
+        return
+    content_vk_last_sync_monotonic = now_monotonic
+    sync_external_vk_wall_posts()
 
 
 def cleanup_expired_content_telegram_media(db: Session) -> None:
@@ -10313,6 +10453,10 @@ def content_telegram_loop() -> None:
     while True:
         try:
             sync_external_telegram_channel_posts()
+        except Exception:
+            pass
+        try:
+            sync_external_vk_wall_posts_if_due()
         except Exception:
             pass
         try:
@@ -18453,6 +18597,27 @@ async def pigeons_chat_label_update(request: Request, db: Session = Depends(get_
     return redirect(next_url)
 
 
+async def save_home_news_image(upload: UploadFile) -> tuple[str, str]:
+    if not upload or not str(upload.filename or "").strip():
+        return "", ""
+    if not str(upload.content_type or "").lower().startswith("image/"):
+        return "", "Для объявления можно загрузить только изображение."
+    raw_bytes = await upload.read(10 * 1024 * 1024 + 1)
+    if len(raw_bytes) > 10 * 1024 * 1024:
+        return "", "Изображение объявления слишком большое (до 10 МБ)."
+    try:
+        with Image.open(io.BytesIO(raw_bytes)) as source:
+            image = ImageOps.exif_transpose(source).convert("RGB")
+            image.thumbnail((1920, 1920), Image.Resampling.LANCZOS)
+            output = io.BytesIO()
+            image.save(output, format="WEBP", quality=88, method=6)
+    except (UnidentifiedImageError, OSError):
+        return "", "Не удалось распознать изображение объявления."
+    file_name = f"home-news-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:12]}.webp"
+    (media_storage_path() / file_name).write_bytes(output.getvalue())
+    return f"/media/{file_name}", ""
+
+
 @app.post("/home-news/new")
 async def home_news_create(request: Request, db: Session = Depends(get_db)):
     user = current_user(request, db)
@@ -20650,7 +20815,11 @@ def admin_dashboard(
         add_flash(request, "Дашборд администратора доступен только модератору.", "error")
         return redirect("/profile")
 
-    dashboard = build_admin_dashboard_stats(db)
+    dashboard = cache_get_or_load(
+        "admin_dashboard_stats_v1",
+        lambda: build_admin_dashboard_stats(db),
+        ttl_seconds=60,
+    )
     notifications_block = build_admin_notifications_page(
         db,
         page=notifications_page,
@@ -20681,6 +20850,7 @@ def admin_dashboard(
         for item in build_admin_city_stats(db)
         if str(item.get("city") or "").strip() and str(item["city"]) != "Не указан"
     ]
+    premium_alias_options = build_premium_alias_options(db)
     return template_response(
         request,
         "admin_dashboard.html",
@@ -20690,11 +20860,11 @@ def admin_dashboard(
         seo_robots="noindex,nofollow,noarchive",
         can_manage_premium_users=is_primary_admin_user(user),
         premium_user_rows=premium_user_rows,
-        premium_alias_options=build_premium_alias_options(db),
+        premium_alias_options=premium_alias_options,
         premium_duration_options=PREMIUM_DURATION_OPTIONS,
         can_manage_card_global_editors=is_primary_admin_user(user),
         card_global_editor_rows=build_card_global_editor_rows(db),
-        card_global_editor_alias_options=build_premium_alias_options(db),
+        card_global_editor_alias_options=premium_alias_options,
         admin_user_search=admin_user_search,
         searched_admin_user=searched_admin_user,
         admin_home_announcements=admin_home_announcements,
@@ -20733,14 +20903,59 @@ async def admin_create_home_announcement(request: Request, db: Session = Depends
         return redirect("/admin/dashboard#admin-home-announcement-editor")
     if plaque_tone not in {"violet", "blue", "mint", "gold"}:
         plaque_tone = "violet"
+    image_url, image_error = await save_home_news_image(form.get("image"))
+    if image_error:
+        add_flash(request, image_error, "error")
+        return redirect("/admin/dashboard#admin-home-announcement-editor")
     db.add(HomeNews(
         author_id=user.id,
         body=body,
         plaque_text=plaque_text or None,
         plaque_tone=plaque_tone,
+        image_url=image_url or None,
     ))
     db.commit()
     add_flash(request, "Объявление опубликовано на главной.", "success")
+    return redirect("/admin/dashboard#admin-home-announcement-editor")
+
+
+@app.post("/admin/home-announcements/{news_id}/edit")
+async def admin_edit_home_announcement(news_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    if not can_view_admin_dashboard(user):
+        add_flash(request, "Недостаточно прав для редактирования объявления.", "error")
+        return redirect("/profile")
+    item = db.get(HomeNews, news_id)
+    if not item:
+        add_flash(request, "Объявление не найдено.", "error")
+        return redirect("/admin/dashboard#admin-home-announcement-editor")
+    form = await request.form()
+    body = str(form.get("body", "")).strip()
+    plaque_text = str(form.get("plaque_text", "")).strip()
+    plaque_tone = str(form.get("plaque_tone", "violet")).strip().casefold()
+    if not body or len(body) > 8000 or len(plaque_text) > 80:
+        add_flash(request, "Проверьте текст объявления и плашки.", "error")
+        return redirect("/admin/dashboard#admin-home-announcement-editor")
+    if plaque_tone not in {"violet", "blue", "mint", "gold"}:
+        plaque_tone = "violet"
+    new_image_url, image_error = await save_home_news_image(form.get("image"))
+    if image_error:
+        add_flash(request, image_error, "error")
+        return redirect("/admin/dashboard#admin-home-announcement-editor")
+    old_image_url = str(item.image_url or "")
+    item.body = body
+    item.plaque_text = plaque_text or None
+    item.plaque_tone = plaque_tone
+    if to_bool(form.get("remove_image")):
+        item.image_url = None
+        remove_media_file_by_path(old_image_url)
+    elif new_image_url:
+        item.image_url = new_image_url
+        remove_media_file_by_path(old_image_url)
+    db.commit()
+    add_flash(request, "Объявление обновлено.", "success")
     return redirect("/admin/dashboard#admin-home-announcement-editor")
 
 
@@ -23415,6 +23630,25 @@ async def cosplan_completed_toggle(card_id: int, request: Request, db: Session =
 
     card.is_completed = not bool(card.is_completed)
     sync_shared_cards_for_nicks(card, user, db)
+    if card.is_completed:
+        db.flush()
+        completed_card_ids = [card.id]
+        if not card.is_shared_copy:
+            completed_card_ids.extend(
+                int(item)
+                for item in db.execute(
+                    select(CosplanCard.id).where(
+                        CosplanCard.source_card_id == card.id,
+                        CosplanCard.is_shared_copy.is_(True),
+                    )
+                ).scalars().all()
+                if item
+            )
+        progress_rows = db.execute(
+            select(InProgressCard).where(InProgressCard.cosplan_card_id.in_(completed_card_ids))
+        ).scalars().all()
+        for progress_row in progress_rows:
+            db.delete(progress_row)
     db.commit()
 
     add_flash(
@@ -24260,10 +24494,12 @@ def in_progress_list(request: Request, db: Session = Depends(get_db)):
     safe_progress_items: list[InProgressCard] = []
     for row in progress_items:
         try:
-            _ = row.cosplan_card
+            linked_card = row.cosplan_card
         except Exception as exc:
             db.rollback()
             print(f"[in-progress] skip broken progress row {row.id} for user {user.id}: {exc}")
+            continue
+        if not linked_card or bool(linked_card.is_completed):
             continue
         safe_progress_items.append(row)
     if character_filter_query or fandom_filter_query:
@@ -26354,6 +26590,8 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
     rubric_colors = rubric_color_map(rubric_options)
     content_rows: list[dict[str, Any]] = []
     planned_telegram_message_keys: set[tuple[str, str]] = set()
+    planned_vk_post_keys: set[tuple[str, str]] = set()
+    planned_vk_text_keys: set[tuple[date, str]] = set()
     content_telegram_weekly_review: dict[str, Any] = {
         "enabled": False,
         "error": "",
@@ -26386,6 +26624,22 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
         partner_user_id = parse_positive_int(str(post.shared_partner_user_id or "").strip())
         partner_user = content_partner_users_by_id.get(partner_user_id) if partner_user_id else None
         partner_alias = preferred_user_alias(partner_user) if partner_user else ""
+
+        for vk_entry in as_list(post.vk_post_ids_json):
+            if not isinstance(vk_entry, dict):
+                continue
+            vk_owner_id = str(vk_entry.get("owner_id") or "").strip()
+            vk_post_id = str(vk_entry.get("post_id") or "").strip()
+            if vk_owner_id and vk_post_id:
+                planned_vk_post_keys.add((vk_owner_id, vk_post_id))
+        if content_post_targets_vk(post) and post.publish_date:
+            planned_vk_text = re.sub(
+                r"\s+",
+                " ",
+                build_content_post_plain_message(post, post.rubric_tag).strip().casefold(),
+            )
+            if planned_vk_text:
+                planned_vk_text_keys.add((post.publish_date, planned_vk_text))
 
         for message_entry in as_list(post.telegram_message_ids_json):
             if not isinstance(message_entry, dict):
@@ -26475,30 +26729,44 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
             select(ContentChannelPost)
             .where(
                 ContentChannelPost.user_id == content_owner.id,
-                ContentChannelPost.platform == "telegram",
+                ContentChannelPost.platform.in_(["telegram", "vk"]),
             )
             .order_by(ContentChannelPost.published_at, ContentChannelPost.id)
         ).scalars().all()
         for external_post in external_channel_posts:
-            external_chat_id = normalize_telegram_target(str(external_post.chat_id or "").strip())
+            platform = str(external_post.platform or "telegram").strip().lower()
+            raw_chat_id = str(external_post.chat_id or "").strip()
+            external_chat_id = normalize_telegram_target(raw_chat_id) if platform == "telegram" else raw_chat_id
             external_message_id = str(external_post.message_id or "").strip()
             if not external_chat_id or not external_message_id:
                 continue
-            if active_telegram_channel_ids and external_chat_id not in active_telegram_channel_ids:
-                continue
-            if (external_chat_id, external_message_id) in planned_telegram_message_keys:
-                continue
+            if platform == "telegram":
+                if active_telegram_channel_ids and external_chat_id not in active_telegram_channel_ids:
+                    continue
+                if (external_chat_id, external_message_id) in planned_telegram_message_keys:
+                    continue
+            elif platform == "vk":
+                if vk_groups_by_owner_id and external_chat_id not in vk_groups_by_owner_id:
+                    continue
+                if (external_chat_id, external_message_id) in planned_vk_post_keys:
+                    continue
             posted_at_local = to_site_datetime(external_post.published_at)
             if not posted_at_local:
                 continue
+            if platform == "vk":
+                external_vk_text = re.sub(r"\s+", " ", str(external_post.message_text or "").strip().casefold())
+                if external_vk_text and (posted_at_local.date(), external_vk_text) in planned_vk_text_keys:
+                    continue
+            matched_rubric = match_content_rubric_by_text(external_post.message_text, rubric_tags)
             content_external_rows.append(
                 {
                     "date": posted_at_local.date(),
                     "time": posted_at_local.strftime("%H:%M"),
                     "title": str(external_post.message_text or "").strip() or "Пост без текста",
-                    "display_title": build_content_external_channel_preview(external_post.message_text, limit=30),
-                    "socials_text": "ТГ (канал)",
-                    "rubric_color": "#cbd5e1",
+                    "display_title": f"★ {build_content_external_channel_preview(external_post.message_text, limit=28)}",
+                    "socials_text": "VK (стена)" if platform == "vk" else "ТГ (канал)",
+                    "rubric": matched_rubric,
+                    "rubric_color": rubric_colors.get(matched_rubric, "#cbd5e1"),
                     "is_external_channel_post": True,
                 }
             )
@@ -26614,6 +26882,7 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
         pinterest_settings=pinterest_settings,
         pinterest_trends_regions=PINTEREST_TRENDS_REGIONS,
         pinterest_trends_types=PINTEREST_TRENDS_TYPES,
+        pinterest_trends_enabled=False,
         telegram_settings_masked={
             "bot_token": mask_secret_value(telegram_settings.get("bot_token")) if content_can_manage_connections else "",
             "channels_text": telegram_settings.get("channels_text", "") if content_can_manage_connections else "",
@@ -27707,8 +27976,42 @@ def my_calendar_content_vk_disconnect(request: Request, db: Session = Depends(ge
 
     set_secret_user_option_value(db, content_owner.id, CONTENT_VK_TOKEN_GROUP, "")
     replace_user_option_values(db, content_owner.id, CONTENT_VK_GROUP_GROUP, [])
+    vk_wall_posts = db.execute(
+        select(ContentChannelPost).where(
+            ContentChannelPost.user_id == content_owner.id,
+            ContentChannelPost.platform == "vk",
+        )
+    ).scalars().all()
+    for row in vk_wall_posts:
+        db.delete(row)
     db.commit()
     add_flash(request, "Настройки VK-сообществ удалены.", "info")
+    return content_calendar_redirect(request, user, content_owner=content_owner)
+
+
+@app.post("/my-calendar/content/vk/sync")
+def my_calendar_content_vk_sync(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    access_redirect = ensure_content_plan_access(request, user, db)
+    if access_redirect:
+        return access_redirect
+    content_owner, owner_redirect = ensure_content_owner_for_action(request, user, db)
+    if owner_redirect or not content_owner:
+        return owner_redirect or content_calendar_redirect(request, user)
+    report = sync_external_vk_wall_posts_for_user_with_report(db, content_owner)
+    if report.get("changed"):
+        db.commit()
+    errors = list(report.get("errors") or [])
+    if errors:
+        add_flash(request, "VK: " + " ".join(errors[:3]), "error")
+    else:
+        add_flash(
+            request,
+            f"Стена VK синхронизирована: добавлено {report['added_posts']}, обновлено {report['updated_posts']}.",
+            "success",
+        )
     return content_calendar_redirect(request, user, content_owner=content_owner)
 
 

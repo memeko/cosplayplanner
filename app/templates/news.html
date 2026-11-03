@@ -190,6 +190,7 @@
               · обновлено {{ item.updated_at.strftime('%d-%m-%Y %H:%M') }}
             {% endif %}
           </p>
+          {% if item.image_url %}<img class="news-image" src="{{ item.image_url }}" alt="Баннер объявления" loading="lazy" />{% endif %}
           <div class="news-body">{{ item.body|render_text }}</div>
 
           {% if can_manage_news %}

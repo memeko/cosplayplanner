@@ -2485,7 +2485,7 @@ textarea {
   overflow: hidden;
   border: 1px solid rgba(255, 255, 255, 0.78);
   border-radius: 26px;
-  background: linear-gradient(145deg, rgba(255, 255, 255, 0.86), rgba(232, 241, 255, 0.68));
+  background: linear-gradient(145deg, rgba(213, 220, 255, 0.94) 0%, rgba(171, 184, 239, 0.84) 48%, rgba(117, 119, 190, 0.78) 100%);
   box-shadow: 0 16px 42px rgba(52, 74, 132, 0.14), var(--glass-highlight);
   backdrop-filter: blur(var(--glass-blur)) saturate(130%);
   -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(130%);
@@ -2703,6 +2703,17 @@ body.modal-open {
 .news-body {
   white-space: pre-wrap;
   line-height: 1.45;
+}
+
+.news-image {
+  display: block;
+  width: 100%;
+  max-height: 440px;
+  margin: 4px 0 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 16px;
+  object-fit: cover;
+  box-shadow: var(--glass-shadow-soft);
 }
 
 .news-edit summary {
@@ -4574,7 +4585,17 @@ body.landing-page main.container {
 .site-footnote > * { margin: 3px; }
 .welcome-overlay[hidden] { display: none; }
 .register-code-modal { width: min(480px, 100%); }
-.support-pigeon-modal { width: min(620px, 100%); }
+.support-pigeon-modal {
+  width: min(620px, calc(100vw - 32px));
+  max-width: 100%;
+  max-height: calc(100dvh - 32px);
+  min-width: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+.support-pigeon-modal form,
+.support-pigeon-modal label,
+.support-pigeon-modal textarea { min-width: 0; max-width: 100%; }
 .support-pigeon-overlay {
   position: fixed;
   inset: 0;
@@ -4589,6 +4610,14 @@ body.landing-page main.container {
 }
 .support-pigeon-overlay.is-open { display: flex; }
 .support-pigeon-overlay[hidden] { display: none !important; }
+
+.photo-contest-entry-row .remove-role-row {
+  align-self: end;
+  justify-self: start;
+  width: auto;
+  min-height: 40px;
+  padding: 8px 14px;
+}
 
 .site-footnote a,
 .site-footnote a:visited,
@@ -5419,6 +5448,14 @@ html[data-theme="dark"] body:not(.landing-page)::before {
 html[data-theme="dark"] body:not(.landing-page)::after {
   background: radial-gradient(circle, rgba(140, 132, 157, 0.16), transparent 70%);
 }
+
+html[data-theme="dark"] .home-citadel-promo {
+  border-color: rgba(183, 160, 255, 0.34);
+  background: linear-gradient(145deg, rgba(67, 61, 91, 0.96) 0%, rgba(48, 43, 68, 0.96) 52%, rgba(30, 28, 41, 0.98) 100%);
+}
+
+html[data-theme="dark"] .home-citadel-promo-copy h2 { color: #f3efff; }
+html[data-theme="dark"] .home-citadel-promo-copy p { color: #c8c0d8; }
 
 html[data-theme="dark"] .site-bg-foxy,
 html[data-theme="dark"] .site-bg-star2 {

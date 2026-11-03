@@ -690,6 +690,11 @@
   .cosplan-page-counter { align-self: center; color: var(--muted); white-space: nowrap; font-size: .88rem; }
   .cosplan-paged-section[hidden] { display: none !important; }
   .cosplan-paged-section { animation: cosplan-page-in .2s ease-out; }
+  html[data-theme="dark"] .cosplan-section-pager {
+    border-color: rgba(183, 160, 255, .46);
+    background: rgba(43, 39, 55, .94);
+    box-shadow: 0 14px 34px rgba(0, 0, 0, .34), inset 0 1px 0 rgba(255, 255, 255, .08);
+  }
   @keyframes cosplan-page-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
   @media (max-width: 640px) {
     .cosplan-section-pager { grid-template-columns: 1fr 1fr; top: 6px; }

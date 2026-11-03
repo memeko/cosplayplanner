@@ -556,10 +556,10 @@
 
     <div class="content-platform-panel" data-platform-panel="vk" hidden>
       <div class="notes-block telegram-editor-note">
-        <strong>Способ сейчас на реконструкции из-за изменений со стороны VK. Отложенный постинг не возможен.</strong>
+        <strong>Публикация без Mini App доступна через официальный API VK.</strong>
       </div>
       <p class="muted">
-        VK публикуется вручную через мини-приложение «Коспи публикует». Оно покажет сообщества, которыми вы управляете, и прикрепит изображения как нативные фотографии VK.
+        Добавьте ключ доступа сообщества для публикации на стену и импорта уже вышедших авторских постов. Текстовые записи работают с ключом сообщества; загрузка новых фотографий может потребовать пользовательский токен с правами стены и фотографий.
       </p>
       <div class="notes-block telegram-editor-note">
         VK не поддерживает расширенную разметку шрифта для таких постов: полужирный, курсив, подчёркивание, зачёркивание, спойлеры и premium-эмодзи в VK не рендерятся так же, как в Telegram. Для VK используется plain-text версия вашего текста.
@@ -567,15 +567,28 @@
       <details class="top-offset">
         <summary>Как подключить VK</summary>
         <ol class="notes-list top-offset">
-          <li>Войдите в Cosplay Planner через VK ID — так планер свяжет ваш аккаунт с мини-приложением.</li>
-          <li>В карточке поста отметьте соцсеть <strong>VK</strong>, добавьте текст и фотографии, затем сохраните её.</li>
-          <li>Нажмите «Открыть VK Mini App» и внутри VK выберите «Предоставить доступ».</li>
-          <li>Выберите пост и одно или несколько сообществ, где у вас есть роль редактора или администратора.</li>
-          <li>Нажмите «Опубликовать с фотографиями». Токен остаётся внутри VK и не передаётся на сервер Cosplay Planner.</li>
-          <li>VK покажет штатное окно подтверждения для каждого сообщества. Из-за ограничений Mini Apps публикация выполняется сразу; автопубликация и отложенный <code>publish_date</code> недоступны.</li>
+          <li>В управлении сообществом откройте «Работа с API → Ключи доступа» и создайте ключ с правом стены.</li>
+          <li>Добавьте по одному сообществу на строку в формате ниже.</li>
+          <li>Для чтения стены VK может потребовать сервисный или пользовательский токен: это зависит от типа выданного ключа.</li>
         </ol>
       </details>
-      <a class="btn btn-accent top-offset" href="{{ vk_mini_app_url }}" target="_blank" rel="noreferrer">Открыть VK Mini App</a>
+      {% if content_can_manage_connections %}
+      <form method="post" action="/my-calendar/content/vk/connect" class="grid one-col top-offset">
+        <input type="hidden" name="content_scope" value="{{ content_scope }}" />
+        {% if content_owner_id %}<input type="hidden" name="content_owner_id" value="{{ content_owner_id }}" />{% endif %}
+        <label>VK-сообщества и токены
+          <textarea name="vk_groups_text" rows="4" placeholder="Название — vk.ru/my_group — токен_доступа"></textarea>
+          {% if vk_settings.groups_masked_text %}<small class="muted">Сохранено: {{ vk_settings.groups_masked_text }}</small>{% endif %}
+        </label>
+        <div class="actions-inline wrap"><button type="submit" class="btn btn-accent">Сохранить VK</button></div>
+      </form>
+      {% if vk_content_connected %}
+      <div class="actions-inline wrap top-offset">
+        <form method="post" action="/my-calendar/content/vk/sync?{{ content_action_query }}"><button type="submit" class="btn">Импортировать стену</button></form>
+        <form method="post" action="/my-calendar/content/vk/disconnect?{{ content_action_query }}" onsubmit="return confirm('Удалить настройки VK?');"><button type="submit" class="btn btn-danger">Отключить VK</button></form>
+      </div>
+      {% endif %}
+      {% endif %}
     </div>
 
     <div class="content-platform-panel" data-platform-panel="threads" hidden>
@@ -710,7 +723,7 @@
     </div>
   </details>
 
-  <details class="box top-offset calendar-spoiler" id="content-pinterest-trends">
+  {% if pinterest_trends_enabled %}<details class="box top-offset calendar-spoiler" id="content-pinterest-trends">
     <summary>Ключевые слова Pinterest Trends</summary>
     <div class="calendar-spoiler-body">
       <p class="muted">
@@ -763,7 +776,7 @@
         <div id="content_pinterest_trends_results" class="pinterest-trends-results" hidden></div>
       </form>
     </div>
-  </details>
+  </details>{% endif %}
 
   <details class="box top-offset calendar-spoiler" id="content-ai-assistant">
     <summary>ИИ-помощник</summary>
@@ -1364,7 +1377,9 @@
                   </form>
                 {% endif %}
                 {% if vk_content_connected %}
-                  <a class="btn btn-small" href="{{ vk_mini_app_url }}" target="_blank" rel="noreferrer">В VK Mini App</a>
+                  <form method="post" action="/my-calendar/content/{{ item.post_id }}/vk-publish?{{ content_action_query }}">
+                    <button type="submit" class="btn btn-small">В VK</button>
+                  </form>
                 {% endif %}
                 {% if pinterest_content_connected %}
                   <form method="post" action="/my-calendar/content/{{ item.post_id }}/pinterest-publish?{{ content_action_query }}">
