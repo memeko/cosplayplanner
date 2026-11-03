@@ -585,6 +585,8 @@ CALDAV_LAST_SYNC_GROUP = "caldav_last_sync"
 CALDAV_IMPORT_MARKER = "[caldav-sync]"
 CONTENT_VK_TOKEN_GROUP = "content_vk_api_token"
 CONTENT_VK_GROUP_GROUP = "content_vk_group"
+CONTENT_VK_READ_TOKEN_GROUP = "content_vk_read_api_token"
+CONTENT_VK_SERVICE_TOKEN = str(os.getenv("VK_SERVICE_TOKEN", "")).strip()
 CONTENT_VK_WALL_POST_LIMIT = max(5, min(100, int(os.getenv("CONTENT_VK_WALL_POST_LIMIT", "100"))))
 CONTENT_VK_WALL_SYNC_MAX_PAGES = max(1, min(100, int(os.getenv("CONTENT_VK_WALL_SYNC_MAX_PAGES", "20"))))
 CONTENT_VK_WALL_SYNC_INTERVAL_SECONDS = max(
@@ -604,6 +606,7 @@ CONTENT_THREADS_USERNAME_GROUP = "content_threads_username"
 CONTENT_THREADS_PASSWORD_GROUP = "content_threads_password"
 CONTENT_REDNOTE_PROFILE_GROUP = "content_rednote_profile"
 CONTENT_RUBRIC_TAG_GROUP = "content_rubric_tag"
+CONTENT_RUBRIC_HIDDEN_GROUP = "content_rubric_hidden"
 CONTENT_RECOMMENDATION_DISMISSED_GROUP = "content_recommendation_dismissed"
 CONTENT_PLAN_ACCESS_VERIFIED_GROUP = "content_plan_brfox_subscription_verified_at"
 CONTENT_AI_ASSISTANT_USAGE_GROUP = "content_ai_assistant_usage"
@@ -5389,6 +5392,7 @@ def save_content_plan_post_from_form(
         save_content_rubric_tags(db, user.id, rubric_tags)
 
     remember_options(db, user.id, "content_rubric", [rubric])
+    remove_user_option_value(db, user.id, CONTENT_RUBRIC_HIDDEN_GROUP, rubric)
     return True, ""
 
 
@@ -5410,10 +5414,13 @@ def get_content_telegram_settings(user: User, db: Session) -> dict[str, Any]:
 def get_content_vk_settings(user: User, db: Session) -> dict[str, Any]:
     legacy_token = get_secret_user_option_value(db, user.id, CONTENT_VK_TOKEN_GROUP)
     groups = get_content_vk_groups(db, user.id, legacy_token)
+    read_token = str(get_secret_user_option_value(db, user.id, CONTENT_VK_READ_TOKEN_GROUP) or "").strip()
     return {
         "groups_text": "",
         "groups_masked_text": format_content_vk_group_lines(groups, masked_tokens=True),
         "groups": groups,
+        "read_token_masked": mask_secret_value(read_token or CONTENT_VK_SERVICE_TOKEN),
+        "read_token_configured": bool(read_token or CONTENT_VK_SERVICE_TOKEN),
     }
 
 
@@ -9884,20 +9891,30 @@ def sync_external_vk_wall_posts_for_user_with_report(db: Session, user: User) ->
     if not groups:
         report["errors"].append("Не настроены VK-сообщества.")
         return report
+    read_token = str(
+        get_secret_user_option_value(db, user_id, CONTENT_VK_READ_TOKEN_GROUP)
+        or CONTENT_VK_SERVICE_TOKEN
+        or ""
+    ).strip()
+    if not read_token:
+        report["errors"].append(
+            "Для импорта стены добавьте отдельный сервисный ключ VK. Ключ сообщества используется только для публикации."
+        )
+        return report
 
     for group in groups:
         owner_id = str(group.get("owner_id") or "").strip()
         token = str(group.get("api_token") or "").strip()
         title = str(group.get("title") or group.get("screen_name") or owner_id).strip()[:255]
         if not owner_id or not token:
-            report["errors"].append(f"{title or owner_id}: не указан API-токен.")
+            report["errors"].append(f"{title or owner_id}: не указан API-токен публикации.")
             continue
         cutoff_timestamp = int(time.time()) - (CONTENT_TELEGRAM_CHANNEL_POST_RETENTION_DAYS * 86400)
         remote_posts: dict[str, tuple[datetime, str]] = {}
         for page_index in range(CONTENT_VK_WALL_SYNC_MAX_PAGES):
             try:
                 payload = vk_content_api_call(
-                    token,
+                    read_token,
                     "wall.get",
                     {
                         "owner_id": owner_id,
@@ -15666,6 +15683,21 @@ def save_content_rubric_tags(db: Session, user_id: int, tag_map: dict[str, str])
         if rubric and tag
     ]
     replace_user_option_values(db, user_id, CONTENT_RUBRIC_TAG_GROUP, values)
+
+
+def remove_user_option_value(db: Session, user_id: int, group: str, value: str) -> None:
+    normalized = str(value or "").strip()
+    if not normalized:
+        return
+    rows = db.execute(
+        select(UserOption).where(
+            UserOption.user_id == user_id,
+            UserOption.group == group,
+            UserOption.value == normalized,
+        )
+    ).scalars().all()
+    for row in rows:
+        db.delete(row)
 
 
 def smtp_is_configured() -> bool:
@@ -26602,10 +26634,12 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
             if str(board.get("id") or "").strip()
         }
         rubric_tags = get_content_rubric_tags(db, content_owner.id)
+        hidden_rubrics = set(get_options(db, content_owner.id, CONTENT_RUBRIC_HIDDEN_GROUP))
         rubric_options = merge_unique(
             get_options(db, content_owner.id, "content_rubric"),
             [post.rubric for post in content_posts if post.rubric],
         )
+        rubric_options = [rubric for rubric in rubric_options if rubric not in hidden_rubrics]
     rubric_colors = rubric_color_map(rubric_options)
     content_rows: list[dict[str, Any]] = []
     planned_telegram_message_keys: set[tuple[str, str]] = set()
@@ -27414,6 +27448,37 @@ async def my_calendar_content_recommendation_create(request: Request, db: Sessio
     return redirect(f"/my-calendar?{urlencode(query_params)}#content-form")
 
 
+@app.post("/my-calendar/content/rubrics/delete")
+async def my_calendar_content_rubric_delete(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    access_redirect = ensure_content_plan_access(request, user, db)
+    if access_redirect:
+        return access_redirect
+    form = await request.form()
+    content_owner, owner_redirect = ensure_content_owner_for_action(request, user, db, form=form)
+    if owner_redirect or not content_owner:
+        return owner_redirect or content_calendar_redirect(request, user, form=form)
+    rubric = str(form.get("rubric", "")).strip()
+    if not rubric or len(rubric) > 120:
+        add_flash(request, "Не удалось определить рубрику для удаления.", "error")
+        return content_calendar_redirect(request, user, form=form, content_owner=content_owner)
+
+    rubric_tags = get_content_rubric_tags(db, content_owner.id)
+    rubric_tags.pop(rubric, None)
+    save_content_rubric_tags(db, content_owner.id, rubric_tags)
+    remove_user_option_value(db, content_owner.id, "content_rubric", rubric)
+    remember_options(db, content_owner.id, CONTENT_RUBRIC_HIDDEN_GROUP, [rubric])
+    db.commit()
+    add_flash(
+        request,
+        f"Рубрика «{rubric}» и её тег удалены из списка. Созданные посты не изменены.",
+        "success",
+    )
+    return content_calendar_redirect(request, user, form=form, content_owner=content_owner)
+
+
 @app.post("/my-calendar/content/recommendations/dismiss")
 async def my_calendar_content_recommendation_dismiss(request: Request, db: Session = Depends(get_db)):
     user = current_user(request, db)
@@ -27942,6 +28007,7 @@ async def my_calendar_content_vk_connect(request: Request, db: Session = Depends
 
     existing_groups = get_content_vk_settings(content_owner, db).get("groups") or []
     vk_groups_text = str(form.get("vk_groups_text", "")).strip()
+    vk_read_token = str(form.get("vk_read_token", "")).strip()
 
     if vk_groups_text:
         group_entries, group_error = parse_content_vk_group_lines(vk_groups_text)
@@ -27958,6 +28024,8 @@ async def my_calendar_content_vk_connect(request: Request, db: Session = Depends
             return content_calendar_redirect(request, user, form=form, content_owner=content_owner)
 
     set_secret_user_option_value(db, content_owner.id, CONTENT_VK_TOKEN_GROUP, "")
+    if vk_read_token:
+        set_secret_user_option_value(db, content_owner.id, CONTENT_VK_READ_TOKEN_GROUP, vk_read_token)
     replace_user_option_values(
         db,
         content_owner.id,
@@ -27994,6 +28062,7 @@ def my_calendar_content_vk_disconnect(request: Request, db: Session = Depends(ge
         return content_calendar_redirect(request, user, content_owner=content_owner)
 
     set_secret_user_option_value(db, content_owner.id, CONTENT_VK_TOKEN_GROUP, "")
+    set_secret_user_option_value(db, content_owner.id, CONTENT_VK_READ_TOKEN_GROUP, "")
     replace_user_option_values(db, content_owner.id, CONTENT_VK_GROUP_GROUP, [])
     vk_wall_posts = db.execute(
         select(ContentChannelPost).where(

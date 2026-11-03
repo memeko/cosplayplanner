@@ -559,7 +559,7 @@
         <strong>Публикация без Mini App доступна через официальный API VK.</strong>
       </div>
       <p class="muted">
-        Добавьте ключ доступа сообщества для публикации на стену и импорта уже вышедших авторских постов. Текстовые записи работают с ключом сообщества; загрузка новых фотографий может потребовать пользовательский токен с правами стены и фотографий.
+        Для VK используются два разных ключа: ключ сообщества публикует записи, а сервисный ключ приложения читает стену для импорта. VK запрещает вызов <code>wall.get</code> с ключом сообщества и возвращает код 27.
       </p>
       <div class="notes-block telegram-editor-note">
         VK не поддерживает расширенную разметку шрифта для таких постов: полужирный, курсив, подчёркивание, зачёркивание, спойлеры и premium-эмодзи в VK не рендерятся так же, как в Telegram. Для VK используется plain-text версия вашего текста.
@@ -569,7 +569,7 @@
         <ol class="notes-list top-offset">
           <li>В управлении сообществом откройте «Работа с API → Ключи доступа» и создайте ключ с правом стены.</li>
           <li>Добавьте по одному сообществу на строку в формате ниже.</li>
-          <li>Для чтения стены VK может потребовать сервисный или пользовательский токен: это зависит от типа выданного ключа.</li>
+          <li>В настройках отдельного приложения VK скопируйте сервисный ключ доступа и добавьте его в поле импорта стены.</li>
         </ol>
       </details>
       {% if content_can_manage_connections %}
@@ -579,6 +579,12 @@
         <label>VK-сообщества и токены
           <textarea name="vk_groups_text" rows="4" placeholder="Название — vk.ru/my_group — токен_доступа"></textarea>
           {% if vk_settings.groups_masked_text %}<small class="muted">Сохранено: {{ vk_settings.groups_masked_text }}</small>{% endif %}
+        </label>
+        <label>Сервисный ключ для импорта стены
+          <input type="password" name="vk_read_token" value="" placeholder="Сервисный ключ приложения VK" autocomplete="new-password" />
+          <small class="muted">
+            {% if vk_settings.read_token_masked %}Сейчас сохранено: {{ vk_settings.read_token_masked }}. Оставьте пустым, если менять ключ не нужно.{% else %}Обязателен только для <code>wall.get</code>. Ключ сообщества сюда не подходит.{% endif %}
+          </small>
         </label>
         <div class="actions-inline wrap"><button type="submit" class="btn btn-accent">Сохранить VK</button></div>
       </form>
@@ -1257,9 +1263,15 @@
     {% if content_rubric_options %}
       <div class="chips-wrap">
         {% for rubric in content_rubric_options %}
-          <span class="chip content-rubric-chip" style="background: {{ content_rubric_colors.get(rubric, '#8ecae6') }}55; border-color: {{ content_rubric_colors.get(rubric, '#8ecae6') }};">
-            {{ rubric }}{% if content_rubric_tags.get(rubric) %} · {{ content_rubric_tags.get(rubric) }}{% endif %}
-          </span>
+          <div class="chip content-rubric-chip content-rubric-chip-manage" style="background: {{ content_rubric_colors.get(rubric, '#8ecae6') }}55; border-color: {{ content_rubric_colors.get(rubric, '#8ecae6') }};">
+            <span>{{ rubric }}{% if content_rubric_tags.get(rubric) %} · {{ content_rubric_tags.get(rubric) }}{% endif %}</span>
+            <form method="post" action="/my-calendar/content/rubrics/delete" onsubmit="return confirm('Удалить эту рубрику и её тег из списка? Созданные посты останутся без изменений.');">
+              <input type="hidden" name="content_scope" value="{{ content_scope }}" />
+              {% if content_owner_id %}<input type="hidden" name="content_owner_id" value="{{ content_owner_id }}" />{% endif %}
+              <input type="hidden" name="rubric" value="{{ rubric }}" />
+              <button type="submit" class="content-rubric-delete" aria-label="Удалить рубрику {{ rubric }}" title="Удалить рубрику и тег">×</button>
+            </form>
+          </div>
         {% endfor %}
       </div>
     {% else %}

@@ -2225,6 +2225,40 @@ textarea {
   font-weight: 600;
 }
 
+.content-rubric-chip-manage {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.content-rubric-chip-manage form { display: inline-flex; margin: 0; }
+
+.content-rubric-delete {
+  display: inline-grid;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  place-items: center;
+  border: 1px solid rgba(78, 64, 112, 0.24);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.48);
+  color: inherit;
+  font: 700 16px/1 "Manrope", sans-serif;
+  cursor: pointer;
+}
+
+.content-rubric-delete:hover,
+.content-rubric-delete:focus-visible {
+  border-color: rgba(94, 91, 255, 0.58);
+  background: rgba(255, 255, 255, 0.82);
+  outline: none;
+}
+
+html[data-theme="dark"] .content-rubric-delete {
+  border-color: rgba(211, 202, 229, 0.28);
+  background: rgba(28, 26, 35, 0.48);
+}
+
 .comments-list {
   display: grid;
   gap: 10px;
