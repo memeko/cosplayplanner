@@ -397,6 +397,7 @@
       {% set assignee_options = task_assignees_by_progress.get(row.id, []) %}
       {% if task_items or assignee_options %}
         <h4>Задания</h4>
+        <div data-task-list>
         {% if task_items %}
           <table class="tasks-table">
             <thead>
@@ -406,7 +407,7 @@
                 <th>Выполнил(а)</th>
               </tr>
             </thead>
-            <tbody>
+            <tbody data-task-tbody>
               {% for item in task_items %}
               <tr>
                 <td data-label="Ответственный">{{ item.assignee_label }}</td>
@@ -426,9 +427,10 @@
             </tbody>
           </table>
         {% endif %}
+        </div>
 
         {% if assignee_options %}
-          <form method="post" action="/in-progress/{{ row.id }}/tasks/add" class="task-add-form">
+          <form method="post" action="/in-progress/{{ row.id }}/tasks/add" class="task-add-form" data-task-add-form>
             <label>
               Ответственный
               <select name="task_assignee" required>
@@ -444,6 +446,7 @@
             </label>
             <div class="task-add-actions">
               <button type="submit" class="btn">Добавить задание</button>
+              <span class="meta" data-task-status aria-live="polite"></span>
             </div>
           </form>
         {% endif %}
@@ -593,4 +596,61 @@
 })();
 </script>
 {% endif %}
+<script>
+(() => {
+  const taskTableMarkup = () => `
+    <table class="tasks-table">
+      <thead><tr><th>Ответственный</th><th>Задание</th><th>Выполнил(а)</th></tr></thead>
+      <tbody data-task-tbody></tbody>
+    </table>`;
+  document.querySelectorAll('[data-task-add-form]').forEach((form) => {
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const button = form.querySelector('button[type="submit"]');
+      const status = form.querySelector('[data-task-status]');
+      button.disabled = true;
+      status.textContent = 'Добавляю…';
+      try {
+        const response = await fetch(form.action, {
+          method: 'POST',
+          body: new FormData(form),
+          credentials: 'same-origin',
+          headers: { Accept: 'application/json' },
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok || !payload.ok) throw new Error(payload.error || 'Не удалось добавить задание.');
+        const list = form.closest('.in-progress-card, .card, section, article')?.querySelector('[data-task-list]')
+          || form.parentElement?.querySelector('[data-task-list]');
+        if (!list) throw new Error('Не удалось обновить список заданий.');
+        if (!list.querySelector('[data-task-tbody]')) list.innerHTML = taskTableMarkup();
+        const row = document.createElement('tr');
+        const assignee = document.createElement('td');
+        assignee.dataset.label = 'Ответственный';
+        assignee.textContent = payload.task.assignee_label;
+        const task = document.createElement('td');
+        task.dataset.label = 'Задание';
+        task.textContent = payload.task.task;
+        const actions = document.createElement('td');
+        actions.dataset.label = 'Действия';
+        actions.className = 'task-cell-actions';
+        actions.innerHTML = `<div class="task-done-actions">
+          <form method="post" class="inline-form"><button type="submit" class="btn btn-small">☐</button></form>
+          <form method="post" class="inline-form"><button type="submit" class="btn btn-small btn-danger">✕</button></form>
+        </div>`;
+        const actionForms = actions.querySelectorAll('form');
+        actionForms[0].action = payload.task.toggle_url;
+        actionForms[1].action = payload.task.delete_url;
+        row.append(assignee, task, actions);
+        list.querySelector('[data-task-tbody]').appendChild(row);
+        form.querySelector('[name="task_text"]').value = '';
+        status.textContent = 'Задание добавлено.';
+      } catch (error) {
+        status.textContent = error.message || 'Не удалось добавить задание.';
+      } finally {
+        button.disabled = false;
+      }
+    });
+  });
+})();
+</script>
 {% endblock %}

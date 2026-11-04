@@ -190,8 +190,8 @@
               · обновлено {{ item.updated_at.strftime('%d-%m-%Y %H:%M') }}
             {% endif %}
           </p>
-          {% if item.image_url %}<img class="news-image" src="{{ item.image_url }}" alt="Баннер объявления" loading="lazy" />{% endif %}
-          <div class="news-body">{{ item.body|render_text }}</div>
+          {% if item.image_url %}{% if item.image_link_url %}<a href="{{ item.image_link_url }}" target="_blank" rel="noopener noreferrer">{% endif %}<img class="news-image" src="{{ item.image_url }}" alt="Баннер объявления" loading="lazy" />{% if item.image_link_url %}</a>{% endif %}{% endif %}
+          <div class="news-body">{{ item.body|render_markdown }}</div>
 
           {% if can_manage_news %}
             <details class="news-edit top-offset">
@@ -296,9 +296,9 @@
 <section class="box top-offset">
   <h2>Дни рождения персонажей на сегодня</h2>
   {% if character_birthdays_today %}
-    <ul class="notifications-list">
+    <ul class="notifications-list character-birthdays-list" data-birthday-list>
       {% for item in character_birthdays_today %}
-        <li>
+        <li data-birthday-item>
           <div class="notification-content">
             <span>
               {% if item.anime_title %}
@@ -314,12 +314,40 @@
         </li>
       {% endfor %}
     </ul>
+    {% if character_birthdays_today|length > 10 %}
+      <nav class="cosplan-section-pager birthday-pager" data-birthday-pager aria-label="Страницы дней рождения">
+        <button type="button" class="btn btn-small" data-birthday-prev>← Назад</button>
+        <span class="meta" data-birthday-counter></span>
+        <button type="button" class="btn btn-small" data-birthday-next>Далее →</button>
+      </nav>
+    {% endif %}
   {% else %}
     <p class="muted">Сегодня нет данных о днях рождения персонажей.</p>
   {% endif %}
 </section>
 
 <script>
+  (function () {
+    const items = Array.from(document.querySelectorAll("[data-birthday-item]"));
+    const pager = document.querySelector("[data-birthday-pager]");
+    if (!items.length || !pager) return;
+    const pageSize = 10;
+    const pageCount = Math.ceil(items.length / pageSize);
+    const counter = pager.querySelector("[data-birthday-counter]");
+    const previous = pager.querySelector("[data-birthday-prev]");
+    const next = pager.querySelector("[data-birthday-next]");
+    let page = 0;
+    const render = () => {
+      items.forEach((item, index) => { item.hidden = Math.floor(index / pageSize) !== page; });
+      counter.textContent = `${page + 1} из ${pageCount}`;
+      previous.disabled = page === 0;
+      next.disabled = page === pageCount - 1;
+    };
+    previous.addEventListener("click", () => { page -= 1; render(); });
+    next.addEventListener("click", () => { page += 1; render(); });
+    render();
+  })();
+
   (function () {
     document.querySelectorAll("main section.box:not([data-home-fixed])").forEach(function (section, index) {
       const heading = section.querySelector(":scope > .row-between, :scope > h2");

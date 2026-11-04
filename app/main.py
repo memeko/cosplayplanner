@@ -1451,6 +1451,7 @@ def apply_schema_migrations() -> None:
             ("plaque_text", "VARCHAR(80)"),
             ("plaque_tone", "VARCHAR(24) NOT NULL DEFAULT 'violet'"),
             ("image_url", "TEXT"),
+            ("image_link_url", "TEXT"),
         ],
         "cosplan_cards": [
             ("costume_bought", "BOOLEAN NOT NULL DEFAULT 0"),
@@ -1649,6 +1650,7 @@ def apply_schema_migrations() -> None:
         ],
         "personal_calendar_events": [
             ("event_city", "VARCHAR(255)"),
+            ("is_note", "BOOLEAN NOT NULL DEFAULT 0"),
         ],
         "community_master_comments": [
             ("is_client", "BOOLEAN NOT NULL DEFAULT 0"),
@@ -4402,23 +4404,29 @@ def month_calendar_grid(
     entries: list[dict[str, Any]],
     shift_days: set[int] | None = None,
     shift_half_days: set[int] | None = None,
+    today: date | None = None,
 ) -> list[list[dict[str, Any]]]:
     calendar_builder = calendar.Calendar(firstweekday=0)
     matrix = calendar_builder.monthdayscalendar(year, month)
     day_types: dict[int, set[str]] = defaultdict(set)
     day_labels: dict[int, list[str]] = defaultdict(list)
+    day_note_labels: dict[int, list[str]] = defaultdict(list)
+    resolved_today = today or date.today()
     normalized_shift_days = {int(day) for day in (shift_days or set()) if isinstance(day, int) and day > 0}
     normalized_shift_half_days = {int(day) for day in (shift_half_days or set()) if isinstance(day, int) and day > 0}
     for entry in entries:
         entry_date = entry.get("date")
         if not isinstance(entry_date, date) or entry_date.year != year or entry_date.month != month:
             continue
-        day_types[entry_date.day].add(str(entry.get("type_key") or ""))
+        is_note = bool(entry.get("is_note"))
+        if not is_note:
+            day_types[entry_date.day].add(str(entry.get("type_key") or ""))
         title = str(entry.get("title") or "").strip()
         kind = str(entry.get("kind") or "").strip()
         label = title or kind
-        if label and label not in day_labels[entry_date.day]:
-            day_labels[entry_date.day].append(label)
+        target_labels = day_note_labels if is_note else day_labels
+        if label and label not in target_labels[entry_date.day]:
+            target_labels[entry_date.day].append(label)
 
     weeks: list[list[dict[str, Any]]] = []
     for week in matrix:
@@ -4445,6 +4453,8 @@ def month_calendar_grid(
                     "single_type": (types[0] if len(types) == 1 else ""),
                     "is_multi": len(types) > 1,
                     "labels": day_labels.get(day_value, []),
+                    "note_labels": day_note_labels.get(day_value, []),
+                    "is_past": date(year, month, day_value) < resolved_today,
                     "has_work_shift": has_shift,
                     "has_full_day_shift": has_shift_full_day,
                     "is_work_shift_only": has_shift_full_day and not types,
@@ -18392,7 +18402,13 @@ def index(request: Request, db: Session = Depends(get_db)):
         ).scalars().all()
         birthdays_this_week = upcoming_user_birthdays_this_week(users_with_birthdays, today)
         info_events_week = weekly_infopovods(today)
-        character_birthdays_today_rows = cached_character_birthdays_today(today)
+        character_birthdays_today_rows = sorted(
+            cached_character_birthdays_today(today),
+            key=lambda item: (
+                str(item.get("name") or "").casefold(),
+                str(item.get("localized_title") or item.get("anime_title") or "").casefold(),
+            ),
+        )
         home_favorite_options = build_home_favorite_options(db, user)
         home_favorites = home_favorites_for_user(db, user, home_favorite_options)
         home_week_summary = build_home_week_summary(db, user, today)
@@ -18657,6 +18673,16 @@ async def save_home_news_image(upload: UploadFile) -> tuple[str, str]:
     file_name = f"home-news-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:12]}.webp"
     (media_storage_path() / file_name).write_bytes(output.getvalue())
     return f"/media/{file_name}", ""
+
+
+def normalize_home_news_link(value: str | None) -> str:
+    normalized = normalize_url_with_scheme(value)
+    if not normalized:
+        return ""
+    parsed = urlparse(normalized)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return ""
+    return normalized
 
 
 @app.post("/home-news/new")
@@ -19324,7 +19350,7 @@ def serialize_in_progress_for_mobile(item: InProgressCard) -> dict[str, Any]:
 
 
 def serialize_calendar_event_for_mobile(item: PersonalCalendarEvent) -> dict[str, Any]:
-    return {"id": int(item.id), "date": mobile_iso_date(item.event_date), "time": item.event_time, "title": item.title, "city": item.event_city, "details": item.details, "updated_at": mobile_iso_datetime(item.updated_at)}
+    return {"id": int(item.id), "date": mobile_iso_date(item.event_date), "time": item.event_time, "title": item.title, "city": item.event_city, "details": item.details, "is_note": bool(item.is_note), "updated_at": mobile_iso_datetime(item.updated_at)}
 
 
 def serialize_content_post_for_mobile(item: ContentPlanPost) -> dict[str, Any]:
@@ -20943,6 +20969,7 @@ async def admin_create_home_announcement(request: Request, db: Session = Depends
     body = str(form.get("body", "")).strip()
     plaque_text = str(form.get("plaque_text", "")).strip()
     plaque_tone = str(form.get("plaque_tone", "violet")).strip().casefold()
+    image_link_url = normalize_home_news_link(str(form.get("image_link_url", "")).strip())
     if not body:
         add_flash(request, "Введите текст объявления.", "error")
         return redirect("/admin/dashboard#admin-home-announcement-editor")
@@ -20964,6 +20991,7 @@ async def admin_create_home_announcement(request: Request, db: Session = Depends
         plaque_text=plaque_text or None,
         plaque_tone=plaque_tone,
         image_url=image_url or None,
+        image_link_url=image_link_url or None,
     ))
     db.commit()
     add_flash(request, "Объявление опубликовано на главной.", "success")
@@ -20986,6 +21014,7 @@ async def admin_edit_home_announcement(news_id: int, request: Request, db: Sessi
     body = str(form.get("body", "")).strip()
     plaque_text = str(form.get("plaque_text", "")).strip()
     plaque_tone = str(form.get("plaque_tone", "violet")).strip().casefold()
+    image_link_url = normalize_home_news_link(str(form.get("image_link_url", "")).strip())
     if not body or len(body) > 8000 or len(plaque_text) > 80:
         add_flash(request, "Проверьте текст объявления и плашки.", "error")
         return redirect("/admin/dashboard#admin-home-announcement-editor")
@@ -20999,6 +21028,7 @@ async def admin_edit_home_announcement(news_id: int, request: Request, db: Sessi
     item.body = body
     item.plaque_text = plaque_text or None
     item.plaque_tone = plaque_tone
+    item.image_link_url = image_link_url or None
     if to_bool(form.get("remove_image")):
         item.image_url = None
         remove_media_file_by_path(old_image_url)
@@ -24838,19 +24868,26 @@ def in_progress_checklist_delete(progress_id: int, item_index: int, request: Req
 @app.post("/in-progress/{progress_id}/tasks/add")
 async def in_progress_task_add(progress_id: int, request: Request, db: Session = Depends(get_db)):
     user = current_user(request, db)
+    wants_json = "application/json" in request.headers.get("accept", "")
     if not user:
+        if wants_json:
+            return JSONResponse({"ok": False, "error": "Требуется войти в аккаунт."}, status_code=401)
         return redirect("/login")
 
     progress = db.execute(
         select(InProgressCard).where(InProgressCard.id == progress_id, InProgressCard.user_id == user.id)
     ).scalar_one_or_none()
     if not progress:
+        if wants_json:
+            return JSONResponse({"ok": False, "error": "Карточка «В работе» не найдена."}, status_code=404)
         add_flash(request, "Карточка «В работе» не найдена.", "error")
         return redirect("/in-progress")
 
     card = progress.cosplan_card
     source_card = resolve_source_card(db, card)
     if not source_card or source_card.plan_type != "project":
+        if wants_json:
+            return JSONResponse({"ok": False, "error": "Блок «Задания» доступен только для проектных карточек."}, status_code=400)
         add_flash(request, "Блок «Задания» доступен только для проектных карточек.", "error")
         return redirect("/in-progress")
 
@@ -24858,9 +24895,13 @@ async def in_progress_task_add(progress_id: int, request: Request, db: Session =
     task_text = str(form.get("task_text", "")).strip()
     assignee_raw = str(form.get("task_assignee", "")).strip()
     if not task_text:
+        if wants_json:
+            return JSONResponse({"ok": False, "error": "Введите текст задания."}, status_code=422)
         add_flash(request, "Введите текст задания.", "error")
         return redirect("/in-progress")
     if not assignee_raw:
+        if wants_json:
+            return JSONResponse({"ok": False, "error": "Выберите ответственного."}, status_code=422)
         add_flash(request, "Выберите ответственного.", "error")
         return redirect("/in-progress")
 
@@ -24871,6 +24912,8 @@ async def in_progress_task_add(progress_id: int, request: Request, db: Session =
         for item in card_task_assignee_options(source_card, alias_to_username, users_by_username)
     }
     if not canonical_assignee or canonical_assignee.casefold() not in allowed_assignees:
+        if wants_json:
+            return JSONResponse({"ok": False, "error": "Выберите ответственного из списка участников карточки."}, status_code=422)
         add_flash(request, "Выберите ответственного из списка участников карточки.", "error")
         return redirect("/in-progress")
 
@@ -24900,6 +24943,26 @@ async def in_progress_task_add(progress_id: int, request: Request, db: Session =
         )
 
     db.commit()
+    if wants_json:
+        assignee_label = next(
+            (
+                str(item.get("label") or canonical_assignee)
+                for item in card_task_assignee_options(source_card, alias_to_username, users_by_username)
+                if str(item.get("value") or "").casefold() == canonical_assignee.casefold()
+            ),
+            canonical_assignee,
+        )
+        task_index = len(existing_rows) - 1
+        return JSONResponse({
+            "ok": True,
+            "task": {
+                "assignee_label": assignee_label,
+                "task": task_text,
+                "done": False,
+                "toggle_url": f"/in-progress/{progress.id}/tasks/toggle/{task_index}",
+                "delete_url": f"/in-progress/{progress.id}/tasks/delete/{task_index}",
+            },
+        })
     add_flash(request, "Задание добавлено.", "success")
     return redirect("/in-progress")
 
@@ -25293,20 +25356,29 @@ async def in_progress_master_board_save_api(card_id: int, request: Request, db: 
 @app.post("/in-progress/master/{card_id}/tasks/add")
 async def in_progress_master_task_add(card_id: int, request: Request, db: Session = Depends(get_db)):
     user = current_user(request, db)
+    wants_json = "application/json" in request.headers.get("accept", "")
     if not user:
+        if wants_json:
+            return JSONResponse({"ok": False, "error": "Требуется войти в аккаунт."}, status_code=401)
         return redirect("/login")
 
     card = db.get(InProgressMasterCard, card_id)
     if not card:
+        if wants_json:
+            return JSONResponse({"ok": False, "error": "Карточка мастера не найдена."}, status_code=404)
         add_flash(request, "Карточка мастера не найдена.", "error")
         return redirect("/in-progress?scope=master")
     if not can_edit_in_progress_master_card(user, card):
+        if wants_json:
+            return JSONResponse({"ok": False, "error": "Недостаточно прав для редактирования."}, status_code=403)
         add_flash(request, "Недостаточно прав для редактирования.", "error")
         return redirect(f"/in-progress/master/{card_id}")
 
     form = await request.form()
     item_text = str(form.get("item_text", "")).strip()
     if not item_text:
+        if wants_json:
+            return JSONResponse({"ok": False, "error": "Введите текст задачи."}, status_code=422)
         add_flash(request, "Введите текст задачи.", "error")
         return redirect(f"/in-progress/master/{card_id}")
 
@@ -25314,6 +25386,16 @@ async def in_progress_master_task_add(card_id: int, request: Request, db: Sessio
     rows.append({"text": item_text, "done": False, "status": CHECKLIST_STATUS_TODO, "tags": []})
     card.task_rows_json = rows
     db.commit()
+    if wants_json:
+        task_index = len(rows) - 1
+        return JSONResponse({
+            "ok": True,
+            "task": {
+                "text": item_text,
+                "toggle_url": f"/in-progress/master/{card.id}/tasks/toggle/{task_index}",
+                "delete_url": f"/in-progress/master/{card.id}/tasks/delete/{task_index}",
+            },
+        })
     add_flash(request, "Задача добавлена.", "success")
     return redirect(f"/in-progress/master/{card_id}")
 
@@ -26404,17 +26486,19 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
             }
         )
     for event in personal_events:
+        event_is_note = bool(getattr(event, "is_note", False))
         entries.append(
             {
                 "date": event.event_date,
-                "time": event.event_time or "",
-                "kind": "Личное событие",
-                "type_key": "personal",
+                "time": "" if event_is_note else (event.event_time or ""),
+                "kind": "Заметка на весь день" if event_is_note else "Личное событие",
+                "type_key": "note" if event_is_note else "personal",
                 "title": event.title or "Без названия",
-                "city": event.event_city or "—",
+                "city": "—" if event_is_note else (event.event_city or "—"),
                 "coproplayers": "",
                 "details": event.details or "",
                 "personal_event_id": event.id,
+                "is_note": event_is_note,
             }
         )
     for card in master_cards:
@@ -26480,7 +26564,7 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
         if bool(shift_item.is_half_day):
             shift_half_days_by_month[(shift_date.year, shift_date.month)].add(shift_date.day)
 
-    month_keys = set(by_month.keys()) | set(shift_days_by_month.keys())
+    month_keys = set(by_month.keys()) | set(shift_days_by_month.keys()) | {(today.year, today.month)}
 
     for year_month in sorted(month_keys):
         year, month = year_month
@@ -26496,6 +26580,7 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
                     month_rows,
                     shift_days=shift_days_by_month.get(year_month, set()),
                     shift_half_days=shift_half_days_by_month.get(year_month, set()),
+                    today=today,
                 ),
             }
         )
@@ -27053,6 +27138,7 @@ async def my_calendar_event_create(request: Request, db: Session = Depends(get_d
     event_title = str(form.get("event_title", "")).strip()
     event_city = str(form.get("event_city", "")).strip()
     event_details = str(form.get("event_details", "")).strip()
+    is_note = to_bool(form.get("is_note"))
 
     if not event_date:
         add_flash(request, "Укажите дату события.", "error")
@@ -27065,14 +27151,15 @@ async def my_calendar_event_create(request: Request, db: Session = Depends(get_d
         PersonalCalendarEvent(
             user_id=user.id,
             event_date=event_date,
-            event_time=event_time,
+            event_time=None if is_note else event_time,
             title=event_title,
-            event_city=event_city or None,
+            event_city=None if is_note else (event_city or None),
             details=event_details or None,
+            is_note=is_note,
         )
     )
     db.commit()
-    add_flash(request, "Событие добавлено в календарь.", "success")
+    add_flash(request, "Заметка добавлена в календарь." if is_note else "Событие добавлено в календарь.", "success")
     return calendar_redirect_for_view(next_view)
 
 

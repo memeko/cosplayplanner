@@ -51,10 +51,15 @@
         <textarea name="body" rows="8" maxlength="8000" required placeholder="Введите текст объявления…" id="admin-announcement-body"></textarea>
         <span class="meta"><span id="admin-announcement-count">0</span> / 8000 символов</span>
       </label>
+      <p class="muted">Поддерживается Markdown: заголовки, списки, **жирный**, *курсив* и [ссылки](https://...).</p>
       <label>
         Баннер или изображение
         <input type="file" name="image" accept="image/*" id="admin-announcement-image" />
         <span class="meta">До 10 МБ. Изображение будет оптимизировано в WebP.</span>
+      </label>
+      <label>
+        Ссылка с баннера
+        <input type="url" name="image_link_url" placeholder="https://example.com" />
       </label>
       <p class="muted">Ссылки вида https://example.com станут кликабельными на главной.</p>
       <div class="actions-inline wrap">
@@ -79,8 +84,8 @@
       <article class="news-item">
         {% if item.plaque_text %}<span class="news-plaque news-plaque-{{ item.plaque_tone or 'violet' }}">{{ item.plaque_text }}</span>{% endif %}
         <p class="news-meta">{{ item.created_at.strftime('%d-%m-%Y %H:%M') if item.created_at else '—' }}</p>
-        {% if item.image_url %}<img class="news-image" src="{{ item.image_url }}" alt="Баннер объявления" loading="lazy" />{% endif %}
-        <div class="news-body">{{ item.body|render_text }}</div>
+        {% if item.image_url %}{% if item.image_link_url %}<a href="{{ item.image_link_url }}" target="_blank" rel="noopener noreferrer">{% endif %}<img class="news-image" src="{{ item.image_url }}" alt="Баннер объявления" loading="lazy" />{% if item.image_link_url %}</a>{% endif %}{% endif %}
+        <div class="news-body">{{ item.body|render_markdown }}</div>
         <details class="news-edit top-offset">
           <summary>Редактировать объявление</summary>
           <form method="post" action="/admin/home-announcements/{{ item.id }}/edit" enctype="multipart/form-data" class="grid one-col top-offset">
@@ -92,8 +97,9 @@
                 {% endfor %}
               </select>
             </label>
-            <label>Текст<textarea name="body" rows="6" maxlength="8000" required>{{ item.body }}</textarea></label>
+            <label>Текст (Markdown)<textarea name="body" rows="6" maxlength="8000" required>{{ item.body }}</textarea></label>
             <label>Заменить изображение<input type="file" name="image" accept="image/*" /></label>
+            <label>Ссылка с баннера<input type="url" name="image_link_url" value="{{ item.image_link_url or '' }}" placeholder="https://example.com" /></label>
             {% if item.image_url %}<label class="checkbox-row"><input type="checkbox" name="remove_image" value="1" /> Удалить текущее изображение</label>{% endif %}
             <button type="submit" class="btn btn-accent">Сохранить изменения</button>
           </form>

@@ -45,6 +45,10 @@
         Пояснение
         <textarea name="event_details" rows="2" placeholder="Необязательно"></textarea>
       </label>
+      <label class="inline-check">
+        <input type="checkbox" name="is_note" value="1" />
+        Информационная плашка на весь день — без времени и города
+      </label>
       <div class="actions-inline">
         <button type="submit" class="btn btn-accent">Добавить в календарь</button>
       </div>
@@ -180,6 +184,8 @@
       <span class="chip calendar-chip photoset">Фотосет</span>
       <span class="chip calendar-chip rehearsal">Репетиция</span>
       <span class="chip calendar-chip personal">Личное событие</span>
+      <span class="chip calendar-chip note">Заметка на весь день</span>
+      <span class="chip calendar-chip past-day">Прошедший день</span>
       <span class="chip calendar-chip master-deadline">Дедлайн мастера</span>
       <span class="chip calendar-chip master-fitting">Промежуточный дедлайн / Примерка</span>
       <span class="chip calendar-chip multi">Несколько типов в один день</span>
@@ -215,7 +221,7 @@
                   <tr>
                     {% for cell in week %}
                       {% if cell.day %}
-                        <td class="calendar-grid-cell {% if cell.has_half_day_shift %}calendar-day-half-split{% elif cell.is_multi %}calendar-day-multi{% elif cell.single_type %}calendar-day-{{ cell.single_type }}{% endif %} {% if cell.has_full_day_shift %}calendar-day-work-shift{% endif %} {% if cell.is_work_shift_only %}calendar-day-shift-only{% endif %}">
+                        <td class="calendar-grid-cell {% if cell.has_half_day_shift %}calendar-day-half-split{% elif cell.is_multi %}calendar-day-multi{% elif cell.single_type %}calendar-day-{{ cell.single_type }}{% endif %} {% if cell.has_full_day_shift %}calendar-day-work-shift{% endif %} {% if cell.is_work_shift_only %}calendar-day-shift-only{% endif %} {% if cell.is_past %}calendar-day-past{% endif %}">
                           {% if cell.has_half_day_shift %}
                             <div class="calendar-split-bg" aria-hidden="true">
                               <span class="calendar-split-half split-shift"></span>
@@ -223,6 +229,13 @@
                             </div>
                           {% endif %}
                           <span class="day-number">{{ cell.day }}</span>
+                          {% if cell.note_labels %}
+                            <div class="calendar-day-notes">
+                              {% for note_label in cell.note_labels %}
+                                <div class="calendar-day-note" title="{{ note_label }}">{{ note_label }}</div>
+                              {% endfor %}
+                            </div>
+                          {% endif %}
                           {% if cell.labels %}
                             <div class="calendar-cell-items">
                               {% for label in cell.labels[:2] %}
@@ -257,7 +270,7 @@
                     <span class="chip chip-alert">Совпадает по дате ({{ item.same_date_count }})</span>
                   {% endif %}
                   <strong>{{ item.title }}</strong>
-                  <span class="muted">Город: {{ item.city or "—" }}</span>
+                  {% if not item.is_note %}<span class="muted">Город: {{ item.city or "—" }}</span>{% endif %}
                   {% if item.coproplayers %}
                     <span class="muted">Сокосплеер: {{ item.coproplayers }}</span>
                   {% endif %}

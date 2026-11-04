@@ -185,10 +185,49 @@
       min-width: 160px;
     }
   }
+  .cosplan-form-pager {
+    position: sticky;
+    top: 10px;
+    z-index: 30;
+    display: grid;
+    grid-template-columns: auto minmax(220px, 1fr) auto auto;
+    align-items: end;
+    gap: 10px;
+    padding: 12px;
+    border: 1px solid rgba(184, 200, 255, .82);
+    border-radius: 20px;
+    background: rgba(248, 251, 255, .94);
+    box-shadow: 0 12px 32px rgba(80, 100, 180, .14);
+    backdrop-filter: blur(16px);
+  }
+  .cosplan-form-pager label { margin: 0; }
+  .cosplan-form-pager label span { display: block; margin-bottom: 4px; color: var(--muted); font-size: .78rem; }
+  .cosplan-form-page-counter { align-self: center; color: var(--muted); white-space: nowrap; font-size: .88rem; }
+  .cosplan-form-page[hidden] { display: none !important; }
+  html[data-theme="dark"] .cosplan-form-pager {
+    border-color: rgba(183, 160, 255, .46);
+    background: rgba(43, 39, 55, .95);
+    box-shadow: 0 14px 34px rgba(0, 0, 0, .34), inset 0 1px 0 rgba(255, 255, 255, .08);
+  }
+  @media (max-width: 640px) {
+    .cosplan-form-pager { grid-template-columns: 1fr 1fr; top: 6px; }
+    .cosplan-form-pager label { grid-column: 1 / -1; }
+    .cosplan-form-page-counter { grid-column: 1 / -1; text-align: center; }
+    .cosplan-form-pager .btn { width: 100%; min-height: 42px; }
+  }
 </style>
 
 <form method="post" action="{{ '/cosplan/' ~ card_id ~ '/edit' if editing else '/cosplan/new' }}" class="grid one-col big-form" id="cosplan-form">
   <p class="muted">Во всех текстовых полях карточки поддерживается Markdown: **жирный**, *курсив*, `код`, [ссылка](https://...).</p>
+  <nav class="cosplan-form-pager" id="cosplan-form-pager" aria-label="Разделы формы карточки">
+    <button type="button" class="btn cosplan-form-page-prev">← Назад</button>
+    <label>
+      <span>Раздел карточки</span>
+      <select class="cosplan-form-page-select" aria-label="Выберите раздел карточки"></select>
+    </label>
+    <span class="cosplan-form-page-counter" aria-live="polite"></span>
+    <button type="button" class="btn btn-accent cosplan-form-page-next">Далее →</button>
+  </nav>
   <section class="box">
     <h2>Основное</h2>
     <div class="grid two-col">
@@ -1178,7 +1217,7 @@
 
   <input type="hidden" id="unknown_prices_initial" value='{{ form.unknown_prices_json | tojson }}' />
 
-  <div class="actions-inline">
+  <div class="actions-inline" id="cosplan-form-final-actions">
     <button type="submit" class="btn btn-accent">{{ "Сохранить" if editing else "Создать" }}</button>
     <a href="/cosplan" class="btn">Отмена</a>
   </div>
@@ -2924,5 +2963,58 @@
   updateStatusMode();
   updateStatusValue();
   updateReferencesPreview();
+</script>
+<script>
+  (() => {
+    const form = document.getElementById("cosplan-form");
+    const pager = document.getElementById("cosplan-form-pager");
+    if (!form || !pager) return;
+    const pages = Array.from(form.querySelectorAll(":scope > section.box"));
+    const select = pager.querySelector(".cosplan-form-page-select");
+    const previous = pager.querySelector(".cosplan-form-page-prev");
+    const next = pager.querySelector(".cosplan-form-page-next");
+    const counter = pager.querySelector(".cosplan-form-page-counter");
+    const finalActions = document.getElementById("cosplan-form-final-actions");
+    if (!pages.length || !select || !previous || !next || !counter) {
+      pager.hidden = true;
+      return;
+    }
+
+    pages.forEach((page, index) => {
+      page.classList.add("cosplan-form-page");
+      const option = document.createElement("option");
+      option.value = String(index);
+      option.textContent = page.querySelector(":scope > h2")?.textContent?.trim() || `Раздел ${index + 1}`;
+      select.appendChild(option);
+    });
+
+    let activeIndex = 0;
+    let invalidNavigationLocked = false;
+    const showPage = (requestedIndex, focusPage = false) => {
+      activeIndex = Math.max(0, Math.min(pages.length - 1, requestedIndex));
+      pages.forEach((page, index) => { page.hidden = index !== activeIndex; });
+      select.value = String(activeIndex);
+      counter.textContent = `${activeIndex + 1} из ${pages.length}`;
+      previous.disabled = activeIndex === 0;
+      next.hidden = activeIndex === pages.length - 1;
+      if (finalActions) finalActions.hidden = activeIndex !== pages.length - 1;
+      if (focusPage) {
+        pager.scrollIntoView({ behavior: "smooth", block: "start" });
+        window.setTimeout(() => pages[activeIndex].querySelector("input, select, textarea, button")?.focus({ preventScroll: true }), 220);
+      }
+    };
+
+    previous.addEventListener("click", () => showPage(activeIndex - 1, true));
+    next.addEventListener("click", () => showPage(activeIndex + 1, true));
+    select.addEventListener("change", () => showPage(Number(select.value), true));
+    form.addEventListener("invalid", (event) => {
+      if (invalidNavigationLocked) return;
+      invalidNavigationLocked = true;
+      const pageIndex = pages.indexOf(event.target.closest(".cosplan-form-page"));
+      if (pageIndex >= 0) showPage(pageIndex);
+      window.setTimeout(() => { invalidNavigationLocked = false; }, 100);
+    }, true);
+    showPage(0);
+  })();
 </script>
 {% endblock %}

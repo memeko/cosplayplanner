@@ -337,6 +337,7 @@ class HomeNews(Base):
     plaque_text = Column(String(80), nullable=True)
     plaque_tone = Column(String(24), nullable=False, default="violet")
     image_url = Column(Text, nullable=True)
+    image_link_url = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
@@ -692,6 +693,7 @@ class PersonalCalendarEvent(Base):
     title = Column(String(255), nullable=False)
     event_city = Column(String(255), nullable=True, index=True)
     details = Column(Text, nullable=True)
+    is_note = Column(Boolean, nullable=False, default=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
