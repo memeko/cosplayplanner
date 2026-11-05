@@ -723,6 +723,12 @@
       }
     }
 
+    function syncPhotoInputAvailability() {
+      if (!addPhotoFileButton) return;
+      const occupiedSlots = uploadedTokens().length + photoInputs().length;
+      addPhotoFileButton.disabled = occupiedSlots >= maxFileCount;
+    }
+
     function validateSelectedPhotos() {
       if (!photoInputsWrap) {
         return true;
@@ -794,7 +800,10 @@
           }
           photoInput.required = false;
           photoInput.value = "";
+          const completedRow = photoInput.closest(".contest-photo-input-row");
+          if (completedRow) completedRow.remove();
           validateSelectedPhotos();
+          syncPhotoInputAvailability();
         } catch (error) {
           filesPreparationFailed = true;
           setUploadProgress(0, "Ошибка загрузки", "progress");
@@ -812,14 +821,15 @@
     }
     if (addPhotoFileButton && photoInputsWrap) {
       addPhotoFileButton.addEventListener("click", function () {
-        const inputCount = photoInputs().length;
-        if (inputCount >= maxFileCount) {
+        const uploadedCount = uploadedTokens().length;
+        const pendingCount = photoInputs().length;
+        if (uploadedCount + pendingCount >= maxFileCount) {
           setUploadStatus(`В одной заявке можно загрузить не более ${maxFileCount} фото.`, "error");
           return;
         }
         const label = document.createElement("label");
         label.className = "contest-photo-input-row";
-        label.textContent = `Файл ${inputCount + 1}`;
+        label.textContent = `Файл ${uploadedCount + pendingCount + 1}`;
         const input = document.createElement("input");
         input.type = "file";
         input.name = "photos";
@@ -828,9 +838,9 @@
         label.appendChild(input);
         photoInputsWrap.appendChild(label);
         input.click();
-        if (photoInputs().length >= maxFileCount) addPhotoFileButton.disabled = true;
+        syncPhotoInputAvailability();
       });
-      if (maxFileCount <= 1) addPhotoFileButton.disabled = true;
+      syncPhotoInputAvailability();
     }
     if (submitForm && submitButton) {
       submitForm.addEventListener("submit", function (event) {

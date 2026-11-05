@@ -235,6 +235,7 @@ def run_scenario(db_path: Path) -> None:
         response = client.get(f"/photocosplay/{contest_id}")
         assert_ok("contest-upload-progress" in response.text, "Photo upload progress bar is missing")
         assert_ok("Дождитесь загрузки" in response.text, "Upload submit lock is missing")
+        assert_ok("completedRow.remove()" in response.text, "Completed photo input cleanup is missing")
         assert_ok("Роли *" in response.text, "Required roles marker is missing")
         assert_ok("Заполните хотя бы одну роль." in response.text, "Required roles hint is missing")
         uploaded_tokens = [
