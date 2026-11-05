@@ -3742,6 +3742,19 @@ body.modal-open {
   line-height: 1.45;
 }
 
+.photo-success-modal {
+  width: min(720px, calc(100vw - 32px));
+  max-width: 100%;
+  max-height: none;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+.photo-success-modal::before {
+  right: 0;
+  bottom: 0;
+}
+
 .welcome-actions-grid {
   display: flex;
   flex-wrap: wrap;
