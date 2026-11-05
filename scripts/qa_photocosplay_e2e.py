@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import uuid
 from datetime import date, timedelta
 from io import BytesIO
 from pathlib import Path
@@ -114,6 +115,27 @@ def run_scenario(db_path: Path) -> None:
         def logout() -> None:
             post_form(client, "/logout")
 
+        def upload_photo_in_chunks(contest_id: int, file_name: str, content: bytes, chunk_size: int = 4096) -> str:
+            upload_id = uuid.uuid4().hex
+            token = ""
+            for offset in range(0, len(content), chunk_size):
+                response = client.post(
+                    f"/photocosplay/{contest_id}/upload-photo",
+                    params={
+                        "upload_id": upload_id,
+                        "file_name": file_name,
+                        "offset": offset,
+                        "total_size": len(content),
+                    },
+                    content=content[offset:offset + chunk_size],
+                    headers={"Content-Type": "application/octet-stream"},
+                )
+                payload = response.json()
+                assert_ok(response.status_code == 200 and payload.get("ok"), f"Chunk upload failed: {payload}")
+                token = str(payload.get("token") or token)
+            assert_ok(bool(token), "Chunk upload did not return a token")
+            return token
+
         # 1) Users
         register("brfox_cosplay", "admin@example.com")
         logout()
@@ -210,9 +232,9 @@ def run_scenario(db_path: Path) -> None:
 
         # 4) Participant submits work during open submission phase.
         login("contest_participant")
-        files = [
-            ("photos", ("work1.jpg", make_jpeg_bytes((200, 80, 120)), "image/jpeg")),
-            ("photos", ("work2.jpg", make_jpeg_bytes((60, 140, 210)), "image/jpeg")),
+        uploaded_tokens = [
+            upload_photo_in_chunks(contest_id, "work1.jpg", make_jpeg_bytes((200, 80, 120))),
+            upload_photo_in_chunks(contest_id, "work2.jpg", make_jpeg_bytes((60, 140, 210))),
         ]
         post_form(
             client,
@@ -224,8 +246,8 @@ def run_scenario(db_path: Path) -> None:
                 "entry_role": ["cosplayer", "photographer"],
                 "entry_character": ["2B", "A2"],
                 "agree_rules": "1",
+                "uploaded_photo_token": uploaded_tokens,
             },
-            files=files,
         )
 
         with SessionLocal() as db:

@@ -649,6 +649,10 @@
       return photoInputs().flatMap((input) => Array.from(input.files || []));
     }
 
+    function uploadedTokens() {
+      return submitForm ? Array.from(submitForm.querySelectorAll('input[name="uploaded_photo_token"]')) : [];
+    }
+
     function setUploadStatus(message, kind) {
       if (!uploadStatus) {
         return;
@@ -662,7 +666,8 @@
         return true;
       }
       const files = selectedFiles();
-      if (files.length > maxFileCount) {
+      const uploadedCount = uploadedTokens().length;
+      if (files.length + uploadedCount > maxFileCount) {
         setUploadStatus(`Можно выбрать не более ${maxFileCount} фото.`, "error");
         return false;
       }
@@ -674,6 +679,8 @@
       if (files.length) {
         const totalMb = files.reduce((sum, file) => sum + file.size, 0) / (1024 * 1024);
         setUploadStatus(`Выбрано файлов: ${files.length}. Общий размер: ${totalMb.toFixed(1)} МБ.`, "");
+      } else if (uploadedCount) {
+        setUploadStatus(`Фотографий подготовлено: ${uploadedCount}. Можно отправлять заявку.`, "");
       } else {
         setUploadStatus("Добавляйте фотографии по одной. Поддерживаются JPG, PNG, WEBP, GIF, BMP и TIFF.", "");
       }
@@ -686,26 +693,47 @@
         if (!validateSelectedPhotos() || !photoInput.files || !photoInput.files.length) {
           return;
         }
-        if (typeof DataTransfer === "undefined") {
-          setUploadStatus("Файлы выбраны. Не перемещайте и не удаляйте их до завершения загрузки.", "");
-          return;
-        }
         filesArePreparing = true;
         if (submitButton) submitButton.disabled = true;
-        setUploadStatus("Подготавливаем файлы к надёжной загрузке…", "progress");
+        setUploadStatus("Загружаем фотографию частями…", "progress");
         try {
-          const preparedFiles = await Promise.all(Array.from(photoInput.files).map(async (file) => {
-            const bytes = await file.arrayBuffer();
-            return new File([bytes], file.name, { type: file.type, lastModified: file.lastModified });
-          }));
-          const transfer = new DataTransfer();
-          preparedFiles.forEach((file) => transfer.items.add(file));
-          photoInput.files = transfer.files;
+          for (const file of Array.from(photoInput.files)) {
+            const uploadId = crypto.randomUUID().replaceAll("-", "");
+            const chunkSize = 2 * 1024 * 1024;
+            let token = "";
+            for (let offset = 0; offset < file.size; offset += chunkSize) {
+              const chunk = file.slice(offset, Math.min(offset + chunkSize, file.size));
+              const params = new URLSearchParams({
+                upload_id: uploadId,
+                file_name: file.name,
+                offset: String(offset),
+                total_size: String(file.size),
+              });
+              const response = await fetch(`/photocosplay/{{ contest.id }}/upload-photo?${params}`, {
+                method: "POST",
+                body: chunk,
+                credentials: "same-origin",
+                headers: { "Content-Type": "application/octet-stream" },
+              });
+              const payload = await response.json();
+              if (!response.ok || !payload.ok) throw new Error(payload.error || "Ошибка загрузки");
+              token = payload.token || token;
+              const percent = Math.min(100, Math.round(((offset + chunk.size) / file.size) * 100));
+              setUploadStatus(`Загружаем «${file.name}»: ${percent}%`, "progress");
+            }
+            if (!token) throw new Error("Сервер не подтвердил загрузку файла");
+            const hidden = document.createElement("input");
+            hidden.type = "hidden";
+            hidden.name = "uploaded_photo_token";
+            hidden.value = token;
+            submitForm.appendChild(hidden);
+          }
+          photoInput.required = false;
+          photoInput.value = "";
           validateSelectedPhotos();
-          setUploadStatus(`Выбрано файлов: ${selectedFiles().length}. Теперь временный файл Telegram можно закрыть.`, "");
         } catch (error) {
           filesPreparationFailed = true;
-          setUploadStatus("Не удалось прочитать выбранный файл. Сохраните его в «Фото» или «Загрузки» и выберите снова.", "error");
+          setUploadStatus(`Не удалось загрузить файл: ${error.message || "повторите попытку"}.`, "error");
         } finally {
           filesArePreparing = false;
           if (submitButton) submitButton.disabled = false;

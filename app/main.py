@@ -1160,6 +1160,7 @@ PHOTO_CONTEST_MAX_ENTRIES_PER_PARTICIPANT_LIMIT = 20
 PHOTO_CONTEST_MAX_NOMINATIONS = 20
 PHOTO_CONTEST_MAX_JUDGES = 50
 PHOTO_CONTEST_MAX_PHOTO_FILE_BYTES = 20 * 1024 * 1024
+PHOTO_CONTEST_UPLOAD_CHUNK_BYTES = 2 * 1024 * 1024
 
 MASTER_ORDER_STATUS_PENDING = "pending"
 MASTER_ORDER_STATUS_ACCEPTED = "accepted"
@@ -38395,6 +38396,28 @@ async def save_photo_contest_images(files: list[UploadFile], max_count: int) -> 
     return saved_paths, ""
 
 
+def photo_contest_pending_upload_dir() -> Path:
+    path = media_storage_path() / ".photo-contest-uploads"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def consume_photo_contest_pending_upload(user_id: int, token: str) -> tuple[str, str]:
+    clean_token = str(token or "").strip()
+    if not re.fullmatch(r"[a-f0-9]{32}\.(?:jpg|jpeg|png|webp|gif|bmp|tif|tiff)", clean_token):
+        return "", "Некорректный идентификатор загруженной фотографии."
+    source = photo_contest_pending_upload_dir() / f"{int(user_id)}-{clean_token}"
+    if not source.is_file():
+        return "", "Загруженная фотография не найдена. Выберите файл повторно."
+    if source.stat().st_size > PHOTO_CONTEST_MAX_PHOTO_FILE_BYTES:
+        source.unlink(missing_ok=True)
+        return "", "Один из файлов слишком большой (до 20 МБ)."
+    destination_name = f"photo-contest-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:14]}{source.suffix}"
+    destination = media_storage_path() / destination_name
+    source.replace(destination)
+    return f"/media/{destination_name}", ""
+
+
 def parse_photo_contest_payload_from_form(
     form: Any,
     *,
@@ -38937,6 +38960,64 @@ async def photo_contest_update_schedule(contest_id: int, request: Request, db: S
     return redirect(f"/photocosplay/{contest_id}#contest-schedule")
 
 
+@app.post("/photocosplay/{contest_id}/upload-photo")
+async def photo_contest_upload_photo_chunk(contest_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    contest = db.get(PhotoContest, contest_id) if user else None
+    if not user or not contest:
+        return JSONResponse({"ok": False, "error": "Конкурс или пользователь не найден."}, status_code=404)
+    if not photo_contest_submission_period_active(contest) and not photo_contest_can_manage(user, contest):
+        return JSONResponse({"ok": False, "error": "Прием работ сейчас закрыт."}, status_code=403)
+
+    upload_id = str(request.query_params.get("upload_id", "")).replace("-", "").lower()
+    file_name = str(request.query_params.get("file_name", ""))
+    try:
+        offset = int(request.query_params.get("offset", "0"))
+        total_size = int(request.query_params.get("total_size", "0"))
+    except (TypeError, ValueError):
+        return JSONResponse({"ok": False, "error": "Некорректные параметры загрузки."}, status_code=400)
+    if not re.fullmatch(r"[a-f0-9]{32}", upload_id):
+        return JSONResponse({"ok": False, "error": "Некорректный идентификатор загрузки."}, status_code=400)
+    if total_size < 1 or total_size > PHOTO_CONTEST_MAX_PHOTO_FILE_BYTES or offset < 0 or offset >= total_size:
+        return JSONResponse({"ok": False, "error": "Файл слишком большой или пустой."}, status_code=400)
+
+    chunk = await request.body()
+    if not chunk or len(chunk) > PHOTO_CONTEST_UPLOAD_CHUNK_BYTES:
+        return JSONResponse({"ok": False, "error": "Некорректный размер части файла."}, status_code=400)
+    part_path = photo_contest_pending_upload_dir() / f"{int(user.id)}-{upload_id}.part"
+    current_size = part_path.stat().st_size if part_path.exists() else 0
+    if offset == 0 and current_size:
+        part_path.unlink(missing_ok=True)
+        current_size = 0
+    if current_size != offset or current_size + len(chunk) > total_size:
+        return JSONResponse({"ok": False, "error": "Нарушен порядок частей файла. Начните загрузку заново."}, status_code=409)
+    with part_path.open("ab") as output:
+        output.write(chunk)
+
+    uploaded_size = current_size + len(chunk)
+    if uploaded_size < total_size:
+        return JSONResponse({"ok": True, "complete": False, "uploaded": uploaded_size})
+
+    extension_map = {"JPEG": ".jpg", "JPG": ".jpg", "PNG": ".png", "WEBP": ".webp", "GIF": ".gif", "BMP": ".bmp", "TIFF": ".tiff"}
+    try:
+        with Image.open(part_path) as image:
+            source_format = str(image.format or "").upper()
+            if source_format not in extension_map:
+                raise UnidentifiedImageError
+            image.verify()
+    except (UnidentifiedImageError, OSError):
+        part_path.unlink(missing_ok=True)
+        return JSONResponse({"ok": False, "error": "Не удалось распознать файл как поддерживаемое изображение."}, status_code=400)
+
+    original_ext = Path(file_name).suffix.lower()
+    allowed_ext = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tif", ".tiff"}
+    final_ext = original_ext if original_ext in allowed_ext else extension_map[source_format]
+    token = f"{upload_id}{final_ext}"
+    completed_path = photo_contest_pending_upload_dir() / f"{int(user.id)}-{token}"
+    part_path.replace(completed_path)
+    return JSONResponse({"ok": True, "complete": True, "token": token})
+
+
 @app.post("/photocosplay/{contest_id}/submit")
 async def photo_contest_submit_work(contest_id: int, request: Request, db: Session = Depends(get_db)):
     user = current_user(request, db)
@@ -38996,15 +39077,31 @@ async def photo_contest_submit_work(contest_id: int, request: Request, db: Sessi
         if hasattr(item, "filename") and hasattr(item, "read")
     ]
     saved_paths: list[str] = []
+    pending_tokens = [str(value or "").strip() for value in form.getlist("uploaded_photo_token") if str(value or "").strip()]
+    if len(files) + len(pending_tokens) > max(1, int(contest.max_photos_per_participant or 1)):
+        add_flash(request, f"Можно загрузить не более {max(1, int(contest.max_photos_per_participant or 1))} фото.", "error")
+        return redirect(f"/photocosplay/{contest_id}")
+    if pending_tokens:
+        for token in pending_tokens:
+            saved_path, save_error = consume_photo_contest_pending_upload(int(user.id), token)
+            if save_error:
+                for path_value in saved_paths:
+                    remove_media_file_by_path(path_value)
+                add_flash(request, save_error, "error")
+                return redirect(f"/photocosplay/{contest_id}")
+            saved_paths.append(saved_path)
     if files:
-        saved_paths, save_error = await save_photo_contest_images(
+        direct_saved_paths, save_error = await save_photo_contest_images(
             files,
             max(1, int(contest.max_photos_per_participant or 1)),
         )
         if save_error:
+            for path_value in saved_paths:
+                remove_media_file_by_path(path_value)
             add_flash(request, save_error, "error")
             return redirect(f"/photocosplay/{contest_id}")
-    elif not entry:
+        saved_paths.extend(direct_saved_paths)
+    elif not entry and not saved_paths:
         add_flash(request, "Загрузите хотя бы одну фотографию.", "error")
         return redirect(f"/photocosplay/{contest_id}")
 
