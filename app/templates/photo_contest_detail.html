@@ -66,6 +66,34 @@
   .photo-upload-status[data-kind="progress"] {
     color: #5e5bff;
   }
+  .photo-upload-progress {
+    display: grid;
+    gap: 0.4rem;
+    margin-top: 0.65rem;
+  }
+  .photo-upload-progress[hidden] { display: none; }
+  .photo-upload-progress-track {
+    height: 12px;
+    overflow: hidden;
+    border: 1px solid rgba(108, 99, 255, 0.18);
+    border-radius: 999px;
+    background: rgba(184, 200, 255, 0.28);
+    box-shadow: inset 0 1px 3px rgba(52, 74, 107, 0.12);
+  }
+  .photo-upload-progress-fill {
+    width: 0;
+    height: 100%;
+    border-radius: inherit;
+    background: linear-gradient(90deg, #5e5bff, #7b72ff, #b8c8ff);
+    box-shadow: 0 0 14px rgba(108, 99, 255, 0.38);
+    transition: width 180ms ease;
+  }
+  .photo-upload-progress-label {
+    color: #344a6b;
+    font-size: 0.88rem;
+    font-weight: 600;
+  }
+  html[data-theme="dark"] .photo-upload-progress-label { color: var(--text); }
   .photo-modal {
     position: fixed;
     inset: 0;
@@ -205,6 +233,12 @@
       <button type="button" class="btn top-offset" id="add-contest-photo-file">Загрузить ещё файл</button>
     </div>
     <p class="muted photo-upload-status" id="contest-upload-status" role="status" aria-live="polite">Добавляйте фотографии по одной. Поддерживаются JPG, PNG, WEBP, GIF, BMP и TIFF.</p>
+    <div class="photo-upload-progress" id="contest-upload-progress" hidden aria-hidden="true">
+      <div class="photo-upload-progress-track" role="progressbar" aria-label="Загрузка фотографии" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+        <div class="photo-upload-progress-fill" id="contest-upload-progress-fill"></div>
+      </div>
+      <span class="photo-upload-progress-label" id="contest-upload-progress-label">0%</span>
+    </div>
 
     <label>
       Фандом
@@ -213,9 +247,10 @@
 
     <div>
       <div class="row-between">
-        <strong>Роли</strong>
+        <strong>Роли *</strong>
         <button type="button" class="btn" id="add-role-row">Добавить роль</button>
       </div>
+      <p class="muted">Заполните хотя бы одну роль.</p>
       <div id="entry-role-rows" class="top-offset">
         {% if form_entry and form_entry.roles_json %}
           {% for row in form_entry.roles_json %}
@@ -635,10 +670,15 @@
     const addPhotoFileButton = document.getElementById("add-contest-photo-file");
     const submitButton = document.getElementById("contest-submit-button");
     const uploadStatus = document.getElementById("contest-upload-status");
+    const uploadProgress = document.getElementById("contest-upload-progress");
+    const uploadProgressTrack = uploadProgress?.querySelector('[role="progressbar"]');
+    const uploadProgressFill = document.getElementById("contest-upload-progress-fill");
+    const uploadProgressLabel = document.getElementById("contest-upload-progress-label");
     const maxFileBytes = {{ photo_contest_max_photo_file_mb }} * 1024 * 1024;
     const maxFileCount = {{ contest.max_photos_per_participant or 1 }};
+    const requiresNewPhoto = {{ 'false' if form_entry else 'true' }};
     const initialSubmitLabel = submitButton ? submitButton.textContent : "Сохранить заявку";
-    let filesArePreparing = false;
+    let activeUploads = 0;
     let filesPreparationFailed = false;
 
     function photoInputs() {
@@ -659,6 +699,28 @@
       }
       uploadStatus.textContent = message;
       uploadStatus.dataset.kind = kind || "";
+    }
+
+    function setUploadProgress(percent, fileName, state) {
+      if (!uploadProgress || !uploadProgressFill || !uploadProgressLabel) return;
+      const normalized = Math.max(0, Math.min(100, Math.round(percent || 0)));
+      uploadProgress.hidden = state === "idle";
+      uploadProgress.setAttribute("aria-hidden", uploadProgress.hidden ? "true" : "false");
+      uploadProgressFill.style.width = `${normalized}%`;
+      uploadProgressLabel.textContent = state === "complete"
+        ? `«${fileName}» загружен · 100%`
+        : `«${fileName}» · ${normalized}%`;
+      if (uploadProgressTrack) uploadProgressTrack.setAttribute("aria-valuenow", String(normalized));
+    }
+
+    function syncSubmitAvailability() {
+      if (!submitButton) return;
+      submitButton.disabled = activeUploads > 0 || filesPreparationFailed;
+      if (activeUploads > 0) {
+        submitButton.textContent = "Дождитесь загрузки…";
+      } else {
+        submitButton.textContent = initialSubmitLabel;
+      }
     }
 
     function validateSelectedPhotos() {
@@ -693,11 +755,12 @@
         if (!validateSelectedPhotos() || !photoInput.files || !photoInput.files.length) {
           return;
         }
-        filesArePreparing = true;
-        if (submitButton) submitButton.disabled = true;
+        activeUploads += 1;
+        syncSubmitAvailability();
         setUploadStatus("Загружаем фотографию частями…", "progress");
         try {
           for (const file of Array.from(photoInput.files)) {
+            setUploadProgress(0, file.name, "progress");
             const uploadId = crypto.randomUUID().replaceAll("-", "");
             const chunkSize = 2 * 1024 * 1024;
             let token = "";
@@ -719,6 +782,7 @@
               if (!response.ok || !payload.ok) throw new Error(payload.error || "Ошибка загрузки");
               token = payload.token || token;
               const percent = Math.min(100, Math.round(((offset + chunk.size) / file.size) * 100));
+              setUploadProgress(percent, file.name, percent === 100 ? "complete" : "progress");
               setUploadStatus(`Загружаем «${file.name}»: ${percent}%`, "progress");
             }
             if (!token) throw new Error("Сервер не подтвердил загрузку файла");
@@ -733,10 +797,11 @@
           validateSelectedPhotos();
         } catch (error) {
           filesPreparationFailed = true;
+          setUploadProgress(0, "Ошибка загрузки", "progress");
           setUploadStatus(`Не удалось загрузить файл: ${error.message || "повторите попытку"}.`, "error");
         } finally {
-          filesArePreparing = false;
-          if (submitButton) submitButton.disabled = false;
+          activeUploads = Math.max(0, activeUploads - 1);
+          syncSubmitAvailability();
         }
     }
 
@@ -769,14 +834,22 @@
     }
     if (submitForm && submitButton) {
       submitForm.addEventListener("submit", function (event) {
-        if (filesArePreparing || filesPreparationFailed) {
+        if (activeUploads > 0 || filesPreparationFailed) {
           event.preventDefault();
           setUploadStatus(
-            filesArePreparing
+            activeUploads > 0
               ? "Дождитесь завершения подготовки файлов."
               : "Выберите файл повторно из «Фото» или «Загрузок».",
             filesPreparationFailed ? "error" : "progress"
           );
+          return;
+        }
+        if (requiresNewPhoto && uploadedTokens().length === 0) {
+          event.preventDefault();
+          setUploadStatus("Сначала выберите фотографию и дождитесь окончания загрузки.", "error");
+          setUploadProgress(0, "Файл не загружен", "progress");
+          const firstInput = photoInputs()[0];
+          if (firstInput) firstInput.focus();
           return;
         }
         if (!validateSelectedPhotos()) {
@@ -793,8 +866,7 @@
         );
       });
       window.addEventListener("pageshow", function () {
-        submitButton.disabled = false;
-        submitButton.textContent = initialSubmitLabel;
+        syncSubmitAvailability();
       });
     }
   })();

@@ -232,6 +232,11 @@ def run_scenario(db_path: Path) -> None:
 
         # 4) Participant submits work during open submission phase.
         login("contest_participant")
+        response = client.get(f"/photocosplay/{contest_id}")
+        assert_ok("contest-upload-progress" in response.text, "Photo upload progress bar is missing")
+        assert_ok("Дождитесь загрузки" in response.text, "Upload submit lock is missing")
+        assert_ok("Роли *" in response.text, "Required roles marker is missing")
+        assert_ok("Заполните хотя бы одну роль." in response.text, "Required roles hint is missing")
         uploaded_tokens = [
             upload_photo_in_chunks(contest_id, "work1.jpg", make_jpeg_bytes((200, 80, 120))),
             upload_photo_in_chunks(contest_id, "work2.jpg", make_jpeg_bytes((60, 140, 210))),
