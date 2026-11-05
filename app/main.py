@@ -38901,6 +38901,42 @@ async def photo_contest_update(contest_id: int, request: Request, db: Session = 
     return redirect(f"/photocosplay/{contest_id}")
 
 
+@app.post("/photocosplay/{contest_id}/schedule")
+async def photo_contest_update_schedule(contest_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    contest = db.get(PhotoContest, contest_id)
+    if not contest:
+        add_flash(request, "Конкурс не найден.", "error")
+        return redirect("/photocosplay")
+    if not photo_contest_can_manage(user, contest):
+        add_flash(request, "Недостаточно прав для изменения этапов конкурса.", "error")
+        return redirect(f"/photocosplay/{contest_id}")
+
+    form = await request.form()
+    submission_start = parse_date(str(form.get("submission_start_date", "")).strip())
+    submission_end = parse_date(str(form.get("submission_end_date", "")).strip())
+    results_date = parse_date(str(form.get("results_date", "")).strip())
+    if not submission_start or not submission_end or not results_date:
+        add_flash(request, "Укажите даты всех этапов конкурса.", "error")
+        return redirect(f"/photocosplay/{contest_id}#contest-schedule")
+    if submission_end < submission_start:
+        add_flash(request, "Конец приема работ не может быть раньше его начала.", "error")
+        return redirect(f"/photocosplay/{contest_id}#contest-schedule")
+    if results_date < submission_end:
+        add_flash(request, "Дата результатов не может быть раньше конца приема работ.", "error")
+        return redirect(f"/photocosplay/{contest_id}#contest-schedule")
+
+    contest.submission_start_date = submission_start
+    contest.submission_end_date = submission_end
+    contest.results_date = results_date
+    db.commit()
+    add_flash(request, "Даты этапов конкурса обновлены.", "success")
+    return redirect(f"/photocosplay/{contest_id}#contest-schedule")
+
+
 @app.post("/photocosplay/{contest_id}/submit")
 async def photo_contest_submit_work(contest_id: int, request: Request, db: Session = Depends(get_db)):
     user = current_user(request, db)

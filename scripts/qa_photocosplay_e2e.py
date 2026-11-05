@@ -168,6 +168,46 @@ def run_scenario(db_path: Path) -> None:
 
         logout()
 
+        # Creator and admin can update every stage date from the dedicated schedule editor.
+        login("contest_creator")
+        response = client.get(f"/photocosplay/{contest_id}")
+        assert_ok("Этапы конкурса" in response.text, "Creator schedule editor is missing")
+        post_form(
+            client,
+            f"/photocosplay/{contest_id}/schedule",
+            data={
+                "submission_start_date": fmt(submission_start_open),
+                "submission_end_date": fmt(submission_end_open),
+                "results_date": fmt(results_future),
+            },
+        )
+        logout()
+
+        login("brfox_cosplay")
+        response = client.get(f"/photocosplay/{contest_id}")
+        assert_ok("Сохранить даты" in response.text, "Admin schedule editor is missing")
+        logout()
+
+        login("contest_viewer")
+        response = client.get(f"/photocosplay/{contest_id}")
+        assert_ok("Сохранить даты" not in response.text, "Viewer can see schedule editor")
+        post_form(
+            client,
+            f"/photocosplay/{contest_id}/schedule",
+            data={
+                "submission_start_date": fmt(today - timedelta(days=30)),
+                "submission_end_date": fmt(today - timedelta(days=20)),
+                "results_date": fmt(today - timedelta(days=10)),
+            },
+        )
+        with SessionLocal() as db:
+            unchanged_contest = db.get(PhotoContest, contest_id)
+            assert_ok(
+                unchanged_contest is not None and unchanged_contest.submission_start_date == submission_start_open,
+                "Viewer changed contest schedule",
+            )
+        logout()
+
         # 4) Participant submits work during open submission phase.
         login("contest_participant")
         files = [

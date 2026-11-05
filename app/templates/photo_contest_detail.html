@@ -104,6 +104,20 @@
   html[data-theme="dark"] .photo-modal-image {
     background: #0d0e0e;
   }
+  .contest-schedule-card {
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.95), rgba(240, 247, 255, 0.9));
+    border: 1px solid rgba(255, 255, 255, 0.7);
+    border-radius: 24px;
+    box-shadow: 0 12px 40px rgba(80, 100, 180, 0.12);
+  }
+  .contest-schedule-card h2 { color: #1f2e4a; }
+  .contest-schedule-card .muted { color: #62728c; }
+  html[data-theme="dark"] .contest-schedule-card {
+    background: linear-gradient(155deg, rgba(57, 54, 66, 0.98), rgba(39, 37, 46, 0.98));
+    border-color: var(--line-strong);
+  }
+  html[data-theme="dark"] .contest-schedule-card h2,
+  html[data-theme="dark"] .contest-schedule-card .muted { color: var(--text); }
 </style>
 
 <section class="box">
@@ -130,6 +144,35 @@
     <p class="notes-block">{{ contest.prizes_markdown|render_markdown }}</p>
   {% endif %}
 </section>
+
+{% if can_manage %}
+<section class="box contest-schedule-card" id="contest-schedule">
+  <div class="row-between">
+    <div>
+      <h2>Этапы конкурса</h2>
+      <p class="muted">Измените даты приема работ, судейства и публикации результатов.</p>
+    </div>
+    <span class="chip">Организатор и админ</span>
+  </div>
+  <form method="post" action="/photocosplay/{{ contest.id }}/schedule" class="grid three-col top-offset">
+    <label>
+      1. Начало приема работ
+      <input type="date" name="submission_start_date" value="{{ contest.submission_start_date.isoformat() if contest.submission_start_date else '' }}" required />
+    </label>
+    <label>
+      2. Конец приема / начало судейства
+      <input type="date" name="submission_end_date" value="{{ contest.submission_end_date.isoformat() if contest.submission_end_date else '' }}" required />
+    </label>
+    <label>
+      3. Оглашение результатов
+      <input type="date" name="results_date" value="{{ contest.results_date.isoformat() if contest.results_date else '' }}" required />
+    </label>
+    <div class="actions-inline">
+      <button type="submit" class="btn btn-accent">Сохранить даты</button>
+    </div>
+  </form>
+</section>
+{% endif %}
 
 {% if submission_form_visible %}
 <section class="box">
