@@ -520,6 +520,8 @@ class Photoset(Base):
     role_costs_json = Column(JSON, nullable=False, default=list)
     corrections_json = Column(JSON, nullable=False, default=list)
     links_json = Column(JSON, nullable=False, default=list)
+    selection_url = Column(Text, nullable=True)
+    ready_folder_url = Column(Text, nullable=True)
     travel_to_price = Column(Float, nullable=True)
     travel_from_price = Column(Float, nullable=True)
     status = Column(String(32), nullable=False, default="preparation", index=True)

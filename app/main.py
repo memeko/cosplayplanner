@@ -1521,6 +1521,8 @@ def apply_schema_migrations() -> None:
         "photosets": [
             ("corrections_json", "JSON NOT NULL DEFAULT '[]'"),
             ("links_json", "JSON NOT NULL DEFAULT '[]'"),
+            ("selection_url", "TEXT"),
+            ("ready_folder_url", "TEXT"),
         ],
         "festival_notifications": [
             ("id", "INTEGER PRIMARY KEY"),
@@ -23091,8 +23093,18 @@ def photoset_links(photoset_id: int, request: Request, db: Session = Depends(get
     item = owned_photoset(db, user, photoset_id)
     if not item:
         return redirect("/cosplan/photosets")
-    rows = as_list(item.links_json) or [{"role": "", "nickname": "", "social": "", "selection_url": "", "ready_url": ""}]
-    return template_response(request, "photoset_links.html", rows=rows, **photoset_subpage_context(request, db, user, item, "links"))
+    saved_rows = as_list(item.links_json)
+    selection_url = str(item.selection_url or "").strip()
+    ready_folder_url = str(item.ready_folder_url or "").strip()
+    if not selection_url:
+        selection_url = next((str(row.get("selection_url") or "").strip() for row in saved_rows if isinstance(row, dict) and row.get("selection_url")), "")
+    if not ready_folder_url:
+        ready_folder_url = next((str(row.get("ready_url") or "").strip() for row in saved_rows if isinstance(row, dict) and row.get("ready_url")), "")
+    rows = [
+        {"role": str(row.get("role") or ""), "nickname": str(row.get("nickname") or ""), "social": str(row.get("social") or "")}
+        for row in saved_rows if isinstance(row, dict)
+    ] or [{"role": "", "nickname": "", "social": ""}]
+    return template_response(request, "photoset_links.html", rows=rows, selection_url=selection_url, ready_folder_url=ready_folder_url, **photoset_subpage_context(request, db, user, item, "links"))
 
 
 @app.post("/cosplan/photosets/{photoset_id}/links")
@@ -23103,11 +23115,14 @@ async def photoset_links_save(photoset_id: int, request: Request, db: Session = 
     item = owned_photoset(db, user, photoset_id)
     if not item:
         return redirect("/cosplan/photosets")
-    form = await request.form(); roles=list(form.getlist("link_role")); nicknames=list(form.getlist("link_nickname")); socials=list(form.getlist("link_social")); selections=list(form.getlist("link_selection_url")); ready=list(form.getlist("link_ready_url")); rows=[]
+    form = await request.form(); roles=list(form.getlist("link_role")); nicknames=list(form.getlist("link_nickname")); socials=list(form.getlist("link_social")); rows=[]
     for index, raw_role in enumerate(roles):
-        row={"role":str(raw_role).strip(),"nickname":str(nicknames[index] if index<len(nicknames) else "").strip(),"social":str(socials[index] if index<len(socials) else "").strip(),"selection_url":str(selections[index] if index<len(selections) else "").strip(),"ready_url":str(ready[index] if index<len(ready) else "").strip()}
+        row={"role":str(raw_role).strip(),"nickname":str(nicknames[index] if index<len(nicknames) else "").strip(),"social":str(socials[index] if index<len(socials) else "").strip()}
         if any(row.values()): rows.append(row)
-    item.links_json=rows; db.commit(); add_flash(request,"Ссылки сохранены.","success")
+    item.links_json=rows
+    item.selection_url=str(form.get("selection_url", "")).strip() or None
+    item.ready_folder_url=str(form.get("ready_folder_url", "")).strip() or None
+    db.commit(); add_flash(request,"Ссылки сохранены.","success")
     return redirect(f"/cosplan/photosets/{item.id}/links")
 
 
