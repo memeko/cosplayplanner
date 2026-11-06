@@ -35,6 +35,7 @@ from urllib.parse import parse_qs, quote, unquote, urlencode, urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import requests
+import bleach
 from cryptography.fernet import Fernet, InvalidToken
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.exception_handlers import http_exception_handler
@@ -98,6 +99,11 @@ from .models import (
     InProgressMasterBoard,
     InProgressMasterCard,
     InProgressMasterComment,
+    LearningCourse,
+    LearningCourseMember,
+    LearningLesson,
+    LearningLessonComment,
+    LearningLessonPost,
     ProjectSearchPost,
     ProjectSearchComment,
     PersonalCalendarEvent,
@@ -21863,6 +21869,235 @@ def user_public_card(alias: str, request: Request, db: Session = Depends(get_db)
     )
 
 
+COURSE_STATUSES = {"draft": "Черновик", "published": "Опубликован", "archived": "Архив"}
+COURSE_ACCESS_MODES = {"open": "Открытый", "code": "По кодовому слову", "members": "Только добавленные пользователи"}
+COURSE_MEMBER_ROLES = {"editor": "Редактор", "participant": "Участник"}
+LESSON_POST_TYPES = {"text": "Текст", "image": "Изображение", "video": "Видео", "audio": "Аудио", "file": "Файл", "link": "Ссылка"}
+
+
+def learning_course_membership(db: Session, course_id: int, user_id: int) -> LearningCourseMember | None:
+    return db.execute(select(LearningCourseMember).where(LearningCourseMember.course_id == course_id, LearningCourseMember.user_id == user_id)).scalar_one_or_none()
+
+
+def can_edit_learning_course(db: Session, course: LearningCourse, user: User) -> bool:
+    if int(course.creator_id) == int(user.id): return True
+    membership = learning_course_membership(db, course.id, user.id)
+    return bool(membership and membership.role == "editor")
+
+
+def can_view_learning_course(db: Session, course: LearningCourse, user: User) -> bool:
+    if can_edit_learning_course(db, course, user): return True
+    if learning_course_membership(db, course.id, user.id): return True
+    return course.status == "published" and course.access_mode == "open"
+
+
+def sanitize_lesson_html(value: Any) -> str:
+    return bleach.clean(
+        str(value or ""),
+        tags={"p","br","strong","b","em","i","u","s","h2","h3","h4","ul","ol","li","blockquote","code","pre","table","thead","tbody","tr","th","td","a","img","video","audio","source","figure","figcaption","hr","span"},
+        attributes={"a":["href","title","target","rel"],"img":["src","alt","title","width","height"],"video":["src","controls","poster","preload"],"audio":["src","controls","preload"],"source":["src","type"],"td":["colspan","rowspan"],"th":["colspan","rowspan"],"span":["class"]},
+        protocols={"http","https","mailto"}, strip=True,
+    )
+
+
+@app.post("/media/upload-course-material")
+async def media_upload_course_material(request: Request, file: UploadFile = File(...), db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user: raise HTTPException(status_code=401, detail="Требуется авторизация.")
+    if not file.filename: raise HTTPException(status_code=400, detail="Файл не передан.")
+    raw = await file.read(100 * 1024 * 1024 + 1)
+    if len(raw) > 100 * 1024 * 1024: raise HTTPException(status_code=400, detail="Размер файла — не более 100 МБ.")
+    suffix = Path(file.filename).suffix.lower()
+    allowed = {".jpg",".jpeg",".png",".webp",".gif",".mp4",".webm",".mov",".mp3",".wav",".ogg",".m4a",".pdf",".txt",".doc",".docx",".zip"}
+    if suffix not in allowed: raise HTTPException(status_code=400, detail="Этот тип файла не поддерживается.")
+    filename = f"course-{user.id}-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:10]}{suffix}"
+    (media_storage_path() / filename).write_bytes(raw)
+    return {"ok": True, "url": f"/media/{filename}", "name": file.filename, "content_type": file.content_type or ""}
+
+
+@app.get("/courses", response_class=HTMLResponse)
+def learning_courses_list(request: Request, scope: str = "available", db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user: return redirect("/login")
+    all_courses = db.execute(select(LearningCourse).order_by(LearningCourse.updated_at.desc(), LearningCourse.id.desc())).scalars().all()
+    if scope == "created": courses = [course for course in all_courses if course.creator_id == user.id]
+    elif scope == "mine": courses = [course for course in all_courses if learning_course_membership(db, course.id, user.id) or course.creator_id == user.id]
+    else:
+        courses = [
+            course for course in all_courses
+            if can_view_learning_course(db, course, user)
+            or (course.status == "published" and course.access_mode == "code")
+        ]
+    creators = {row.id: row for row in db.execute(select(User).where(User.id.in_({c.creator_id for c in courses}))).scalars().all()} if courses else {}
+    return template_response(request, "courses_list.html", user=user, active_tab="courses", courses=courses, creators=creators, scope=scope, statuses=COURSE_STATUSES, access_modes=COURSE_ACCESS_MODES)
+
+
+@app.get("/courses/new", response_class=HTMLResponse)
+def learning_course_new_form(request: Request, db: Session = Depends(get_db)):
+    user=current_user(request,db)
+    if not user:return redirect("/login")
+    return template_response(request,"course_form.html",user=user,active_tab="courses",course=None,statuses=COURSE_STATUSES,access_modes=COURSE_ACCESS_MODES)
+
+
+@app.post("/courses/new")
+async def learning_course_new(request: Request, db: Session = Depends(get_db)):
+    user=current_user(request,db)
+    if not user:return redirect("/login")
+    form=await request.form();title=str(form.get("title","")).strip()
+    if not title:add_flash(request,"Укажите название курса.","error");return redirect("/courses/new")
+    mode=str(form.get("access_mode","members"));status=str(form.get("status","draft"));code=str(form.get("access_code","")).strip()
+    course=LearningCourse(creator_id=user.id,title=title,description=str(form.get("description","")).strip() or None,cover_url=str(form.get("cover_url","")).strip() or None,status=status if status in COURSE_STATUSES else "draft",access_mode=mode if mode in COURSE_ACCESS_MODES else "members",access_code_hash=password_context.hash(code) if mode=="code" and code else None)
+    db.add(course);db.commit();db.refresh(course);add_flash(request,"Курс создан.","success");return redirect(f"/courses/{course.id}")
+
+
+@app.get("/courses/{course_id}", response_class=HTMLResponse)
+def learning_course_detail(course_id: int, request: Request, db: Session = Depends(get_db)):
+    user=current_user(request,db)
+    if not user:return redirect("/login")
+    course=db.get(LearningCourse,course_id)
+    if not course:return redirect("/courses")
+    can_edit=can_edit_learning_course(db,course,user);membership=learning_course_membership(db,course.id,user.id)
+    if not can_edit and not membership and not (course.status=="published" and course.access_mode=="open"):
+        return template_response(request,"course_access.html",user=user,active_tab="courses",course=course,access_modes=COURSE_ACCESS_MODES,status_code=403)
+    lessons=[lesson for lesson in course.lessons if can_edit or lesson.status=="published"]
+    creator=db.get(User,course.creator_id)
+    return template_response(request,"course_detail.html",user=user,active_tab="courses",course=course,lessons=lessons,creator=creator,can_edit=can_edit,is_owner=int(course.creator_id)==int(user.id),membership=membership,statuses=COURSE_STATUSES,access_modes=COURSE_ACCESS_MODES)
+
+
+@app.post("/courses/{course_id}/join")
+async def learning_course_join(course_id: int, request: Request, db: Session = Depends(get_db)):
+    user=current_user(request,db)
+    if not user:return redirect("/login")
+    course=db.get(LearningCourse,course_id)
+    if not course:return redirect("/courses")
+    form=await request.form();allowed=course.access_mode=="open"
+    if course.access_mode=="code" and course.access_code_hash:
+        try:allowed=password_context.verify(str(form.get("access_code", "")),course.access_code_hash)
+        except Exception:allowed=False
+    if not allowed:add_flash(request,"Кодовое слово не подошло или доступ выдаётся вручную.","error");return redirect(f"/courses/{course.id}")
+    if not learning_course_membership(db,course.id,user.id):db.add(LearningCourseMember(course_id=course.id,user_id=user.id,role="participant",added_by_user_id=course.creator_id));db.commit()
+    add_flash(request,"Курс добавлен в ваши курсы.","success");return redirect(f"/courses/{course.id}")
+
+
+@app.get("/courses/{course_id}/edit", response_class=HTMLResponse)
+def learning_course_edit_form(course_id: int, request: Request, db: Session = Depends(get_db)):
+    user=current_user(request,db);course=db.get(LearningCourse,course_id) if user else None
+    if not user:return redirect("/login")
+    if not course or int(course.creator_id) != int(user.id):return redirect("/courses")
+    return template_response(request,"course_form.html",user=user,active_tab="courses",course=course,statuses=COURSE_STATUSES,access_modes=COURSE_ACCESS_MODES)
+
+
+@app.post("/courses/{course_id}/edit")
+async def learning_course_edit(course_id: int, request: Request, db: Session = Depends(get_db)):
+    user=current_user(request,db);course=db.get(LearningCourse,course_id) if user else None
+    if not user:return redirect("/login")
+    if not course or int(course.creator_id) != int(user.id):return redirect("/courses")
+    form=await request.form();course.title=str(form.get("title","")).strip() or course.title;course.description=str(form.get("description","")).strip() or None;course.cover_url=str(form.get("cover_url","")).strip() or None
+    status=str(form.get("status","draft"));mode=str(form.get("access_mode","members"));course.status=status if status in COURSE_STATUSES else "draft";course.access_mode=mode if mode in COURSE_ACCESS_MODES else "members";code=str(form.get("access_code","")).strip()
+    if mode=="code" and code:course.access_code_hash=password_context.hash(code)
+    elif mode!="code":course.access_code_hash=None
+    db.commit();add_flash(request,"Курс обновлён.","success");return redirect(f"/courses/{course.id}")
+
+
+@app.get("/courses/{course_id}/members", response_class=HTMLResponse)
+def learning_course_members(course_id: int, request: Request, db: Session = Depends(get_db)):
+    user=current_user(request,db);course=db.get(LearningCourse,course_id) if user else None
+    if not user:return redirect("/login")
+    if not course or int(course.creator_id) != int(user.id):return redirect("/courses")
+    return template_response(request,"course_members.html",user=user,active_tab="courses",course=course,members=course.members,roles=COURSE_MEMBER_ROLES)
+
+
+@app.post("/courses/{course_id}/members/add")
+async def learning_course_member_add(course_id: int, request: Request, db: Session = Depends(get_db)):
+    user=current_user(request,db);course=db.get(LearningCourse,course_id) if user else None
+    if not user:return redirect("/login")
+    if not course or int(course.creator_id) != int(user.id):return redirect("/courses")
+    form=await request.form();alias=str(form.get("alias","")).strip();role=str(form.get("role","participant"));alias_lookup,users_by_username,_=build_user_alias_lookup(db);username=resolve_alias_to_username(alias,alias_lookup);target=users_by_username.get(username or "")
+    if not target:add_flash(request,"Пользователь по нику не найден.","error")
+    elif target.id==course.creator_id:add_flash(request,"Создатель уже управляет курсом.","info")
+    elif learning_course_membership(db,course.id,target.id):add_flash(request,"Пользователь уже добавлен.","info")
+    else:db.add(LearningCourseMember(course_id=course.id,user_id=target.id,role=role if role in COURSE_MEMBER_ROLES else "participant",added_by_user_id=user.id));db.commit();add_flash(request,"Пользователь добавлен.","success")
+    return redirect(f"/courses/{course.id}/members")
+
+
+@app.post("/courses/{course_id}/members/{member_id}/delete")
+def learning_course_member_delete(course_id: int, member_id: int, request: Request, db: Session = Depends(get_db)):
+    user=current_user(request,db);course=db.get(LearningCourse,course_id) if user else None
+    if not user:return redirect("/login")
+    if course and int(course.creator_id) == int(user.id):
+        member=db.execute(select(LearningCourseMember).where(LearningCourseMember.id==member_id,LearningCourseMember.course_id==course.id)).scalar_one_or_none()
+        if member:db.delete(member);db.commit()
+    return redirect(f"/courses/{course_id}/members")
+
+
+@app.post("/courses/{course_id}/lessons/new")
+async def learning_lesson_new(course_id: int, request: Request, db: Session = Depends(get_db)):
+    user=current_user(request,db);course=db.get(LearningCourse,course_id) if user else None
+    if not user:return redirect("/login")
+    if not course or not can_edit_learning_course(db,course,user):return redirect("/courses")
+    form=await request.form();title=str(form.get("title","")).strip()
+    if title:
+        max_pos=db.execute(select(func.max(LearningLesson.position)).where(LearningLesson.course_id==course.id)).scalar() or 0;lesson=LearningLesson(course_id=course.id,title=title,summary=str(form.get("summary","")).strip() or None,status=str(form.get("status","draft")) if str(form.get("status","draft")) in COURSE_STATUSES else "draft",position=int(max_pos)+1);db.add(lesson);db.commit();db.refresh(lesson);return redirect(f"/courses/{course.id}/lessons/{lesson.id}")
+    add_flash(request,"Укажите название урока.","error");return redirect(f"/courses/{course.id}")
+
+
+@app.get("/courses/{course_id}/lessons/{lesson_id}", response_class=HTMLResponse)
+def learning_lesson_detail(course_id: int, lesson_id: int, request: Request, db: Session = Depends(get_db)):
+    user=current_user(request,db);course=db.get(LearningCourse,course_id) if user else None;lesson=db.get(LearningLesson,lesson_id) if user else None
+    if not user:return redirect("/login")
+    if not course or not lesson or lesson.course_id!=course.id or not can_view_learning_course(db,course,user):return redirect("/courses")
+    can_edit=can_edit_learning_course(db,course,user)
+    if lesson.status!="published" and not can_edit:return redirect(f"/courses/{course.id}")
+    visible=[row for row in course.lessons if can_edit or row.status=="published"];index=next((i for i,row in enumerate(visible) if row.id==lesson.id),0);previous=visible[index-1] if index>0 else None;following=visible[index+1] if index+1<len(visible) else None
+    comments=db.execute(select(LearningLessonComment).where(LearningLessonComment.lesson_id==lesson.id).order_by(LearningLessonComment.created_at,LearningLessonComment.id)).scalars().all()
+    return template_response(request,"lesson_detail.html",user=user,active_tab="courses",course=course,lesson=lesson,can_edit=can_edit,previous=previous,following=following,comments=comments,post_types=LESSON_POST_TYPES)
+
+
+@app.post("/courses/{course_id}/lessons/{lesson_id}/edit")
+async def learning_lesson_edit(course_id: int, lesson_id: int, request: Request, db: Session = Depends(get_db)):
+    user=current_user(request,db);course=db.get(LearningCourse,course_id) if user else None;lesson=db.get(LearningLesson,lesson_id) if user else None
+    if not user:return redirect("/login")
+    if not course or not lesson or lesson.course_id!=course.id or not can_edit_learning_course(db,course,user):return redirect("/courses")
+    form=await request.form();lesson.title=str(form.get("title","")).strip() or lesson.title;lesson.summary=str(form.get("summary","")).strip() or None;lesson.cover_url=str(form.get("cover_url","")).strip() or None;status=str(form.get("status","draft"));lesson.status=status if status in COURSE_STATUSES else "draft";db.commit();return redirect(f"/courses/{course.id}/lessons/{lesson.id}")
+
+
+@app.post("/courses/{course_id}/lessons/{lesson_id}/posts/save")
+async def learning_lesson_post_save(course_id: int, lesson_id: int, request: Request, db: Session = Depends(get_db)):
+    user=current_user(request,db);course=db.get(LearningCourse,course_id) if user else None;lesson=db.get(LearningLesson,lesson_id) if user else None
+    if not user:return redirect("/login")
+    if not course or not lesson or lesson.course_id!=course.id or not can_edit_learning_course(db,course,user):return redirect("/courses")
+    form=await request.form();post_id=str(form.get("post_id","")).strip();post=db.get(LearningLessonPost,int(post_id)) if post_id.isdigit() else None
+    if post and post.lesson_id!=lesson.id:post=None
+    if not post:
+        max_pos=db.execute(select(func.max(LearningLessonPost.position)).where(LearningLessonPost.lesson_id==lesson.id)).scalar() or 0;post=LearningLessonPost(lesson_id=lesson.id,author_id=user.id,position=int(max_pos)+1);db.add(post)
+    kind=str(form.get("post_type","text"));post.post_type=kind if kind in LESSON_POST_TYPES else "text";post.content_html=sanitize_lesson_html(form.get("content_html","")) or None;post.media_url=str(form.get("media_url","")).strip() or None;post.caption=str(form.get("caption","")).strip() or None;db.commit();add_flash(request,"Публикация урока сохранена.","success");return redirect(f"/courses/{course.id}/lessons/{lesson.id}")
+
+
+@app.post("/courses/{course_id}/lessons/{lesson_id}/posts/{post_id}/delete")
+def learning_lesson_post_delete(course_id: int, lesson_id: int, post_id: int, request: Request, db: Session = Depends(get_db)):
+    user=current_user(request,db);course=db.get(LearningCourse,course_id) if user else None;lesson=db.get(LearningLesson,lesson_id) if user else None;post=db.get(LearningLessonPost,post_id) if user else None
+    if user and course and lesson and lesson.course_id==course.id and post and post.lesson_id==lesson.id and can_edit_learning_course(db,course,user):db.delete(post);db.commit()
+    return redirect(f"/courses/{course_id}/lessons/{lesson_id}")
+
+
+@app.post("/courses/{course_id}/lessons/{lesson_id}/comments")
+async def learning_lesson_comment_add(course_id: int, lesson_id: int, request: Request, db: Session = Depends(get_db)):
+    user=current_user(request,db);course=db.get(LearningCourse,course_id) if user else None;lesson=db.get(LearningLesson,lesson_id) if user else None
+    if not user:return redirect("/login")
+    if not course or not lesson or lesson.course_id!=course.id or not can_view_learning_course(db,course,user):return redirect("/courses")
+    if lesson.status != "published" and not can_edit_learning_course(db,course,user):return redirect(f"/courses/{course.id}")
+    form=await request.form();body=str(form.get("body","")).strip()
+    if body:db.add(LearningLessonComment(lesson_id=lesson.id,author_id=user.id,body=body[:5000]));db.commit()
+    return redirect(f"/courses/{course.id}/lessons/{lesson.id}#comments")
+
+
+@app.post("/courses/{course_id}/lessons/{lesson_id}/comments/{comment_id}/delete")
+def learning_lesson_comment_delete(course_id: int, lesson_id: int, comment_id: int, request: Request, db: Session = Depends(get_db)):
+    user=current_user(request,db);course=db.get(LearningCourse,course_id) if user else None;lesson=db.get(LearningLesson,lesson_id) if user else None;comment=db.get(LearningLessonComment,comment_id) if user else None
+    if user and course and lesson and lesson.course_id==course.id and comment and comment.lesson_id==lesson.id and (comment.author_id==user.id or can_edit_learning_course(db,course,user)):db.delete(comment);db.commit()
+    return redirect(f"/courses/{course_id}/lessons/{lesson_id}#comments")
+
+
 @app.post("/profile/vk-bot/unlink")
 def profile_vk_bot_unlink(request: Request, db: Session = Depends(get_db)):
     user = current_user(request, db)
@@ -22941,12 +23176,16 @@ def photoset_subpage_context(request: Request, db: Session, user: User, item: Ph
 
 
 @app.get("/cosplan/photosets/{photoset_id}/props", response_class=HTMLResponse)
-def photoset_props(photoset_id: int, request: Request, db: Session = Depends(get_db)):
+def photoset_props(photoset_id: int, request: Request, edit: bool = False, db: Session = Depends(get_db)):
     user = current_user(request, db)
     if not user: return redirect("/login")
     item = owned_photoset(db, user, photoset_id)
     if not item: return redirect("/cosplan/photosets")
-    return template_response(request, "photoset_props.html", props=as_list(item.props_json), **photoset_subpage_context(request, db, user, item, "props"))
+    props = []
+    for row in as_list(item.props_json):
+        if isinstance(row, dict):
+            normalized = dict(row); normalized["quantity"] = max(1, int(row.get("quantity") or 1)); props.append(normalized)
+    return template_response(request, "photoset_props.html", props=props, editing=edit, props_total=sum(float(row.get("price") or 0) * int(row.get("quantity") or 1) for row in props), **photoset_subpage_context(request, db, user, item, "props"))
 
 
 @app.post("/cosplan/photosets/{photoset_id}/props")
@@ -22955,19 +23194,25 @@ async def photoset_props_save(photoset_id: int, request: Request, db: Session = 
     if not user: return redirect("/login")
     item = owned_photoset(db, user, photoset_id)
     if not item: return redirect("/cosplan/photosets")
-    form = await request.form(); names=list(form.getlist("name")); prices=list(form.getlist("price")); images=list(form.getlist("image_url"))
-    item.props_json=[{"name":str(v).strip(),"price":parse_float(str(prices[i] if i<len(prices) else "")) or 0,"image_url":str(images[i] if i<len(images) else "").strip()} for i,v in enumerate(names) if str(v).strip()]
+    form = await request.form(); names=list(form.getlist("name")); quantities=list(form.getlist("quantity")); prices=list(form.getlist("price")); images=list(form.getlist("image_url"))
+    rows=[]
+    for i, value in enumerate(names):
+        if not str(value).strip(): continue
+        try: quantity=max(1, int(str(quantities[i] if i<len(quantities) else "1")))
+        except ValueError: quantity=1
+        rows.append({"name":str(value).strip(),"quantity":quantity,"price":parse_float(str(prices[i] if i<len(prices) else "")) or 0,"image_url":str(images[i] if i<len(images) else "").strip()})
+    item.props_json=rows
     db.commit(); add_flash(request,"Реквизит сохранён.","success"); return redirect(f"/cosplan/photosets/{item.id}/props")
 
 
 @app.get("/cosplan/photosets/{photoset_id}/references", response_class=HTMLResponse)
-def photoset_references(photoset_id: int, request: Request, db: Session = Depends(get_db)):
+def photoset_references(photoset_id: int, request: Request, edit: bool = False, db: Session = Depends(get_db)):
     user=current_user(request,db)
     if not user:return redirect("/login")
     item=owned_photoset(db,user,photoset_id)
     if not item:return redirect("/cosplan/photosets")
     refs=item.references_json if isinstance(item.references_json,dict) else {}
-    return template_response(request,"photoset_references.html",refs=refs,**photoset_subpage_context(request,db,user,item,"references"))
+    return template_response(request,"photoset_references.html",refs=refs,editing=edit,**photoset_subpage_context(request,db,user,item,"references"))
 
 
 @app.post("/cosplan/photosets/{photoset_id}/references")
@@ -22988,7 +23233,9 @@ def photoset_tasks(photoset_id:int,request:Request,db:Session=Depends(get_db)):
     if not user:return redirect("/login")
     item=owned_photoset(db,user,photoset_id)
     if not item:return redirect("/cosplan/photosets")
-    return template_response(request,"photoset_tasks.html",tasks=as_list(item.tasks_json),status_labels=CHECKLIST_STATUS_LABELS,**photoset_subpage_context(request,db,user,item,"tasks"))
+    tasks = [dict(row, item_index=index) for index, row in enumerate(as_list(item.tasks_json)) if isinstance(row, dict)]
+    task_board = {status: [row for row in tasks if normalize_checklist_status(row) == status] for status in CHECKLIST_STATUS_LABELS}
+    return template_response(request,"photoset_tasks.html",tasks=tasks,task_board=task_board,status_labels=CHECKLIST_STATUS_LABELS,**photoset_subpage_context(request,db,user,item,"tasks"))
 
 
 @app.post("/cosplan/photosets/{photoset_id}/tasks")
@@ -23004,6 +23251,31 @@ async def photoset_tasks_save(photoset_id:int,request:Request,db:Session=Depends
         status=str(statuses[i] if i<len(statuses) else CHECKLIST_STATUS_TODO)
         tasks.append({"text":value,"status":status if status in CHECKLIST_STATUS_LABELS else CHECKLIST_STATUS_TODO,"done":status==CHECKLIST_STATUS_DONE,"deadline":str(deadlines[i] if i<len(deadlines) else "").strip(),"tags":["photoset"]})
     item.tasks_json=tasks;db.commit();add_flash(request,"Список дел сохранён и обновлён в канбане.","success");return redirect(f"/cosplan/photosets/{item.id}/tasks")
+
+
+@app.post("/cosplan/photosets/{photoset_id}/tasks/add")
+async def photoset_task_add(photoset_id: int, request: Request, db: Session = Depends(get_db)):
+    user=current_user(request,db)
+    if not user:return redirect("/login")
+    item=owned_photoset(db,user,photoset_id)
+    if not item:return redirect("/cosplan/photosets")
+    form=await request.form();text_value=str(form.get("task_text","")).strip()
+    if text_value:
+        status=str(form.get("task_status",CHECKLIST_STATUS_TODO)).strip()
+        if status not in CHECKLIST_STATUS_LABELS:status=CHECKLIST_STATUS_TODO
+        tasks=list(item.tasks_json or []);tasks.append({"text":text_value,"status":status,"done":status==CHECKLIST_STATUS_DONE,"deadline":str(form.get("task_deadline","")).strip(),"tags":["photoset"]});item.tasks_json=tasks;db.commit();add_flash(request,"Дело добавлено.","success")
+    return redirect(f"/cosplan/photosets/{item.id}/tasks")
+
+
+@app.post("/cosplan/photosets/{photoset_id}/tasks/delete/{item_index}")
+def photoset_task_delete(photoset_id: int, item_index: int, request: Request, db: Session = Depends(get_db)):
+    user=current_user(request,db)
+    if not user:return redirect("/login")
+    item=owned_photoset(db,user,photoset_id)
+    if not item:return redirect("/cosplan/photosets")
+    tasks=list(item.tasks_json or [])
+    if 0<=item_index<len(tasks):tasks.pop(item_index);item.tasks_json=tasks;db.commit();add_flash(request,"Дело удалено.","info")
+    return redirect(f"/cosplan/photosets/{item.id}/tasks")
 
 
 @app.post("/cosplan/photosets/{photoset_id}/tasks/status/{item_index}")
@@ -23024,7 +23296,7 @@ def photoset_budget(photoset_id:int,request:Request,db:Session=Depends(get_db)):
     if not user:return redirect("/login")
     item=owned_photoset(db,user,photoset_id)
     if not item:return redirect("/cosplan/photosets")
-    costs=photoset_costs(item);props_total=sum(float(r.get("price") or 0) for r in as_list(item.props_json) if isinstance(r,dict));role_total=sum(float(r.get("price") or 0) for r in as_list(item.role_costs_json) if isinstance(r,dict));travel=float(item.travel_to_price or 0)+float(item.travel_from_price or 0);grand=costs["total"]+props_total+role_total+travel
+    costs=photoset_costs(item);props_total=sum(float(r.get("price") or 0)*max(1,int(r.get("quantity") or 1)) for r in as_list(item.props_json) if isinstance(r,dict));role_total=sum(float(r.get("price") or 0) for r in as_list(item.role_costs_json) if isinstance(r,dict));travel=float(item.travel_to_price or 0)+float(item.travel_from_price or 0);grand=costs["total"]+props_total+role_total+travel
     slices=[("Студия и аренда",costs["total"],"#5e5bff"),("Команда",role_total,"#8f86ff"),("Реквизит",props_total,"#b8c8ff"),("Проезд",travel,"#d7e4ff")]
     role_costs = as_list(item.role_costs_json) or [
         {"role": "Фотограф", "price": ""}, {"role": "Ретушер", "price": ""},
@@ -23086,7 +23358,7 @@ async def photoset_corrections_save(photoset_id: int, request: Request, db: Sess
 
 
 @app.get("/cosplan/photosets/{photoset_id}/links", response_class=HTMLResponse)
-def photoset_links(photoset_id: int, request: Request, db: Session = Depends(get_db)):
+def photoset_links(photoset_id: int, request: Request, edit: bool = False, db: Session = Depends(get_db)):
     user = current_user(request, db)
     if not user:
         return redirect("/login")
@@ -23104,7 +23376,7 @@ def photoset_links(photoset_id: int, request: Request, db: Session = Depends(get
         {"role": str(row.get("role") or ""), "nickname": str(row.get("nickname") or ""), "social": str(row.get("social") or "")}
         for row in saved_rows if isinstance(row, dict)
     ] or [{"role": "", "nickname": "", "social": ""}]
-    return template_response(request, "photoset_links.html", rows=rows, selection_url=selection_url, ready_folder_url=ready_folder_url, **photoset_subpage_context(request, db, user, item, "links"))
+    return template_response(request, "photoset_links.html", rows=rows, selection_url=selection_url, ready_folder_url=ready_folder_url, editing=edit, **photoset_subpage_context(request, db, user, item, "links"))
 
 
 @app.post("/cosplan/photosets/{photoset_id}/links")

@@ -531,6 +531,93 @@ class Photoset(Base):
     user = relationship("User")
 
 
+class LearningCourse(Base):
+    __tablename__ = "learning_courses"
+
+    id = Column(Integer, primary_key=True)
+    creator_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    title = Column(String(255), nullable=False, index=True)
+    description = Column(Text, nullable=True)
+    cover_url = Column(Text, nullable=True)
+    status = Column(String(24), nullable=False, default="draft", index=True)
+    access_mode = Column(String(24), nullable=False, default="members", index=True)
+    access_code_hash = Column(String(255), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    creator = relationship("User", foreign_keys=[creator_id])
+    lessons = relationship("LearningLesson", back_populates="course", cascade="all, delete-orphan", order_by="LearningLesson.position")
+    members = relationship("LearningCourseMember", back_populates="course", cascade="all, delete-orphan")
+
+
+class LearningCourseMember(Base):
+    __tablename__ = "learning_course_members"
+
+    id = Column(Integer, primary_key=True)
+    course_id = Column(Integer, ForeignKey("learning_courses.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    role = Column(String(24), nullable=False, default="participant")
+    added_by_user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    course = relationship("LearningCourse", back_populates="members")
+    user = relationship("User", foreign_keys=[user_id])
+    added_by = relationship("User", foreign_keys=[added_by_user_id])
+    __table_args__ = (UniqueConstraint("course_id", "user_id", name="uq_learning_course_member"),)
+
+
+class LearningLesson(Base):
+    __tablename__ = "learning_lessons"
+
+    id = Column(Integer, primary_key=True)
+    course_id = Column(Integer, ForeignKey("learning_courses.id", ondelete="CASCADE"), nullable=False, index=True)
+    title = Column(String(255), nullable=False)
+    summary = Column(Text, nullable=True)
+    cover_url = Column(Text, nullable=True)
+    position = Column(Integer, nullable=False, default=0)
+    status = Column(String(24), nullable=False, default="draft", index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    course = relationship("LearningCourse", back_populates="lessons")
+    posts = relationship("LearningLessonPost", back_populates="lesson", cascade="all, delete-orphan", order_by="LearningLessonPost.position")
+    comments = relationship("LearningLessonComment", back_populates="lesson", cascade="all, delete-orphan")
+
+
+class LearningLessonPost(Base):
+    __tablename__ = "learning_lesson_posts"
+
+    id = Column(Integer, primary_key=True)
+    lesson_id = Column(Integer, ForeignKey("learning_lessons.id", ondelete="CASCADE"), nullable=False, index=True)
+    author_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    post_type = Column(String(24), nullable=False, default="text")
+    content_html = Column(Text, nullable=True)
+    media_url = Column(Text, nullable=True)
+    caption = Column(Text, nullable=True)
+    position = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    lesson = relationship("LearningLesson", back_populates="posts")
+    author = relationship("User")
+
+
+class LearningLessonComment(Base):
+    __tablename__ = "learning_lesson_comments"
+
+    id = Column(Integer, primary_key=True)
+    lesson_id = Column(Integer, ForeignKey("learning_lessons.id", ondelete="CASCADE"), nullable=False, index=True)
+    author_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    parent_id = Column(Integer, ForeignKey("learning_lesson_comments.id", ondelete="SET NULL"), nullable=True)
+    body = Column(Text, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    lesson = relationship("LearningLesson", back_populates="comments")
+    author = relationship("User")
+    parent = relationship("LearningLessonComment", remote_side=[id])
+
+
 class CharacterLibraryEntry(Base):
     __tablename__ = "character_library_entries"
 
