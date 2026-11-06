@@ -518,6 +518,8 @@ class Photoset(Base):
     references_json = Column(JSON, nullable=False, default=dict)
     tasks_json = Column(JSON, nullable=False, default=list)
     role_costs_json = Column(JSON, nullable=False, default=list)
+    corrections_json = Column(JSON, nullable=False, default=list)
+    links_json = Column(JSON, nullable=False, default=list)
     travel_to_price = Column(Float, nullable=True)
     travel_from_price = Column(Float, nullable=True)
     status = Column(String(32), nullable=False, default="preparation", index=True)

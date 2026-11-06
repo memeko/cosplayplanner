@@ -1518,6 +1518,10 @@ def apply_schema_migrations() -> None:
             ("performance_rehearsal_count", "INTEGER"),
             ("linked_photoset_id", "INTEGER"),
         ],
+        "photosets": [
+            ("corrections_json", "JSON NOT NULL DEFAULT '[]'"),
+            ("links_json", "JSON NOT NULL DEFAULT '[]'"),
+        ],
         "festival_notifications": [
             ("id", "INTEGER PRIMARY KEY"),
             ("user_id", "INTEGER NOT NULL"),
@@ -22785,11 +22789,7 @@ def photoset_form_data(item: Photoset | None = None) -> dict[str, Any]:
 def save_photoset_from_form(form: Any, item: Photoset, db: Session) -> str | None:
     item.title = str(form.get("title", "")).strip()
     item.fandom = str(form.get("fandom", "")).strip()
-    if not item.title or not item.fandom:
-        return "Укажите название фотосета и фэндом."
     item.characters_json = [str(v).strip() for v in form.getlist("character") if str(v).strip()]
-    if not item.characters_json:
-        return "Добавьте хотя бы одного персонажа."
     item.au_name = str(form.get("au_name", "")).strip() or None
     aliases, _, _ = build_user_alias_lookup(db)
     roles: list[dict[str, str]] = []
@@ -22828,6 +22828,10 @@ def save_photoset_from_form(form: Any, item: Photoset, db: Session) -> str | Non
     status = str(form.get("status", "preparation")).strip()
     item.status = status if status in PHOTOSET_STATUSES else "preparation"
     item.storyboard_rows_json = parse_photoset_storyboard_rows_from_form(form)
+    if not item.title or not item.fandom:
+        return "Укажите название фотосета и фэндом."
+    if not item.characters_json:
+        return "Добавьте хотя бы одного персонажа."
     return None
 
 
@@ -22856,7 +22860,7 @@ def photoset_new_form(request: Request, db: Session = Depends(get_db)):
     user = current_user(request, db)
     if not user:
         return redirect("/login")
-    return template_response(request, "photoset_form.html", user=user, active_tab="cosplan", item=None, form=photoset_form_data(), statuses=PHOTOSET_STATUSES, role_types=PHOTOSET_ROLE_TYPES, **get_cosplan_section_totals(db, user.id))
+    return template_response(request, "photoset_form.html", user=user, active_tab="cosplan", item=None, is_new=True, form=photoset_form_data(), statuses=PHOTOSET_STATUSES, role_types=PHOTOSET_ROLE_TYPES, **get_cosplan_section_totals(db, user.id))
 
 
 @app.post("/cosplan/photosets/new")
@@ -22869,7 +22873,7 @@ async def photoset_new(request: Request, db: Session = Depends(get_db)):
     error = save_photoset_from_form(form, item, db)
     if error:
         add_flash(request, error, "error")
-        return redirect("/cosplan/photosets/new")
+        return template_response(request, "photoset_form.html", user=user, active_tab="cosplan", item=item, is_new=True, form=photoset_form_data(item), statuses=PHOTOSET_STATUSES, role_types=PHOTOSET_ROLE_TYPES, status_code=422, **get_cosplan_section_totals(db, user.id))
     db.add(item); db.commit(); db.refresh(item)
     add_flash(request, "Карточка фотосета создана.", "success")
     return redirect(f"/cosplan/photosets/{item.id}")
@@ -22899,7 +22903,7 @@ def photoset_edit_form(photoset_id: int, request: Request, db: Session = Depends
     item = owned_photoset(db, user, photoset_id)
     if not item:
         return redirect("/cosplan/photosets")
-    return template_response(request, "photoset_form.html", user=user, active_tab="cosplan", item=item, form=photoset_form_data(item), statuses=PHOTOSET_STATUSES, role_types=PHOTOSET_ROLE_TYPES, **get_cosplan_section_totals(db, user.id))
+    return template_response(request, "photoset_form.html", user=user, active_tab="cosplan", item=item, is_new=False, form=photoset_form_data(item), statuses=PHOTOSET_STATUSES, role_types=PHOTOSET_ROLE_TYPES, **get_cosplan_section_totals(db, user.id))
 
 
 @app.post("/cosplan/photosets/{photoset_id}/edit")
@@ -22912,7 +22916,8 @@ async def photoset_edit(photoset_id: int, request: Request, db: Session = Depend
         return redirect("/cosplan/photosets")
     form = await request.form(); error = save_photoset_from_form(form, item, db)
     if error:
-        add_flash(request, error, "error"); return redirect(f"/cosplan/photosets/{item.id}/edit")
+        add_flash(request, error, "error")
+        return template_response(request, "photoset_form.html", user=user, active_tab="cosplan", item=item, is_new=False, form=photoset_form_data(item), statuses=PHOTOSET_STATUSES, role_types=PHOTOSET_ROLE_TYPES, status_code=422, **get_cosplan_section_totals(db, user.id))
     db.commit(); add_flash(request, "Карточка фотосета обновлена.", "success")
     return redirect(f"/cosplan/photosets/{item.id}")
 
@@ -23033,6 +23038,77 @@ async def photoset_budget_save(photoset_id:int,request:Request,db:Session=Depend
     item=owned_photoset(db,user,photoset_id)
     if not item:return redirect("/cosplan/photosets")
     form=await request.form();roles=list(form.getlist("cost_role"));prices=list(form.getlist("cost_price"));item.role_costs_json=[{"role":str(v).strip(),"price":parse_float(str(prices[i] if i<len(prices) else "")) or 0} for i,v in enumerate(roles) if str(v).strip()];item.travel_to_price=parse_float(str(form.get("travel_to_price","")));item.travel_from_price=parse_float(str(form.get("travel_from_price","")));db.commit();add_flash(request,"Бюджет обновлён.","success");return redirect(f"/cosplan/photosets/{item.id}/budget")
+
+
+@app.get("/cosplan/photosets/{photoset_id}/corrections", response_class=HTMLResponse)
+def photoset_corrections(photoset_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    item = owned_photoset(db, user, photoset_id)
+    if not item:
+        return redirect("/cosplan/photosets")
+    rows = as_list(item.corrections_json) or [{"id": "person-0", "nickname": "", "role": "", "general": "", "frames": [{"frame": "", "comment": ""}]}]
+    return template_response(request, "photoset_corrections.html", rows=rows, **photoset_subpage_context(request, db, user, item, "corrections"))
+
+
+@app.post("/cosplan/photosets/{photoset_id}/corrections")
+async def photoset_corrections_save(photoset_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    item = owned_photoset(db, user, photoset_id)
+    if not item:
+        return redirect("/cosplan/photosets")
+    form = await request.form()
+    person_ids = [str(v).strip() for v in form.getlist("correction_person_id")]
+    nicknames, roles, general = list(form.getlist("correction_nickname")), list(form.getlist("correction_role")), list(form.getlist("correction_general"))
+    frame_person_ids = list(form.getlist("correction_frame_person_id")); frame_values = list(form.getlist("correction_frame")); frame_comments = list(form.getlist("correction_frame_comment"))
+    frames_by_person: dict[str, list[dict[str, str]]] = defaultdict(list)
+    for index, raw_person_id in enumerate(frame_person_ids):
+        frame = str(frame_values[index] if index < len(frame_values) else "").strip()
+        comment = str(frame_comments[index] if index < len(frame_comments) else "").strip()
+        if frame or comment:
+            frames_by_person[str(raw_person_id).strip()].append({"frame": frame, "comment": comment})
+    rows: list[dict[str, Any]] = []
+    for index, person_id in enumerate(person_ids):
+        nickname = str(nicknames[index] if index < len(nicknames) else "").strip()
+        role = str(roles[index] if index < len(roles) else "").strip()
+        wishes = str(general[index] if index < len(general) else "").strip()
+        frames = frames_by_person.get(person_id, [])
+        if nickname or role or wishes or frames:
+            rows.append({"id": person_id or f"person-{index}", "nickname": nickname, "role": role, "general": wishes, "frames": frames})
+    item.corrections_json = rows
+    db.commit(); add_flash(request, "Таблица правок сохранена.", "success")
+    return redirect(f"/cosplan/photosets/{item.id}/corrections")
+
+
+@app.get("/cosplan/photosets/{photoset_id}/links", response_class=HTMLResponse)
+def photoset_links(photoset_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    item = owned_photoset(db, user, photoset_id)
+    if not item:
+        return redirect("/cosplan/photosets")
+    rows = as_list(item.links_json) or [{"role": "", "nickname": "", "social": "", "selection_url": "", "ready_url": ""}]
+    return template_response(request, "photoset_links.html", rows=rows, **photoset_subpage_context(request, db, user, item, "links"))
+
+
+@app.post("/cosplan/photosets/{photoset_id}/links")
+async def photoset_links_save(photoset_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    item = owned_photoset(db, user, photoset_id)
+    if not item:
+        return redirect("/cosplan/photosets")
+    form = await request.form(); roles=list(form.getlist("link_role")); nicknames=list(form.getlist("link_nickname")); socials=list(form.getlist("link_social")); selections=list(form.getlist("link_selection_url")); ready=list(form.getlist("link_ready_url")); rows=[]
+    for index, raw_role in enumerate(roles):
+        row={"role":str(raw_role).strip(),"nickname":str(nicknames[index] if index<len(nicknames) else "").strip(),"social":str(socials[index] if index<len(socials) else "").strip(),"selection_url":str(selections[index] if index<len(selections) else "").strip(),"ready_url":str(ready[index] if index<len(ready) else "").strip()}
+        if any(row.values()): rows.append(row)
+    item.links_json=rows; db.commit(); add_flash(request,"Ссылки сохранены.","success")
+    return redirect(f"/cosplan/photosets/{item.id}/links")
 
 
 @app.get("/cosplan/{card_id}/storyboard.pdf")

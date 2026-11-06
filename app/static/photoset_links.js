@@ -1,0 +1,1 @@
+(function(){document.addEventListener('click',event=>{const add=event.target.closest('[data-add-link]');if(add){document.querySelector('[data-link-rows]').append(document.getElementById('link-row-template').content.cloneNode(true));return}const remove=event.target.closest('[data-remove-link]');if(remove)remove.closest('tr').remove()})})();
