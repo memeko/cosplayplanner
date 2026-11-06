@@ -466,6 +466,7 @@ class CosplanCard(Base):
     source_card_id = Column(Integer, ForeignKey("cosplan_cards.id", ondelete="SET NULL"), nullable=True, index=True)
     shared_from_user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
     notes = Column(Text, nullable=True)
+    linked_photoset_id = Column(Integer, ForeignKey("photosets.id", ondelete="SET NULL"), nullable=True, index=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
@@ -483,6 +484,47 @@ class CosplanCard(Base):
     rehearsal_cards = relationship("RehearsalCard", back_populates="cosplan_card", cascade="all, delete-orphan")
     rehearsal_entries = relationship("RehearsalEntry", back_populates="cosplan_card", cascade="all, delete-orphan")
     linked_title_entries = relationship("TitleEntry", back_populates="linked_card")
+
+
+class Photoset(Base):
+    __tablename__ = "photosets"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    title = Column(String(255), nullable=False, index=True)
+    fandom = Column(String(255), nullable=False, index=True)
+    characters_json = Column(JSON, nullable=False, default=list)
+    au_name = Column(String(255), nullable=True)
+    roles_json = Column(JSON, nullable=False, default=list)
+    event_date = Column(Date, nullable=True)
+    studio_name = Column(String(255), nullable=True)
+    studio_address = Column(Text, nullable=True)
+    hourly_price = Column(Float, nullable=True)
+    rental_hours = Column(Float, nullable=True)
+    smoke_machine_required = Column(Boolean, nullable=False, default=False)
+    smoke_machine_price = Column(Float, nullable=True)
+    dressing_room_hours = Column(Float, nullable=True)
+    dressing_room_hourly_price = Column(Float, nullable=True)
+    extra_expenses_json = Column(JSON, nullable=False, default=list)
+    payers_count = Column(Integer, nullable=True)
+    payment_comment = Column(Text, nullable=True)
+    shooting_date = Column(Date, nullable=True)
+    selection_date = Column(Date, nullable=True)
+    ready_date = Column(Date, nullable=True)
+    shooting_time_start = Column(String(8), nullable=True)
+    shooting_time_end = Column(String(8), nullable=True)
+    storyboard_rows_json = Column(JSON, nullable=False, default=list)
+    props_json = Column(JSON, nullable=False, default=list)
+    references_json = Column(JSON, nullable=False, default=dict)
+    tasks_json = Column(JSON, nullable=False, default=list)
+    role_costs_json = Column(JSON, nullable=False, default=list)
+    travel_to_price = Column(Float, nullable=True)
+    travel_from_price = Column(Float, nullable=True)
+    status = Column(String(32), nullable=False, default="preparation", index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    user = relationship("User")
 
 
 class CharacterLibraryEntry(Base):

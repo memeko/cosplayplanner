@@ -1,0 +1,8 @@
+(function () {
+  const form = document.getElementById('photoset-form'); if (!form) return;
+  const money = new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 2 });
+  function renumberStoryboard() { document.querySelectorAll('.storyboard-row').forEach((row, i) => { const id='story-'+i; row.querySelector('[name="photoset_storyboard_row_id"]').value=id; const done=row.querySelector('[name="photoset_storyboard_done"]'); done.value=id; }); const out=document.querySelector('[data-story-count]'); if(out) out.textContent=document.querySelectorAll('.storyboard-row').length; }
+  function calculate() { const n = name => Number(form.elements[name]?.value || 0); let total=n('hourly_price')*n('rental_hours')+n('dressing_room_hours')*n('dressing_room_hourly_price'); if(form.elements.smoke_machine_required?.checked) total+=n('smoke_machine_price'); form.querySelectorAll('[name="extra_price"]').forEach(input=>total+=Number(input.value||0)); document.querySelector('[data-total]').textContent=money.format(total)+' ₽'; const payers=Number(form.elements.payers_count?.value||0); document.querySelector('[data-contribution]').textContent=money.format(payers>0?total/payers:0)+' ₽'; }
+  form.addEventListener('click', e => { const add=e.target.closest('[data-add]'); if(add){ const key=add.dataset.add, tpl=document.getElementById('tpl-'+key); form.querySelector('[data-rows="'+key+'"]').append(tpl.content.cloneNode(true)); renumberStoryboard(); calculate(); } const remove=e.target.closest('[data-remove]'); if(remove){ remove.closest('.repeat-row').remove(); renumberStoryboard(); calculate(); } });
+  form.addEventListener('input', calculate); form.addEventListener('change', calculate); renumberStoryboard(); calculate();
+})();

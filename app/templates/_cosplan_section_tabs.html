@@ -1,0 +1,6 @@
+<nav class="calendar-tabs">
+  <a href="/cosplan" class="tab {% if section == 'cards' %}active{% endif %}">Коспланы <span class="chip">{{ cosplan_cards_total }}</span></a>
+  <a href="/cosplan/titles" class="tab {% if section == 'titles' %}active{% endif %}">Тайтлы <span class="chip">{{ title_entries_total }}</span></a>
+  <a href="/cosplan/characters" class="tab {% if section == 'characters' %}active{% endif %}">Персонажи <span class="chip">{{ character_library_total }}</span></a>
+  <a href="/cosplan/photosets" class="tab {% if section == 'photosets' %}active{% endif %}">Фотосеты <span class="chip">{{ photosets_total }}</span></a>
+</nav>

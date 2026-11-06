@@ -1,0 +1,9 @@
+{% if item %}
+<nav class="calendar-tabs photoset-inner-tabs">
+  <a class="tab {% if photoset_page == 'main' %}active{% endif %}" href="/cosplan/photosets/{{ item.id }}">Обзор</a>
+  <a class="tab {% if photoset_page == 'props' %}active{% endif %}" href="/cosplan/photosets/{{ item.id }}/props">Реквизит</a>
+  <a class="tab {% if photoset_page == 'references' %}active{% endif %}" href="/cosplan/photosets/{{ item.id }}/references">Референсы</a>
+  <a class="tab {% if photoset_page == 'tasks' %}active{% endif %}" href="/cosplan/photosets/{{ item.id }}/tasks">Список дел</a>
+  <a class="tab {% if photoset_page == 'budget' %}active{% endif %}" href="/cosplan/photosets/{{ item.id }}/budget">Бюджет</a>
+</nav>
+{% endif %}

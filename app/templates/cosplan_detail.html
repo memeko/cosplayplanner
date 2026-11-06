@@ -377,11 +377,12 @@
 {% endif %}
 
 {% set has_photoset_breakdown = card.photoset_photographer_price is not none or card.photoset_studio_price is not none or card.photoset_props_price is not none or card.photoset_extra_price is not none or 'photoset_photographer_price' in unknown_fields or 'photoset_studio_price' in unknown_fields or 'photoset_props_price' in unknown_fields or 'photoset_extra_price' in unknown_fields %}
-{% set has_photoset = photographers or studios or card.photoset_date or has_photoset_breakdown or card.photoset_price is not none or 'photoset_price' in unknown_fields or card.photoset_comment or photoset_props_checklist or photoset_storyboard_rows %}
+{% set has_photoset = linked_photoset or photographers or studios or card.photoset_date or has_photoset_breakdown or card.photoset_price is not none or 'photoset_price' in unknown_fields or card.photoset_comment or photoset_props_checklist or photoset_storyboard_rows %}
 {% set has_coproplayers = coproplayer_people or coproplayers_display %}
 {% if has_photoset %}
 <section class="box">
   <h2>Фотосет</h2>
+  {% if linked_photoset %}<p><a class="btn btn-accent" href="/cosplan/photosets/{{ linked_photoset.id }}">Открыть карточку «{{ linked_photoset.title }}»</a></p>{% endif %}
   {% if photographers %}<p class="meta">Фотограф(ы): {{ photographers | join(", ") }}</p>{% endif %}
   {% if studios %}<p class="meta">Студия(и): {{ studios | join(", ") }}</p>{% endif %}
   {% if card.photoset_date %}<p class="meta">Дата фотосета: {{ card.photoset_date.strftime('%d-%m-%Y') }}</p>{% endif %}

@@ -202,7 +202,7 @@
   }
 </style>
 
-{% if progress_items %}
+{% if progress_items or has_checklist_items %}
 {% if progress_view == "kanban" %}
 <section class="kanban-filters" aria-label="Фильтр дел по тегам">
   <strong>Категории</strong>
@@ -221,9 +221,9 @@
       </div>
       {% for project_group in column_items|groupby("card_name") %}
         <div class="kanban-project" data-card-id="{{ project_group.list[0].card_id }}">
-          <a class="kanban-project-title" href="/cosplan/{{ project_group.list[0].card_id }}"><strong>{{ project_group.grouper }}</strong></a>
+          <a class="kanban-project-title" href="{{ project_group.list[0].card_url }}"><strong>{{ project_group.grouper }}</strong></a>
           {% for item in project_group.list %}
-            <article class="kanban-task" draggable="true" data-card-id="{{ item.card_id }}" data-card-name="{{ item.card_name }}" data-card-url="/cosplan/{{ item.card_id }}" data-tags="{{ item.tags|join(',') }}" data-status-url="/in-progress/{{ item.progress_id }}/checklist/status/{{ item.item_index }}" data-tags-url="/in-progress/{{ item.progress_id }}/checklist/tags/{{ item.item_index }}">
+            <article class="kanban-task" draggable="true" data-card-id="{{ item.card_id }}" data-card-name="{{ item.card_name }}" data-card-url="{{ item.card_url }}" data-tags="{{ item.tags|join(',') }}" data-status-url="{{ item.status_url }}" data-tags-url="{{ item.tags_url }}">
               <div class="kanban-task-head">
                 <p>{{ item.text }}</p>
                 <button type="button" class="kanban-drag-handle" aria-label="Перетащить дело" title="Перетащить между колонками">

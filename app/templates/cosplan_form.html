@@ -996,6 +996,16 @@
 
   <section class="box">
     <h2>Фотосет</h2>
+      <label>
+        Связанная карточка фотосета
+        <select name="linked_photoset_id">
+          <option value="">Не связывать</option>
+          {% for photoset in photoset_options %}
+            <option value="{{ photoset.id }}" {% if form.linked_photoset_id|string == photoset.id|string %}selected{% endif %}>{{ photoset.title }} — {{ photoset.fandom }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <a class="btn btn-small" href="/cosplan/photosets/new">Создать отдельную карточку фотосета</a>
       <div class="actions-inline wrap top-offset">
         <a href="/community/studios" class="btn btn-small">Найти студию</a>
         <a href="/community/masters" class="btn btn-small">Найти мастера</a>
