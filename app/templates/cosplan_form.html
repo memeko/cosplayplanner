@@ -328,10 +328,10 @@
       </div>
 
       <div id="costume_executor_wrap">
-        <label>
-          Исполнитель
-          <input type="text" name="costume_executor" value="{{ form.costume_executor }}" />
-        </label>
+        <div class="grid two-col">
+          <label>Исполнитель<input type="text" name="costume_executor" value="{{ form.costume_executor }}" /></label>
+          <label>Контакт исполнителя<input type="text" name="costume_executor_contact" value="{{ form.costume_executor_contact }}" placeholder="Телефон, Telegram, VK или ссылка" /></label>
+        </div>
       </div>
 
       <div id="costume_payments_wrap" class="grid two-col">
@@ -492,10 +492,14 @@
       </div>
     </div>
 
-    <div id="shoes_craft_wrap" class="grid three-col">
+    <div id="shoes_craft_wrap" class="grid four-col">
       <label>
         Исполнитель
         <input type="text" name="shoes_executor" value="{{ form.shoes_executor }}" />
+      </label>
+      <label>
+        Контакт исполнителя
+        <input type="text" name="shoes_executor_contact" value="{{ form.shoes_executor_contact }}" placeholder="Телефон, Telegram, VK или ссылка" />
       </label>
       <label>
         Срок
@@ -549,10 +553,14 @@
       </select>
     </label>
 
-    <div id="wigmaker_wrap" class="grid three-col">
+    <div id="wigmaker_wrap" class="grid four-col">
       <label>
         Имя вигмейкера
         <input type="text" name="wigmaker_name" value="{{ form.wigmaker_name }}" />
+      </label>
+      <label>
+        Контакт вигмейкера
+        <input type="text" name="wigmaker_contact" value="{{ form.wigmaker_contact }}" placeholder="Телефон, Telegram, VK или ссылка" />
       </label>
       <label>
         Цена
@@ -589,6 +597,27 @@
       Валюта
       <input type="text" list="currency-options" name="wig_currency" value="{{ form.wig_currency }}" />
     </label>
+
+    <h3>Украшения и аксессуары для парика</h3>
+    <div class="self-sew-table-wrap">
+      <table class="self-sew-table">
+        <thead><tr><th>Название</th><th>Назначение</th><th>Количество</th><th>Цена за единицу</th><th>Ссылка / Где купить</th><th>Куплено</th><th>Действие</th></tr></thead>
+        <tbody id="wig_accessory_rows">
+          {% for item in form.wig_accessory_rows %}
+          <tr class="supply-row">
+            <td><input type="hidden" name="wig_accessory_row_id" value="{{ item.row_id }}" /><input type="text" name="wig_accessory_name" value="{{ item.name }}" placeholder="Заколка, лента, бусины" /></td>
+            <td><input type="text" name="wig_accessory_purpose" value="{{ item.purpose }}" placeholder="Коса, хвост, головной убор" /></td>
+            <td><input type="text" name="wig_accessory_quantity" value="{{ item.quantity }}" placeholder="1" /></td>
+            <td><input type="text" name="wig_accessory_unit_price" value="{{ item.unit_price }}" placeholder="500" /></td>
+            <td><input type="url" name="wig_accessory_link" value="{{ item.link }}" placeholder="https://..." /></td>
+            <td class="self-sew-buy-cell"><input type="checkbox" name="wig_accessory_bought" value="{{ item.row_id }}" {% if item.bought == '__YES__' %}checked{% endif %} /></td>
+            <td><button type="button" class="btn btn-danger supply-remove-btn">Удалить</button></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <button type="button" class="btn btn-small" id="add_wig_accessory_btn">Добавить украшение</button>
   </section>
 
   <section class="box">
@@ -607,10 +636,14 @@
       </label>
     </div>
 
-    <div id="craft_order_wrap" class="grid three-col">
+    <div id="craft_order_wrap" class="grid four-col">
       <label>
         Мастер
         <input type="text" name="craft_master" value="{{ form.craft_master }}" />
+      </label>
+      <label>
+        Контакт мастера
+        <input type="text" name="craft_master_contact" value="{{ form.craft_master_contact }}" placeholder="Телефон, Telegram, VK или ссылка" />
       </label>
       <label>
         Цена
@@ -622,11 +655,28 @@
       </label>
     </div>
 
-    <div id="craft_self_wrap" class="grid one-col">
-      <label>
-        Стоимость материалов
-        <input type="text" name="craft_material_price" value="{{ form.craft_material_price }}" class="price-field" />
-      </label>
+    <div id="craft_self_wrap">
+      <h3>Материалы</h3>
+      <div class="self-sew-table-wrap">
+        <table class="self-sew-table">
+          <thead><tr><th>Материал</th><th>Назначение</th><th>Количество</th><th>Цена за единицу</th><th>Ссылка / Где купить</th><th>Куплено</th><th>Действие</th></tr></thead>
+          <tbody id="craft_material_rows">
+            {% for item in form.craft_material_rows %}
+            <tr class="supply-row">
+              <td><input type="hidden" name="craft_material_row_id" value="{{ item.row_id }}" /><input type="text" name="craft_material_name" value="{{ item.name }}" placeholder="ЭВА, клей, краска" /></td>
+              <td><input type="text" name="craft_material_purpose" value="{{ item.purpose }}" placeholder="Броня, оружие, декор" /></td>
+              <td><input type="text" name="craft_material_quantity" value="{{ item.quantity }}" placeholder="1" /></td>
+              <td><input type="text" name="craft_material_unit_price" value="{{ item.unit_price }}" placeholder="500" /></td>
+              <td><input type="url" name="craft_material_link" value="{{ item.link }}" placeholder="https://..." /></td>
+              <td class="self-sew-buy-cell"><input type="checkbox" name="craft_material_bought" value="{{ item.row_id }}" {% if item.bought == '__YES__' %}checked{% endif %} /></td>
+              <td><button type="button" class="btn btn-danger supply-remove-btn">Удалить</button></td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <button type="button" class="btn btn-small" id="add_craft_material_btn">Добавить материал</button>
+      <label>Общая стоимость материалов<input type="text" name="craft_material_price" value="{{ form.craft_material_price }}" class="price-field" /></label>
     </div>
 
     <h3>Дополнительные ссылки по крафту</h3>
@@ -1403,7 +1453,7 @@
     toggleVisibility("wigmaker_wrap", wigType === "wigmaker");
     toggleVisibility("wig_buy_wrap", wigType === "buy");
     toggleVisibility("wig_no_buy_wrap", wigType === "no_buy");
-    toggleVisibility("wig_currency_wrap", wigType !== "no_buy");
+    toggleVisibility("wig_currency_wrap", true);
 
     const craftType = document.getElementById("craft_type")?.value;
     toggleVisibility("craft_order_wrap", craftType === "order");
@@ -1545,6 +1595,20 @@
     let hasUnknown = false;
     const currencies = new Set();
     const selfSewSubtotals = computeSelfSewSubtotals();
+    const supplySubtotal = (prefix) => {
+      let subtotal = 0;
+      let hasPricedRows = false;
+      document.querySelectorAll(`#${prefix}_rows tr`).forEach((row) => {
+        const quantity = parseDecimalInput(row.querySelector(`[name="${prefix}_quantity"]`)?.value);
+        const unitPrice = parseDecimalInput(row.querySelector(`[name="${prefix}_unit_price"]`)?.value);
+        if (quantity === null || unitPrice === null) return;
+        hasPricedRows = true;
+        subtotal += quantity * unitPrice;
+      });
+      return { subtotal, hasPricedRows };
+    };
+    const wigAccessorySubtotal = supplySubtotal("wig_accessory");
+    const craftMaterialSubtotal = supplySubtotal("craft_material");
     const currencyByPriceField = {
       "costume_prepayment": "costume_currency",
       "costume_postpayment": "costume_currency",
@@ -1570,6 +1634,7 @@
       if (fieldRoot.offsetParent === null) {
         return;
       }
+      if (input.name === "craft_material_price" && craftMaterialSubtotal.hasPricedRows) return;
       const isUnknown = input.classList.contains("part-price-field") ? getPartRowUnknown(input) : getPriceFieldUnknown(input);
       if (isUnknown) {
         hasUnknown = true;
@@ -1599,6 +1664,17 @@
         }
       }
     });
+
+    if (wigAccessorySubtotal.hasPricedRows) {
+      total += wigAccessorySubtotal.subtotal;
+      const currency = (document.querySelector('[name="wig_currency"]')?.value || "").trim().toUpperCase();
+      if (currency) currencies.add(currency);
+    }
+    if (craftMaterialSubtotal.hasPricedRows && document.getElementById("craft_type")?.value !== "order") {
+      total += craftMaterialSubtotal.subtotal;
+      const currency = (document.querySelector('[name="craft_currency"]')?.value || "").trim().toUpperCase();
+      if (currency) currencies.add(currency);
+    }
 
     const costumeType = document.getElementById("costume_type")?.value;
     const sewingType = document.getElementById("sewing_type")?.value;
@@ -1828,6 +1904,48 @@
         updateEstimatedTotal();
       });
     }
+  };
+
+  const setupSupplyTables = () => {
+    const configs = [
+      { prefix: "wig_accessory", wrapId: "wig_accessory_rows", buttonId: "add_wig_accessory_btn", namePlaceholder: "Заколка, лента, бусины" },
+      { prefix: "craft_material", wrapId: "craft_material_rows", buttonId: "add_craft_material_btn", namePlaceholder: "ЭВА, клей, краска" },
+    ];
+    const bindRow = (row) => {
+      if (!row || row.dataset.supplyBound === "1") return;
+      row.dataset.supplyBound = "1";
+      row.querySelector(".supply-remove-btn")?.addEventListener("click", () => {
+        row.remove();
+        updateEstimatedTotal();
+      });
+      row.querySelectorAll("input").forEach((input) => {
+        input.addEventListener("input", updateEstimatedTotal);
+        input.addEventListener("change", updateEstimatedTotal);
+      });
+    };
+    configs.forEach(({ prefix, wrapId, buttonId, namePlaceholder }) => {
+      const wrap = document.getElementById(wrapId);
+      const button = document.getElementById(buttonId);
+      wrap?.querySelectorAll("tr").forEach(bindRow);
+      button?.addEventListener("click", () => {
+        if (!wrap) return;
+        const rowId = `${prefix}-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
+        const row = document.createElement("tr");
+        row.className = "supply-row";
+        row.innerHTML = `
+          <td><input type="hidden" name="${prefix}_row_id" value="${rowId}" /><input type="text" name="${prefix}_name" placeholder="${namePlaceholder}" /></td>
+          <td><input type="text" name="${prefix}_purpose" placeholder="Для какой части" /></td>
+          <td><input type="text" name="${prefix}_quantity" placeholder="1" /></td>
+          <td><input type="text" name="${prefix}_unit_price" placeholder="500" /></td>
+          <td><input type="url" name="${prefix}_link" placeholder="https://..." /></td>
+          <td class="self-sew-buy-cell"><input type="checkbox" name="${prefix}_bought" value="${rowId}" /></td>
+          <td><button type="button" class="btn btn-danger supply-remove-btn">Удалить</button></td>`;
+        wrap.appendChild(row);
+        bindRow(row);
+        row.querySelector(`input[name="${prefix}_name"]`)?.focus();
+        updateEstimatedTotal();
+      });
+    });
   };
 
   const makeChecklistRow = () => {
@@ -2889,6 +3007,7 @@
   attachUnknownPriceCheckboxes();
   setupPartsControls();
   setupSelfSewCostTables();
+  setupSupplyTables();
   setupChecklistControls();
   setupPhotosetFramesCalculator();
   setupPhotosetStoryboardTable();

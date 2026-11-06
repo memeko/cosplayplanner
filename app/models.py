@@ -364,6 +364,7 @@ class CosplanCard(Base):
     sewing_fitting = Column(Boolean, nullable=False, default=False)
     sewing_details = Column(Boolean, nullable=False, default=False)
     costume_executor = Column(String(255), nullable=True)
+    costume_executor_contact = Column(String(255), nullable=True)
     costume_deadline = Column(Date, nullable=True)
     costume_prepayment = Column(Float, nullable=True)
     costume_postpayment = Column(Float, nullable=True)
@@ -382,6 +383,7 @@ class CosplanCard(Base):
     shoes_link = Column(Text, nullable=True)
     shoes_buy_price = Column(Float, nullable=True)
     shoes_executor = Column(String(255), nullable=True)
+    shoes_executor_contact = Column(String(255), nullable=True)
     shoes_deadline = Column(Date, nullable=True)
     shoes_price = Column(Float, nullable=True)
     shoes_currency = Column(String(16), nullable=True)
@@ -394,6 +396,7 @@ class CosplanCard(Base):
 
     wig_type = Column(String(32), nullable=True)  # wigmaker | buy | no_buy
     wigmaker_name = Column(String(255), nullable=True)
+    wigmaker_contact = Column(String(255), nullable=True)
     wig_price = Column(Float, nullable=True)
     wig_buy_price = Column(Float, nullable=True)
     wig_currency = Column(String(16), nullable=True)
@@ -401,13 +404,16 @@ class CosplanCard(Base):
     wig_link = Column(Text, nullable=True)
     wig_no_buy_from = Column(String(255), nullable=True)
     wig_restyle = Column(Boolean, nullable=False, default=False)
+    wig_accessory_rows_json = Column(JSON, nullable=False, default=list)
 
     craft_type = Column(String(32), nullable=True)  # self | order
     craft_master = Column(String(255), nullable=True)
+    craft_master_contact = Column(String(255), nullable=True)
     craft_price = Column(Float, nullable=True)
     craft_material_price = Column(Float, nullable=True)
     craft_deadline = Column(Date, nullable=True)
     craft_currency = Column(String(16), nullable=True)
+    craft_material_rows_json = Column(JSON, nullable=False, default=list)
     status_percent = Column(Integer, nullable=False, default=0)
 
     plan_type = Column(String(32), nullable=True)  # project | personal

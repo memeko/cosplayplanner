@@ -38,7 +38,7 @@ private val fullCardSections = listOf(
         FullField("sewing_fabric", "Ткань выбрана", FullFieldKind.Boolean), FullField("sewing_hardware", "Фурнитура выбрана", FullFieldKind.Boolean),
         FullField("sewing_pattern", "Выкройка готова", FullFieldKind.Boolean), FullField("sewing_mockup", "Макет готов", FullFieldKind.Boolean),
         FullField("sewing_fitting", "Примерка проведена", FullFieldKind.Boolean), FullField("sewing_details", "Детали готовы", FullFieldKind.Boolean),
-        FullField("costume_executor", "Исполнитель"), FullField("costume_deadline", "Дедлайн", FullFieldKind.Date),
+        FullField("costume_executor", "Исполнитель"), FullField("costume_executor_contact", "Контакт исполнителя"), FullField("costume_deadline", "Дедлайн", FullFieldKind.Date),
         FullField("costume_prepayment", "Предоплата", FullFieldKind.Number), FullField("costume_postpayment", "Доплата", FullFieldKind.Number),
         FullField("costume_fabric_price", "Стоимость ткани", FullFieldKind.Number), FullField("costume_hardware_price", "Стоимость фурнитуры", FullFieldKind.Number),
         FullField("costume_fabric_rows_json", "Таблица тканей (JSON)", FullFieldKind.Json), FullField("costume_hardware_rows_json", "Таблица фурнитуры (JSON)", FullFieldKind.Json),
@@ -48,7 +48,7 @@ private val fullCardSections = listOf(
     )),
     FullSection("Обувь", listOf(
         FullField("shoes_type", "Способ", FullFieldKind.Choice, listOf("buy" to "Покупка", "craft" to "Изготовление")), FullField("shoes_bought", "Обувь куплена", FullFieldKind.Boolean),
-        FullField("shoes_link", "Ссылка"), FullField("shoes_buy_price", "Цена покупки", FullFieldKind.Number), FullField("shoes_executor", "Исполнитель"),
+        FullField("shoes_link", "Ссылка"), FullField("shoes_buy_price", "Цена покупки", FullFieldKind.Number), FullField("shoes_executor", "Исполнитель"), FullField("shoes_executor_contact", "Контакт исполнителя"),
         FullField("shoes_deadline", "Дедлайн", FullFieldKind.Date), FullField("shoes_price", "Цена изготовления", FullFieldKind.Number), FullField("shoes_currency", "Валюта"),
     )),
     FullSection("Линзы", listOf(
@@ -57,14 +57,14 @@ private val fullCardSections = listOf(
     )),
     FullSection("Парик", listOf(
         FullField("wig_type", "Способ", FullFieldKind.Choice, listOf("wigmaker" to "Вигмейкер", "buy" to "Покупка", "no_buy" to "Уже есть")),
-        FullField("wigmaker_name", "Вигмейкер"), FullField("wig_price", "Цена работы", FullFieldKind.Number), FullField("wig_buy_price", "Цена покупки", FullFieldKind.Number),
+        FullField("wigmaker_name", "Вигмейкер"), FullField("wigmaker_contact", "Контакт вигмейкера"), FullField("wig_price", "Цена работы", FullFieldKind.Number), FullField("wig_buy_price", "Цена покупки", FullFieldKind.Number),
         FullField("wig_currency", "Валюта"), FullField("wig_deadline", "Дедлайн", FullFieldKind.Date), FullField("wig_link", "Ссылка"),
-        FullField("wig_no_buy_from", "Откуда парик"), FullField("wig_restyle", "Нужен рестайлинг", FullFieldKind.Boolean),
+        FullField("wig_no_buy_from", "Откуда парик"), FullField("wig_restyle", "Нужен рестайлинг", FullFieldKind.Boolean), FullField("wig_accessory_rows_json", "Украшения и аксессуары (JSON)", FullFieldKind.Json),
     )),
     FullSection("Крафт", listOf(
-        FullField("craft_type", "Способ", FullFieldKind.Choice, listOf("self" to "Самостоятельно", "order" to "На заказ")), FullField("craft_master", "Мастер"),
+        FullField("craft_type", "Способ", FullFieldKind.Choice, listOf("self" to "Самостоятельно", "order" to "На заказ")), FullField("craft_master", "Мастер"), FullField("craft_master_contact", "Контакт мастера"),
         FullField("craft_price", "Цена работы", FullFieldKind.Number), FullField("craft_material_price", "Цена материалов", FullFieldKind.Number),
-        FullField("craft_deadline", "Дедлайн", FullFieldKind.Date), FullField("craft_currency", "Валюта"), FullField("craft_parts_json", "Части крафта (JSON)", FullFieldKind.Json),
+        FullField("craft_deadline", "Дедлайн", FullFieldKind.Date), FullField("craft_currency", "Валюта"), FullField("craft_material_rows_json", "Материалы (JSON)", FullFieldKind.Json), FullField("craft_parts_json", "Части крафта (JSON)", FullFieldKind.Json),
     )),
     FullSection("Проект и команда", listOf(
         FullField("project_leader", "Руководитель проекта"), FullField("cosbands_json", "Коспбенды", FullFieldKind.Lines), FullField("project_deadline", "Дедлайн проекта", FullFieldKind.Date),

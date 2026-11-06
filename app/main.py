@@ -1462,14 +1462,18 @@ def apply_schema_migrations() -> None:
             ("costume_hardware_price", "FLOAT"),
             ("costume_fabric_rows_json", "JSON NOT NULL DEFAULT '[]'"),
             ("costume_hardware_rows_json", "JSON NOT NULL DEFAULT '[]'"),
+            ("costume_executor_contact", "VARCHAR(255)"),
             ("sewing_mockup", "BOOLEAN NOT NULL DEFAULT 0"),
             ("sewing_fitting", "BOOLEAN NOT NULL DEFAULT 0"),
             ("sewing_details", "BOOLEAN NOT NULL DEFAULT 0"),
             ("costume_notes", "TEXT"),
             ("shoes_buy_price", "FLOAT"),
+            ("shoes_executor_contact", "VARCHAR(255)"),
             ("lenses_price", "FLOAT"),
             ("lenses_currency", "VARCHAR(16)"),
             ("wig_buy_price", "FLOAT"),
+            ("wigmaker_contact", "VARCHAR(255)"),
+            ("wig_accessory_rows_json", "JSON NOT NULL DEFAULT '[]'"),
             ("coproplayer_nicks_json", "JSON NOT NULL DEFAULT '[]'"),
             ("is_shared_copy", "BOOLEAN NOT NULL DEFAULT 0"),
             ("is_priority", "BOOLEAN NOT NULL DEFAULT 0"),
@@ -1480,10 +1484,12 @@ def apply_schema_migrations() -> None:
             ("wig_restyle", "BOOLEAN NOT NULL DEFAULT 0"),
             ("craft_type", "VARCHAR(32)"),
             ("craft_master", "VARCHAR(255)"),
+            ("craft_master_contact", "VARCHAR(255)"),
             ("craft_price", "FLOAT"),
             ("craft_material_price", "FLOAT"),
             ("craft_deadline", "DATE"),
             ("craft_currency", "VARCHAR(16)"),
+            ("craft_material_rows_json", "JSON NOT NULL DEFAULT '[]'"),
             ("status_percent", "INTEGER NOT NULL DEFAULT 0"),
             ("related_cards_json", "JSON NOT NULL DEFAULT '[]'"),
             ("project_characters_json", "JSON NOT NULL DEFAULT '[]'"),
@@ -2673,6 +2679,11 @@ def estimate_card_total_and_currency(card: CosplanCard) -> tuple[float, str]:
     add(card.lenses_price, card.lenses_currency)
     add(card.wig_price, card.wig_currency)
     add(card.wig_buy_price, card.wig_currency)
+    wig_accessory_subtotal, has_wig_accessory_subtotal = subtotal_product_rows(
+        as_list(card.wig_accessory_rows_json), amount_key="quantity", unit_price_key="unit_price"
+    )
+    if has_wig_accessory_subtotal:
+        add(wig_accessory_subtotal, card.wig_currency)
     add(card.craft_price, card.craft_currency)
     add(card.craft_material_price, card.craft_currency)
     photoset_breakdown = [
@@ -11114,6 +11125,38 @@ def parse_costume_hardware_rows_from_form(form: Any) -> list[dict[str, Any]]:
     return rows
 
 
+def parse_supply_rows_from_form(form: Any, prefix: str) -> list[dict[str, Any]]:
+    row_ids = [str(value).strip() for value in form.getlist(f"{prefix}_row_id")]
+    names = [str(value).strip() for value in form.getlist(f"{prefix}_name")]
+    purposes = [str(value).strip() for value in form.getlist(f"{prefix}_purpose")]
+    quantities = [str(value).strip() for value in form.getlist(f"{prefix}_quantity")]
+    unit_prices = [str(value).strip() for value in form.getlist(f"{prefix}_unit_price")]
+    links = [str(value).strip() for value in form.getlist(f"{prefix}_link")]
+    bought_ids = {str(value).strip() for value in form.getlist(f"{prefix}_bought") if str(value).strip()}
+    size = max(len(row_ids), len(names), len(purposes), len(quantities), len(unit_prices), len(links))
+    rows: list[dict[str, Any]] = []
+    for index in range(size):
+        row_id = row_ids[index] if index < len(row_ids) and row_ids[index] else f"{prefix}-{index}"
+        name = names[index] if index < len(names) else ""
+        purpose = purposes[index] if index < len(purposes) else ""
+        raw_quantity = quantities[index] if index < len(quantities) else ""
+        raw_unit_price = unit_prices[index] if index < len(unit_prices) else ""
+        link = links[index] if index < len(links) else ""
+        bought = row_id in bought_ids
+        if not (name or purpose or raw_quantity or raw_unit_price or link or bought):
+            continue
+        rows.append({
+            "row_id": row_id,
+            "name": name,
+            "purpose": purpose,
+            "quantity": parse_float(raw_quantity),
+            "unit_price": parse_float(raw_unit_price),
+            "link": link,
+            "bought": bought,
+        })
+    return rows
+
+
 def subtotal_product_rows(rows: list[Any], *, amount_key: str, unit_price_key: str) -> tuple[float, bool]:
     subtotal = 0.0
     has_rows_with_price = False
@@ -11245,6 +11288,25 @@ def format_costume_hardware_rows_for_form(rows: list[Any]) -> list[dict[str, str
                 "price_per_unit": "" if price_per_unit is None else f"{price_per_unit:g}",
             }
         )
+    return formatted
+
+
+def format_supply_rows_for_form(rows: list[Any], prefix: str) -> list[dict[str, str]]:
+    formatted: list[dict[str, str]] = []
+    for index, raw_row in enumerate(rows):
+        if not isinstance(raw_row, dict):
+            continue
+        quantity = parse_float(str(raw_row.get("quantity", "") or ""))
+        unit_price = parse_float(str(raw_row.get("unit_price", "") or ""))
+        formatted.append({
+            "row_id": str(raw_row.get("row_id") or f"{prefix}-{index}"),
+            "name": str(raw_row.get("name", "") or ""),
+            "purpose": str(raw_row.get("purpose", "") or ""),
+            "quantity": "" if quantity is None else f"{quantity:g}",
+            "unit_price": "" if unit_price is None else f"{unit_price:g}",
+            "link": str(raw_row.get("link", "") or ""),
+            "bought": "__YES__" if to_bool(raw_row.get("bought")) else "__NO__",
+        })
     return formatted
 
 
@@ -13346,6 +13408,7 @@ def card_fields_for_sync() -> list[str]:
         "sewing_fitting",
         "sewing_details",
         "costume_executor",
+        "costume_executor_contact",
         "costume_deadline",
         "costume_prepayment",
         "costume_postpayment",
@@ -13363,6 +13426,7 @@ def card_fields_for_sync() -> list[str]:
         "shoes_link",
         "shoes_buy_price",
         "shoes_executor",
+        "shoes_executor_contact",
         "shoes_deadline",
         "shoes_price",
         "shoes_currency",
@@ -13373,6 +13437,7 @@ def card_fields_for_sync() -> list[str]:
         "lenses_currency",
         "wig_type",
         "wigmaker_name",
+        "wigmaker_contact",
         "wig_price",
         "wig_buy_price",
         "wig_currency",
@@ -13380,12 +13445,15 @@ def card_fields_for_sync() -> list[str]:
         "wig_link",
         "wig_no_buy_from",
         "wig_restyle",
+        "wig_accessory_rows_json",
         "craft_type",
         "craft_master",
+        "craft_master_contact",
         "craft_price",
         "craft_material_price",
         "craft_deadline",
         "craft_currency",
+        "craft_material_rows_json",
         "status_percent",
         "plan_type",
         "project_leader",
@@ -13516,6 +13584,8 @@ MOBILE_CARD_INT_FIELDS = {"status_percent", "performance_rehearsal_count"}
 MOBILE_CARD_LIST_FIELDS = {
     "costume_fabric_rows_json",
     "costume_hardware_rows_json",
+    "wig_accessory_rows_json",
+    "craft_material_rows_json",
     "cosbands_json",
     "related_cards_json",
     "project_characters_json",
@@ -16519,6 +16589,7 @@ def get_card_form_values(card: CosplanCard | None = None, *, actor_user_id: int 
             "sewing_fitting": False,
             "sewing_details": False,
             "costume_executor": "",
+            "costume_executor_contact": "",
             "costume_deadline": "",
             "costume_prepayment": "",
             "costume_postpayment": "",
@@ -16554,6 +16625,7 @@ def get_card_form_values(card: CosplanCard | None = None, *, actor_user_id: int 
             "shoes_link": "",
             "shoes_buy_price": "",
             "shoes_executor": "",
+            "shoes_executor_contact": "",
             "shoes_deadline": "",
             "shoes_price": "",
             "shoes_currency": "RUB",
@@ -16564,6 +16636,7 @@ def get_card_form_values(card: CosplanCard | None = None, *, actor_user_id: int 
             "lenses_currency": "RUB",
             "wig_type": "wigmaker",
             "wigmaker_name": "",
+            "wigmaker_contact": "",
             "wig_price": "",
             "wig_buy_price": "",
             "wig_currency": "RUB",
@@ -16571,10 +16644,13 @@ def get_card_form_values(card: CosplanCard | None = None, *, actor_user_id: int 
             "wig_link": "",
             "wig_no_buy_from": "",
             "wig_restyle": False,
+            "wig_accessory_rows": [],
             "craft_type": "self",
             "craft_master": "",
+            "craft_master_contact": "",
             "craft_price": "",
             "craft_material_price": "",
+            "craft_material_rows": [],
             "craft_deadline": "",
             "craft_currency": "RUB",
             "status_percent": 0,
@@ -16678,6 +16754,7 @@ def get_card_form_values(card: CosplanCard | None = None, *, actor_user_id: int 
         "sewing_fitting": bool(card.sewing_fitting),
         "sewing_details": bool(card.sewing_details),
         "costume_executor": card.costume_executor or "",
+        "costume_executor_contact": card.costume_executor_contact or "",
         "costume_deadline": card.costume_deadline.isoformat() if card.costume_deadline else "",
         "costume_prepayment": "" if card.costume_prepayment is None else f"{card.costume_prepayment:g}",
         "costume_postpayment": "" if card.costume_postpayment is None else f"{card.costume_postpayment:g}",
@@ -16695,6 +16772,7 @@ def get_card_form_values(card: CosplanCard | None = None, *, actor_user_id: int 
         "shoes_link": card.shoes_link or "",
         "shoes_buy_price": "" if card.shoes_buy_price is None else f"{card.shoes_buy_price:g}",
         "shoes_executor": card.shoes_executor or "",
+        "shoes_executor_contact": card.shoes_executor_contact or "",
         "shoes_deadline": card.shoes_deadline.isoformat() if card.shoes_deadline else "",
         "shoes_price": "" if card.shoes_price is None else f"{card.shoes_price:g}",
         "shoes_currency": card.shoes_currency or "RUB",
@@ -16705,6 +16783,7 @@ def get_card_form_values(card: CosplanCard | None = None, *, actor_user_id: int 
         "lenses_currency": card.lenses_currency or "RUB",
         "wig_type": card.wig_type or "wigmaker",
         "wigmaker_name": card.wigmaker_name or "",
+        "wigmaker_contact": card.wigmaker_contact or "",
         "wig_price": "" if card.wig_price is None else f"{card.wig_price:g}",
         "wig_buy_price": "" if card.wig_buy_price is None else f"{card.wig_buy_price:g}",
         "wig_currency": card.wig_currency or "RUB",
@@ -16712,10 +16791,13 @@ def get_card_form_values(card: CosplanCard | None = None, *, actor_user_id: int 
         "wig_link": card.wig_link or "",
         "wig_no_buy_from": card.wig_no_buy_from or "",
         "wig_restyle": bool(card.wig_restyle),
+        "wig_accessory_rows": format_supply_rows_for_form(as_list(card.wig_accessory_rows_json), "wig_accessory"),
         "craft_type": card.craft_type or "self",
         "craft_master": card.craft_master or "",
+        "craft_master_contact": card.craft_master_contact or "",
         "craft_price": "" if card.craft_price is None else f"{card.craft_price:g}",
         "craft_material_price": "" if card.craft_material_price is None else f"{card.craft_material_price:g}",
+        "craft_material_rows": format_supply_rows_for_form(as_list(card.craft_material_rows_json), "craft_material"),
         "craft_deadline": card.craft_deadline.isoformat() if card.craft_deadline else "",
         "craft_currency": card.craft_currency or "RUB",
         "status_percent": normalize_status_percent(card.status_percent),
@@ -23087,6 +23169,8 @@ def cosplan_detail(card_id: int, request: Request, db: Session = Depends(get_db)
         costume_parts=as_list(card.costume_parts_json),
         costume_fabric_rows=meaningful_costume_fabric_rows(as_list(card.costume_fabric_rows_json)),
         costume_hardware_rows=meaningful_costume_hardware_rows(as_list(card.costume_hardware_rows_json)),
+        wig_accessory_rows=as_list(card.wig_accessory_rows_json),
+        craft_material_rows=as_list(card.craft_material_rows_json),
         craft_parts=as_list(card.craft_parts_json),
         photoset_props_checklist=format_checklist_for_form(as_list(card.photoset_props_checklist_json)),
         photoset_storyboard_rows=normalize_photoset_storyboard_rows(as_list(card.photoset_storyboard_rows_json)),
@@ -23266,6 +23350,8 @@ def save_card_from_form(form: Any, card: CosplanCard, user: User, db: Session) -
 
     costume_fabric_rows = parse_costume_fabric_rows_from_form(form)
     costume_hardware_rows = parse_costume_hardware_rows_from_form(form)
+    wig_accessory_rows = parse_supply_rows_from_form(form, "wig_accessory")
+    craft_material_rows = parse_supply_rows_from_form(form, "craft_material")
     costume_fabric_subtotal, has_costume_fabric_subtotal = costume_fabric_rows_subtotal(costume_fabric_rows)
     costume_hardware_subtotal, has_costume_hardware_subtotal = costume_hardware_rows_subtotal(costume_hardware_rows)
 
@@ -23284,6 +23370,7 @@ def save_card_from_form(form: Any, card: CosplanCard, user: User, db: Session) -
         card.sewing_fitting = False
         card.sewing_details = False
         card.costume_executor = None
+        card.costume_executor_contact = None
         card.costume_deadline = None
         card.costume_prepayment = None
         card.costume_postpayment = None
@@ -23305,6 +23392,7 @@ def save_card_from_form(form: Any, card: CosplanCard, user: User, db: Session) -
         card.costume_deadline = parse_date(str(form.get("costume_deadline", "")))
         if card.sewing_type == "self":
             card.costume_executor = None
+            card.costume_executor_contact = None
             card.costume_prepayment = None
             card.costume_postpayment = None
             card.costume_fabric_rows_json = costume_fabric_rows
@@ -23321,6 +23409,7 @@ def save_card_from_form(form: Any, card: CosplanCard, user: User, db: Session) -
                 card.costume_hardware_price = legacy_hardware_price
         else:
             card.costume_executor = str(form.get("costume_executor", "")).strip() or None
+            card.costume_executor_contact = str(form.get("costume_executor_contact", "")).strip() or None
             card.costume_prepayment = parse_price_field("costume_prepayment")
             card.costume_postpayment = parse_price_field("costume_postpayment")
             card.costume_fabric_price = None
@@ -23339,6 +23428,7 @@ def save_card_from_form(form: Any, card: CosplanCard, user: User, db: Session) -
         card.shoes_link = str(form.get("shoes_link", "")).strip() or None
         card.shoes_buy_price = parse_price_field("shoes_buy_price")
         card.shoes_executor = None
+        card.shoes_executor_contact = None
         card.shoes_deadline = None
         card.shoes_price = None
     else:
@@ -23346,6 +23436,7 @@ def save_card_from_form(form: Any, card: CosplanCard, user: User, db: Session) -
         card.shoes_link = None
         card.shoes_buy_price = None
         card.shoes_executor = str(form.get("shoes_executor", "")).strip() or None
+        card.shoes_executor_contact = str(form.get("shoes_executor_contact", "")).strip() or None
         card.shoes_deadline = parse_date(str(form.get("shoes_deadline", "")))
         card.shoes_price = parse_price_field("shoes_price")
     card.shoes_currency = str(form.get("shoes_currency", "")).strip() or None
@@ -23365,6 +23456,7 @@ def save_card_from_form(form: Any, card: CosplanCard, user: User, db: Session) -
     card.wig_type = str(form.get("wig_type", "")).strip() or None
     if card.wig_type == "buy":
         card.wigmaker_name = None
+        card.wigmaker_contact = None
         card.wig_price = None
         card.wig_deadline = None
         card.wig_no_buy_from = None
@@ -23374,15 +23466,17 @@ def save_card_from_form(form: Any, card: CosplanCard, user: User, db: Session) -
         card.wig_currency = str(form.get("wig_currency", "")).strip() or None
     elif card.wig_type == "no_buy":
         card.wigmaker_name = None
+        card.wigmaker_contact = None
         card.wig_price = None
         card.wig_deadline = None
         card.wig_buy_price = None
         card.wig_link = None
         card.wig_no_buy_from = str(form.get("wig_no_buy_from", "")).strip() or None
         card.wig_restyle = to_bool(form.get("wig_restyle"))
-        card.wig_currency = None
+        card.wig_currency = str(form.get("wig_currency", "")).strip() or None
     else:  # wigmaker
         card.wigmaker_name = str(form.get("wigmaker_name", "")).strip() or None
+        card.wigmaker_contact = str(form.get("wigmaker_contact", "")).strip() or None
         card.wig_price = parse_price_field("wig_price")
         card.wig_deadline = parse_date(str(form.get("wig_deadline", "")))
         card.wig_buy_price = None
@@ -23390,18 +23484,26 @@ def save_card_from_form(form: Any, card: CosplanCard, user: User, db: Session) -
         card.wig_no_buy_from = None
         card.wig_restyle = False
         card.wig_currency = str(form.get("wig_currency", "")).strip() or None
+    card.wig_accessory_rows_json = wig_accessory_rows
 
     card.craft_type = str(form.get("craft_type", "")).strip() or "self"
     if card.craft_type == "order":
         card.craft_master = str(form.get("craft_master", "")).strip() or None
+        card.craft_master_contact = str(form.get("craft_master_contact", "")).strip() or None
         card.craft_price = parse_price_field("craft_price")
         card.craft_deadline = parse_date(str(form.get("craft_deadline", "")))
         card.craft_material_price = None
+        card.craft_material_rows_json = []
     else:
         card.craft_master = None
+        card.craft_master_contact = None
         card.craft_price = None
         card.craft_deadline = None
-        card.craft_material_price = parse_price_field("craft_material_price")
+        material_subtotal, has_material_subtotal = subtotal_product_rows(
+            craft_material_rows, amount_key="quantity", unit_price_key="unit_price"
+        )
+        card.craft_material_price = material_subtotal if has_material_subtotal else parse_price_field("craft_material_price")
+        card.craft_material_rows_json = craft_material_rows
     card.craft_currency = str(form.get("craft_currency", "")).strip() or None
     card.status_percent = normalize_status_percent(form.get("status_percent", "0"))
 
