@@ -2075,27 +2075,12 @@ def startup() -> None:
     start_content_telegram_worker()
     start_vk_bot_worker()
     start_external_import_worker()
-    try:
-        auto_backup_if_needed()
-    except OSError:
-        # Backup creation must not block app startup.
-        pass
-    except sqlite3.Error:
-        pass
-    except RuntimeError:
-        pass
+    schedule_auto_backup_if_needed()
 
 
 @app.middleware("http")
 async def ensure_daily_backup(request: Request, call_next):
-    try:
-        auto_backup_if_needed()
-    except OSError:
-        pass
-    except sqlite3.Error:
-        pass
-    except RuntimeError:
-        pass
+    schedule_auto_backup_if_needed()
     return await call_next(request)
 
 
@@ -8869,6 +8854,32 @@ def auto_backup_if_needed() -> None:
         return
 
     create_sqlite_backup_file(prefix=today_prefix)
+
+
+AUTO_BACKUP_SCHEDULE_LOCK = threading.Lock()
+AUTO_BACKUP_SCHEDULED_DATE: date | None = None
+
+
+def schedule_auto_backup_if_needed() -> None:
+    """Schedule at most one non-blocking backup check per process and day."""
+    global AUTO_BACKUP_SCHEDULED_DATE
+    today = date.today()
+    with AUTO_BACKUP_SCHEDULE_LOCK:
+        if AUTO_BACKUP_SCHEDULED_DATE == today:
+            return
+        AUTO_BACKUP_SCHEDULED_DATE = today
+
+    def run_backup() -> None:
+        global AUTO_BACKUP_SCHEDULED_DATE
+        try:
+            auto_backup_if_needed()
+        except (OSError, sqlite3.Error, RuntimeError):
+            # A later request may retry after a transient storage failure.
+            with AUTO_BACKUP_SCHEDULE_LOCK:
+                if AUTO_BACKUP_SCHEDULED_DATE == today:
+                    AUTO_BACKUP_SCHEDULED_DATE = None
+
+    threading.Thread(target=run_backup, name="daily-sqlite-backup", daemon=True).start()
 
 
 def _short_names(names: list[str], limit: int = 3) -> str:
