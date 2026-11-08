@@ -18,7 +18,7 @@ import argparse
 import os
 import sys
 import uuid
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from io import BytesIO
 from pathlib import Path
 from typing import Any
@@ -80,10 +80,13 @@ def run_scenario(db_path: Path) -> None:
         PhotoContestEntryPhoto,
         PhotoContestRequest,
         PhotoContestVote,
+        SITE_TIMEZONE,
         SessionLocal,
         User,
         app,
         password_context,
+        photo_contest_status_key,
+        photo_contest_submission_period_active,
     )
 
     today = date.today()
@@ -398,6 +401,31 @@ def run_scenario(db_path: Path) -> None:
         )
         response = client.get("/photocosplay?status=judging")
         assert_ok("QA Фотокосплей 2026" in response.text, "Judging filter did not show contest")
+        response = client.get(f"/photocosplay/{contest_id}")
+        assert_ok("Открытое судейство" in response.text, "Open judging label has incorrect grammar")
+        assert_ok("Открытый судейство" not in response.text, "Legacy open judging typo is still rendered")
+        with SessionLocal() as db:
+            judging_contest = db.get(PhotoContest, contest_id)
+            assert_ok(judging_contest is not None, "Judging contest is missing")
+            site_today = datetime.now(SITE_TIMEZONE).date()
+            judging_contest.submission_end_date = site_today
+            assert_ok(
+                photo_contest_status_key(judging_contest, today=site_today) == "open",
+                "Submission deadline must remain inclusive",
+            )
+            assert_ok(
+                photo_contest_submission_period_active(judging_contest, today=site_today),
+                "Submission form must remain active through the deadline date",
+            )
+            day_after_deadline = site_today + timedelta(days=1)
+            assert_ok(
+                photo_contest_status_key(judging_contest, today=day_after_deadline) == "judging",
+                "Contest must enter judging on the day after the deadline",
+            )
+            assert_ok(
+                not photo_contest_submission_period_active(judging_contest, today=day_after_deadline),
+                "Submission form must close on the day after the deadline",
+            )
         logout()
 
         # 6) Viewer votes in open judging.

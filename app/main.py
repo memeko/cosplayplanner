@@ -38814,8 +38814,8 @@ def photo_contest_status_label(status: str) -> str:
 
 def photo_contest_judging_label(format_key: str) -> str:
     mapping = {
-        PHOTO_CONTEST_JUDGING_OPEN: "Открытый",
-        PHOTO_CONTEST_JUDGING_CLOSED: "Закрытый",
+        PHOTO_CONTEST_JUDGING_OPEN: "Открытое",
+        PHOTO_CONTEST_JUDGING_CLOSED: "Закрытое",
     }
     return mapping.get(format_key, format_key)
 
@@ -38965,7 +38965,7 @@ def normalize_photo_contest_dates(
 
 
 def photo_contest_status_key(contest: PhotoContest | PhotoContestRequest, today: date | None = None) -> str:
-    today_value = today or date.today()
+    today_value = today or datetime.now(SITE_TIMEZONE).date()
     _start, end_value, results_value = normalize_photo_contest_dates(
         contest.submission_start_date,
         contest.submission_end_date,
@@ -38979,7 +38979,7 @@ def photo_contest_status_key(contest: PhotoContest | PhotoContestRequest, today:
 
 
 def photo_contest_submission_period_active(contest: PhotoContest, today: date | None = None) -> bool:
-    today_value = today or date.today()
+    today_value = today or datetime.now(SITE_TIMEZONE).date()
     start_value, end_value, _results_value = normalize_photo_contest_dates(
         contest.submission_start_date,
         contest.submission_end_date,
