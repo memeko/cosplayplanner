@@ -1534,6 +1534,9 @@ def apply_schema_migrations() -> None:
             ("selection_url", "TEXT"),
             ("ready_folder_url", "TEXT"),
         ],
+        "photo_contest_anonymous_ballots": [
+            ("entry_ids_json", "JSON NOT NULL DEFAULT '[]'"),
+        ],
         "festival_notifications": [
             ("id", "INTEGER PRIMARY KEY"),
             ("user_id", "INTEGER NOT NULL"),
@@ -39198,27 +39201,56 @@ def photo_contest_anonymous_voter_hash(request: Request, contest_id: int) -> str
     return hmac.new(secret_key.encode("utf-8"), payload, hashlib.sha256).hexdigest()
 
 
-def photo_contest_vote_count_map(db: Session, contest_id: int) -> dict[int, int]:
-    registered_rows = db.execute(
-        select(PhotoContestVote.photo_id, func.count(PhotoContestVote.id))
-        .where(PhotoContestVote.contest_id == contest_id)
-        .group_by(PhotoContestVote.photo_id)
-    ).all()
-    counts = {
-        int(photo_id): int(vote_count or 0)
-        for photo_id, vote_count in registered_rows
-        if photo_id
-    }
-    anonymous_ballots = db.execute(
-        select(PhotoContestAnonymousBallot.photo_ids_json).where(
-            PhotoContestAnonymousBallot.contest_id == contest_id
+def photo_contest_entry_vote_count_map(db: Session, contest_id: int) -> dict[int, int]:
+    photo_rows = db.execute(
+        select(PhotoContestEntryPhoto.id, PhotoContestEntryPhoto.entry_id).where(
+            PhotoContestEntryPhoto.contest_id == contest_id
         )
-    ).scalars().all()
-    for photo_ids in anonymous_ballots:
-        for raw_photo_id in as_list(photo_ids):
+    ).all()
+    entry_id_by_photo_id = {int(photo_id): int(entry_id) for photo_id, entry_id in photo_rows}
+    valid_entry_ids = set(entry_id_by_photo_id.values())
+    counts: dict[int, int] = {}
+
+    # Historical account votes were stored against individual photos. Collapse
+    # them by voter and entry so multiple photos in one application count once.
+    registered_rows = db.execute(
+        select(PhotoContestVote.photo_id, PhotoContestVote.voter_user_id).where(
+            PhotoContestVote.contest_id == contest_id
+        )
+    ).all()
+    seen_registered: set[tuple[int, int]] = set()
+    for photo_id, voter_user_id in registered_rows:
+        entry_id = entry_id_by_photo_id.get(int(photo_id or 0))
+        if not entry_id or not voter_user_id:
+            continue
+        key = (int(voter_user_id), entry_id)
+        if key in seen_registered:
+            continue
+        seen_registered.add(key)
+        counts[entry_id] = counts.get(entry_id, 0) + 1
+
+    # New ballots store entry ids. Old public ballots are converted in memory
+    # through their photo ids, preserving already submitted votes.
+    anonymous_ballots = db.execute(
+        select(
+            PhotoContestAnonymousBallot.entry_ids_json,
+            PhotoContestAnonymousBallot.photo_ids_json,
+        ).where(PhotoContestAnonymousBallot.contest_id == contest_id)
+    ).all()
+    for entry_ids_json, photo_ids_json in anonymous_ballots:
+        ballot_entry_ids = {
+            int(entry_id)
+            for raw_entry_id in as_list(entry_ids_json)
+            if (entry_id := parse_positive_int(str(raw_entry_id or "").strip()))
+            and int(entry_id) in valid_entry_ids
+        }
+        for raw_photo_id in as_list(photo_ids_json):
             photo_id = parse_positive_int(str(raw_photo_id or "").strip())
-            if photo_id:
-                counts[int(photo_id)] = counts.get(int(photo_id), 0) + 1
+            entry_id = entry_id_by_photo_id.get(int(photo_id or 0))
+            if entry_id:
+                ballot_entry_ids.add(entry_id)
+        for entry_id in ballot_entry_ids:
+            counts[entry_id] = counts.get(entry_id, 0) + 1
     return counts
 
 
@@ -39544,20 +39576,21 @@ def photo_contest_winning_rows(
     entries: list[PhotoContestEntry],
     photos: list[PhotoContestEntryPhoto],
     users_by_id: dict[int, User],
-    vote_count_by_photo_id: dict[int, int],
+    vote_count_by_entry_id: dict[int, int],
 ) -> tuple[list[dict[str, Any]], set[int]]:
-    entry_by_id = {int(item.id): item for item in entries if item and item.id}
-    photos_by_nomination: dict[str, list[PhotoContestEntryPhoto]] = defaultdict(list)
+    photos_by_entry_id: dict[int, list[PhotoContestEntryPhoto]] = defaultdict(list)
+    for photo in photos:
+        photos_by_entry_id[int(photo.entry_id)].append(photo)
+    entries_by_nomination: dict[str, list[PhotoContestEntry]] = defaultdict(list)
     nomination_titles_by_key: dict[str, str] = {}
 
-    for photo in photos:
-        entry = entry_by_id.get(int(photo.entry_id))
-        if not entry:
+    for entry in entries:
+        if not photos_by_entry_id.get(int(entry.id)):
             continue
         nomination_title = canonical_nomination_title(entry.nomination_title) or "Без номинации"
         nomination_key = normalize_nomination_title_key(nomination_title) or nomination_title.casefold()
         nomination_titles_by_key.setdefault(nomination_key, nomination_title)
-        photos_by_nomination[nomination_key].append(photo)
+        entries_by_nomination[nomination_key].append(entry)
 
     ordered_nominations = normalize_photo_contest_nomination_rows(contest.nominations_json)
     known_nomination_keys = {normalize_nomination_title_key(item["title"]) for item in ordered_nominations}
@@ -39574,34 +39607,36 @@ def photo_contest_winning_rows(
         if not nomination_key:
             continue
         places_count = parse_positive_int(str(nomination.get("places", "")).strip()) or 1
-        candidate_photos = photos_by_nomination.get(nomination_key, [])
-        candidate_photos = sorted(
-            candidate_photos,
+        candidate_entries = entries_by_nomination.get(nomination_key, [])
+        candidate_entries = sorted(
+            candidate_entries,
             key=lambda item: (
-                -(vote_count_by_photo_id.get(int(item.id), 0)),
+                -(vote_count_by_entry_id.get(int(item.id), 0)),
                 int(item.id),
             ),
         )
-        if not candidate_photos:
+        if not candidate_entries:
             continue
-        for place_index, photo in enumerate(candidate_photos[:places_count], start=1):
-            entry = entry_by_id.get(int(photo.entry_id))
-            if not entry:
+        for place_index, entry in enumerate(candidate_entries[:places_count], start=1):
+            entry_photos = photos_by_entry_id.get(int(entry.id), [])
+            if not entry_photos:
                 continue
+            primary_photo = entry_photos[0]
             participant = users_by_id.get(int(entry.participant_user_id))
             participant_alias = f"@{preferred_user_alias(participant)}" if participant else "@unknown"
-            points = int(vote_count_by_photo_id.get(int(photo.id), 0))
+            points = int(vote_count_by_entry_id.get(int(entry.id), 0))
             result_rows.append(
                 {
                     "nomination": nomination_title,
                     "place": place_index,
                     "participant_alias": participant_alias,
                     "points": points,
-                    "photo_path": str(photo.file_path or "").strip(),
-                    "photo_id": int(photo.id),
+                    "photo_path": str(primary_photo.file_path or "").strip(),
+                    "photo_id": int(primary_photo.id),
+                    "entry_id": int(entry.id),
                 }
             )
-            winning_photo_ids.add(int(photo.id))
+            winning_photo_ids.update(int(photo.id) for photo in entry_photos)
     return result_rows, winning_photo_ids
 
 
@@ -40207,20 +40242,24 @@ async def photo_contest_save_votes(contest_id: int, request: Request, db: Sessio
         return redirect(f"/photocosplay/{contest_id}")
 
     form = await request.form()
-    selected_ids: set[int] = set()
-    for raw_value in form.getlist("photo_vote"):
+    selected_entry_ids: set[int] = set()
+    for raw_value in form.getlist("entry_vote"):
         parsed = parse_positive_int(str(raw_value).strip())
         if parsed:
-            selected_ids.add(int(parsed))
+            selected_entry_ids.add(int(parsed))
 
-    contest_photo_ids = {
-        int(item)
-        for item in db.execute(
-            select(PhotoContestEntryPhoto.id).where(PhotoContestEntryPhoto.contest_id == contest.id)
-        ).scalars().all()
-        if item
-    }
-    selected_ids &= contest_photo_ids
+    contest_photos = db.execute(
+        select(PhotoContestEntryPhoto)
+        .where(PhotoContestEntryPhoto.contest_id == contest.id)
+        .order_by(PhotoContestEntryPhoto.sort_order.asc(), PhotoContestEntryPhoto.id.asc())
+    ).scalars().all()
+    representative_photo_id_by_entry_id: dict[int, int] = {}
+    entry_id_by_photo_id: dict[int, int] = {}
+    for photo in contest_photos:
+        entry_id = int(photo.entry_id)
+        entry_id_by_photo_id[int(photo.id)] = entry_id
+        representative_photo_id_by_entry_id.setdefault(entry_id, int(photo.id))
+    selected_entry_ids &= set(representative_photo_id_by_entry_id)
 
     existing_votes = db.execute(
         select(PhotoContestVote).where(
@@ -40228,26 +40267,62 @@ async def photo_contest_save_votes(contest_id: int, request: Request, db: Sessio
             PhotoContestVote.voter_user_id == user.id,
         )
     ).scalars().all()
-    existing_by_photo_id = {int(item.photo_id): item for item in existing_votes if item.photo_id}
-
-    for photo_id, vote in existing_by_photo_id.items():
-        if photo_id not in selected_ids:
+    kept_entry_ids: set[int] = set()
+    for vote in existing_votes:
+        entry_id = entry_id_by_photo_id.get(int(vote.photo_id or 0))
+        if not entry_id or entry_id not in selected_entry_ids or entry_id in kept_entry_ids:
             db.delete(vote)
-
-    for photo_id in selected_ids:
-        if photo_id in existing_by_photo_id:
             continue
+        kept_entry_ids.add(entry_id)
+
+    for entry_id in selected_entry_ids - kept_entry_ids:
         db.add(
             PhotoContestVote(
                 contest_id=int(contest.id),
-                photo_id=int(photo_id),
+                photo_id=representative_photo_id_by_entry_id[entry_id],
                 voter_user_id=user.id,
             )
         )
 
     db.commit()
-    add_flash(request, "Оценки сохранены.", "success")
+    add_flash(request, "Оценки заявок сохранены.", "success")
     return redirect(f"/photocosplay/{contest_id}")
+
+
+@app.get("/photocosplay/{contest_id}/preview/{photo_id}", include_in_schema=False)
+def photo_contest_public_preview(contest_id: int, photo_id: int, db: Session = Depends(get_db)):
+    contest = db.get(PhotoContest, contest_id)
+    if not contest or not (
+        photo_contest_status_key(contest) == PHOTO_CONTEST_STATUS_JUDGING
+        and normalize_photo_contest_judging_format(contest.judging_format) == PHOTO_CONTEST_JUDGING_OPEN
+    ):
+        raise HTTPException(status_code=404)
+    photo = db.get(PhotoContestEntryPhoto, photo_id)
+    if not photo or int(photo.contest_id) != int(contest_id):
+        raise HTTPException(status_code=404)
+    public_path = str(photo.file_path or "").strip()
+    if not public_path.startswith("/media/"):
+        raise HTTPException(status_code=404)
+    safe_name = Path(unquote(public_path.removeprefix("/media/"))).name
+    source_path = media_storage_path() / safe_name
+    if not source_path.is_file():
+        raise HTTPException(status_code=404)
+
+    source_version = int(source_path.stat().st_mtime_ns)
+    preview_dir = media_storage_path() / ".photo-contest-previews"
+    preview_dir.mkdir(parents=True, exist_ok=True)
+    preview_path = preview_dir / f"photo-{int(photo.id)}-{source_version}.jpg"
+    if not preview_path.is_file():
+        try:
+            with Image.open(source_path) as source:
+                prepared = ImageOps.exif_transpose(source).convert("RGB")
+                prepared.thumbnail((720, 900), Image.Resampling.LANCZOS)
+                prepared.save(preview_path, format="JPEG", quality=82, optimize=True)
+        except (UnidentifiedImageError, OSError):
+            raise HTTPException(status_code=404)
+    response = FileResponse(preview_path, media_type="image/jpeg")
+    response.headers["Cache-Control"] = "public, max-age=86400, immutable"
+    return response
 
 
 @app.get("/photocosplay/{contest_id}/vote", response_class=HTMLResponse)
@@ -40362,28 +40437,31 @@ async def photo_contest_submit_public_vote(contest_id: int, request: Request, db
         return redirect(f"/photocosplay/{contest_id}/vote")
 
     form = await request.form()
-    selected_ids = {
-        int(photo_id)
-        for raw_value in form.getlist("photo_vote")
-        if (photo_id := parse_positive_int(str(raw_value or "").strip()))
+    selected_entry_ids = {
+        int(entry_id)
+        for raw_value in form.getlist("entry_vote")
+        if (entry_id := parse_positive_int(str(raw_value or "").strip()))
     }
-    contest_photo_ids = {
+    valid_entry_ids = {
         int(item)
         for item in db.execute(
-            select(PhotoContestEntryPhoto.id).where(PhotoContestEntryPhoto.contest_id == contest_id)
+            select(PhotoContestEntryPhoto.entry_id)
+            .where(PhotoContestEntryPhoto.contest_id == contest_id)
+            .distinct()
         ).scalars().all()
         if item
     }
-    selected_ids &= contest_photo_ids
-    if not selected_ids:
-        add_flash(request, "Выберите хотя бы одну фотографию.", "error")
+    selected_entry_ids &= valid_entry_ids
+    if not selected_entry_ids:
+        add_flash(request, "Выберите хотя бы одну заявку.", "error")
         return redirect(f"/photocosplay/{contest_id}/vote")
 
     db.add(
         PhotoContestAnonymousBallot(
             contest_id=contest_id,
             voter_hash=voter_hash,
-            photo_ids_json=sorted(selected_ids),
+            photo_ids_json=[],
+            entry_ids_json=sorted(selected_entry_ids),
         )
     )
     try:
@@ -40434,7 +40512,7 @@ def photo_contest_detail(contest_id: int, request: Request, db: Session = Depend
         related_users = db.execute(select(User).where(User.id.in_(participant_ids))).scalars().all()
         users_by_id = {int(item.id): item for item in related_users if item and item.id}
 
-    vote_count_by_photo_id = photo_contest_vote_count_map(db, int(contest.id))
+    vote_count_by_entry_id = photo_contest_entry_vote_count_map(db, int(contest.id))
     user_voted_photo_ids = {
         int(item)
         for item in db.execute(
@@ -40445,13 +40523,18 @@ def photo_contest_detail(contest_id: int, request: Request, db: Session = Depend
         ).scalars().all()
         if item
     }
+    user_voted_entry_ids = {
+        int(photo.entry_id)
+        for photo in photos
+        if int(photo.id) in user_voted_photo_ids
+    }
 
     result_rows, winning_photo_ids = photo_contest_winning_rows(
         contest,
         entries=entries,
         photos=photos,
         users_by_id=users_by_id,
-        vote_count_by_photo_id=vote_count_by_photo_id,
+        vote_count_by_entry_id=vote_count_by_entry_id,
     )
 
     entry_briefs_by_id = {
@@ -40577,7 +40660,7 @@ def photo_contest_detail(contest_id: int, request: Request, db: Session = Depend
                         "other_roles": brief.get("other_roles", []),
                         "characters": brief.get("characters", []),
                         "fandom": brief.get("fandom", ""),
-                        "points": int(vote_count_by_photo_id.get(int(photo.id), 0)),
+                        "points": int(vote_count_by_entry_id.get(int(row["entry"].id), 0)),
                     }
                 )
 
@@ -40601,8 +40684,8 @@ def photo_contest_detail(contest_id: int, request: Request, db: Session = Depend
         user_can_add_entry=user_can_add_entry,
         grouped_entries=visible_grouped_entries,
         ordered_nomination_titles=ordered_nomination_titles,
-        vote_count_by_photo_id=vote_count_by_photo_id,
-        user_voted_photo_ids=user_voted_photo_ids,
+        vote_count_by_entry_id=vote_count_by_entry_id,
+        user_voted_entry_ids=user_voted_entry_ids,
         result_rows=result_rows,
         photo_modal_items_json=json.dumps(photo_modal_items, ensure_ascii=False),
         photo_contest_judging_label=photo_contest_judging_label,

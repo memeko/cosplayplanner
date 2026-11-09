@@ -90,7 +90,7 @@ def run_scenario(db_path: Path) -> None:
         password_context,
         photo_contest_status_key,
         photo_contest_submission_period_active,
-        photo_contest_vote_count_map,
+        photo_contest_entry_vote_count_map,
     )
 
     today = date.today()
@@ -280,6 +280,7 @@ def run_scenario(db_path: Path) -> None:
             )
             assert_ok(len(photos) == 2, f"Expected 2 photos, got {len(photos)}")
             voted_photo_id = int(photos[0].id)
+            voted_entry_id = int(entry.id)
 
         response = client.get("/photocosplay?participating_only=1")
         assert_ok("QA Фотокосплей 2026" in response.text, "Participating filter did not show contest")
@@ -319,6 +320,7 @@ def run_scenario(db_path: Path) -> None:
                 PhotoContestEntry.participant_user_id == participant_user.id,
             ).all()
             assert_ok(len(participant_entries) == 2, "Per-participant entry limit was not enforced")
+            second_entry_id = next(int(item.id) for item in participant_entries if int(item.id) != voted_entry_id)
         logout()
 
         # The creator can premoderate submissions before judging starts, while a
@@ -441,16 +443,31 @@ def run_scenario(db_path: Path) -> None:
         assert_ok(response.status_code == 200, "Public voting page requires authentication")
         assert_ok("Бланк голосования" in response.text, "Public voting form is missing")
         assert_ok("На главную Cosplay Planner" in response.text, "Planner home button is missing")
+        assert_ok(
+            response.text.count('<input type="checkbox" name="entry_vote"') == 2,
+            "Ballot must render one choice per application",
+        )
+        assert_ok(
+            response.text.count(f'name="entry_vote" value="{voted_entry_id}"') == 1,
+            "Application with two photos rendered multiple choices",
+        )
+        assert_ok(f"/photocosplay/{contest_id}/preview/{voted_photo_id}" in response.text, "Preview URL is missing")
+        assert_ok("/media/photo-contest-" not in response.text, "Ballot leaks full-size photo URLs")
+        preview_response = client.get(f"/photocosplay/{contest_id}/preview/{voted_photo_id}")
+        assert_ok(preview_response.status_code == 200, "Photo preview failed")
+        assert_ok(preview_response.headers.get("content-type", "").startswith("image/jpeg"), "Preview is not JPEG")
+        with Image.open(BytesIO(preview_response.content)) as preview_image:
+            assert_ok(preview_image.width <= 720 and preview_image.height <= 900, "Preview dimensions are too large")
         response = post_form(
             client,
             f"/photocosplay/{contest_id}/vote",
-            data={"photo_vote": [str(voted_photo_id)]},
+            data={"entry_vote": [str(voted_entry_id), str(second_entry_id)]},
         )
         assert_ok("Спасибо! Ваш голос принят." in response.text, "Public ballot was not accepted")
         response = post_form(
             client,
             f"/photocosplay/{contest_id}/vote",
-            data={"photo_vote": [str(voted_photo_id)]},
+            data={"entry_vote": [str(voted_entry_id)]},
         )
         assert_ok("С этого IP-адреса голос уже был отправлен." in response.text, "Duplicate IP ballot was not blocked")
         with SessionLocal() as db:
@@ -458,12 +475,17 @@ def run_scenario(db_path: Path) -> None:
                 PhotoContestAnonymousBallot.contest_id == contest_id
             ).all()
             assert_ok(len(anonymous_ballots) == 1, "Expected exactly one anonymous ballot per IP")
-            vote_counts = photo_contest_vote_count_map(db, contest_id)
-            assert_ok(vote_counts.get(voted_photo_id) == 1, "Anonymous ballot is missing from vote totals")
+            assert_ok(
+                set(anonymous_ballots[0].entry_ids_json or []) == {voted_entry_id, second_entry_id},
+                "Anonymous ballot did not save application ids",
+            )
+            vote_counts = photo_contest_entry_vote_count_map(db, contest_id)
+            assert_ok(vote_counts.get(voted_entry_id) == 1, "Anonymous ballot is missing from application totals")
+            assert_ok(vote_counts.get(second_entry_id) == 1, "Second application by same user was not counted separately")
 
         # 7) Account voting is disabled for open judging to prevent a second ballot.
         login("contest_viewer")
-        post_form(client, f"/photocosplay/{contest_id}/votes", data={"photo_vote": [str(voted_photo_id)]})
+        post_form(client, f"/photocosplay/{contest_id}/votes", data={"entry_vote": [str(voted_entry_id)]})
 
         with SessionLocal() as db:
             votes = db.query(PhotoContestVote).filter(PhotoContestVote.contest_id == contest_id).all()
@@ -495,10 +517,45 @@ def run_scenario(db_path: Path) -> None:
         logout()
 
         login("contest_viewer")
-        post_form(client, f"/photocosplay/{contest_id}/votes", data={"photo_vote": [str(voted_photo_id)]})
+        post_form(client, f"/photocosplay/{contest_id}/votes", data={"entry_vote": [str(voted_entry_id)]})
         with SessionLocal() as db:
             votes = db.query(PhotoContestVote).filter(PhotoContestVote.contest_id == contest_id).all()
             assert_ok(len(votes) == 0, "Viewer should not be able to vote in closed judging")
+        logout()
+
+        login("brfox_cosplay")
+        response = client.get(f"/photocosplay/{contest_id}")
+        assert_ok(
+            response.text.count(f'name="entry_vote" value="{voted_entry_id}"') == 1,
+            "Closed judging rendered more than one choice for a multi-photo application",
+        )
+        post_form(client, f"/photocosplay/{contest_id}/votes", data={"entry_vote": [str(voted_entry_id)]})
+        with SessionLocal() as db:
+            votes = db.query(PhotoContestVote).filter(PhotoContestVote.contest_id == contest_id).all()
+            assert_ok(len(votes) == 1, "Assigned judge could not vote for an application")
+            voted_photo = db.get(PhotoContestEntryPhoto, votes[0].photo_id)
+            assert_ok(
+                voted_photo is not None and int(voted_photo.entry_id) == voted_entry_id,
+                "Registered application vote points to the wrong entry",
+            )
+            second_photo = db.query(PhotoContestEntryPhoto).filter(
+                PhotoContestEntryPhoto.entry_id == voted_entry_id,
+                PhotoContestEntryPhoto.id != votes[0].photo_id,
+            ).first()
+            assert_ok(second_photo is not None, "Multi-photo legacy vote test has no second photo")
+            db.add(
+                PhotoContestVote(
+                    contest_id=contest_id,
+                    photo_id=int(second_photo.id),
+                    voter_user_id=int(votes[0].voter_user_id),
+                )
+            )
+            db.commit()
+            collapsed_counts = photo_contest_entry_vote_count_map(db, contest_id)
+            assert_ok(
+                collapsed_counts.get(voted_entry_id) == 2,
+                "Legacy photo votes from one judge were not collapsed to one application vote",
+            )
         logout()
 
         # 9) Finish contest and check results visibility.
@@ -633,7 +690,7 @@ def main() -> int:
     repo_root = Path(__file__).resolve().parents[1]
     media_dir = repo_root / "app" / "static" / "media"
     media_dir.mkdir(parents=True, exist_ok=True)
-    media_before = {item.resolve() for item in media_dir.iterdir() if item.is_file()}
+    media_before = {item.resolve() for item in media_dir.rglob("*") if item.is_file()}
 
     db_path = Path(args.db_path).expanduser().resolve()
     db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -652,13 +709,22 @@ def main() -> int:
         return 1
     finally:
         if not args.keep_media:
-            for item in media_dir.iterdir():
+            for item in media_dir.rglob("*"):
                 if not item.is_file():
                     continue
                 if item.resolve() in media_before:
                     continue
                 try:
                     item.unlink()
+                except OSError:
+                    pass
+            for directory in sorted(
+                (item for item in media_dir.rglob("*") if item.is_dir()),
+                key=lambda item: len(item.parts),
+                reverse=True,
+            ):
+                try:
+                    directory.rmdir()
                 except OSError:
                     pass
         if not args.keep_db and db_path.exists():

@@ -26,11 +26,11 @@
 {% else %}
   <section class="box public-vote-intro">
     <h2>Бланк голосования</h2>
-    <p class="muted">Можно отметить несколько работ. После отправки изменить выбор или проголосовать повторно с того же IP-адреса нельзя.</p>
+    <p class="muted">Каждая карточка — отдельная заявка, даже если участник один и тот же. Можно отметить несколько заявок. После отправки изменить выбор или проголосовать повторно с того же IP-адреса нельзя.</p>
   </section>
 
   <form method="post" action="/photocosplay/{{ contest.id }}/vote" id="public-contest-vote-form">
-    {% set ns = namespace(has_photos=false) %}
+    {% set ns = namespace(has_entries=false) %}
     {% for nomination_title in ordered_nomination_titles %}
       {% set rows = grouped_entries.get(nomination_title, []) %}
       {% if rows %}
@@ -39,12 +39,16 @@
           <div class="public-vote-grid">
             {% for row in rows %}
               {% set brief = row.brief %}
-              {% for photo in row.photos %}
-                {% set ns.has_photos = true %}
+              {% if row.photos %}
+                {% set ns.has_entries = true %}
                 <label class="card public-vote-card">
-                  <input type="checkbox" name="photo_vote" value="{{ photo.id }}" />
-                  <span class="public-vote-check">Выбрать</span>
-                  <img src="{{ photo.file_path }}" alt="Конкурсная фотография: {{ brief.characters|join(', ') if brief.characters else nomination_title }}" loading="lazy" />
+                  <input type="checkbox" name="entry_vote" value="{{ row.entry.id }}" />
+                  <span class="public-vote-check">Выбрать заявку</span>
+                  <span class="public-vote-photo-grid {% if row.photos|length == 1 %}single{% endif %}">
+                    {% for photo in row.photos %}
+                      <img src="/photocosplay/{{ contest.id }}/preview/{{ photo.id }}" alt="Превью фотографии заявки: {{ brief.characters|join(', ') if brief.characters else nomination_title }}" loading="lazy" />
+                    {% endfor %}
+                  </span>
                   <span class="public-vote-copy">
                     {% if brief.characters %}<strong>{{ brief.characters|join(', ') }}</strong>{% endif %}
                     {% if brief.fandom %}<span class="meta">{{ brief.fandom }}</span>{% endif %}
@@ -52,14 +56,14 @@
                     {% if brief.photographers %}<span class="meta">Фотограф: {{ brief.photographers|join(', ') }}</span>{% endif %}
                   </span>
                 </label>
-              {% endfor %}
+              {% endif %}
             {% endfor %}
           </div>
         </section>
       {% endif %}
     {% endfor %}
 
-    {% if ns.has_photos %}
+    {% if ns.has_entries %}
       <div class="public-vote-submit-bar">
         <span id="public-vote-selection-count">Ничего не выбрано</span>
         <button type="submit" class="btn btn-accent">Отправить голос</button>
@@ -76,14 +80,14 @@
     const counter = document.getElementById("public-vote-selection-count");
     if (!form || !counter) return;
     function updateCounter() {
-      const count = form.querySelectorAll('input[name="photo_vote"]:checked').length;
+      const count = form.querySelectorAll('input[name="entry_vote"]:checked').length;
       counter.textContent = count ? `Выбрано: ${count}` : "Ничего не выбрано";
     }
     form.addEventListener("change", updateCounter);
     form.addEventListener("submit", function (event) {
-      if (!form.querySelector('input[name="photo_vote"]:checked')) {
+      if (!form.querySelector('input[name="entry_vote"]:checked')) {
         event.preventDefault();
-        counter.textContent = "Выберите хотя бы одну фотографию";
+        counter.textContent = "Выберите хотя бы одну заявку";
         counter.classList.add("form-error-text");
       }
     });

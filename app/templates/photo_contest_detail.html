@@ -338,7 +338,7 @@
   <div class="row-between">
     <h2>{% if can_manage and contest_status == 'open' %}Премодерация заявок{% elif contest_status == 'open' %}Мои заявки{% else %}Участники{% endif %}</h2>
     {% if can_vote %}
-      <span class="chip">Можно ставить отметки</span>
+      <span class="chip">Голосование за заявки</span>
     {% endif %}
   </div>
 
@@ -378,18 +378,18 @@
                 {% for photo in row.photos %}
                   <div class="photo-work-item">
                     <img src="{{ photo.file_path }}" alt="Работа участника" class="photo-work-thumb" data-photo-open="{{ photo.id }}" loading="lazy" />
-                    <div class="photo-work-meta">Баллы: {{ vote_count_by_photo_id.get(photo.id, 0) }}</div>
-                    {% if can_vote %}
-                      <div class="photo-work-vote">
-                        <label class="inline-check">
-                          <input type="checkbox" name="photo_vote" value="{{ photo.id }}" form="contest-vote-form" {% if photo.id in user_voted_photo_ids %}checked{% endif %} />
-                          Отметить работу
-                        </label>
-                      </div>
-                    {% endif %}
                   </div>
                 {% endfor %}
               </div>
+              <div class="photo-work-meta">Голосов за заявку: {{ vote_count_by_entry_id.get(entry.id, 0) }}</div>
+              {% if can_vote %}
+                <div class="photo-work-vote">
+                  <label class="inline-check">
+                    <input type="checkbox" name="entry_vote" value="{{ entry.id }}" form="contest-vote-form" {% if entry.id in user_voted_entry_ids %}checked{% endif %} />
+                    Отметить заявку
+                  </label>
+                </div>
+              {% endif %}
             {% endif %}
             {% if can_manage or (submission_open and entry.participant_user_id == user.id) %}
               <div class="actions-inline top-offset">
