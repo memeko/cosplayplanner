@@ -463,6 +463,7 @@ class CosplanCard(Base):
     is_shared_copy = Column(Boolean, nullable=False, default=False)
     is_priority = Column(Boolean, nullable=False, default=False)
     is_completed = Column(Boolean, nullable=False, default=False)
+    is_quick_draft = Column(Boolean, nullable=False, default=False, index=True)
     source_card_id = Column(Integer, ForeignKey("cosplan_cards.id", ondelete="SET NULL"), nullable=True, index=True)
     shared_from_user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
     notes = Column(Text, nullable=True)
@@ -520,6 +521,7 @@ class Photoset(Base):
     role_costs_json = Column(JSON, nullable=False, default=list)
     corrections_json = Column(JSON, nullable=False, default=list)
     links_json = Column(JSON, nullable=False, default=list)
+    publication_rows_json = Column(JSON, nullable=False, default=list)
     selection_url = Column(Text, nullable=True)
     ready_folder_url = Column(Text, nullable=True)
     travel_to_price = Column(Float, nullable=True)
@@ -1259,6 +1261,22 @@ class PhotoContestVote(Base):
 
     __table_args__ = (
         UniqueConstraint("contest_id", "photo_id", "voter_user_id", name="uq_photo_contest_vote"),
+    )
+
+
+class PhotoContestAnonymousBallot(Base):
+    __tablename__ = "photo_contest_anonymous_ballots"
+
+    id = Column(Integer, primary_key=True)
+    contest_id = Column(Integer, ForeignKey("photo_contests.id", ondelete="CASCADE"), nullable=False, index=True)
+    voter_hash = Column(String(64), nullable=False)
+    photo_ids_json = Column(JSON, nullable=False, default=list)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    contest = relationship("PhotoContest")
+
+    __table_args__ = (
+        UniqueConstraint("contest_id", "voter_hash", name="uq_photo_contest_anonymous_ballot"),
     )
 
 

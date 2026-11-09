@@ -5,7 +5,7 @@
 <section class="section-head">
   <div>
     <h1>Косплан</h1>
-    <p class="meta">Показано карточек: <strong>{{ cards_total }}</strong></p>
+    <p class="meta">Показано карточек: <strong data-cosplan-visible-count>{{ cards_total }}</strong></p>
   </div>
   <div class="actions-inline wrap">
     <form method="get" action="/cosplan" class="search-inline">
@@ -47,6 +47,9 @@
     <a href="/my-calendar?view=my#caldav-sync" class="btn">
       {% if caldav_settings.connected %}CalDAV подключен{% else %}CalDAV занятость{% endif %}
     </a>
+    {% if current_tab == 'current' and current_filter in ['all', 'personal'] and not q and not character_filter and not fandom_filter %}
+      <button type="button" class="btn" id="quick-cosplan-open">Быстрая идея</button>
+    {% endif %}
     <a href="/cosplan/new" class="btn btn-accent">Новая карточка</a>
   </div>
 </section>
@@ -54,7 +57,7 @@
 <nav class="calendar-tabs">
   <a href="/cosplan" class="tab active">
     Карточки косплана
-    <span class="chip">{{ cosplan_cards_total }}</span>
+    <span class="chip" data-cosplan-total-count>{{ cosplan_cards_total }}</span>
   </a>
   <a href="/cosplan/titles" class="tab">
     Тайтлы
@@ -82,7 +85,7 @@
 <nav class="calendar-tabs">
   <a href="/cosplan?tab=current&view={{ current_view }}{% if q %}&q={{ q|urlencode }}{% endif %}{% if character_filter %}&character={{ character_filter|urlencode }}{% endif %}{% if fandom_filter %}&fandom={{ fandom_filter|urlencode }}{% endif %}" class="tab {% if current_tab == 'current' %}active{% endif %}">
     Текущие планы
-    <span class="chip">{{ current_count }}</span>
+    <span class="chip" data-cosplan-current-count>{{ current_count }}</span>
   </a>
   <a href="/cosplan?tab=completed&view={{ current_view }}{% if q %}&q={{ q|urlencode }}{% endif %}{% if character_filter %}&character={{ character_filter|urlencode }}{% endif %}{% if fandom_filter %}&fandom={{ fandom_filter|urlencode }}{% endif %}" class="tab {% if current_tab == 'completed' %}active{% endif %}">
     Завершенные
@@ -112,13 +115,14 @@
         {% elif status_value > 100 %}
           {% set status_value = 100 %}
         {% endif %}
-        <article class="card cosplan-list-item {% if card.is_priority %}priority-card{% endif %} {% if (card.plan_type or '') == 'project' %}shared-project-card{% endif %}">
+        <article class="card cosplan-list-item {% if card.is_quick_draft %}quick-draft-card{% endif %} {% if card.is_priority %}priority-card{% endif %} {% if (card.plan_type or '') == 'project' %}shared-project-card{% endif %}">
           <div class="cosplan-list-row">
             <div class="cosplan-list-number">{{ loop.index }}.</div>
             <div class="cosplan-list-main">
               <a href="/cosplan/{{ card.id }}" class="card-title-link cosplan-list-title">
                 {{ '★ ' if card.is_priority else '' }}{{ card.character_name }}
               </a>
+              {% if card.is_quick_draft %}<span class="chip chip-quick-draft">Нужно заполнить</span>{% endif %}
               <div class="master-status-inline" role="img" aria-label="Готовность {{ status_value }}%">
                 <span class="master-status-inline-track">
                   <span class="master-status-inline-fill" style="width: {{ status_value }}%;"></span>
@@ -201,9 +205,10 @@
         {% elif status_value > 100 %}
           {% set status_value = 100 %}
         {% endif %}
-        <article class="card {% if card.is_priority %}priority-card{% endif %} {% if (card.plan_type or '') == 'project' %}shared-project-card{% endif %}">
+        <article class="card {% if card.is_quick_draft %}quick-draft-card{% endif %} {% if card.is_priority %}priority-card{% endif %} {% if (card.plan_type or '') == 'project' %}shared-project-card{% endif %}">
           <h3>
             <a href="/cosplan/{{ card.id }}" class="card-title-link">{{ card.character_name }}</a>
+            {% if card.is_quick_draft %}<span class="chip chip-quick-draft">Нужно заполнить</span>{% endif %}
             {% if card.is_priority %}
               <span class="chip chip-priority">★ Приоритетный проект</span>
             {% endif %}
@@ -310,7 +315,7 @@
     </div>
   {% endif %}
 {% else %}
-  <section class="box">
+  <section class="box cosplan-empty-state">
     <p class="muted">Карточек пока нет. Создайте первую карточку косплана.</p>
     <div class="actions-inline top-offset">
       <a href="/cosplan/new" class="btn btn-accent">Создать карточку</a>
@@ -319,4 +324,38 @@
     </div>
   </section>
 {% endif %}
+
+<dialog class="quick-cosplan-dialog" id="quick-cosplan-dialog" aria-labelledby="quick-cosplan-title">
+  <form class="quick-cosplan-dialog-card" id="quick-cosplan-form" method="post" action="/cosplan/quick">
+    <div class="row-between">
+      <div>
+        <h2 id="quick-cosplan-title">Быстро записать идею</h2>
+        <p class="muted">Достаточно названия. Подробности можно заполнить сразу или позже.</p>
+      </div>
+      <button type="button" class="btn btn-small" id="quick-cosplan-close" aria-label="Закрыть">Закрыть</button>
+    </div>
+    <div class="grid one-col top-offset">
+      <label>
+        Название карточки
+        <input type="text" name="quick_title" maxlength="255" placeholder="Например, образ для зимнего фестиваля" autofocus />
+      </label>
+      <details class="quick-cosplan-details">
+        <summary>Или указать персонажа, фандом и AU</summary>
+        <div class="grid one-col top-offset">
+          <label>Персонаж<input type="text" name="character_name" maxlength="255" /></label>
+          <label>Фандом<input type="text" name="fandom" maxlength="255" /></label>
+          <label>AU<input type="text" name="au_text" maxlength="500" placeholder="Название или краткое описание AU" /></label>
+        </div>
+      </details>
+      <input type="hidden" name="view" value="{{ current_view }}" />
+      <p class="quick-cosplan-status muted" id="quick-cosplan-status" role="status" aria-live="polite"></p>
+      <div class="actions-inline">
+        <button type="submit" class="btn btn-accent">Добавить идею</button>
+        <a href="/cosplan/new" class="btn">Полная карточка</a>
+      </div>
+    </div>
+  </form>
+</dialog>
+
+<script src="/static/cosplan_quick_add.js"></script>
 {% endblock %}

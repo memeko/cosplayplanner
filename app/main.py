@@ -8,6 +8,7 @@ import base64
 import hashlib
 import hmac
 import html
+import ipaddress
 import io
 import json
 import mimetypes
@@ -110,6 +111,7 @@ from .models import (
     PendingRegistration,
     PasswordResetToken,
     PerformanceVideoAnalysisJob,
+    PhotoContestAnonymousBallot,
     PhotoContest,
     PhotoContestEntry,
     PhotoContestEntryPhoto,
@@ -1462,6 +1464,7 @@ def apply_schema_migrations() -> None:
             ("image_link_url", "TEXT"),
         ],
         "cosplan_cards": [
+            ("is_quick_draft", "BOOLEAN NOT NULL DEFAULT 0"),
             ("costume_bought", "BOOLEAN NOT NULL DEFAULT 0"),
             ("costume_link", "TEXT"),
             ("costume_buy_price", "FLOAT"),
@@ -1527,6 +1530,7 @@ def apply_schema_migrations() -> None:
         "photosets": [
             ("corrections_json", "JSON NOT NULL DEFAULT '[]'"),
             ("links_json", "JSON NOT NULL DEFAULT '[]'"),
+            ("publication_rows_json", "JSON NOT NULL DEFAULT '[]'"),
             ("selection_url", "TEXT"),
             ("ready_folder_url", "TEXT"),
         ],
@@ -1874,6 +1878,8 @@ def apply_schema_migrations() -> None:
             PhotoContestEntryPhoto.__table__.create(bind=conn, checkfirst=True)
         if "photo_contest_votes" not in existing_tables:
             PhotoContestVote.__table__.create(bind=conn, checkfirst=True)
+        if "photo_contest_anonymous_ballots" not in existing_tables:
+            PhotoContestAnonymousBallot.__table__.create(bind=conn, checkfirst=True)
 
         community_masters_added_allow_site_orders = False
 
@@ -22344,6 +22350,56 @@ def cosplan_list(
     )
 
 
+@app.post("/cosplan/quick")
+async def cosplan_quick_create(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return JSONResponse({"ok": False, "error": "Войдите в аккаунт, чтобы добавить идею."}, status_code=401)
+
+    form = await request.form()
+    quick_title = str(form.get("quick_title", "")).strip()[:255]
+    character_name = str(form.get("character_name", "")).strip()[:255]
+    fandom = str(form.get("fandom", "")).strip()[:255]
+    au_text = str(form.get("au_text", "")).strip()[:500]
+    card_title = character_name or quick_title
+    if not card_title:
+        return JSONResponse(
+            {"ok": False, "error": "Введите название карточки или имя персонажа."},
+            status_code=400,
+        )
+
+    card = CosplanCard(
+        user_id=user.id,
+        character_name=card_title,
+        fandom=fandom or None,
+        is_au=bool(au_text),
+        au_text=au_text or None,
+        plan_type="personal",
+        is_quick_draft=True,
+    )
+    db.add(card)
+    remember_options(db, user.id, "character", [character_name] if character_name else [])
+    remember_options(db, user.id, "fandom", [fandom] if fandom else [])
+    db.commit()
+    db.refresh(card)
+
+    current_view = str(form.get("view", "cards")).strip()
+    if current_view not in {"cards", "list"}:
+        current_view = "cards"
+    card_html = templates.get_template("_cosplan_quick_card.html").render(
+        card=card,
+        current_view=current_view,
+    )
+    return JSONResponse(
+        {
+            "ok": True,
+            "card_id": int(card.id),
+            "view": current_view,
+            "html": card_html,
+        }
+    )
+
+
 @app.get("/cosplan/titles", response_class=HTMLResponse)
 def cosplan_titles_list(
     request: Request,
@@ -23011,6 +23067,14 @@ PHOTOSET_ROLE_TYPES = {
     "lighting": "Световик",
     "videographer": "Видеограф",
 }
+PHOTOSET_PUBLICATION_PLATFORMS: tuple[tuple[str, str], ...] = (
+    ("vk", "VK"),
+    ("tg", "TG"),
+    ("xiaohongshu", "Сяохуншу"),
+    ("reddit", "Реддит"),
+    ("instagram", "И."),
+    ("other", "Другое"),
+)
 
 
 def photoset_costs(item: Photoset) -> dict[str, float]:
@@ -23366,6 +23430,83 @@ async def photoset_corrections_save(photoset_id: int, request: Request, db: Sess
     item.corrections_json = rows
     db.commit(); add_flash(request, "Таблица правок сохранена.", "success")
     return redirect(f"/cosplan/photosets/{item.id}/corrections")
+
+
+@app.get("/cosplan/photosets/{photoset_id}/publication", response_class=HTMLResponse)
+def photoset_publication(photoset_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    item = owned_photoset(db, user, photoset_id)
+    if not item:
+        return redirect("/cosplan/photosets")
+    rows: list[dict[str, Any]] = []
+    for index, raw_row in enumerate(as_list(item.publication_rows_json)):
+        if not isinstance(raw_row, dict):
+            continue
+        raw_published = raw_row.get("published")
+        published = raw_published if isinstance(raw_published, dict) else {}
+        rows.append(
+            {
+                "id": str(raw_row.get("id") or f"publication-{index}"),
+                "frame": str(raw_row.get("frame") or ""),
+                "comment": str(raw_row.get("comment") or ""),
+                "published": {
+                    platform: bool(published.get(platform))
+                    for platform, _label in PHOTOSET_PUBLICATION_PLATFORMS
+                },
+            }
+        )
+    if not rows:
+        rows = [{"id": "publication-0", "frame": "", "comment": "", "published": {}}]
+    return template_response(
+        request,
+        "photoset_publication.html",
+        rows=rows,
+        publication_platforms=PHOTOSET_PUBLICATION_PLATFORMS,
+        **photoset_subpage_context(request, db, user, item, "publication"),
+    )
+
+
+@app.post("/cosplan/photosets/{photoset_id}/publication")
+async def photoset_publication_save(photoset_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    item = owned_photoset(db, user, photoset_id)
+    if not item:
+        return redirect("/cosplan/photosets")
+
+    form = await request.form()
+    row_ids = [str(value).strip() for value in form.getlist("publication_row_id")]
+    frames = list(form.getlist("publication_frame"))
+    comments = list(form.getlist("publication_comment"))
+    checked_by_platform = {
+        platform: {str(value).strip() for value in form.getlist(f"publication_{platform}")}
+        for platform, _label in PHOTOSET_PUBLICATION_PLATFORMS
+    }
+    rows: list[dict[str, Any]] = []
+    for index, raw_row_id in enumerate(row_ids):
+        row_id = re.sub(r"[^a-zA-Z0-9_-]", "", raw_row_id)[:80] or f"publication-{index}"
+        frame = str(frames[index] if index < len(frames) else "").strip()[:255]
+        comment = str(comments[index] if index < len(comments) else "").strip()[:2000]
+        published = {
+            platform: row_id in checked_ids
+            for platform, checked_ids in checked_by_platform.items()
+        }
+        if frame or comment or any(published.values()):
+            rows.append(
+                {
+                    "id": row_id,
+                    "frame": frame,
+                    "comment": comment,
+                    "published": published,
+                }
+            )
+    item.publication_rows_json = rows
+    db.commit()
+    add_flash(request, "Таблица выкладки сохранена.", "success")
+    return redirect(f"/cosplan/photosets/{item.id}/publication")
 
 
 @app.get("/cosplan/photosets/{photoset_id}/links", response_class=HTMLResponse)
@@ -24443,6 +24584,7 @@ async def cosplan_update(card_id: int, request: Request, db: Session = Depends(g
         return redirect(f"/cosplan/{card.id}/edit")
 
     save_card_from_form(form, card, user, db)
+    card.is_quick_draft = False
     conflict_notifications = notify_coproplayer_conflicts_for_card(db, card=card, owner=user)
     sync_shared_cards_for_nicks(card, user, db)
     linked_rehearsal_cards = db.execute(
@@ -39027,8 +39169,57 @@ def photo_contest_can_vote(contest: PhotoContest, user: User | None, today: date
     if not user or photo_contest_status_key(contest, today=today) != PHOTO_CONTEST_STATUS_JUDGING:
         return False
     if normalize_photo_contest_judging_format(contest.judging_format) == PHOTO_CONTEST_JUDGING_OPEN:
-        return True
+        # Open judging uses the public, IP-limited ballot exclusively. Keeping
+        # account voting enabled here would allow the same person to vote twice.
+        return False
     return photo_contest_is_user_judge(contest, user)
+
+
+def photo_contest_anonymous_voter_hash(request: Request, contest_id: int) -> str:
+    remote_host = ""
+    envoy_external = str(request.headers.get("x-envoy-external-address") or "").strip()
+    forwarded_chain = str(request.headers.get("x-forwarded-for") or "").strip()
+    candidates = [envoy_external]
+    if forwarded_chain:
+        # The edge proxy appends the real peer address to the right. Taking the
+        # rightmost valid value prevents a client-supplied leading address from
+        # bypassing the one-ballot limit.
+        candidates.extend(reversed([item.strip() for item in forwarded_chain.split(",")]))
+    candidates.append(str(request.client.host if request.client else "unknown").strip())
+    for candidate in candidates:
+        try:
+            remote_host = ipaddress.ip_address(candidate).compressed
+            break
+        except ValueError:
+            continue
+    if not remote_host:
+        remote_host = str(request.client.host if request.client else "unknown").strip().lower()[:255] or "unknown"
+    payload = f"photo-contest-ballot:{int(contest_id)}:{remote_host}".encode("utf-8")
+    return hmac.new(secret_key.encode("utf-8"), payload, hashlib.sha256).hexdigest()
+
+
+def photo_contest_vote_count_map(db: Session, contest_id: int) -> dict[int, int]:
+    registered_rows = db.execute(
+        select(PhotoContestVote.photo_id, func.count(PhotoContestVote.id))
+        .where(PhotoContestVote.contest_id == contest_id)
+        .group_by(PhotoContestVote.photo_id)
+    ).all()
+    counts = {
+        int(photo_id): int(vote_count or 0)
+        for photo_id, vote_count in registered_rows
+        if photo_id
+    }
+    anonymous_ballots = db.execute(
+        select(PhotoContestAnonymousBallot.photo_ids_json).where(
+            PhotoContestAnonymousBallot.contest_id == contest_id
+        )
+    ).scalars().all()
+    for photo_ids in anonymous_ballots:
+        for raw_photo_id in as_list(photo_ids):
+            photo_id = parse_positive_int(str(raw_photo_id or "").strip())
+            if photo_id:
+                counts[int(photo_id)] = counts.get(int(photo_id), 0) + 1
+    return counts
 
 
 def photo_contest_form_values(item: PhotoContest | PhotoContestRequest | None = None) -> dict[str, Any]:
@@ -40059,6 +40250,153 @@ async def photo_contest_save_votes(contest_id: int, request: Request, db: Sessio
     return redirect(f"/photocosplay/{contest_id}")
 
 
+@app.get("/photocosplay/{contest_id}/vote", response_class=HTMLResponse)
+def photo_contest_public_vote(contest_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    contest = db.get(PhotoContest, contest_id)
+    if not contest:
+        return template_response(
+            request,
+            "photo_contest_public_vote.html",
+            user=user,
+            contest=None,
+            voting_available=False,
+            already_voted=False,
+            grouped_entries={},
+            ordered_nomination_titles=[],
+            seo_robots="noindex,nofollow",
+            status_code=404,
+        )
+
+    voting_available = bool(
+        photo_contest_status_key(contest) == PHOTO_CONTEST_STATUS_JUDGING
+        and normalize_photo_contest_judging_format(contest.judging_format) == PHOTO_CONTEST_JUDGING_OPEN
+    )
+    voter_hash = photo_contest_anonymous_voter_hash(request, contest_id)
+    already_voted = bool(
+        db.execute(
+            select(PhotoContestAnonymousBallot.id).where(
+                PhotoContestAnonymousBallot.contest_id == contest_id,
+                PhotoContestAnonymousBallot.voter_hash == voter_hash,
+            )
+        ).scalar_one_or_none()
+    )
+
+    grouped_entries: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    ordered_nomination_titles: list[str] = []
+    if voting_available:
+        entries = db.execute(
+            select(PhotoContestEntry)
+            .where(PhotoContestEntry.contest_id == contest_id)
+            .order_by(PhotoContestEntry.created_at.asc(), PhotoContestEntry.id.asc())
+        ).scalars().all()
+        photos = db.execute(
+            select(PhotoContestEntryPhoto)
+            .where(PhotoContestEntryPhoto.contest_id == contest_id)
+            .order_by(PhotoContestEntryPhoto.sort_order.asc(), PhotoContestEntryPhoto.id.asc())
+        ).scalars().all()
+        photos_by_entry_id: dict[int, list[PhotoContestEntryPhoto]] = defaultdict(list)
+        for photo in photos:
+            photos_by_entry_id[int(photo.entry_id)].append(photo)
+
+        participant_ids = {int(entry.participant_user_id) for entry in entries if entry.participant_user_id}
+        users_by_id: dict[int, User] = {}
+        if participant_ids:
+            participants = db.execute(select(User).where(User.id.in_(participant_ids))).scalars().all()
+            users_by_id = {int(item.id): item for item in participants if item and item.id}
+
+        for entry in entries:
+            nomination_title = canonical_nomination_title(entry.nomination_title) or "Без номинации"
+            grouped_entries[nomination_title].append(
+                {
+                    "entry": entry,
+                    "brief": photo_contest_entry_brief(entry, users_by_id),
+                    "photos": photos_by_entry_id.get(int(entry.id), []),
+                }
+            )
+        ordered_nomination_titles = [
+            item["title"]
+            for item in normalize_photo_contest_nomination_rows(contest.nominations_json)
+            if item.get("title") and item["title"] in grouped_entries
+        ]
+        for title in sorted(grouped_entries, key=lambda value: value.casefold()):
+            if title not in ordered_nomination_titles:
+                ordered_nomination_titles.append(title)
+
+    return template_response(
+        request,
+        "photo_contest_public_vote.html",
+        user=user,
+        active_tab="photocosplay" if user else None,
+        contest=contest,
+        voting_available=voting_available,
+        already_voted=already_voted,
+        grouped_entries=grouped_entries,
+        ordered_nomination_titles=ordered_nomination_titles,
+        seo_robots="noindex,nofollow",
+    )
+
+
+@app.post("/photocosplay/{contest_id}/vote")
+async def photo_contest_submit_public_vote(contest_id: int, request: Request, db: Session = Depends(get_db)):
+    contest = db.get(PhotoContest, contest_id)
+    if not contest:
+        add_flash(request, "Конкурс не найден.", "error")
+        return redirect("/")
+    if not (
+        photo_contest_status_key(contest) == PHOTO_CONTEST_STATUS_JUDGING
+        and normalize_photo_contest_judging_format(contest.judging_format) == PHOTO_CONTEST_JUDGING_OPEN
+    ):
+        add_flash(request, "Открытое голосование сейчас недоступно.", "error")
+        return redirect(f"/photocosplay/{contest_id}/vote")
+
+    voter_hash = photo_contest_anonymous_voter_hash(request, contest_id)
+    existing_ballot = db.execute(
+        select(PhotoContestAnonymousBallot.id).where(
+            PhotoContestAnonymousBallot.contest_id == contest_id,
+            PhotoContestAnonymousBallot.voter_hash == voter_hash,
+        )
+    ).scalar_one_or_none()
+    if existing_ballot:
+        add_flash(request, "С этого IP-адреса голос уже был отправлен.", "error")
+        return redirect(f"/photocosplay/{contest_id}/vote")
+
+    form = await request.form()
+    selected_ids = {
+        int(photo_id)
+        for raw_value in form.getlist("photo_vote")
+        if (photo_id := parse_positive_int(str(raw_value or "").strip()))
+    }
+    contest_photo_ids = {
+        int(item)
+        for item in db.execute(
+            select(PhotoContestEntryPhoto.id).where(PhotoContestEntryPhoto.contest_id == contest_id)
+        ).scalars().all()
+        if item
+    }
+    selected_ids &= contest_photo_ids
+    if not selected_ids:
+        add_flash(request, "Выберите хотя бы одну фотографию.", "error")
+        return redirect(f"/photocosplay/{contest_id}/vote")
+
+    db.add(
+        PhotoContestAnonymousBallot(
+            contest_id=contest_id,
+            voter_hash=voter_hash,
+            photo_ids_json=sorted(selected_ids),
+        )
+    )
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        add_flash(request, "С этого IP-адреса голос уже был отправлен.", "error")
+        return redirect(f"/photocosplay/{contest_id}/vote")
+
+    add_flash(request, "Спасибо! Ваш голос принят.", "success")
+    return redirect(f"/photocosplay/{contest_id}/vote")
+
+
 @app.get("/photocosplay/{contest_id}", response_class=HTMLResponse)
 def photo_contest_detail(contest_id: int, request: Request, db: Session = Depends(get_db)):
     user = current_user(request, db)
@@ -40096,12 +40434,7 @@ def photo_contest_detail(contest_id: int, request: Request, db: Session = Depend
         related_users = db.execute(select(User).where(User.id.in_(participant_ids))).scalars().all()
         users_by_id = {int(item.id): item for item in related_users if item and item.id}
 
-    vote_rows = db.execute(
-        select(PhotoContestVote.photo_id, func.count(PhotoContestVote.id))
-        .where(PhotoContestVote.contest_id == contest.id)
-        .group_by(PhotoContestVote.photo_id)
-    ).all()
-    vote_count_by_photo_id = {int(photo_id): int(vote_count or 0) for photo_id, vote_count in vote_rows if photo_id}
+    vote_count_by_photo_id = photo_contest_vote_count_map(db, int(contest.id))
     user_voted_photo_ids = {
         int(item)
         for item in db.execute(

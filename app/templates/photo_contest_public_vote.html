@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="section-head public-vote-head">
+  <div>
+    <h1>{{ contest.title if contest else "Фотоконкурс не найден" }}</h1>
+    {% if contest %}<p class="meta">Открытое судейство · выберите понравившиеся фотографии</p>{% endif %}
+  </div>
+  <a href="/" class="btn">На главную Cosplay Planner</a>
+</section>
+
+{% if not contest %}
+  <section class="box public-vote-message">
+    <h2>Такого конкурса нет</h2>
+    <p class="muted">Проверьте ссылку или вернитесь на главную страницу.</p>
+  </section>
+{% elif not voting_available %}
+  <section class="box public-vote-message">
+    <h2>Голосование сейчас недоступно</h2>
+    <p class="muted">Открытое судейство ещё не началось или уже завершилось.</p>
+  </section>
+{% elif already_voted %}
+  <section class="box public-vote-message public-vote-success">
+    <h2>Голос уже принят</h2>
+    <p>С этого IP-адреса бюллетень в данном конкурсе уже был отправлен.</p>
+  </section>
+{% else %}
+  <section class="box public-vote-intro">
+    <h2>Бланк голосования</h2>
+    <p class="muted">Можно отметить несколько работ. После отправки изменить выбор или проголосовать повторно с того же IP-адреса нельзя.</p>
+  </section>
+
+  <form method="post" action="/photocosplay/{{ contest.id }}/vote" id="public-contest-vote-form">
+    {% set ns = namespace(has_photos=false) %}
+    {% for nomination_title in ordered_nomination_titles %}
+      {% set rows = grouped_entries.get(nomination_title, []) %}
+      {% if rows %}
+        <section class="public-vote-nomination" aria-labelledby="nomination-{{ loop.index }}">
+          <h2 id="nomination-{{ loop.index }}">{{ nomination_title }}</h2>
+          <div class="public-vote-grid">
+            {% for row in rows %}
+              {% set brief = row.brief %}
+              {% for photo in row.photos %}
+                {% set ns.has_photos = true %}
+                <label class="card public-vote-card">
+                  <input type="checkbox" name="photo_vote" value="{{ photo.id }}" />
+                  <span class="public-vote-check">Выбрать</span>
+                  <img src="{{ photo.file_path }}" alt="Конкурсная фотография: {{ brief.characters|join(', ') if brief.characters else nomination_title }}" loading="lazy" />
+                  <span class="public-vote-copy">
+                    {% if brief.characters %}<strong>{{ brief.characters|join(', ') }}</strong>{% endif %}
+                    {% if brief.fandom %}<span class="meta">{{ brief.fandom }}</span>{% endif %}
+                    {% if brief.cosplayers %}<span class="meta">Косплеер: {{ brief.cosplayers|join(', ') }}</span>{% endif %}
+                    {% if brief.photographers %}<span class="meta">Фотограф: {{ brief.photographers|join(', ') }}</span>{% endif %}
+                  </span>
+                </label>
+              {% endfor %}
+            {% endfor %}
+          </div>
+        </section>
+      {% endif %}
+    {% endfor %}
+
+    {% if ns.has_photos %}
+      <div class="public-vote-submit-bar">
+        <span id="public-vote-selection-count">Ничего не выбрано</span>
+        <button type="submit" class="btn btn-accent">Отправить голос</button>
+      </div>
+    {% else %}
+      <section class="box"><p class="muted">В конкурсе пока нет фотографий для голосования.</p></section>
+    {% endif %}
+  </form>
+{% endif %}
+
+<script>
+  (function () {
+    const form = document.getElementById("public-contest-vote-form");
+    const counter = document.getElementById("public-vote-selection-count");
+    if (!form || !counter) return;
+    function updateCounter() {
+      const count = form.querySelectorAll('input[name="photo_vote"]:checked').length;
+      counter.textContent = count ? `Выбрано: ${count}` : "Ничего не выбрано";
+    }
+    form.addEventListener("change", updateCounter);
+    form.addEventListener("submit", function (event) {
+      if (!form.querySelector('input[name="photo_vote"]:checked')) {
+        event.preventDefault();
+        counter.textContent = "Выберите хотя бы одну фотографию";
+        counter.classList.add("form-error-text");
+      }
+    });
+  })();
+</script>
+{% endblock %}

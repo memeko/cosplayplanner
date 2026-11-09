@@ -75,11 +75,14 @@ def run_scenario(db_path: Path) -> None:
     from fastapi.testclient import TestClient
 
     from app.main import (
+        CosplanCard,
         PhotoContest,
+        PhotoContestAnonymousBallot,
         PhotoContestEntry,
         PhotoContestEntryPhoto,
         PhotoContestRequest,
         PhotoContestVote,
+        Photoset,
         SITE_TIMEZONE,
         SessionLocal,
         User,
@@ -87,6 +90,7 @@ def run_scenario(db_path: Path) -> None:
         password_context,
         photo_contest_status_key,
         photo_contest_submission_period_active,
+        photo_contest_vote_count_map,
     )
 
     today = date.today()
@@ -401,6 +405,10 @@ def run_scenario(db_path: Path) -> None:
         )
         response = client.get("/photocosplay?status=judging")
         assert_ok("QA Фотокосплей 2026" in response.text, "Judging filter did not show contest")
+        assert_ok(
+            f'href="/photocosplay/{contest_id}/vote"' in response.text and "Бюллетень" in response.text,
+            "Contest card has no public ballot link",
+        )
         response = client.get(f"/photocosplay/{contest_id}")
         assert_ok("Открытое судейство" in response.text, "Open judging label has incorrect grammar")
         assert_ok("Открытый судейство" not in response.text, "Legacy open judging typo is still rendered")
@@ -428,16 +436,41 @@ def run_scenario(db_path: Path) -> None:
             )
         logout()
 
-        # 6) Viewer votes in open judging.
+        # 6) Public voting works without registration and accepts one ballot per IP.
+        response = client.get(f"/photocosplay/{contest_id}/vote")
+        assert_ok(response.status_code == 200, "Public voting page requires authentication")
+        assert_ok("Бланк голосования" in response.text, "Public voting form is missing")
+        assert_ok("На главную Cosplay Planner" in response.text, "Planner home button is missing")
+        response = post_form(
+            client,
+            f"/photocosplay/{contest_id}/vote",
+            data={"photo_vote": [str(voted_photo_id)]},
+        )
+        assert_ok("Спасибо! Ваш голос принят." in response.text, "Public ballot was not accepted")
+        response = post_form(
+            client,
+            f"/photocosplay/{contest_id}/vote",
+            data={"photo_vote": [str(voted_photo_id)]},
+        )
+        assert_ok("С этого IP-адреса голос уже был отправлен." in response.text, "Duplicate IP ballot was not blocked")
+        with SessionLocal() as db:
+            anonymous_ballots = db.query(PhotoContestAnonymousBallot).filter(
+                PhotoContestAnonymousBallot.contest_id == contest_id
+            ).all()
+            assert_ok(len(anonymous_ballots) == 1, "Expected exactly one anonymous ballot per IP")
+            vote_counts = photo_contest_vote_count_map(db, contest_id)
+            assert_ok(vote_counts.get(voted_photo_id) == 1, "Anonymous ballot is missing from vote totals")
+
+        # 7) Account voting is disabled for open judging to prevent a second ballot.
         login("contest_viewer")
         post_form(client, f"/photocosplay/{contest_id}/votes", data={"photo_vote": [str(voted_photo_id)]})
 
         with SessionLocal() as db:
             votes = db.query(PhotoContestVote).filter(PhotoContestVote.contest_id == contest_id).all()
-            assert_ok(len(votes) == 1, f"Expected 1 vote, got {len(votes)}")
+            assert_ok(len(votes) == 0, "Open judging accepted an extra account vote")
         logout()
 
-        # 7) Closed judging restriction.
+        # 8) Closed judging restriction.
         login("contest_creator")
         post_form(
             client,
@@ -465,10 +498,10 @@ def run_scenario(db_path: Path) -> None:
         post_form(client, f"/photocosplay/{contest_id}/votes", data={"photo_vote": [str(voted_photo_id)]})
         with SessionLocal() as db:
             votes = db.query(PhotoContestVote).filter(PhotoContestVote.contest_id == contest_id).all()
-            assert_ok(len(votes) == 1, "Viewer should not be able to vote in closed judging")
+            assert_ok(len(votes) == 0, "Viewer should not be able to vote in closed judging")
         logout()
 
-        # 8) Finish contest and check results visibility.
+        # 9) Finish contest and check results visibility.
         login("contest_creator")
         post_form(
             client,
@@ -497,6 +530,81 @@ def run_scenario(db_path: Path) -> None:
 
         response = client.get("/photocosplay?status=finished")
         assert_ok("QA Фотокосплей 2026" in response.text, "Finished filter did not show contest")
+
+        # 10) Quick cosplan idea is created through JSON and stays highlighted until full edit.
+        response = client.post(
+            "/cosplan/quick",
+            data={
+                "quick_title": "Идея зимнего образа",
+                "character_name": "",
+                "fandom": "Original",
+                "au_text": "Ледяное AU",
+                "view": "cards",
+            },
+            headers={"Accept": "application/json"},
+        )
+        assert_ok(response.status_code == 200, "Quick cosplan request failed")
+        payload = response.json()
+        assert_ok(payload.get("ok") is True, "Quick cosplan response is not successful")
+        assert_ok("quick-draft-card" in str(payload.get("html") or ""), "Quick draft HTML is not highlighted")
+        quick_card_id = int(payload["card_id"])
+        with SessionLocal() as db:
+            quick_card = db.get(CosplanCard, quick_card_id)
+            assert_ok(quick_card is not None and quick_card.is_quick_draft, "Quick draft flag was not saved")
+            assert_ok(quick_card.au_text == "Ледяное AU", "Quick AU value was not saved")
+
+        response = client.get("/cosplan")
+        assert_ok("Идея зимнего образа" in response.text, "Quick card is missing from cosplan list")
+        assert_ok("Нужно заполнить" in response.text, "Quick card marker is missing")
+        post_form(
+            client,
+            f"/cosplan/{quick_card_id}/edit",
+            data={"character_name": "Зимний образ", "fandom": "Original", "next": "/cosplan"},
+        )
+        with SessionLocal() as db:
+            quick_card = db.get(CosplanCard, quick_card_id)
+            assert_ok(quick_card is not None and not quick_card.is_quick_draft, "Full edit did not clear quick draft flag")
+
+        # 11) Photoset publication table stores user rows and per-platform checks.
+        with SessionLocal() as db:
+            creator = db.query(User).filter(User.username == "contest_creator").one()
+            photoset = Photoset(
+                user_id=creator.id,
+                title="QA фотосет",
+                fandom="Original",
+                characters_json=["Fox"],
+            )
+            db.add(photoset)
+            db.commit()
+            db.refresh(photoset)
+            photoset_id = int(photoset.id)
+
+        response = client.get(f"/cosplan/photosets/{photoset_id}/publication")
+        assert_ok(response.status_code == 200, "Photoset publication page failed")
+        assert_ok("Выкладка · QA фотосет" in response.text, "Publication page title is missing")
+        assert_ok("Сяохуншу" in response.text and "Реддит" in response.text, "Publication platforms are missing")
+        post_form(
+            client,
+            f"/cosplan/photosets/{photoset_id}/publication",
+            data={
+                "publication_row_id": ["publication-a", "publication-b"],
+                "publication_frame": ["001", "002"],
+                "publication_comment": ["Тизер", "Основной кадр"],
+                "publication_vk": ["publication-a"],
+                "publication_tg": ["publication-a", "publication-b"],
+                "publication_xiaohongshu": ["publication-b"],
+                "publication_reddit": [],
+                "publication_instagram": ["publication-a"],
+                "publication_other": [],
+            },
+        )
+        with SessionLocal() as db:
+            photoset = db.get(Photoset, photoset_id)
+            publication_rows = list(photoset.publication_rows_json or []) if photoset else []
+            assert_ok(len(publication_rows) == 2, "Publication rows were not saved")
+            assert_ok(publication_rows[0]["published"]["vk"] is True, "VK publication check was not saved")
+            assert_ok(publication_rows[1]["published"]["xiaohongshu"] is True, "Xiaohongshu check was not saved")
+            assert_ok(publication_rows[1]["published"]["reddit"] is False, "Unchecked platform was saved as checked")
 
 
 def parse_args() -> argparse.Namespace:

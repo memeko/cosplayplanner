@@ -119,6 +119,9 @@
       {% endif %}
       <div class="actions-inline top-offset">
         <a href="/photocosplay/{{ contest.id }}" class="btn">Подробнее</a>
+        {% if contest.judging_format == 'open' %}
+          <a href="/photocosplay/{{ contest.id }}/vote" class="btn {% if status == 'judging' %}btn-accent{% endif %}">Бюллетень</a>
+        {% endif %}
       </div>
     </article>
   {% endfor %}

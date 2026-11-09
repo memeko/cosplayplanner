@@ -1,0 +1,32 @@
+{% if current_view == "list" %}
+<article class="card cosplan-list-item quick-draft-card" data-cosplan-card-id="{{ card.id }}">
+  <div class="cosplan-list-row">
+    <div class="cosplan-list-number">Новая</div>
+    <div class="cosplan-list-main">
+      <a href="/cosplan/{{ card.id }}" class="card-title-link cosplan-list-title">{{ card.character_name }}</a>
+      <span class="chip chip-quick-draft">Нужно заполнить</span>
+      <div class="cosplan-list-meta">
+        <span>{{ card.fandom or "—" }}</span>
+        {% if card.au_text %}<span>AU: {{ card.au_text|preview_text(50) }}</span>{% endif %}
+      </div>
+    </div>
+    <div class="actions-inline cosplan-list-actions">
+      <a href="/cosplan/{{ card.id }}/edit" class="btn btn-accent">Заполнить</a>
+    </div>
+  </div>
+</article>
+{% else %}
+<article class="card quick-draft-card" data-cosplan-card-id="{{ card.id }}">
+  <h3>
+    <a href="/cosplan/{{ card.id }}" class="card-title-link">{{ card.character_name }}</a>
+    <span class="chip chip-quick-draft">Нужно заполнить</span>
+  </h3>
+  <p class="meta">Фандом: {{ card.fandom or "—" }}</p>
+  {% if card.au_text %}<p class="meta">AU: {{ card.au_text|preview_text(50) }}</p>{% endif %}
+  <p class="meta">Идея сохранена. Откройте карточку, когда будете готовы добавить детали.</p>
+  <div class="actions-inline">
+    <a href="/cosplan/{{ card.id }}/edit" class="btn btn-accent">Заполнить карточку</a>
+    <a href="/cosplan/{{ card.id }}" class="btn">Открыть</a>
+  </div>
+</article>
+{% endif %}

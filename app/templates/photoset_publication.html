@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="section-head">
+  <div>
+    <h1>Выкладка · {{ item.title }}</h1>
+    <p class="meta">Отмечайте, где уже опубликован каждый готовый кадр.</p>
+  </div>
+  <a class="btn" href="/cosplan/photosets/{{ item.id }}">К обзору</a>
+</section>
+{% include "_photoset_tabs.html" %}
+
+<form method="post" id="photoset-publication-form" class="card photoset-publication-card">
+  <div class="photoset-publication-scroll">
+    <table class="table photoset-publication-table">
+      <thead>
+        <tr>
+          <th rowspan="2">Номер кадра</th>
+          <th rowspan="2">Комментарий</th>
+          <th colspan="{{ publication_platforms|length }}" class="photoset-publication-group">Выложено</th>
+          <th rowspan="2"><span class="sr-only">Действия</span></th>
+        </tr>
+        <tr>
+          {% for platform, label in publication_platforms %}
+            <th title="{{ 'Instagram' if platform == 'instagram' else label }}">{{ label }}</th>
+          {% endfor %}
+        </tr>
+      </thead>
+      <tbody data-publication-rows>
+        {% for row in rows %}
+          <tr class="photoset-publication-row" data-row-id="{{ row.id }}">
+            <td>
+              <input type="hidden" name="publication_row_id" value="{{ row.id }}" />
+              <input type="text" name="publication_frame" value="{{ row.frame }}" maxlength="255" placeholder="001" aria-label="Номер кадра" />
+            </td>
+            <td><textarea name="publication_comment" rows="2" maxlength="2000" placeholder="Подпись, дата или примечание">{{ row.comment }}</textarea></td>
+            {% for platform, label in publication_platforms %}
+              <td class="photoset-publication-check">
+                <label title="{{ 'Instagram' if platform == 'instagram' else label }}">
+                  <input type="checkbox" name="publication_{{ platform }}" value="{{ row.id }}" {% if row.published.get(platform) %}checked{% endif %} />
+                  <span class="sr-only">{{ label }}</span>
+                </label>
+              </td>
+            {% endfor %}
+            <td><button type="button" class="btn btn-small" data-remove-publication-row>Удалить</button></td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <div class="actions-inline top-offset">
+    <button type="button" class="btn" data-add-publication-row>+ Добавить строку</button>
+    <button type="submit" class="btn btn-accent">Сохранить выкладку</button>
+  </div>
+</form>
+
+<template id="photoset-publication-row-template">
+  <tr class="photoset-publication-row">
+    <td>
+      <input type="hidden" name="publication_row_id" />
+      <input type="text" name="publication_frame" maxlength="255" placeholder="001" aria-label="Номер кадра" />
+    </td>
+    <td><textarea name="publication_comment" rows="2" maxlength="2000" placeholder="Подпись, дата или примечание"></textarea></td>
+    {% for platform, label in publication_platforms %}
+      <td class="photoset-publication-check">
+        <label title="{{ 'Instagram' if platform == 'instagram' else label }}">
+          <input type="checkbox" name="publication_{{ platform }}" />
+          <span class="sr-only">{{ label }}</span>
+        </label>
+      </td>
+    {% endfor %}
+    <td><button type="button" class="btn btn-small" data-remove-publication-row>Удалить</button></td>
+  </tr>
+</template>
+<script src="/static/photoset_publication.js"></script>
+{% endblock %}

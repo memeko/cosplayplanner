@@ -4,6 +4,9 @@
   <h1>{{ contest.title }}</h1>
   <div class="actions-inline">
     <a href="/photocosplay" class="btn">Назад к списку</a>
+    {% if contest.judging_format == 'open' %}
+      <a href="/photocosplay/{{ contest.id }}/vote" class="btn btn-accent">Открыть страницу голосования</a>
+    {% endif %}
     {% if can_manage %}
       <a href="/photocosplay/{{ contest.id }}/edit" class="btn">Редактировать</a>
     {% endif %}
