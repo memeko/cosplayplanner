@@ -994,6 +994,8 @@ vk_bot_worker_lock = threading.Lock()
 vk_bot_worker_thread: threading.Thread | None = None
 external_import_worker_lock = threading.Lock()
 external_import_worker_thread: threading.Thread | None = None
+photo_contest_preview_worker_lock = threading.Lock()
+photo_contest_preview_worker_thread: threading.Thread | None = None
 
 MASTER_TYPE_OPTIONS = [
     "фотограф",
@@ -2084,6 +2086,7 @@ def startup() -> None:
     start_content_telegram_worker()
     start_vk_bot_worker()
     start_external_import_worker()
+    start_photo_contest_preview_worker()
     schedule_auto_backup_if_needed()
 
 
@@ -40199,7 +40202,15 @@ async def photo_contest_submit_work(contest_id: int, request: Request, db: Sessi
             )
         )
 
+    db.flush()
+    saved_photos = [
+        photo
+        for photo in entry.photos
+        if int(photo.contest_id) == int(contest.id)
+    ]
     db.commit()
+    for photo in saved_photos:
+        create_photo_contest_preview(photo)
     add_flash(request, "Заявка успешно загружена!", "photo_success")
     return redirect(f"/photocosplay/{contest_id}")
 
@@ -40289,6 +40300,83 @@ async def photo_contest_save_votes(contest_id: int, request: Request, db: Sessio
     return redirect(f"/photocosplay/{contest_id}")
 
 
+def photo_contest_preview_source_path(photo: PhotoContestEntryPhoto) -> Path | None:
+    public_path = str(photo.file_path or "").strip()
+    if not public_path.startswith("/media/"):
+        return None
+    safe_name = Path(unquote(public_path.removeprefix("/media/"))).name
+    source_path = media_storage_path() / safe_name
+    if not source_path.is_file():
+        return None
+    return source_path
+
+
+def photo_contest_preview_path(photo: PhotoContestEntryPhoto) -> Path | None:
+    source_path = photo_contest_preview_source_path(photo)
+    if not source_path:
+        return None
+    source_version = int(source_path.stat().st_mtime_ns)
+    return media_storage_path() / ".photo-contest-previews" / f"photo-{int(photo.id)}-{source_version}.jpg"
+
+
+def create_photo_contest_preview(photo: PhotoContestEntryPhoto) -> Path | None:
+    source_path = photo_contest_preview_source_path(photo)
+    preview_path = photo_contest_preview_path(photo)
+    if not source_path or not preview_path:
+        return None
+    if preview_path.is_file():
+        return preview_path
+    preview_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = preview_path.with_name(f".{preview_path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        with Image.open(source_path) as source:
+            prepared = ImageOps.exif_transpose(source).convert("RGB")
+            prepared.thumbnail((720, 900), Image.Resampling.LANCZOS)
+            prepared.save(temporary_path, format="JPEG", quality=82, optimize=True)
+        temporary_path.replace(preview_path)
+        return preview_path
+    except (UnidentifiedImageError, OSError):
+        temporary_path.unlink(missing_ok=True)
+        return None
+
+
+def generate_photo_contest_previews(contest_id: int, db: Session) -> int:
+    photos = db.execute(
+        select(PhotoContestEntryPhoto).where(PhotoContestEntryPhoto.contest_id == int(contest_id))
+    ).scalars().all()
+    return sum(1 for photo in photos if create_photo_contest_preview(photo))
+
+
+def run_photo_contest_preview_worker() -> None:
+    while True:
+        db = SessionLocal()
+        try:
+            contests = db.execute(
+                select(PhotoContest).where(PhotoContest.judging_format == PHOTO_CONTEST_JUDGING_OPEN)
+            ).scalars().all()
+            for contest in contests:
+                if photo_contest_status_key(contest) == PHOTO_CONTEST_STATUS_JUDGING:
+                    generate_photo_contest_previews(int(contest.id), db)
+        except Exception as exc:
+            print(f"Photo contest preview worker failed: {exc}", file=sys.stderr)
+        finally:
+            db.close()
+        time.sleep(600)
+
+
+def start_photo_contest_preview_worker() -> None:
+    global photo_contest_preview_worker_thread
+    with photo_contest_preview_worker_lock:
+        if photo_contest_preview_worker_thread and photo_contest_preview_worker_thread.is_alive():
+            return
+        photo_contest_preview_worker_thread = threading.Thread(
+            target=run_photo_contest_preview_worker,
+            name="photo-contest-preview-worker",
+            daemon=True,
+        )
+        photo_contest_preview_worker_thread.start()
+
+
 @app.get("/photocosplay/{contest_id}/preview/{photo_id}", include_in_schema=False)
 def photo_contest_public_preview(contest_id: int, photo_id: int, db: Session = Depends(get_db)):
     contest = db.get(PhotoContest, contest_id)
@@ -40300,26 +40388,9 @@ def photo_contest_public_preview(contest_id: int, photo_id: int, db: Session = D
     photo = db.get(PhotoContestEntryPhoto, photo_id)
     if not photo or int(photo.contest_id) != int(contest_id):
         raise HTTPException(status_code=404)
-    public_path = str(photo.file_path or "").strip()
-    if not public_path.startswith("/media/"):
+    preview_path = photo_contest_preview_path(photo)
+    if not preview_path or not preview_path.is_file():
         raise HTTPException(status_code=404)
-    safe_name = Path(unquote(public_path.removeprefix("/media/"))).name
-    source_path = media_storage_path() / safe_name
-    if not source_path.is_file():
-        raise HTTPException(status_code=404)
-
-    source_version = int(source_path.stat().st_mtime_ns)
-    preview_dir = media_storage_path() / ".photo-contest-previews"
-    preview_dir.mkdir(parents=True, exist_ok=True)
-    preview_path = preview_dir / f"photo-{int(photo.id)}-{source_version}.jpg"
-    if not preview_path.is_file():
-        try:
-            with Image.open(source_path) as source:
-                prepared = ImageOps.exif_transpose(source).convert("RGB")
-                prepared.thumbnail((720, 900), Image.Resampling.LANCZOS)
-                prepared.save(preview_path, format="JPEG", quality=82, optimize=True)
-        except (UnidentifiedImageError, OSError):
-            raise HTTPException(status_code=404)
     response = FileResponse(preview_path, media_type="image/jpeg")
     response.headers["Cache-Control"] = "public, max-age=86400, immutable"
     return response

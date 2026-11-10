@@ -91,6 +91,8 @@ def run_scenario(db_path: Path) -> None:
         photo_contest_status_key,
         photo_contest_submission_period_active,
         photo_contest_entry_vote_count_map,
+        photo_contest_preview_path,
+        create_photo_contest_preview,
     )
 
     today = date.today()
@@ -453,6 +455,17 @@ def run_scenario(db_path: Path) -> None:
         )
         assert_ok(f"/photocosplay/{contest_id}/preview/{voted_photo_id}" in response.text, "Preview URL is missing")
         assert_ok("/media/photo-contest-" not in response.text, "Ballot leaks full-size photo URLs")
+        with SessionLocal() as db:
+            voted_photo = db.get(PhotoContestEntryPhoto, voted_photo_id)
+            preview_path = photo_contest_preview_path(voted_photo)
+            assert_ok(bool(preview_path and preview_path.is_file()), "Preview was not prepared before ballot loading")
+            preview_path.unlink()
+        preview_response = client.get(f"/photocosplay/{contest_id}/preview/{voted_photo_id}")
+        assert_ok(preview_response.status_code == 404, "Preview route generated a missing preview during voting")
+        assert_ok(not preview_path.exists(), "Preview route recreated a missing preview")
+        with SessionLocal() as db:
+            voted_photo = db.get(PhotoContestEntryPhoto, voted_photo_id)
+            assert_ok(bool(create_photo_contest_preview(voted_photo)), "Background preview preparation failed")
         preview_response = client.get(f"/photocosplay/{contest_id}/preview/{voted_photo_id}")
         assert_ok(preview_response.status_code == 200, "Photo preview failed")
         assert_ok(preview_response.headers.get("content-type", "").startswith("image/jpeg"), "Preview is not JPEG")
