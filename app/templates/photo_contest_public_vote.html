@@ -50,7 +50,7 @@
                     {% endfor %}
                   </span>
                   <span class="public-vote-copy">
-                    <span class="chip">{{ "Групповая" if brief.entry_type == "group" else "Соло" }}</span>
+                    <span class="chip public-vote-type-chip">{{ "Групповая" if brief.entry_type == "group" else "Соло" }}</span>
                     {% if brief.characters %}<strong>{{ brief.characters|join(', ') }}</strong>{% endif %}
                     {% if brief.fandom %}<span class="meta">{{ brief.fandom }}</span>{% endif %}
                     {% if brief.cosplayers %}<span class="meta">Косплеер: {{ brief.cosplayers|join(', ') }}</span>{% endif %}

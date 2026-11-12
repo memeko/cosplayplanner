@@ -1384,6 +1384,10 @@ textarea {
   gap: 4px;
 }
 
+.public-vote-type-chip {
+  justify-self: start;
+}
+
 .public-vote-submit-bar {
   position: sticky;
   z-index: 10;

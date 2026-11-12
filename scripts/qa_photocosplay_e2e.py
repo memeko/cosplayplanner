@@ -296,8 +296,8 @@ def run_scenario(db_path: Path) -> None:
             data={
                 "nomination_title": "Групповой фотокосплей",
                 "fandom": "Second allowed entry",
-                "entry_person": ["contest_participant", "group_friend"],
-                "entry_role": ["cosplayer", "cosplayer"],
+                "entry_person": ["contest_participant"],
+                "entry_role": ["cosplayer"],
                 "entry_character": ["A2"],
                 "agree_rules": "1",
             },

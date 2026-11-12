@@ -39395,9 +39395,16 @@ def photo_contest_entry_brief(
         role_values[role_key] = merge_unique(people)
 
     cosplayers = role_values.get(PHOTO_CONTEST_ROLE_COSPLAYER, [])
+    nomination_key = normalize_nomination_title_key(entry.nomination_title)
+    if "групп" in nomination_key:
+        entry_type = "group"
+    elif "одиноч" in nomination_key or "соло" in nomination_key:
+        entry_type = "solo"
+    else:
+        entry_type = "group" if len(cosplayers) > 1 else "solo"
     return {
         "cosplayers": cosplayers,
-        "entry_type": "group" if len(cosplayers) > 1 else "solo",
+        "entry_type": entry_type,
         "photographers": role_values.get(PHOTO_CONTEST_ROLE_PHOTOGRAPHER, []),
         "other_roles": [
             {
