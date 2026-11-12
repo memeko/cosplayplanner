@@ -39547,6 +39547,16 @@ def consume_photo_contest_pending_upload(user_id: int, token: str) -> tuple[str,
     return f"/media/{destination_name}", ""
 
 
+def discard_photo_contest_pending_upload(user_id: int, token: str) -> None:
+    clean_token = str(token or "").strip()
+    if not re.fullmatch(r"[a-f0-9]{32}\.(?:jpg|jpeg|png|webp|gif|bmp|tif|tiff)", clean_token):
+        return
+    try:
+        (photo_contest_pending_upload_dir() / f"{int(user_id)}-{clean_token}").unlink(missing_ok=True)
+    except OSError:
+        return
+
+
 def parse_photo_contest_payload_from_form(
     form: Any,
     *,
@@ -40206,14 +40216,28 @@ async def photo_contest_submit_work(contest_id: int, request: Request, db: Sessi
     files = [
         item
         for item in form.getlist("photos")
-        if hasattr(item, "filename") and hasattr(item, "read")
+        if hasattr(item, "filename")
+        and hasattr(item, "read")
+        and str(getattr(item, "filename", "") or "").strip()
     ]
     saved_paths: list[str] = []
     pending_tokens = [str(value or "").strip() for value in form.getlist("uploaded_photo_token") if str(value or "").strip()]
-    if len(files) + len(pending_tokens) > max(1, int(contest.max_photos_per_participant or 1)):
+    requested_photo_action = str(form.get("photo_action", "")).strip().lower()
+    if not entry:
+        replace_photos = True
+    elif requested_photo_action == "keep":
+        replace_photos = False
+    elif requested_photo_action == "replace":
+        replace_photos = True
+    else:
+        replace_photos = bool(files or pending_tokens)
+    if not replace_photos:
+        for token in pending_tokens:
+            discard_photo_contest_pending_upload(int(user.id), token)
+    if replace_photos and len(files) + len(pending_tokens) > max(1, int(contest.max_photos_per_participant or 1)):
         add_flash(request, f"Можно загрузить не более {max(1, int(contest.max_photos_per_participant or 1))} фото.", "error")
         return redirect(f"/photocosplay/{contest_id}")
-    if pending_tokens:
+    if replace_photos and pending_tokens:
         for token in pending_tokens:
             saved_path, save_error = consume_photo_contest_pending_upload(int(user.id), token)
             if save_error:
@@ -40222,7 +40246,7 @@ async def photo_contest_submit_work(contest_id: int, request: Request, db: Sessi
                 add_flash(request, save_error, "error")
                 return redirect(f"/photocosplay/{contest_id}")
             saved_paths.append(saved_path)
-    if files:
+    if replace_photos and files:
         direct_saved_paths, save_error = await save_photo_contest_images(
             files,
             max(1, int(contest.max_photos_per_participant or 1)),
@@ -40233,8 +40257,9 @@ async def photo_contest_submit_work(contest_id: int, request: Request, db: Sessi
             add_flash(request, save_error, "error")
             return redirect(f"/photocosplay/{contest_id}")
         saved_paths.extend(direct_saved_paths)
-    elif not entry and not saved_paths:
-        add_flash(request, "Загрузите хотя бы одну фотографию.", "error")
+    elif replace_photos and not saved_paths:
+        error_text = "Выберите хотя бы одну новую фотографию для замены." if entry else "Загрузите хотя бы одну фотографию."
+        add_flash(request, error_text, "error")
         return redirect(f"/photocosplay/{contest_id}")
 
     if not entry:
@@ -40259,7 +40284,7 @@ async def photo_contest_submit_work(contest_id: int, request: Request, db: Sessi
         )
         db.add(entry)
         db.flush()
-    elif saved_paths:
+    elif replace_photos:
         for old_photo in list(entry.photos):
             remove_media_file_by_path(str(old_photo.file_path or ""))
             db.delete(old_photo)
@@ -40282,11 +40307,12 @@ async def photo_contest_submit_work(contest_id: int, request: Request, db: Sessi
         )
 
     db.flush()
-    saved_photos = [
-        photo
-        for photo in entry.photos
-        if int(photo.contest_id) == int(contest.id)
-    ]
+    saved_photos = db.execute(
+        select(PhotoContestEntryPhoto).where(
+            PhotoContestEntryPhoto.contest_id == int(contest.id),
+            PhotoContestEntryPhoto.entry_id == int(entry.id),
+        )
+    ).scalars().all()
     db.commit()
     for photo in saved_photos:
         create_photo_contest_preview(photo)

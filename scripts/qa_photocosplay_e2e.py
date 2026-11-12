@@ -324,6 +324,36 @@ def run_scenario(db_path: Path) -> None:
             ).all()
             assert_ok(len(participant_entries) == 2, "Per-participant entry limit was not enforced")
             second_entry_id = next(int(item.id) for item in participant_entries if int(item.id) != voted_entry_id)
+            original_second_photo = (
+                db.query(PhotoContestEntryPhoto)
+                .filter(PhotoContestEntryPhoto.entry_id == second_entry_id)
+                .one()
+            )
+            original_second_photo_path = str(original_second_photo.file_path)
+        post_form(
+            client,
+            f"/photocosplay/{contest_id}/submit",
+            data={
+                "entry_id": str(second_entry_id),
+                "photo_action": "replace",
+                "nomination_title": "Групповой фотокосплей",
+                "fandom": "Second allowed entry",
+                "entry_person": ["contest_participant"],
+                "entry_role": ["cosplayer"],
+                "entry_character": ["A2"],
+                "agree_rules": "1",
+            },
+            files=[("photos", ("replacement.jpg", make_jpeg_bytes((25, 170, 115)), "image/jpeg"))],
+        )
+        with SessionLocal() as db:
+            replacement_photos = db.query(PhotoContestEntryPhoto).filter(
+                PhotoContestEntryPhoto.entry_id == second_entry_id
+            ).all()
+            assert_ok(len(replacement_photos) == 1, "Photo replacement did not preserve the entry photo limit")
+            assert_ok(
+                str(replacement_photos[0].file_path) != original_second_photo_path,
+                "Selected replacement photo was not saved",
+            )
         logout()
 
         # The creator can premoderate submissions before judging starts, while a
@@ -339,6 +369,7 @@ def run_scenario(db_path: Path) -> None:
             f"/photocosplay/{contest_id}/submit",
             data={
                 "entry_id": str(entry.id),
+                "photo_action": "keep",
                 "nomination_title": "Одиночный фотокосплей",
                 "fandom": "NieR:Automata",
                 "entry_person": ["contest_participant", "friend_photo"],
@@ -346,12 +377,16 @@ def run_scenario(db_path: Path) -> None:
                 "entry_character": ["2B"],
                 "agree_rules": "1",
             },
+            files=[("photos", ("", b"", "application/octet-stream"))],
         )
         with SessionLocal() as db:
             edited_entry = db.get(PhotoContestEntry, entry.id)
             assert_ok(edited_entry is not None and edited_entry.fandom == "NieR:Automata", "Creator edit failed")
             remaining_photos = db.query(PhotoContestEntryPhoto).filter(PhotoContestEntryPhoto.entry_id == entry.id).all()
             assert_ok(len(remaining_photos) == 2, "Metadata edit unexpectedly replaced photos")
+        response = client.get(f"/photocosplay/{contest_id}?edit_entry_id={entry.id}")
+        assert_ok('name="photo_action" value="keep" checked' in response.text, "Keep-current-photos option is missing")
+        assert_ok('name="photo_action" value="replace"' in response.text, "Replace-photos option is missing")
         logout()
 
         login("contest_viewer")

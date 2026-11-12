@@ -69,6 +69,15 @@
   .photo-upload-status[data-kind="progress"] {
     color: #5e5bff;
   }
+  .photo-edit-choice {
+    padding: 0.8rem;
+    border: 1px solid rgba(108, 99, 255, 0.18);
+    border-radius: 18px;
+    background: rgba(234, 242, 255, 0.42);
+  }
+  .photo-edit-choice .photo-work-grid {
+    grid-template-columns: repeat(auto-fill, minmax(110px, 150px));
+  }
   .photo-upload-progress {
     display: grid;
     gap: 0.4rem;
@@ -227,13 +236,37 @@
 
     <div>
       <strong>Фотографии *</strong>
-      <div id="contest-photo-inputs" class="grid one-col top-offset">
-        <label class="contest-photo-input-row">
-          Файл 1
-          <input type="file" name="photos" class="contest-photo-file" accept="image/jpeg,image/png,image/webp,image/gif,image/bmp,image/tiff" {% if not form_entry %}required{% endif %} />
-        </label>
+      {% if form_entry %}
+        <div class="photo-edit-choice top-offset">
+          <strong>Текущие фотографии</strong>
+          <div class="photo-work-grid top-offset">
+            {% for photo in form_entry.photos %}
+              <div class="photo-work-item">
+                <img src="{{ photo.file_path }}" alt="Текущая фотография заявки" class="photo-work-thumb" loading="lazy" />
+              </div>
+            {% endfor %}
+          </div>
+          <div class="grid two-col top-offset" id="contest-photo-action">
+            <label class="inline-check">
+              <input type="radio" name="photo_action" value="keep" checked />
+              Оставить текущие
+            </label>
+            <label class="inline-check">
+              <input type="radio" name="photo_action" value="replace" />
+              Заменить новыми
+            </label>
+          </div>
+        </div>
+      {% endif %}
+      <div id="contest-photo-replacement" {% if form_entry %}hidden{% endif %}>
+        <div id="contest-photo-inputs" class="grid one-col top-offset">
+          <label class="contest-photo-input-row">
+            Файл 1
+            <input type="file" name="photos" class="contest-photo-file" accept="image/jpeg,image/png,image/webp,image/gif,image/bmp,image/tiff" {% if not form_entry %}required{% endif %} />
+          </label>
+        </div>
+        <button type="button" class="btn top-offset" id="add-contest-photo-file">Загрузить ещё файл</button>
       </div>
-      <button type="button" class="btn top-offset" id="add-contest-photo-file">Загрузить ещё файл</button>
     </div>
     <p class="muted photo-upload-status" id="contest-upload-status" role="status" aria-live="polite">Добавляйте фотографии по одной. Поддерживаются JPG, PNG, WEBP, GIF, BMP и TIFF.</p>
     <div class="photo-upload-progress" id="contest-upload-progress" hidden aria-hidden="true">
@@ -670,6 +703,8 @@
 
     const submitForm = document.getElementById("contest-submit-form");
     const photoInputsWrap = document.getElementById("contest-photo-inputs");
+    const photoReplacement = document.getElementById("contest-photo-replacement");
+    const photoActionInputs = Array.from(document.querySelectorAll('input[name="photo_action"]'));
     const addPhotoFileButton = document.getElementById("add-contest-photo-file");
     const submitButton = document.getElementById("contest-submit-button");
     const uploadStatus = document.getElementById("contest-upload-status");
@@ -683,6 +718,24 @@
     const initialSubmitLabel = submitButton ? submitButton.textContent : "Сохранить заявку";
     let activeUploads = 0;
     let filesPreparationFailed = false;
+
+    function replacingPhotos() {
+      return requiresNewPhoto || photoActionInputs.some((input) => input.checked && input.value === "replace");
+    }
+
+    function syncPhotoAction() {
+      if (!photoReplacement || !photoActionInputs.length) return;
+      const replaceSelected = replacingPhotos();
+      photoReplacement.hidden = !replaceSelected;
+      if (!replaceSelected) {
+        setUploadStatus("Текущие фотографии останутся в заявке без изменений.", "");
+      } else {
+        validateSelectedPhotos();
+      }
+    }
+
+    photoActionInputs.forEach((input) => input.addEventListener("change", syncPhotoAction));
+    syncPhotoAction();
 
     function photoInputs() {
       return photoInputsWrap ? Array.from(photoInputsWrap.querySelectorAll(".contest-photo-file")) : [];
@@ -760,6 +813,11 @@
 
     async function preparePhotoInput(photoInput) {
         if (!(photoInput instanceof HTMLInputElement)) return;
+        const replaceInput = photoActionInputs.find((input) => input.value === "replace");
+        if (replaceInput && photoInput.files && photoInput.files.length) {
+          replaceInput.checked = true;
+          syncPhotoAction();
+        }
         filesPreparationFailed = false;
         if (!validateSelectedPhotos() || !photoInput.files || !photoInput.files.length) {
           return;
@@ -857,7 +915,7 @@
           );
           return;
         }
-        if (requiresNewPhoto && uploadedTokens().length === 0) {
+        if (replacingPhotos() && uploadedTokens().length === 0) {
           event.preventDefault();
           setUploadStatus("Сначала выберите фотографию и дождитесь окончания загрузки.", "error");
           setUploadProgress(0, "Файл не загружен", "progress");
