@@ -3,7 +3,7 @@
 <section class="section-head public-vote-head">
   <div>
     <h1>{{ contest.title if contest else "Фотоконкурс не найден" }}</h1>
-    {% if contest %}<p class="meta">Открытое судейство · выберите понравившиеся фотографии</p>{% endif %}
+    {% if contest %}<p class="meta">Открытое судейство · выберите понравившиеся заявки</p>{% endif %}
   </div>
   <a href="/" class="btn">На главную Cosplay Planner</a>
 </section>
@@ -50,6 +50,7 @@
                     {% endfor %}
                   </span>
                   <span class="public-vote-copy">
+                    <span class="chip">{{ "Групповая" if brief.entry_type == "group" else "Соло" }}</span>
                     {% if brief.characters %}<strong>{{ brief.characters|join(', ') }}</strong>{% endif %}
                     {% if brief.fandom %}<span class="meta">{{ brief.fandom }}</span>{% endif %}
                     {% if brief.cosplayers %}<span class="meta">Косплеер: {{ brief.cosplayers|join(', ') }}</span>{% endif %}

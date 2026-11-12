@@ -93,6 +93,7 @@ def run_scenario(db_path: Path) -> None:
         photo_contest_entry_vote_count_map,
         photo_contest_preview_path,
         create_photo_contest_preview,
+        deduplicate_photo_contest_ballots,
     )
 
     today = date.today()
@@ -295,8 +296,8 @@ def run_scenario(db_path: Path) -> None:
             data={
                 "nomination_title": "Групповой фотокосплей",
                 "fandom": "Second allowed entry",
-                "entry_person": ["contest_participant"],
-                "entry_role": ["cosplayer"],
+                "entry_person": ["contest_participant", "group_friend"],
+                "entry_role": ["cosplayer", "cosplayer"],
                 "entry_character": ["A2"],
                 "agree_rules": "1",
             },
@@ -453,6 +454,8 @@ def run_scenario(db_path: Path) -> None:
             response.text.count(f'name="entry_vote" value="{voted_entry_id}"') == 1,
             "Application with two photos rendered multiple choices",
         )
+        assert_ok(response.text.count(">Соло<") == 1, "Solo application label is missing")
+        assert_ok(response.text.count(">Групповая<") == 1, "Group application label is missing")
         assert_ok(f"/photocosplay/{contest_id}/preview/{voted_photo_id}" in response.text, "Preview URL is missing")
         assert_ok("/media/photo-contest-" not in response.text, "Ballot leaks full-size photo URLs")
         with SessionLocal() as db:
@@ -495,6 +498,44 @@ def run_scenario(db_path: Path) -> None:
             vote_counts = photo_contest_entry_vote_count_map(db, contest_id)
             assert_ok(vote_counts.get(voted_entry_id) == 1, "Anonymous ballot is missing from application totals")
             assert_ok(vote_counts.get(second_entry_id) == 1, "Second application by same user was not counted separately")
+
+            duplicate_started_at = datetime(2026, 1, 1, 12, 0, 0)
+            db.add_all(
+                [
+                    PhotoContestAnonymousBallot(
+                        contest_id=contest_id,
+                        voter_hash="qa-vpn-duplicate-1",
+                        entry_ids_json=[voted_entry_id],
+                        photo_ids_json=[],
+                        created_at=duplicate_started_at,
+                    ),
+                    PhotoContestAnonymousBallot(
+                        contest_id=contest_id,
+                        voter_hash="qa-vpn-duplicate-2",
+                        entry_ids_json=[voted_entry_id],
+                        photo_ids_json=[],
+                        created_at=duplicate_started_at + timedelta(seconds=30),
+                    ),
+                    PhotoContestAnonymousBallot(
+                        contest_id=contest_id,
+                        voter_hash="qa-later-same-choice",
+                        entry_ids_json=[voted_entry_id],
+                        photo_ids_json=[],
+                        created_at=duplicate_started_at + timedelta(minutes=5),
+                    ),
+                ]
+            )
+            db.commit()
+            assert_ok(deduplicate_photo_contest_ballots(db) == 1, "VPN duplicate ballot was not removed")
+            remaining_test_ballots = db.query(PhotoContestAnonymousBallot).filter(
+                PhotoContestAnonymousBallot.voter_hash.in_(
+                    ["qa-vpn-duplicate-1", "qa-vpn-duplicate-2", "qa-later-same-choice"]
+                )
+            ).all()
+            assert_ok(len(remaining_test_ballots) == 2, "Ballot outside duplicate time window was removed")
+            for test_ballot in remaining_test_ballots:
+                db.delete(test_ballot)
+            db.commit()
 
         # 7) Account voting is disabled for open judging to prevent a second ballot.
         login("contest_viewer")

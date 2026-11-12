@@ -1147,6 +1147,7 @@ PHOTO_CONTEST_VISIBILITY_OPTIONS = {
 PHOTO_CONTEST_STATUS_OPEN = "open"
 PHOTO_CONTEST_STATUS_JUDGING = "judging"
 PHOTO_CONTEST_STATUS_FINISHED = "finished"
+PHOTO_CONTEST_DUPLICATE_BALLOT_WINDOW_SECONDS = 120
 PHOTO_CONTEST_ROLE_COSPLAYER = "cosplayer"
 PHOTO_CONTEST_ROLE_PHOTOGRAPHER = "photographer"
 PHOTO_CONTEST_ROLE_MUA = "mua"
@@ -2081,6 +2082,7 @@ def apply_schema_migrations() -> None:
 def startup() -> None:
     Base.metadata.create_all(bind=engine)
     apply_schema_migrations()
+    remove_duplicate_photo_contest_ballots()
     purge_legacy_content_threads_credentials()
     start_telegram_worker()
     start_content_telegram_worker()
@@ -39257,6 +39259,74 @@ def photo_contest_entry_vote_count_map(db: Session, contest_id: int) -> dict[int
     return counts
 
 
+def photo_contest_ballot_entry_ids(
+    ballot: PhotoContestAnonymousBallot,
+    entry_id_by_photo_id: dict[int, int],
+) -> tuple[int, ...]:
+    entry_ids = {
+        int(entry_id)
+        for raw_entry_id in as_list(ballot.entry_ids_json)
+        if (entry_id := parse_positive_int(str(raw_entry_id or "").strip()))
+    }
+    for raw_photo_id in as_list(ballot.photo_ids_json):
+        photo_id = parse_positive_int(str(raw_photo_id or "").strip())
+        entry_id = entry_id_by_photo_id.get(int(photo_id or 0))
+        if entry_id:
+            entry_ids.add(entry_id)
+    return tuple(sorted(entry_ids))
+
+
+def deduplicate_photo_contest_ballots(
+    db: Session,
+    *,
+    max_gap_seconds: int = PHOTO_CONTEST_DUPLICATE_BALLOT_WINDOW_SECONDS,
+) -> int:
+    photo_rows = db.execute(
+        select(PhotoContestEntryPhoto.id, PhotoContestEntryPhoto.entry_id)
+    ).all()
+    entry_id_by_photo_id = {int(photo_id): int(entry_id) for photo_id, entry_id in photo_rows}
+    ballots = db.execute(
+        select(PhotoContestAnonymousBallot).order_by(
+            PhotoContestAnonymousBallot.contest_id.asc(),
+            PhotoContestAnonymousBallot.created_at.asc(),
+            PhotoContestAnonymousBallot.id.asc(),
+        )
+    ).scalars().all()
+    last_submitted_at: dict[tuple[int, tuple[int, ...]], datetime] = {}
+    duplicate_count = 0
+    for ballot in ballots:
+        entry_ids = photo_contest_ballot_entry_ids(ballot, entry_id_by_photo_id)
+        if not entry_ids or not ballot.created_at:
+            continue
+        signature = (int(ballot.contest_id), entry_ids)
+        submitted_at = ballot.created_at
+        previous_at = last_submitted_at.get(signature)
+        if previous_at is not None:
+            gap_seconds = (submitted_at - previous_at).total_seconds()
+            if 0 <= gap_seconds <= max(0, int(max_gap_seconds)):
+                db.delete(ballot)
+                duplicate_count += 1
+                last_submitted_at[signature] = submitted_at
+                continue
+        last_submitted_at[signature] = submitted_at
+    if duplicate_count:
+        db.commit()
+    return duplicate_count
+
+
+def remove_duplicate_photo_contest_ballots() -> None:
+    db = SessionLocal()
+    try:
+        duplicate_count = deduplicate_photo_contest_ballots(db)
+        if duplicate_count:
+            print(f"Removed {duplicate_count} duplicate photo contest ballots.")
+    except Exception as exc:
+        db.rollback()
+        print(f"Photo contest ballot cleanup failed: {exc}", file=sys.stderr)
+    finally:
+        db.close()
+
+
 def photo_contest_form_values(item: PhotoContest | PhotoContestRequest | None = None) -> dict[str, Any]:
     nomination_rows = normalize_photo_contest_nomination_rows(getattr(item, "nominations_json", [])) if item else []
     if not nomination_rows:
@@ -39324,8 +39394,10 @@ def photo_contest_entry_brief(
     for role_key, people in role_values.items():
         role_values[role_key] = merge_unique(people)
 
+    cosplayers = role_values.get(PHOTO_CONTEST_ROLE_COSPLAYER, [])
     return {
-        "cosplayers": role_values.get(PHOTO_CONTEST_ROLE_COSPLAYER, []),
+        "cosplayers": cosplayers,
+        "entry_type": "group" if len(cosplayers) > 1 else "solo",
         "photographers": role_values.get(PHOTO_CONTEST_ROLE_PHOTOGRAPHER, []),
         "other_roles": [
             {
