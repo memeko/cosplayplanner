@@ -1606,8 +1606,20 @@ html[data-theme="dark"] .photoset-publication-row:has(input[type="checkbox"]:che
 .checklist li {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
   margin-bottom: 6px;
+}
+
+.checklist-edit-form {
+  flex: 1 1 420px;
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) auto auto;
+  align-items: center;
+}
+
+@media (max-width: 680px) {
+  .checklist-edit-form { grid-template-columns: 1fr; }
 }
 
 .done {

@@ -250,11 +250,14 @@
   {% endif %}
 
   {% if costume_parts %}
-    <h3>Дополнительные ссылки по костюму</h3>
+    <h3>Изделия костюма</h3>
     <ul class="notes-list">
       {% for item in costume_parts if item is mapping %}
         {% set unknown_flag = item.get('unknown') in [True, 1, '1', 'true', 'True', '__YES__'] %}
         <li>
+          <strong>{{ item.get("name") or "Без названия" }}</strong>
+          <span class="chip">{{ "Готовое изделие" if item.get("kind", "ready") == "ready" else "Изготавливаемое" }}</span>
+          <span class="chip">{{ {"todo": "Не готово", "in_progress": "В процессе изготовления", "done": "Готово"}.get(item.get("status", "todo"), "Не готово") }}</span>
           {% if item.get("url") %}<a href="{{ item.get('url') }}" target="_blank" rel="noreferrer">{{ item.get("url") }}</a>{% endif %}
           {% if unknown_flag %}
             <span class="chip">Цена неизвестна</span>

@@ -378,7 +378,13 @@
           <form method="post" action="/in-progress/{{ row.id }}/checklist/toggle/{{ loop.index0 }}" class="inline-form">
             <button type="submit" class="btn btn-small">{{ "☑" if item.done else "☐" }}</button>
           </form>
-          <span class="{% if item.done %}done{% endif %}">{{ item.text }}</span>
+          <form method="post" action="/in-progress/{{ row.id }}/checklist/edit/{{ loop.index0 }}" class="actions-inline checklist-edit-form">
+            <input type="text" name="item_text" value="{{ item.text }}" aria-label="Пункт чеклиста" required />
+            <input type="date" name="deadline" value="{{ item.deadline or '' }}" aria-label="Дата в календаре" title="Дата в «Моём календаре»" />
+            <button type="submit" class="btn btn-small">Сохранить</button>
+          </form>
+          <form method="post" action="/in-progress/{{ row.id }}/checklist/move/{{ loop.index0 }}/up" class="inline-form"><button type="submit" class="btn btn-small" title="Переместить выше" {% if loop.first %}disabled{% endif %}>↑</button></form>
+          <form method="post" action="/in-progress/{{ row.id }}/checklist/move/{{ loop.index0 }}/down" class="inline-form"><button type="submit" class="btn btn-small" title="Переместить ниже" {% if loop.last %}disabled{% endif %}>↓</button></form>
           <form method="post" action="/in-progress/{{ row.id }}/checklist/delete/{{ loop.index0 }}" class="inline-form">
             <button type="submit" class="btn btn-small btn-danger">✕</button>
           </form>
@@ -389,6 +395,7 @@
 
     <form method="post" action="/in-progress/{{ row.id }}/checklist/add" class="actions-inline">
       <input type="text" name="item_text" placeholder="Новый пункт чеклиста" required />
+      <input type="date" name="deadline" aria-label="Дата в календаре" title="Дата в «Моём календаре»" />
       <button type="submit" class="btn">Добавить</button>
     </form>
 

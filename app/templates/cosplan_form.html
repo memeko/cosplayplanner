@@ -431,11 +431,15 @@
       </div>
     </div>
 
-    <h3>Дополнительные ссылки по костюму</h3>
+    <h3>Изделия костюма</h3>
+    <p class="muted">Добавьте готовые покупки — перчатки, галстуки, ремни — и изделия, которые ещё нужно изготовить.</p>
     <div id="costume_parts_rows">
       {% for item in form.costume_parts_json %}
       <div class="parts-row">
         <input type="hidden" name="costume_part_row_id" value="{{ item.row_id }}" />
+        <label>Тип изделия<select name="costume_part_kind"><option value="ready" {% if item.kind == 'ready' %}selected{% endif %}>Готовое изделие</option><option value="making" {% if item.kind == 'making' %}selected{% endif %}>Изготавливаемое</option></select></label>
+        <label>Наименование<input type="text" name="costume_part_name" value="{{ item.name }}" placeholder="Например, перчатки" /></label>
+        <label>Статус<select name="costume_part_status"><option value="todo" {% if item.status == 'todo' %}selected{% endif %}>Не готово</option><option value="in_progress" {% if item.status == 'in_progress' %}selected{% endif %}>В процессе изготовления</option><option value="done" {% if item.status == 'done' %}selected{% endif %}>Готово</option></select></label>
         <label>
           Ссылка
           <input type="url" name="costume_part_link" value="{{ item.url }}" />
@@ -456,7 +460,7 @@
       </div>
       {% endfor %}
     </div>
-    <button type="button" class="btn" id="add_costume_part_btn">Добавить ссылку</button>
+    <button type="button" class="btn" id="add_costume_part_btn">Добавить изделие</button>
 
     <h3>Дополнительно:</h3>
     <label>
@@ -1772,6 +1776,7 @@
     row.className = "parts-row";
     row.innerHTML = `
       <input type="hidden" name="${prefix}_part_row_id" value="${rowId}" />
+      ${prefix === "costume" ? `<label>Тип изделия<select name="costume_part_kind"><option value="ready">Готовое изделие</option><option value="making">Изготавливаемое</option></select></label><label>Наименование<input type="text" name="costume_part_name" placeholder="Например, ремень" /></label><label>Статус<select name="costume_part_status"><option value="todo">Не готово</option><option value="in_progress">В процессе изготовления</option><option value="done">Готово</option></select></label>` : ""}
       <label>
         Ссылка
         <input type="url" name="${prefix}_part_link" />

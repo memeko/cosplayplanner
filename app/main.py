@@ -11232,9 +11232,12 @@ def parse_parts_from_form(form: Any, prefix: str, default_currency: str | None) 
     links = [str(value).strip() for value in form.getlist(f"{prefix}_part_link")]
     prices = [str(value).strip() for value in form.getlist(f"{prefix}_part_price")]
     comments = [str(value).strip() for value in form.getlist(f"{prefix}_part_comment")]
+    names = [str(value).strip() for value in form.getlist(f"{prefix}_part_name")]
+    kinds = [str(value).strip() for value in form.getlist(f"{prefix}_part_kind")]
+    statuses = [str(value).strip() for value in form.getlist(f"{prefix}_part_status")]
     unknown_ids = {str(value).strip() for value in form.getlist(f"{prefix}_part_unknown") if str(value).strip()}
 
-    size = max(len(row_ids), len(links), len(prices), len(comments))
+    size = max(len(row_ids), len(links), len(prices), len(comments), len(names), len(kinds), len(statuses))
     if size == 0:
         return []
 
@@ -11243,14 +11246,20 @@ def parse_parts_from_form(form: Any, prefix: str, default_currency: str | None) 
         row_id = row_ids[index] if index < len(row_ids) and row_ids[index] else str(index)
         link = links[index] if index < len(links) else ""
         comment = comments[index] if index < len(comments) else ""
+        name = names[index] if index < len(names) else ""
+        kind = kinds[index] if index < len(kinds) and kinds[index] in {"ready", "making"} else "ready"
+        status = statuses[index] if index < len(statuses) and statuses[index] in {"todo", "in_progress", "done"} else "todo"
         raw_price = prices[index] if index < len(prices) else ""
         unknown = row_id in unknown_ids
         parsed_price = None if unknown else parse_float(raw_price)
-        if not (link or comment or raw_price or unknown):
+        if not (name or link or comment or raw_price or unknown):
             continue
         rows.append(
             {
                 "url": link,
+                "name": name,
+                "kind": kind,
+                "status": status,
                 "price": parsed_price,
                 "comment": comment,
                 "currency": (default_currency or "").strip().upper(),
@@ -11272,6 +11281,9 @@ def format_parts_for_form(parts: list[Any]) -> list[dict[str, str]]:
                 "url": str(raw_item.get("url", "") or ""),
                 "price": "" if price is None else f"{price:g}",
                 "comment": str(raw_item.get("comment", "") or ""),
+                "name": str(raw_item.get("name", "") or ""),
+                "kind": str(raw_item.get("kind") or "ready"),
+                "status": str(raw_item.get("status") or "todo"),
                 "unknown": "__YES__" if to_bool(raw_item.get("unknown")) else "__NO__",
             }
         )
@@ -25626,6 +25638,7 @@ def in_progress_list(request: Request, db: Session = Depends(get_db)):
             if not text_value:
                 continue
             status = normalize_checklist_status(raw_item)
+            item_deadline = parse_date(str(raw_item.get("deadline") or ""))
             board_item = {
                 "progress_id": row.id,
                 "item_index": item_index,
@@ -25634,7 +25647,7 @@ def in_progress_list(request: Request, db: Session = Depends(get_db)):
                 "tags": normalize_checklist_tags(raw_item.get("tags")),
                 "card_id": card.id,
                 "card_name": card.character_name or "Без названия",
-                "deadline": card.project_deadline,
+                "deadline": item_deadline or card.project_deadline,
                 "is_frozen": bool(row.is_frozen),
                 "card_url": f"/cosplan/{card.id}",
                 "status_url": f"/in-progress/{row.id}/checklist/status/{item_index}",
@@ -25726,11 +25739,51 @@ async def in_progress_checklist_add(progress_id: int, request: Request, db: Sess
     item_text = str(form.get("item_text", "")).strip()
     if item_text:
         items = list(progress.checklist_json or [])
-        items.append({"text": item_text, "done": False, "status": CHECKLIST_STATUS_TODO})
+        items.append({"text": item_text, "done": False, "status": CHECKLIST_STATUS_TODO, "deadline": str(form.get("deadline") or "").strip()})
         progress.checklist_json = items
         db.commit()
         add_flash(request, "Пункт добавлен.", "success")
 
+    return redirect("/in-progress")
+
+
+@app.post("/in-progress/{progress_id}/checklist/edit/{item_index}")
+async def in_progress_checklist_edit(progress_id: int, item_index: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    progress = db.execute(select(InProgressCard).where(InProgressCard.id == progress_id, InProgressCard.user_id == user.id)).scalar_one_or_none()
+    if not progress:
+        return redirect("/in-progress")
+    form = await request.form()
+    items = list(progress.checklist_json or [])
+    if 0 <= item_index < len(items) and isinstance(items[item_index], dict):
+        text_value = str(form.get("item_text") or "").strip()
+        if text_value:
+            item = dict(items[item_index])
+            item["text"] = text_value
+            item["deadline"] = str(form.get("deadline") or "").strip()
+            items[item_index] = item
+            progress.checklist_json = items
+            db.commit()
+            add_flash(request, "Пункт чеклиста обновлён.", "success")
+    return redirect("/in-progress")
+
+
+@app.post("/in-progress/{progress_id}/checklist/move/{item_index}/{direction}")
+def in_progress_checklist_move(progress_id: int, item_index: int, direction: str, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    progress = db.execute(select(InProgressCard).where(InProgressCard.id == progress_id, InProgressCard.user_id == user.id)).scalar_one_or_none()
+    if not progress:
+        return redirect("/in-progress")
+    items = list(progress.checklist_json or [])
+    target = item_index - 1 if direction == "up" else item_index + 1
+    if direction in {"up", "down"} and 0 <= item_index < len(items) and 0 <= target < len(items):
+        items[item_index], items[target] = items[target], items[item_index]
+        progress.checklist_json = items
+        db.commit()
     return redirect("/in-progress")
 
 
@@ -27366,6 +27419,11 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
         )
         .order_by(PersonalCalendarEvent.event_date, PersonalCalendarEvent.event_time, PersonalCalendarEvent.id)
     ).scalars().all()
+    checklist_progress = db.execute(
+        select(InProgressCard).join(CosplanCard, InProgressCard.cosplan_card_id == CosplanCard.id).where(
+            InProgressCard.user_id == user.id, CosplanCard.is_completed.is_(False)
+        )
+    ).scalars().all()
     master_cards = db.execute(
         select(InProgressMasterCard)
         .where(
@@ -27476,6 +27534,21 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
                 "is_note": event_is_note,
             }
         )
+    for progress in checklist_progress:
+        card = progress.cosplan_card
+        for item in as_list(progress.checklist_json):
+            if not isinstance(item, dict):
+                continue
+            item_date = parse_date(str(item.get("deadline") or ""))
+            item_text = str(item.get("text") or "").strip()
+            if not item_date or item_date < today or not item_text:
+                continue
+            entries.append({
+                "date": item_date, "time": "", "kind": "Чеклист проекта", "type_key": "checklist",
+                "title": item_text, "city": "—", "coproplayers": "",
+                "details": f"Костюм: {card.character_name if card else 'Без названия'}",
+                "personal_event_id": None,
+            })
     for card in master_cards:
         card_title = card.name or "Без названия"
         card_details = f"Тип: {master_work_type_label(card.work_type)}"
