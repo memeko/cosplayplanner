@@ -866,7 +866,7 @@ VK_BOT_SECRET = str(os.getenv("VK_BOT_SECRET", "") or "").strip()
 VK_BOT_COMMUNITY_DOMAIN = (os.getenv("VK_BOT_COMMUNITY_DOMAIN", "cosplayplanner") or "cosplayplanner").strip()
 VK_BOT_LOOP_SLEEP_SECONDS = max(1, min(30, int(os.getenv("VK_BOT_LOOP_SLEEP", "2") or "2")))
 VK_BOT_DISPATCH_LIMIT = max(10, min(200, int(os.getenv("VK_BOT_DISPATCH_LIMIT", "80") or "80")))
-APP_BASE_URL = (os.getenv("APP_BASE_URL", "http://127.0.0.1:8000") or "http://127.0.0.1:8000").strip().rstrip("/")
+APP_BASE_URL = (os.getenv("APP_BASE_URL") or SITE_URL).strip().rstrip("/")
 SMTP_HOST = os.getenv("SMTP_HOST", "").strip()
 SMTP_PORT = int(os.getenv("SMTP_PORT", "587") or "587")
 SMTP_USER = os.getenv("SMTP_USER", "").strip()
@@ -15836,7 +15836,58 @@ def smtp_is_configured() -> bool:
     return bool(SMTP_HOST and SMTP_FROM_EMAIL)
 
 
-def send_plain_email(*, to_email: str, subject: str, body: str) -> bool:
+def build_transactional_email_html(
+    *,
+    title: str,
+    message: str,
+    action_html: str,
+    notice: str,
+) -> str:
+    safe_title = html.escape(title)
+    safe_message = html.escape(message)
+    safe_notice = html.escape(notice)
+    return f"""\
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <meta name="supported-color-schemes" content="dark">
+    <title>{safe_title}</title>
+  </head>
+  <body style="margin:0; padding:0; background:#0b0a12; color:#f6f1ff; font-family:Arial,Helvetica,sans-serif; color-scheme:dark;">
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" bgcolor="#0b0a12" style="width:100%; background:#0b0a12;">
+      <tr>
+        <td align="center" style="padding:32px 16px;">
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" bgcolor="#171321" style="width:100%; max-width:600px; background:#171321; border:1px solid #352b49; border-radius:20px;">
+            <tr>
+              <td align="center" style="padding:32px 32px 12px; font-size:28px; line-height:1;">✨ ⭐ ✨</td>
+            </tr>
+            <tr>
+              <td align="center" style="padding:0 32px 8px; color:#b69cff; font-size:14px; font-weight:700; letter-spacing:1.4px; text-transform:uppercase;">Cosplay Planner</td>
+            </tr>
+            <tr>
+              <td align="center" style="padding:0 32px 20px; color:#ffffff; font-size:28px; line-height:1.25; font-weight:700;">{safe_title}</td>
+            </tr>
+            <tr>
+              <td style="padding:0 32px 24px; color:#d8d0e6; font-size:16px; line-height:1.65; text-align:center;">{safe_message}</td>
+            </tr>
+            <tr>
+              <td align="center" style="padding:0 32px 28px;">{action_html}</td>
+            </tr>
+            <tr>
+              <td style="padding:20px 32px; background:#100d18; border-top:1px solid #352b49; border-radius:0 0 20px 20px; color:#9f96ae; font-size:13px; line-height:1.55; text-align:center;">{safe_notice}<br><span style="color:#756d82;">✦ Это автоматическое письмо, отвечать на него не нужно. ✦</span></td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>"""
+
+
+def send_email(*, to_email: str, subject: str, body: str, html_body: str | None = None) -> bool:
     if not smtp_is_configured():
         return False
     message = EmailMessage()
@@ -15844,6 +15895,8 @@ def send_plain_email(*, to_email: str, subject: str, body: str) -> bool:
     message["From"] = SMTP_FROM_EMAIL
     message["To"] = to_email
     message.set_content(body)
+    if html_body:
+        message.add_alternative(html_body, subtype="html")
     try:
         if SMTP_USE_SSL:
             with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=20) as server:
@@ -15976,16 +16029,31 @@ def create_or_update_pending_registration(
 
 
 def send_registration_code_email(*, to_email: str, code: str) -> bool:
+    safe_code = html.escape(normalize_registration_code(code))
     body = (
         "Здравствуйте!\n\n"
         "Код подтверждения регистрации в Cosplay Planner:\n\n"
         f"{code}\n\n"
         f"Код действует {REGISTRATION_CODE_MINUTES} минут. Если вы не регистрировались, просто проигнорируйте это письмо.\n"
     )
-    return send_plain_email(
+    html_body = build_transactional_email_html(
+        title="Подтвердите регистрацию",
+        message="Введите этот код в форме регистрации, чтобы подтвердить свой email:",
+        action_html=(
+            '<div style="display:inline-block; padding:16px 28px; background:#241b38; '
+            'border:1px solid #8064c7; border-radius:14px; color:#ffffff; font-family:Courier New,monospace; '
+            f'font-size:32px; line-height:1; font-weight:700; letter-spacing:8px;">{safe_code}</div>'
+        ),
+        notice=(
+            f"Код действует {REGISTRATION_CODE_MINUTES} минут. "
+            "Если вы не регистрировались, просто проигнорируйте это письмо."
+        ),
+    )
+    return send_email(
         to_email=to_email,
         subject="Код подтверждения регистрации Cosplay Planner",
         body=body,
+        html_body=html_body,
     )
 
 
@@ -19319,10 +19387,28 @@ async def forgot_password_submit(request: Request, db: Session = Depends(get_db)
                 f"Ссылка действует {PASSWORD_RESET_TOKEN_MINUTES} минут.\n"
                 "Если вы не запрашивали восстановление, просто проигнорируйте это письмо."
             )
-            sent_ok = send_plain_email(
+            safe_reset_link = html.escape(reset_link, quote=True)
+            email_html = build_transactional_email_html(
+                title="Восстановление пароля",
+                message="Мы получили запрос на восстановление пароля для вашего аккаунта. Нажмите кнопку, чтобы задать новый пароль:",
+                action_html=(
+                    f'<a href="{safe_reset_link}" style="display:inline-block; padding:15px 26px; '
+                    'background:#8b6ee8; border:1px solid #a991f0; border-radius:12px; color:#ffffff; '
+                    'font-size:16px; line-height:1.2; font-weight:700; text-decoration:none;">Задать новый пароль&nbsp; ✨</a>'
+                    '<div style="padding-top:16px; color:#8e849e; font-size:12px; line-height:1.5;">'
+                    f'Если кнопка не работает, откройте ссылку:<br><a href="{safe_reset_link}" '
+                    f'style="color:#b69cff; text-decoration:underline; word-break:break-all;">{safe_reset_link}</a></div>'
+                ),
+                notice=(
+                    f"Ссылка действует {PASSWORD_RESET_TOKEN_MINUTES} минут. "
+                    "Если вы не запрашивали восстановление, просто проигнорируйте это письмо."
+                ),
+            )
+            sent_ok = send_email(
                 to_email=user.email,
                 subject="Восстановление пароля Cosplay Planner",
                 body=email_body,
+                html_body=email_html,
             )
             if sent_ok:
                 db.commit()

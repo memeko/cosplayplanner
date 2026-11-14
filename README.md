@@ -84,7 +84,7 @@ uvicorn app.main:app --reload
 - `TELEGRAM_BOT_ENABLED` (`1`/`0`, по умолчанию `1` при наличии токена)
 - `TELEGRAM_POLL_TIMEOUT` (секунды long-polling, по умолчанию `20`)
 - `TELEGRAM_LOOP_SLEEP` (пауза цикла воркера, по умолчанию `2`)
-- `APP_BASE_URL` (базовый URL приложения для ссылок восстановления пароля)
+- `APP_BASE_URL` (базовый URL приложения для ссылок восстановления пароля; по умолчанию `BASE_SITE_URL`)
 - `PASSWORD_RESET_TOKEN_MINUTES` (TTL ссылки восстановления, по умолчанию `30`)
 - `YANDEX_OAUTH_ENABLED` (`1`/`0`)
 - `YANDEX_CLIENT_ID`
