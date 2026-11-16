@@ -118,6 +118,7 @@ from .models import (
     PhotoContestRequest,
     PhotoContestVote,
     Photoset,
+    PhotosetAccess,
     RehearsalCard,
     RehearsalEntry,
     TitleEntry,
@@ -10975,6 +10976,17 @@ def start_external_import_worker() -> None:
         external_import_worker_thread.start()
 
 
+def photoset_calendar_date(item: Photoset) -> date | None:
+    return item.shooting_date or item.event_date
+
+
+def accessible_photosets_for_user(db: Session, user_id: int) -> list[Photoset]:
+    shared_ids = select(PhotosetAccess.photoset_id).where(PhotosetAccess.user_id == user_id)
+    return db.execute(
+        select(Photoset).where(or_(Photoset.user_id == user_id, Photoset.id.in_(shared_ids)))
+    ).scalars().all()
+
+
 def user_busy_items_on_date(
     db: Session,
     *,
@@ -11006,6 +11018,12 @@ def user_busy_items_on_date(
                 busy.append(f"фестиваль «{festival.name or 'Без названия'}»")
                 break
 
+    photosets = [
+        item
+        for item in accessible_photosets_for_user(db, user_id)
+        if photoset_calendar_date(item) == target_date
+    ]
+    linked_photoset_ids = {item.id for item in photosets}
     cards = db.execute(
         select(CosplanCard).where(
             CosplanCard.user_id == user_id,
@@ -11013,11 +11031,15 @@ def user_busy_items_on_date(
         )
     ).scalars().all()
     for card in cards:
+        if card.linked_photoset_id in linked_photoset_ids:
+            continue
         if exclude_card_id and card.id == exclude_card_id:
             continue
         if exclude_source_card_id and card.is_shared_copy and card.source_card_id == exclude_source_card_id:
             continue
         busy.append(f"фотосет «{card.character_name or 'Без названия'}»")
+    for item in photosets:
+        busy.append(f"фотосет «{item.title or 'Без названия'}»")
 
     rehearsal_entries = db.execute(
         select(RehearsalEntry).where(
@@ -23260,7 +23282,8 @@ def photoset_list(request: Request, q: str = "", status: str = "all", page: int 
         return redirect("/login")
     page = max(1, page)
     per_page = 12
-    query = select(Photoset).where(Photoset.user_id == user.id)
+    shared_photoset_ids = select(PhotosetAccess.photoset_id).where(PhotosetAccess.user_id == user.id)
+    query = select(Photoset).where(or_(Photoset.user_id == user.id, Photoset.id.in_(shared_photoset_ids)))
     if status in PHOTOSET_STATUSES:
         query = query.where(Photoset.status == status)
     if q.strip():
@@ -23301,16 +23324,99 @@ def owned_photoset(db: Session, user: User, photoset_id: int) -> Photoset | None
     return db.execute(select(Photoset).where(Photoset.id == photoset_id, Photoset.user_id == user.id)).scalar_one_or_none()
 
 
+def accessible_photoset(db: Session, user: User, photoset_id: int) -> Photoset | None:
+    item = db.get(Photoset, photoset_id)
+    if not item:
+        return None
+    if int(item.user_id) == int(user.id):
+        return item
+    has_access = db.execute(
+        select(PhotosetAccess.id).where(
+            PhotosetAccess.photoset_id == photoset_id,
+            PhotosetAccess.user_id == user.id,
+        )
+    ).scalar_one_or_none()
+    return item if has_access else None
+
+
 @app.get("/cosplan/photosets/{photoset_id}", response_class=HTMLResponse)
 def photoset_detail(photoset_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    item = accessible_photoset(db, user, photoset_id)
+    if not item:
+        return redirect("/cosplan/photosets")
+    linked_cards = db.execute(select(CosplanCard).where(CosplanCard.user_id == user.id, CosplanCard.linked_photoset_id == item.id)).scalars().all()
+    access_entries = db.execute(
+        select(PhotosetAccess).where(PhotosetAccess.photoset_id == item.id).order_by(PhotosetAccess.id)
+    ).scalars().all()
+    access_users = [entry.user for entry in access_entries if entry.user]
+    _, _, access_alias_options = build_user_alias_lookup(db)
+    return template_response(
+        request,
+        "photoset_detail.html",
+        user=user,
+        active_tab="cosplan",
+        item=item,
+        cost=photoset_costs(item),
+        statuses=PHOTOSET_STATUSES,
+        role_types=PHOTOSET_ROLE_TYPES,
+        linked_cards=linked_cards,
+        is_owner=int(item.user_id) == int(user.id),
+        access_users=access_users,
+        access_alias_options=access_alias_options,
+        **get_cosplan_section_totals(db, user.id),
+    )
+
+
+@app.post("/cosplan/photosets/{photoset_id}/access")
+async def photoset_access_add(photoset_id: int, request: Request, db: Session = Depends(get_db)):
     user = current_user(request, db)
     if not user:
         return redirect("/login")
     item = owned_photoset(db, user, photoset_id)
     if not item:
         return redirect("/cosplan/photosets")
-    linked_cards = db.execute(select(CosplanCard).where(CosplanCard.user_id == user.id, CosplanCard.linked_photoset_id == item.id)).scalars().all()
-    return template_response(request, "photoset_detail.html", user=user, active_tab="cosplan", item=item, cost=photoset_costs(item), statuses=PHOTOSET_STATUSES, role_types=PHOTOSET_ROLE_TYPES, linked_cards=linked_cards, **get_cosplan_section_totals(db, user.id))
+    form = await request.form()
+    target = resolve_user_from_alias_or_id(db, str(form.get("nickname") or ""))
+    if not target:
+        add_flash(request, "Пользователь с таким ником не найден.", "error")
+    elif int(target.id) == int(user.id):
+        add_flash(request, "У владельца уже есть доступ к фотосету.", "info")
+    elif db.execute(
+        select(PhotosetAccess.id).where(
+            PhotosetAccess.photoset_id == item.id,
+            PhotosetAccess.user_id == target.id,
+        )
+    ).scalar_one_or_none():
+        add_flash(request, "Доступ этому пользователю уже предоставлен.", "info")
+    else:
+        db.add(PhotosetAccess(photoset_id=item.id, user_id=target.id, added_by_user_id=user.id))
+        db.commit()
+        add_flash(request, f"Доступ для @{preferred_user_alias(target)} добавлен.", "success")
+    return redirect(f"/cosplan/photosets/{item.id}#photoset-access")
+
+
+@app.post("/cosplan/photosets/{photoset_id}/access/{access_user_id}/remove")
+def photoset_access_remove(photoset_id: int, access_user_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    item = owned_photoset(db, user, photoset_id)
+    if not item:
+        return redirect("/cosplan/photosets")
+    entry = db.execute(
+        select(PhotosetAccess).where(
+            PhotosetAccess.photoset_id == item.id,
+            PhotosetAccess.user_id == access_user_id,
+        )
+    ).scalar_one_or_none()
+    if entry:
+        db.delete(entry)
+        db.commit()
+        add_flash(request, "Доступ отозван.", "info")
+    return redirect(f"/cosplan/photosets/{item.id}#photoset-access")
 
 
 @app.get("/cosplan/photosets/{photoset_id}/edit", response_class=HTMLResponse)
@@ -23353,14 +23459,14 @@ def photoset_delete(photoset_id: int, request: Request, db: Session = Depends(ge
 
 
 def photoset_subpage_context(request: Request, db: Session, user: User, item: Photoset, page: str) -> dict[str, Any]:
-    return {"user": user, "active_tab": "cosplan", "item": item, "photoset_page": page, **get_cosplan_section_totals(db, user.id)}
+    return {"user": user, "active_tab": "cosplan", "item": item, "photoset_page": page, "is_owner": int(item.user_id) == int(user.id), **get_cosplan_section_totals(db, user.id)}
 
 
 @app.get("/cosplan/photosets/{photoset_id}/props", response_class=HTMLResponse)
 def photoset_props(photoset_id: int, request: Request, edit: bool = False, db: Session = Depends(get_db)):
     user = current_user(request, db)
     if not user: return redirect("/login")
-    item = owned_photoset(db, user, photoset_id)
+    item = accessible_photoset(db, user, photoset_id)
     if not item: return redirect("/cosplan/photosets")
     props = []
     for row in as_list(item.props_json):
@@ -23373,7 +23479,7 @@ def photoset_props(photoset_id: int, request: Request, edit: bool = False, db: S
 async def photoset_props_save(photoset_id: int, request: Request, db: Session = Depends(get_db)):
     user = current_user(request, db)
     if not user: return redirect("/login")
-    item = owned_photoset(db, user, photoset_id)
+    item = accessible_photoset(db, user, photoset_id)
     if not item: return redirect("/cosplan/photosets")
     form = await request.form(); names=list(form.getlist("name")); quantities=list(form.getlist("quantity")); prices=list(form.getlist("price")); images=list(form.getlist("image_url"))
     rows=[]
@@ -23390,7 +23496,7 @@ async def photoset_props_save(photoset_id: int, request: Request, db: Session = 
 def photoset_references(photoset_id: int, request: Request, edit: bool = False, db: Session = Depends(get_db)):
     user=current_user(request,db)
     if not user:return redirect("/login")
-    item=owned_photoset(db,user,photoset_id)
+    item=accessible_photoset(db,user,photoset_id)
     if not item:return redirect("/cosplan/photosets")
     refs=item.references_json if isinstance(item.references_json,dict) else {}
     return template_response(request,"photoset_references.html",refs=refs,editing=edit,**photoset_subpage_context(request,db,user,item,"references"))
@@ -23400,7 +23506,7 @@ def photoset_references(photoset_id: int, request: Request, edit: bool = False, 
 async def photoset_references_save(photoset_id:int,request:Request,db:Session=Depends(get_db)):
     user=current_user(request,db)
     if not user:return redirect("/login")
-    item=owned_photoset(db,user,photoset_id)
+    item=accessible_photoset(db,user,photoset_id)
     if not item:return redirect("/cosplan/photosets")
     form=await request.form(); refs={}
     for kind in ("poses","light","location"):
@@ -23412,7 +23518,7 @@ async def photoset_references_save(photoset_id:int,request:Request,db:Session=De
 def photoset_tasks(photoset_id:int,request:Request,db:Session=Depends(get_db)):
     user=current_user(request,db)
     if not user:return redirect("/login")
-    item=owned_photoset(db,user,photoset_id)
+    item=accessible_photoset(db,user,photoset_id)
     if not item:return redirect("/cosplan/photosets")
     tasks = [dict(row, item_index=index) for index, row in enumerate(as_list(item.tasks_json)) if isinstance(row, dict)]
     task_board = {status: [row for row in tasks if normalize_checklist_status(row) == status] for status in CHECKLIST_STATUS_LABELS}
@@ -23423,7 +23529,7 @@ def photoset_tasks(photoset_id:int,request:Request,db:Session=Depends(get_db)):
 async def photoset_tasks_save(photoset_id:int,request:Request,db:Session=Depends(get_db)):
     user=current_user(request,db)
     if not user:return redirect("/login")
-    item=owned_photoset(db,user,photoset_id)
+    item=accessible_photoset(db,user,photoset_id)
     if not item:return redirect("/cosplan/photosets")
     form=await request.form();texts=list(form.getlist("task_text"));statuses=list(form.getlist("task_status"));deadlines=list(form.getlist("task_deadline"));tasks=[]
     for i,text_value in enumerate(texts):
@@ -23438,7 +23544,7 @@ async def photoset_tasks_save(photoset_id:int,request:Request,db:Session=Depends
 async def photoset_task_add(photoset_id: int, request: Request, db: Session = Depends(get_db)):
     user=current_user(request,db)
     if not user:return redirect("/login")
-    item=owned_photoset(db,user,photoset_id)
+    item=accessible_photoset(db,user,photoset_id)
     if not item:return redirect("/cosplan/photosets")
     form=await request.form();text_value=str(form.get("task_text","")).strip()
     if text_value:
@@ -23452,7 +23558,7 @@ async def photoset_task_add(photoset_id: int, request: Request, db: Session = De
 def photoset_task_delete(photoset_id: int, item_index: int, request: Request, db: Session = Depends(get_db)):
     user=current_user(request,db)
     if not user:return redirect("/login")
-    item=owned_photoset(db,user,photoset_id)
+    item=accessible_photoset(db,user,photoset_id)
     if not item:return redirect("/cosplan/photosets")
     tasks=list(item.tasks_json or [])
     if 0<=item_index<len(tasks):tasks.pop(item_index);item.tasks_json=tasks;db.commit();add_flash(request,"Дело удалено.","info")
@@ -23463,7 +23569,7 @@ def photoset_task_delete(photoset_id: int, item_index: int, request: Request, db
 async def photoset_task_status(photoset_id:int,item_index:int,request:Request,db:Session=Depends(get_db)):
     user=current_user(request,db)
     if not user:raise HTTPException(status_code=401)
-    item=owned_photoset(db,user,photoset_id)
+    item=accessible_photoset(db,user,photoset_id)
     if not item:raise HTTPException(status_code=404)
     form=await request.form();status=str(form.get("status","")).strip();tasks=list(item.tasks_json or [])
     if status in CHECKLIST_STATUS_LABELS and 0<=item_index<len(tasks):
@@ -23471,11 +23577,32 @@ async def photoset_task_status(photoset_id:int,item_index:int,request:Request,db
     return redirect(str(form.get("next") or "/in-progress?view=kanban"))
 
 
+@app.post("/cosplan/photosets/{photoset_id}/tasks/tags/{item_index}")
+async def photoset_task_tags(photoset_id: int, item_index: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        raise HTTPException(status_code=401, detail="Требуется авторизация.")
+    item = accessible_photoset(db, user, photoset_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Фотосет не найден.")
+    tasks = list(item.tasks_json or [])
+    if not (0 <= item_index < len(tasks)) or not isinstance(tasks[item_index], dict):
+        raise HTTPException(status_code=404, detail="Дело не найдено.")
+    form = await request.form()
+    tags = normalize_checklist_tags(form.getlist("tags"))
+    task = dict(tasks[item_index])
+    task["tags"] = tags
+    tasks[item_index] = task
+    item.tasks_json = tasks
+    db.commit()
+    return {"ok": True, "tags": tags}
+
+
 @app.get("/cosplan/photosets/{photoset_id}/budget",response_class=HTMLResponse)
 def photoset_budget(photoset_id:int,request:Request,db:Session=Depends(get_db)):
     user=current_user(request,db)
     if not user:return redirect("/login")
-    item=owned_photoset(db,user,photoset_id)
+    item=accessible_photoset(db,user,photoset_id)
     if not item:return redirect("/cosplan/photosets")
     costs=photoset_costs(item);props_total=sum(float(r.get("price") or 0)*max(1,int(r.get("quantity") or 1)) for r in as_list(item.props_json) if isinstance(r,dict));role_total=sum(float(r.get("price") or 0) for r in as_list(item.role_costs_json) if isinstance(r,dict));travel=float(item.travel_to_price or 0)+float(item.travel_from_price or 0);grand=costs["total"]+props_total+role_total+travel
     slices=[("Студия и аренда",costs["total"],"#5e5bff"),("Команда",role_total,"#8f86ff"),("Реквизит",props_total,"#b8c8ff"),("Проезд",travel,"#d7e4ff")]
@@ -23490,7 +23617,7 @@ def photoset_budget(photoset_id:int,request:Request,db:Session=Depends(get_db)):
 async def photoset_budget_save(photoset_id:int,request:Request,db:Session=Depends(get_db)):
     user=current_user(request,db)
     if not user:return redirect("/login")
-    item=owned_photoset(db,user,photoset_id)
+    item=accessible_photoset(db,user,photoset_id)
     if not item:return redirect("/cosplan/photosets")
     form=await request.form();roles=list(form.getlist("cost_role"));prices=list(form.getlist("cost_price"));item.role_costs_json=[{"role":str(v).strip(),"price":parse_float(str(prices[i] if i<len(prices) else "")) or 0} for i,v in enumerate(roles) if str(v).strip()];item.travel_to_price=parse_float(str(form.get("travel_to_price","")));item.travel_from_price=parse_float(str(form.get("travel_from_price","")));db.commit();add_flash(request,"Бюджет обновлён.","success");return redirect(f"/cosplan/photosets/{item.id}/budget")
 
@@ -23500,7 +23627,7 @@ def photoset_corrections(photoset_id: int, request: Request, db: Session = Depen
     user = current_user(request, db)
     if not user:
         return redirect("/login")
-    item = owned_photoset(db, user, photoset_id)
+    item = accessible_photoset(db, user, photoset_id)
     if not item:
         return redirect("/cosplan/photosets")
     rows = as_list(item.corrections_json) or [{"id": "person-0", "nickname": "", "role": "", "general": "", "frames": [{"frame": "", "comment": ""}]}]
@@ -23512,7 +23639,7 @@ async def photoset_corrections_save(photoset_id: int, request: Request, db: Sess
     user = current_user(request, db)
     if not user:
         return redirect("/login")
-    item = owned_photoset(db, user, photoset_id)
+    item = accessible_photoset(db, user, photoset_id)
     if not item:
         return redirect("/cosplan/photosets")
     form = await request.form()
@@ -23543,7 +23670,7 @@ def photoset_publication(photoset_id: int, request: Request, db: Session = Depen
     user = current_user(request, db)
     if not user:
         return redirect("/login")
-    item = owned_photoset(db, user, photoset_id)
+    item = accessible_photoset(db, user, photoset_id)
     if not item:
         return redirect("/cosplan/photosets")
     rows: list[dict[str, Any]] = []
@@ -23579,7 +23706,7 @@ async def photoset_publication_save(photoset_id: int, request: Request, db: Sess
     user = current_user(request, db)
     if not user:
         return redirect("/login")
-    item = owned_photoset(db, user, photoset_id)
+    item = accessible_photoset(db, user, photoset_id)
     if not item:
         return redirect("/cosplan/photosets")
 
@@ -23620,7 +23747,7 @@ def photoset_links(photoset_id: int, request: Request, edit: bool = False, db: S
     user = current_user(request, db)
     if not user:
         return redirect("/login")
-    item = owned_photoset(db, user, photoset_id)
+    item = accessible_photoset(db, user, photoset_id)
     if not item:
         return redirect("/cosplan/photosets")
     saved_rows = as_list(item.links_json)
@@ -23642,7 +23769,7 @@ async def photoset_links_save(photoset_id: int, request: Request, db: Session = 
     user = current_user(request, db)
     if not user:
         return redirect("/login")
-    item = owned_photoset(db, user, photoset_id)
+    item = accessible_photoset(db, user, photoset_id)
     if not item:
         return redirect("/cosplan/photosets")
     form = await request.form(); roles=list(form.getlist("link_role")); nicknames=list(form.getlist("link_nickname")); socials=list(form.getlist("link_social")); rows=[]
@@ -25741,8 +25868,9 @@ def in_progress_list(request: Request, db: Session = Depends(get_db)):
             }
             checklist_board[status].append(board_item)
             checklist_timeline.append(board_item)
+    shared_photoset_ids = select(PhotosetAccess.photoset_id).where(PhotosetAccess.user_id == user.id)
     photoset_task_cards = db.execute(
-        select(Photoset).where(Photoset.user_id == user.id)
+        select(Photoset).where(or_(Photoset.user_id == user.id, Photoset.id.in_(shared_photoset_ids)))
     ).scalars().all()
     for photoset in photoset_task_cards:
         for item_index, raw_item in enumerate(as_list(photoset.tasks_json)):
@@ -25762,7 +25890,7 @@ def in_progress_list(request: Request, db: Session = Depends(get_db)):
                 "is_frozen": False,
                 "card_url": f"/cosplan/photosets/{photoset.id}/tasks",
                 "status_url": f"/cosplan/photosets/{photoset.id}/tasks/status/{item_index}",
-                "tags_url": "",
+                "tags_url": f"/cosplan/photosets/{photoset.id}/tasks/tags/{item_index}",
             }
             checklist_board[status].append(board_item)
             checklist_timeline.append(board_item)
@@ -25853,6 +25981,49 @@ async def in_progress_checklist_edit(progress_id: int, item_index: int, request:
             progress.checklist_json = items
             db.commit()
             add_flash(request, "Пункт чеклиста обновлён.", "success")
+    return redirect("/in-progress")
+
+
+@app.post("/in-progress/{progress_id}/checklist/save")
+async def in_progress_checklist_save(progress_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    progress = db.execute(
+        select(InProgressCard).where(InProgressCard.id == progress_id, InProgressCard.user_id == user.id)
+    ).scalar_one_or_none()
+    if not progress:
+        add_flash(request, "Карточка «В работе» не найдена.", "error")
+        return redirect("/in-progress")
+
+    form = await request.form()
+    indexes = list(form.getlist("item_index"))
+    texts = list(form.getlist("item_text"))
+    deadlines = list(form.getlist("deadline"))
+    items = list(progress.checklist_json or [])
+    updated_count = 0
+
+    for raw_index, raw_text, raw_deadline in zip(indexes, texts, deadlines):
+        try:
+            item_index = int(raw_index)
+        except (TypeError, ValueError):
+            continue
+        if not (0 <= item_index < len(items)) or not isinstance(items[item_index], dict):
+            continue
+        text_value = str(raw_text or "").strip()
+        deadline_value = str(raw_deadline or "").strip()
+        if not text_value or (deadline_value and not parse_date(deadline_value)):
+            continue
+        item = dict(items[item_index])
+        item["text"] = text_value
+        item["deadline"] = deadline_value
+        items[item_index] = item
+        updated_count += 1
+
+    if updated_count:
+        progress.checklist_json = items
+        db.commit()
+        add_flash(request, "Изменения чеклиста сохранены.", "success")
     return redirect("/in-progress")
 
 
@@ -27477,6 +27648,13 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
             CosplanCard.photoset_date >= today,
         )
     ).scalars().all()
+    photosets = [
+        item
+        for item in accessible_photosets_for_user(db, user.id)
+        if photoset_calendar_date(item) and photoset_calendar_date(item) >= today
+    ]
+    linked_photoset_ids = {item.id for item in photosets}
+    cards = [card for card in cards if card.linked_photoset_id not in linked_photoset_ids]
     rehearsal_entries = db.execute(
         select(RehearsalEntry)
         .where(
@@ -27584,6 +27762,33 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
                 "city": card.city or "—",
                 "coproplayers": ", ".join(coproplayers_display),
                 "details": "",
+                "personal_event_id": None,
+            }
+        )
+    for item in photosets:
+        event_date = photoset_calendar_date(item)
+        if not event_date:
+            continue
+        participant_aliases = [
+            str(role.get("nickname") or "").strip()
+            for role in as_list(item.roles_json)
+            if isinstance(role, dict) and str(role.get("nickname") or "").strip()
+        ]
+        participants_display = format_coproplayer_names(
+            participant_aliases,
+            alias_to_username,
+            users_by_username,
+        )
+        entries.append(
+            {
+                "date": event_date,
+                "time": item.shooting_time_start or "",
+                "kind": "Фотосет",
+                "type_key": "photoset",
+                "title": item.title or "Без названия",
+                "city": item.studio_address or item.studio_name or "—",
+                "coproplayers": ", ".join(participants_display),
+                "details": item.fandom or "",
                 "personal_event_id": None,
             }
         )
@@ -30098,6 +30303,13 @@ def my_calendar_export_ics(request: Request, db: Session = Depends(get_db)):
             CosplanCard.photoset_date >= today,
         )
     ).scalars().all()
+    photosets = [
+        item
+        for item in accessible_photosets_for_user(db, user.id)
+        if photoset_calendar_date(item) and photoset_calendar_date(item) >= today
+    ]
+    linked_photoset_ids = {item.id for item in photosets}
+    cards = [card for card in cards if card.linked_photoset_id not in linked_photoset_ids]
     rehearsal_entries = db.execute(
         select(RehearsalEntry)
         .where(
@@ -30202,6 +30414,38 @@ def my_calendar_export_ics(request: Request, db: Session = Depends(get_db)):
             summary=f"Фотосет: {card.character_name or 'Без названия'}",
             event_date=card.photoset_date,
             location=card.city or "",
+            description="\n".join(description_parts),
+        )
+
+    for item in photosets:
+        event_date = photoset_calendar_date(item)
+        if not event_date:
+            continue
+        participant_aliases = [
+            str(role.get("nickname") or "").strip()
+            for role in as_list(item.roles_json)
+            if isinstance(role, dict) and str(role.get("nickname") or "").strip()
+        ]
+        participants_display = format_coproplayer_names(
+            participant_aliases,
+            alias_to_username,
+            users_by_username,
+        )
+        description_parts = ["Фотосет"]
+        if item.fandom:
+            description_parts.append(f"Фэндом: {item.fandom}")
+        if participants_display:
+            description_parts.append("Участники: " + ", ".join(participants_display))
+        append_ics_event(
+            lines,
+            dtstamp=dtstamp,
+            uid_prefix=f"photoset-card-{item.id}",
+            summary=f"Фотосет: {item.title or 'Без названия'}",
+            event_date=event_date,
+            time_hhmm=item.shooting_time_start or "",
+            duration_minutes=120,
+            location=item.studio_address or item.studio_name or "",
+            url=f"{SITE_URL}/cosplan/photosets/{item.id}",
             description="\n".join(description_parts),
         )
 

@@ -531,6 +531,22 @@ class Photoset(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
     user = relationship("User")
+    access_entries = relationship("PhotosetAccess", back_populates="photoset", cascade="all, delete-orphan")
+
+
+class PhotosetAccess(Base):
+    __tablename__ = "photoset_accesses"
+
+    id = Column(Integer, primary_key=True)
+    photoset_id = Column(Integer, ForeignKey("photosets.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    added_by_user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    photoset = relationship("Photoset", back_populates="access_entries")
+    user = relationship("User", foreign_keys=[user_id])
+    added_by = relationship("User", foreign_keys=[added_by_user_id])
+    __table_args__ = (UniqueConstraint("photoset_id", "user_id", name="uq_photoset_access_user"),)
 
 
 class LearningCourse(Base):

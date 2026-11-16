@@ -166,9 +166,18 @@
   .kanban-drag-handle svg { width: 21px; height: 21px; fill: none; stroke: currentColor; stroke-width: 3.2; stroke-linecap: round; }
   .kanban-task.is-dragging { opacity: .62; transform: rotate(1deg) scale(.98); }
   .kanban-column.is-drop-target { outline: 3px solid rgba(108,99,255,.5); outline-offset: -3px; }
-  .kanban-task-tags { display: flex; flex-wrap: wrap; gap: 5px; }
-  .task-tag, .tag-filter { border: 1px solid rgba(184,200,255,.78); border-radius: 999px; padding: 5px 9px; color: #344a6b; background: rgba(234,242,255,.72); font: inherit; font-size: .72rem; line-height: 1; cursor: pointer; }
-  .task-tag.active, .tag-filter.active { color: #fff; border-color: transparent; background: linear-gradient(140deg, #6c63ff, #7b72ff); box-shadow: 0 5px 12px rgba(94,91,255,.22); }
+  .kanban-task-tags { position: relative; display: flex; align-items: center; flex-wrap: wrap; gap: 5px; min-height: 28px; }
+  .task-tag-current, .task-tag-option, .tag-filter { border: 1px solid rgba(184,200,255,.78); border-radius: 999px; padding: 5px 9px; color: #344a6b; background: rgba(234,242,255,.72); font: inherit; font-size: .72rem; line-height: 1; }
+  .task-tag-current { color: #fff; border-color: transparent; background: linear-gradient(140deg, #6c63ff, #7b72ff); box-shadow: 0 5px 12px rgba(94,91,255,.18); }
+  .task-tag-selected { display: contents; }
+  .task-tag-option, .tag-filter { cursor: pointer; }
+  .task-tag-option.active, .tag-filter.active { color: #fff; border-color: transparent; background: linear-gradient(140deg, #6c63ff, #7b72ff); box-shadow: 0 5px 12px rgba(94,91,255,.22); }
+  .task-tag-picker { position: relative; }
+  .task-tag-picker > summary { list-style: none; }
+  .task-tag-picker > summary::-webkit-details-marker { display: none; }
+  .task-tag-add { width: 28px; height: 28px; display: grid; place-items: center; padding: 0; border: 1px dashed rgba(123,114,255,.74); border-radius: 50%; color: #5e5bff; background: rgba(234,242,255,.72); font-size: 1rem; font-weight: 800; cursor: pointer; }
+  .task-tag-picker-menu { position: absolute; z-index: 20; left: 0; top: calc(100% + 6px); width: max-content; max-width: min(250px, 70vw); display: flex; flex-wrap: wrap; gap: 6px; padding: 9px; border: 1px solid rgba(184,200,255,.8); border-radius: 14px; background: rgba(248,251,255,.98); box-shadow: 0 12px 28px rgba(80,100,180,.2); }
+  .task-tag-picker:not([open]) .task-tag-picker-menu { display: none; }
   .kanban-filters { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; margin: 0 0 12px; padding: 10px 12px; border: 1px solid rgba(184,200,255,.55); border-radius: 16px; background: rgba(255,255,255,.45); }
   .kanban-task[hidden], .kanban-project:has(.kanban-task:not([hidden])) + .kanban-empty-filter { display: none; }
   .timeline-list { position: relative; margin-left: 10px; padding-left: 28px; border-left: 2px solid #b8c8ff; }
@@ -187,8 +196,10 @@
     border-color: rgba(184, 200, 255, .22);
     background: rgba(72, 73, 98, .76);
   }
-  html[data-theme="dark"] :is(.task-tag, .tag-filter) { color: #d7e4ff; border-color: rgba(184,200,255,.25); background: rgba(79,80,108,.72); }
-  html[data-theme="dark"] :is(.task-tag.active, .tag-filter.active) { color: #fff; background: linear-gradient(140deg, #6c63ff, #7b72ff); }
+  html[data-theme="dark"] :is(.task-tag-option, .tag-filter) { color: #d7e4ff; border-color: rgba(184,200,255,.25); background: rgba(79,80,108,.72); }
+  html[data-theme="dark"] :is(.task-tag-option.active, .tag-filter.active, .task-tag-current) { color: #fff; background: linear-gradient(140deg, #6c63ff, #7b72ff); }
+  html[data-theme="dark"] .task-tag-add { color: #d7e4ff; border-color: rgba(183,160,255,.65); background: rgba(94,91,255,.2); }
+  html[data-theme="dark"] .task-tag-picker-menu { border-color: rgba(184,200,255,.24); background: rgba(43,43,63,.98); box-shadow: 0 14px 30px rgba(0,0,0,.38); }
   html[data-theme="dark"] .kanban-drag-handle { color: #d7e4ff; background: rgba(94,91,255,.22); }
   html[data-theme="dark"] .timeline-card {
     color: #f4f7ff;
@@ -231,9 +242,19 @@
                 </button>
               </div>
               <div class="kanban-task-tags" aria-label="Метки дела">
+                <div class="task-tag-selected" data-selected-tags>
+                  {% for tag, tag_label in checklist_tag_labels.items() if tag in item.tags %}
+                    <span class="task-tag-current" data-tag="{{ tag }}">#{{ tag_label }}</span>
+                  {% endfor %}
+                </div>
+                <details class="task-tag-picker">
+                  <summary class="task-tag-add" aria-label="Изменить теги" title="Добавить или убрать теги">+</summary>
+                  <div class="task-tag-picker-menu" aria-label="Выбор тегов">
                 {% for tag, tag_label in checklist_tag_labels.items() %}
-                  <button type="button" class="task-tag {% if tag in item.tags %}active{% endif %}" data-tag="{{ tag }}">#{{ tag_label }}</button>
+                      <button type="button" class="task-tag-option {% if tag in item.tags %}active{% endif %}" data-tag="{{ tag }}" data-tag-label="{{ tag_label }}">#{{ tag_label }}</button>
                 {% endfor %}
+                  </div>
+                </details>
               </div>
             </article>
           {% endfor %}
@@ -371,31 +392,43 @@
 
     {% set items = row.checklist_json or [] %}
     {% if items %}
+      {% set checklist_form_id = "checklist-save-" ~ row.id %}
       <h4>Чеклист</h4>
       <ul class="checklist">
       {% for item in items %}
-        <li>
+        <li class="checklist-item-row">
           <form method="post" action="/in-progress/{{ row.id }}/checklist/toggle/{{ loop.index0 }}" class="inline-form">
             <button type="submit" class="btn btn-small">{{ "☑" if item.done else "☐" }}</button>
           </form>
-          <form method="post" action="/in-progress/{{ row.id }}/checklist/edit/{{ loop.index0 }}" class="actions-inline checklist-edit-form">
-            <input type="text" name="item_text" value="{{ item.text }}" aria-label="Пункт чеклиста" required />
-            <input type="date" name="deadline" value="{{ item.deadline or '' }}" aria-label="Дата в календаре" title="Дата в «Моём календаре»" />
-            <button type="submit" class="btn btn-small">Сохранить</button>
-          </form>
-          <form method="post" action="/in-progress/{{ row.id }}/checklist/move/{{ loop.index0 }}/up" class="inline-form"><button type="submit" class="btn btn-small" title="Переместить выше" {% if loop.first %}disabled{% endif %}>↑</button></form>
-          <form method="post" action="/in-progress/{{ row.id }}/checklist/move/{{ loop.index0 }}/down" class="inline-form"><button type="submit" class="btn btn-small" title="Переместить ниже" {% if loop.last %}disabled{% endif %}>↓</button></form>
-          <form method="post" action="/in-progress/{{ row.id }}/checklist/delete/{{ loop.index0 }}" class="inline-form">
-            <button type="submit" class="btn btn-small btn-danger">✕</button>
-          </form>
+          <div class="checklist-item-editor">
+            <input type="hidden" name="item_index" value="{{ loop.index0 }}" form="{{ checklist_form_id }}" />
+            <input type="text" name="item_text" value="{{ item.text }}" aria-label="Пункт чеклиста" form="{{ checklist_form_id }}" required />
+            <label class="checklist-date-control {% if item.deadline %}has-date{% endif %}" title="{{ ('Дата: ' ~ item.deadline) if item.deadline else 'Выбрать дату' }}">
+              <span aria-hidden="true">📅</span>
+              <input type="date" name="deadline" value="{{ item.deadline or '' }}" aria-label="Дата в календаре" form="{{ checklist_form_id }}" data-checklist-date />
+            </label>
+          </div>
+          <div class="checklist-item-actions">
+            <form method="post" action="/in-progress/{{ row.id }}/checklist/move/{{ loop.index0 }}/up" class="inline-form"><button type="submit" class="btn btn-small" title="Переместить выше" {% if loop.first %}disabled{% endif %}>↑</button></form>
+            <form method="post" action="/in-progress/{{ row.id }}/checklist/move/{{ loop.index0 }}/down" class="inline-form"><button type="submit" class="btn btn-small" title="Переместить ниже" {% if loop.last %}disabled{% endif %}>↓</button></form>
+            <form method="post" action="/in-progress/{{ row.id }}/checklist/delete/{{ loop.index0 }}" class="inline-form">
+              <button type="submit" class="btn btn-small btn-danger" title="Удалить пункт">✕</button>
+            </form>
+          </div>
         </li>
       {% endfor %}
       </ul>
+      <form method="post" action="/in-progress/{{ row.id }}/checklist/save" id="{{ checklist_form_id }}" class="checklist-card-save">
+        <button type="submit" class="btn btn-accent">Сохранить чеклист</button>
+      </form>
     {% endif %}
 
-    <form method="post" action="/in-progress/{{ row.id }}/checklist/add" class="actions-inline">
+    <form method="post" action="/in-progress/{{ row.id }}/checklist/add" class="checklist-add-form">
       <input type="text" name="item_text" placeholder="Новый пункт чеклиста" required />
-      <input type="date" name="deadline" aria-label="Дата в календаре" title="Дата в «Моём календаре»" />
+      <label class="checklist-date-control" title="Выбрать дату">
+        <span aria-hidden="true">📅</span>
+        <input type="date" name="deadline" aria-label="Дата в календаре" data-checklist-date />
+      </label>
       <button type="submit" class="btn">Добавить</button>
     </form>
 
@@ -546,16 +579,28 @@
       draggedTask = null;
       clearTargets();
     });
-    task.querySelectorAll('.task-tag').forEach((button) => {
+    const renderSelectedTags = () => {
+      const selected = task.querySelector('[data-selected-tags]');
+      if (!selected) return;
+      selected.replaceChildren(...Array.from(task.querySelectorAll('.task-tag-option.active')).map((option) => {
+        const tag = document.createElement('span');
+        tag.className = 'task-tag-current';
+        tag.dataset.tag = option.dataset.tag;
+        tag.textContent = `#${option.dataset.tagLabel}`;
+        return tag;
+      }));
+    };
+    task.querySelectorAll('.task-tag-option').forEach((button) => {
       button.addEventListener('click', async () => {
         button.classList.toggle('active');
-        const tags = Array.from(task.querySelectorAll('.task-tag.active')).map((item) => item.dataset.tag);
+        const tags = Array.from(task.querySelectorAll('.task-tag-option.active')).map((item) => item.dataset.tag);
         const body = new URLSearchParams();
         tags.forEach((tag) => body.append('tags', tag));
         try {
           const response = await fetch(task.dataset.tagsUrl, {method: 'POST', body, credentials: 'same-origin'});
           if (!response.ok) throw new Error();
           task.dataset.tags = tags.join(',');
+          renderSelectedTags();
           applyFilter();
         } catch (_) {
           button.classList.toggle('active');
@@ -605,6 +650,16 @@
 {% endif %}
 <script>
 (() => {
+  document.querySelectorAll('[data-checklist-date]').forEach((input) => {
+    const control = input.closest('.checklist-date-control');
+    const syncDateState = () => {
+      control?.classList.toggle('has-date', Boolean(input.value));
+      if (control) control.title = input.value ? `Дата: ${input.value}` : 'Выбрать дату';
+    };
+    input.addEventListener('change', syncDateState);
+    syncDateState();
+  });
+
   const taskTableMarkup = () => `
     <table class="tasks-table">
       <thead><tr><th>Ответственный</th><th>Задание</th><th>Выполнил(а)</th></tr></thead>
