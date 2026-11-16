@@ -6384,3 +6384,22 @@ html[data-theme="dark"] body.landing-page .landing-video-vignette {
     min-height: 320px;
   }
 }
+
+/* Photoset task board: cards move between status columns. */
+.task-quick-add { grid-template-columns: minmax(240px, 1fr) 170px auto; }
+.photoset-kanban-hint { margin: -2px 0 12px; }
+.photoset-kanban-column { transition: border-color .18s ease, background .18s ease, box-shadow .18s ease; }
+.photoset-kanban-column.is-drag-over { border-color:#7b72ff; background:linear-gradient(180deg,rgba(255,255,255,.98),rgba(215,228,255,.92)); box-shadow:0 12px 40px rgba(94,91,255,.18); }
+.photoset-kanban-list { min-height:230px; }
+.photoset-kanban-task { position:relative; padding-left:36px; cursor:grab; transition:opacity .18s ease,transform .18s ease,box-shadow .18s ease; }
+.photoset-kanban-task:hover,.photoset-kanban-task:focus-visible { box-shadow:0 10px 28px rgba(94,91,255,.14); transform:translateY(-1px); }
+.photoset-kanban-task:focus-visible { outline:2px solid #7b72ff; outline-offset:2px; }
+.photoset-kanban-task.is-dragging { opacity:.45; cursor:grabbing; }
+.photoset-kanban-task[aria-busy="true"] { opacity:.65; pointer-events:none; }
+.photoset-task-drag-handle { position:absolute; top:12px; left:12px; color:#62728c; font-size:1.15rem; line-height:1; touch-action:none; }
+.photoset-kanban-task form { justify-self:start; }
+.photoset-kanban-empty[hidden] { display:none; }
+.photoset-kanban-feedback { min-height:1.4em; margin-top:4px; }
+html[data-theme="dark"] .photoset-kanban-column.is-drag-over { background:rgba(123,114,255,.2); border-color:#8f86ff; }
+@media(max-width:900px){.task-quick-add{grid-template-columns:1fr 1fr}.task-quick-add .btn{grid-column:1/-1}}
+@media(max-width:600px){.task-quick-add{grid-template-columns:1fr}}

@@ -1,5 +1,141 @@
-{% extends 'base.html' %}{% block content %}
-<section class="section-head"><div><h1>Список дел · {{ item.title }}</h1><p class="meta">Канбан подготовки фотосета</p></div><a class="btn" href="/in-progress?scope=cosplayer&view=kanban">Все дела</a></section>{% include '_photoset_tabs.html' %}
-<form method="post" action="/cosplan/photosets/{{ item.id }}/tasks/add" class="card task-quick-add"><input name="task_text" required placeholder="Новое дело"><select name="task_status">{% for value,label in status_labels.items() %}<option value="{{ value }}">{{ label }}</option>{% endfor %}</select><input type="date" name="task_deadline"><button class="btn btn-accent" type="submit">Добавить</button></form>
-<div class="photoset-kanban">{% for status,label in status_labels.items() %}<section class="photoset-kanban-column"><div class="kanban-column-head"><h2>{{ label }}</h2><span class="chip">{{ task_board.get(status,[])|length }}</span></div>{% for row in task_board.get(status,[]) %}<article class="photoset-kanban-task"><h3>{{ row.text }}</h3>{% if row.deadline %}<p class="meta">До {{ row.deadline }}</p>{% endif %}<form method="post" action="/cosplan/photosets/{{ item.id }}/tasks/status/{{ row.item_index }}"><input type="hidden" name="next" value="/cosplan/photosets/{{ item.id }}/tasks"><select name="status" onchange="this.form.submit()">{% for value,option_label in status_labels.items() %}<option value="{{ value }}" {% if value==status %}selected{% endif %}>{{ option_label }}</option>{% endfor %}</select></form><form method="post" action="/cosplan/photosets/{{ item.id }}/tasks/delete/{{ row.item_index }}" onsubmit="return confirm('Удалить дело?')"><button class="btn btn-small" type="submit">Удалить</button></form></article>{% else %}<p class="meta">Пока пусто.</p>{% endfor %}</section>{% endfor %}</div>
+{% extends 'base.html' %}
+{% block content %}
+<section class="section-head">
+  <div><h1>Список дел · {{ item.title }}</h1><p class="meta">Канбан подготовки фотосета</p></div>
+  <a class="btn" href="/in-progress?scope=cosplayer&view=kanban">Все дела</a>
+</section>
+{% include '_photoset_tabs.html' %}
+
+<form method="post" action="/cosplan/photosets/{{ item.id }}/tasks/add" class="card task-quick-add">
+  <input name="task_text" required placeholder="Новое дело" aria-label="Новое дело">
+  <input type="date" name="task_deadline" aria-label="Срок выполнения">
+  <button class="btn btn-accent" type="submit">Добавить</button>
+</form>
+
+<p class="meta photoset-kanban-hint" id="photoset-kanban-hint">Перетащите карточку в нужный столбец. С клавиатуры: выберите карточку и нажмите ← или →.</p>
+<div class="photoset-kanban" data-photoset-kanban data-status-url-template="/cosplan/photosets/{{ item.id }}/tasks/status/__INDEX__">
+  {% for status,label in status_labels.items() %}
+  <section class="photoset-kanban-column" data-kanban-column data-status="{{ status }}">
+    <div class="kanban-column-head"><h2>{{ label }}</h2><span class="chip" data-column-count>{{ task_board.get(status,[])|length }}</span></div>
+    <div class="photoset-kanban-list" data-kanban-list aria-label="{{ label }}">
+      {% for row in task_board.get(status,[]) %}
+      <article class="photoset-kanban-task" draggable="true" tabindex="0" data-task-index="{{ row.item_index }}" data-task-status="{{ status }}" aria-describedby="photoset-kanban-hint">
+        <span class="photoset-task-drag-handle" aria-hidden="true">⠿</span>
+        <h3>{{ row.text }}</h3>
+        {% if row.deadline %}<p class="meta">До {{ row.deadline }}</p>{% endif %}
+        <form method="post" action="/cosplan/photosets/{{ item.id }}/tasks/delete/{{ row.item_index }}" onsubmit="return confirm('Удалить дело?')"><button class="btn btn-small" type="submit">Удалить</button></form>
+      </article>
+      {% endfor %}
+      <p class="meta photoset-kanban-empty" data-column-empty {% if task_board.get(status,[]) %}hidden{% endif %}>Пока пусто.</p>
+    </div>
+  </section>
+  {% endfor %}
+</div>
+<p class="meta photoset-kanban-feedback" data-kanban-feedback aria-live="polite"></p>
+
+<script>
+(() => {
+  const board = document.querySelector('[data-photoset-kanban]');
+  if (!board) return;
+  const columns = [...board.querySelectorAll('[data-kanban-column]')];
+  const feedback = document.querySelector('[data-kanban-feedback]');
+  let draggedTask = null;
+
+  const updateColumns = () => columns.forEach((column) => {
+    const count = column.querySelectorAll('[data-task-index]').length;
+    column.querySelector('[data-column-count]').textContent = count;
+    column.querySelector('[data-column-empty]').hidden = count > 0;
+  });
+
+  const saveStatus = async (task, column) => {
+    const previousColumn = task.closest('[data-kanban-column]');
+    const previousStatus = task.dataset.taskStatus;
+    const status = column.dataset.status;
+    if (!status || status === previousStatus) return;
+    column.querySelector('[data-kanban-list]').append(task);
+    task.dataset.taskStatus = status;
+    task.setAttribute('aria-busy', 'true');
+    updateColumns();
+    const url = board.dataset.statusUrlTemplate.replace('__INDEX__', task.dataset.taskIndex);
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8'},
+        body: new URLSearchParams({status, next: window.location.pathname}),
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      feedback.textContent = `Дело перенесено в «${column.querySelector('h2').textContent.trim()}».`;
+    } catch (error) {
+      previousColumn.querySelector('[data-kanban-list]').append(task);
+      task.dataset.taskStatus = previousStatus;
+      updateColumns();
+      feedback.textContent = 'Не удалось перенести дело. Попробуйте ещё раз.';
+    } finally {
+      task.removeAttribute('aria-busy');
+      task.focus();
+    }
+  };
+
+  board.querySelectorAll('[data-task-index]').forEach((task) => {
+    task.addEventListener('dragstart', (event) => {
+      draggedTask = task;
+      task.classList.add('is-dragging');
+      event.dataTransfer.effectAllowed = 'move';
+      event.dataTransfer.setData('text/plain', task.dataset.taskIndex);
+    });
+    task.addEventListener('dragend', () => {
+      draggedTask = null;
+      task.classList.remove('is-dragging');
+      columns.forEach((column) => column.classList.remove('is-drag-over'));
+    });
+    task.addEventListener('keydown', (event) => {
+      if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+      const currentIndex = columns.indexOf(task.closest('[data-kanban-column]'));
+      const nextIndex = currentIndex + (event.key === 'ArrowRight' ? 1 : -1);
+      if (!columns[nextIndex]) return;
+      event.preventDefault();
+      saveStatus(task, columns[nextIndex]);
+    });
+
+    const handle = task.querySelector('.photoset-task-drag-handle');
+    let touchTarget = null;
+    handle.addEventListener('touchstart', () => {
+      draggedTask = task;
+      task.classList.add('is-dragging');
+    }, {passive: true});
+    handle.addEventListener('touchmove', (event) => {
+      const touch = event.touches[0];
+      if (!touch) return;
+      event.preventDefault();
+      columns.forEach((column) => column.classList.remove('is-drag-over'));
+      const element = document.elementFromPoint(touch.clientX, touch.clientY);
+      touchTarget = element && element.closest('[data-kanban-column]');
+      if (touchTarget) touchTarget.classList.add('is-drag-over');
+    }, {passive: false});
+    handle.addEventListener('touchend', () => {
+      columns.forEach((column) => column.classList.remove('is-drag-over'));
+      task.classList.remove('is-dragging');
+      if (touchTarget) saveStatus(task, touchTarget);
+      draggedTask = null;
+      touchTarget = null;
+    });
+  });
+
+  columns.forEach((column) => {
+    column.addEventListener('dragover', (event) => {
+      event.preventDefault();
+      event.dataTransfer.dropEffect = 'move';
+      column.classList.add('is-drag-over');
+    });
+    column.addEventListener('dragleave', (event) => {
+      if (!column.contains(event.relatedTarget)) column.classList.remove('is-drag-over');
+    });
+    column.addEventListener('drop', (event) => {
+      event.preventDefault();
+      column.classList.remove('is-drag-over');
+      if (draggedTask) saveStatus(draggedTask, column);
+    });
+  });
+})();
+</script>
 {% endblock %}
