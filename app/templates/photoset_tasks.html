@@ -23,7 +23,9 @@
         <span class="photoset-task-drag-handle" aria-hidden="true">⠿</span>
         <h3>{{ row.text }}</h3>
         {% if row.deadline %}<p class="meta">До {{ row.deadline }}</p>{% endif %}
-        <form method="post" action="/cosplan/photosets/{{ item.id }}/tasks/delete/{{ row.item_index }}" onsubmit="return confirm('Удалить дело?')"><button class="btn btn-small" type="submit">Удалить</button></form>
+        <form class="photoset-task-delete-form" method="post" action="/cosplan/photosets/{{ item.id }}/tasks/delete/{{ row.item_index }}" onsubmit="return confirm('Удалить дело?')">
+          <button class="photoset-task-delete" type="submit" aria-label="Удалить дело «{{ row.text }}»" title="Удалить">×</button>
+        </form>
       </article>
       {% endfor %}
       <p class="meta photoset-kanban-empty" data-column-empty {% if task_board.get(status,[]) %}hidden{% endif %}>Пока пусто.</p>
