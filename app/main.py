@@ -39276,6 +39276,49 @@ def festival_cosplay2_source_fallback(
     )
 
 
+@app.get("/api/scriptable/festivals")
+def scriptable_festivals_feed(
+    days: int = 30,
+    city: str = "",
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Read-only public feed of approved festival announcements for Scriptable."""
+    days = min(max(int(days), 1), 90)
+    today = date.today()
+    last_day = today + timedelta(days=days)
+    normalized_city = " ".join(str(city or "").split())
+
+    conditions = [
+        FestivalAnnouncement.status == "approved",
+        FestivalAnnouncement.event_date.is_not(None),
+        FestivalAnnouncement.event_date <= last_day,
+        or_(
+            FestivalAnnouncement.event_end_date.is_(None),
+            FestivalAnnouncement.event_end_date >= today,
+        ),
+    ]
+    if normalized_city:
+        conditions.append(
+            func.lower(func.trim(FestivalAnnouncement.city)) == normalized_city.casefold()
+        )
+
+    rows = db.execute(
+        select(FestivalAnnouncement)
+        .where(*conditions)
+        .order_by(FestivalAnnouncement.event_date, FestivalAnnouncement.name)
+    ).scalars().all()
+
+    events = [
+        {
+            "date": item.event_date.isoformat(),
+            "end_date": item.event_end_date.isoformat() if item.event_end_date else None,
+            "name": item.name,
+        }
+        for item in rows
+    ]
+    return {"city": normalized_city or "Все города", "days": days, "events": events}
+
+
 @app.get("/festivals/export.ics")
 def festivals_export_ics(request: Request, db: Session = Depends(get_db)):
     user = current_user(request, db)
