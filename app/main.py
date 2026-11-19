@@ -39293,7 +39293,7 @@ def scriptable_festivals_feed(
         FestivalAnnouncement.event_date.is_not(None),
         FestivalAnnouncement.event_date <= last_day,
         or_(
-            FestivalAnnouncement.event_end_date.is_(None),
+            FestivalAnnouncement.event_date >= today,
             FestivalAnnouncement.event_end_date >= today,
         ),
     ]
