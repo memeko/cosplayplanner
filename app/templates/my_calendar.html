@@ -19,7 +19,7 @@
 </nav>
 
 {% if active_calendar_view == "my" %}
-  <section class="box">
+  <section class="box" id="personal-events">
     <h2>Добавить личное событие</h2>
     <form method="post" action="/my-calendar/events/new" class="grid one-col">
       <input type="hidden" name="next_view" value="my" />

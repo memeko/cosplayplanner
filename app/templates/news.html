@@ -1,14 +1,33 @@
 {% extends "base.html" %}
 {% block content %}
-<section class="section-head">
+<section class="home-dashboard-head">
   <div>
     <h1>Главная</h1>
+    <p>Планы, ближайшие дела и важные обновления — в одном месте.</p>
   </div>
-  {% if can_use_photo_frames_calculator %}
-  <div class="actions-inline">
-    <a href="/photo-tools/frames-calculator" class="btn btn-accent">Калькулятор кадров</a>
+  <div class="home-primary-actions">
+    <a href="/cosplan/new" class="btn btn-accent home-primary-button">Создать косплан</a>
+    <a href="/my-calendar#personal-events" class="btn home-primary-button">Добавить событие</a>
+    {% if can_use_photo_frames_calculator %}<a href="/photo-tools/frames-calculator" class="btn home-utility-button">Калькулятор кадров</a>{% endif %}
   </div>
-  {% endif %}
+</section>
+
+<section class="home-overview" aria-label="Краткая сводка">
+  <a class="home-overview-card" href="/my-calendar">
+    <span class="home-overview-icon" aria-hidden="true">◷</span>
+    <span><strong>Предстоящая неделя</strong><small>{{ home_week_summary["items"]|length }} {{ "дело" if home_week_summary["items"]|length == 1 else "дел" }}</small></span>
+    <span class="home-overview-arrow" aria-hidden="true">›</span>
+  </a>
+  <a class="home-overview-card" href="/in-progress">
+    <span class="home-overview-icon" aria-hidden="true">✦</span>
+    <span><strong>Активные проекты</strong><small>{{ home_active_projects_count }} в работе</small></span>
+    <span class="home-overview-arrow" aria-hidden="true">›</span>
+  </a>
+  <a class="home-overview-card" href="#home-notifications">
+    <span class="home-overview-icon" aria-hidden="true">☆</span>
+    <span><strong>Оповещения</strong><small>{{ unread_notifications }} непрочитанных</small></span>
+    <span class="home-overview-arrow" aria-hidden="true">›</span>
+  </a>
 </section>
 
 <section class="box home-favorites" id="home-favorites" data-home-fixed>
@@ -35,21 +54,22 @@
       </form>
     </details>
   </div>
-  {% if home_favorites %}
+  {% set visible_favorites = home_favorites if home_favorites else home_favorite_options[:3] %}
+  {% if visible_favorites %}
     <div class="home-favorites-grid top-offset">
-      {% for favorite in home_favorites %}
+      {% for favorite in visible_favorites %}
         <a class="home-favorite-tile" href="{{ favorite.value }}">
           <span class="home-favorite-icon" aria-hidden="true">{{ favorite.icon }}</span>
           <strong>{{ favorite.label }}</strong>
         </a>
       {% endfor %}
     </div>
-  {% else %}
-    <p class="muted top-offset">Нажмите «Настроить», чтобы закрепить разделы, коспланы или карточки фестивалей.</p>
   {% endif %}
 </section>
 
-<section class="box home-week-summary top-offset">
+<div class="home-dashboard-layout">
+<div class="home-dashboard-main">
+<section class="box home-week-summary" data-home-collapsible>
   <div class="row-between">
     <div>
       <h2>На этой неделе</h2>
@@ -72,18 +92,20 @@
   {% endif %}
 </section>
 
-<section class="box">
+<section class="box" id="home-notifications" data-home-collapsible>
   <div class="row-between">
     <h2>Оповещения {% if unread_notifications %}<span class="chip chip-alert">{{ unread_notifications }}</span>{% endif %}</h2>
     <div class="actions-inline">
-      <form method="post" action="/festivals/notifications/mark-read">
+      {% if notifications %}<form method="post" action="/festivals/notifications/mark-read">
         <input type="hidden" name="next" value="/" />
         <button type="submit" class="btn">Отметить прочитанным</button>
-      </form>
+      </form>{% endif %}
+      {% if notifications %}
       <form method="post" action="/festivals/notifications/clear" onsubmit="return confirm('Очистить список оповещений?');">
         <input type="hidden" name="next" value="/" />
         <button type="submit" class="btn btn-danger">Очистить список оповещений</button>
       </form>
+      {% endif %}
     </div>
   </div>
 
@@ -123,33 +145,8 @@
   {% endif %}
 </section>
 
-<section class="box top-offset" id="home-news">
-  <h2>Реклама ТГК-канала</h2>
-  {% if premium_channel_ad %}
-    <div class="top-offset" style="display:flex; gap:0.9rem; align-items:flex-start;">
-      <img
-        src="{{ premium_channel_ad.avatar_path }}"
-        alt="Аватар канала"
-        loading="lazy"
-        style="width:76px; height:76px; border-radius:999px; object-fit:cover; border:1px solid #d9e2ec; background:#fff; flex:0 0 auto;"
-      />
-      <div>
-        <p class="meta">Реклама премиум-пользователя · {{ premium_channel_ad.author_alias }}</p>
-        <div class="notes-block">{{ premium_channel_ad.description }}</div>
-        <div class="actions-inline top-offset">
-          <a href="{{ premium_channel_ad.channel_url }}" target="_blank" rel="noreferrer" class="btn btn-accent btn-small">Посмотреть!</a>
-        </div>
-      </div>
-    </div>
-  {% else %}
-    <div class="notes-block top-offset">
-      Тут могла бы быть ваша реклама : D
-    </div>
-  {% endif %}
-</section>
-
-<section class="box top-offset">
-  <h2>Новости</h2>
+<section class="box home-community-news" id="home-news" data-home-collapsible>
+  <div class="row-between"><div><h2>Сообщество и новости</h2><p class="muted">Обновления Cosplay Planner и важные объявления.</p></div><a class="btn btn-small" href="/community">Открыть сообщество</a></div>
   {% if can_manage_news %}
     <form method="post" action="/home-news/new" class="grid one-col top-offset">
       <label>
@@ -199,8 +196,11 @@
     <p class="muted top-offset">Пока новостей нет.</p>
   {% endif %}
 </section>
+</div>
 
-<section class="box top-offset">
+<aside class="home-dashboard-aside" aria-label="Сообщество и даты">
+
+<section class="box" data-home-collapsible>
   <div class="row-between">
     <h2>Турнирная таблица активности</h2>
     <span class="muted">Топ-10</span>
@@ -212,9 +212,6 @@
           <tr>
             <th class="home-leaderboard-rank">#</th>
             <th class="home-leaderboard-user">Пользователь</th>
-            <th>Карточки</th>
-            <th>Репетиции</th>
-            <th>Проекты (рук.)</th>
             <th>Итого</th>
           </tr>
         </thead>
@@ -225,9 +222,6 @@
               <td class="home-leaderboard-user">
                 <span class="{% if row.is_special %}nick-special{% endif %}">{{ row.user_label }}</span>
               </td>
-              <td>{{ row.cards_count }}</td>
-              <td>{{ row.rehearsals_count }}</td>
-              <td>{{ row.led_projects_count }}</td>
               <td class="home-leaderboard-total">{{ row.activity_total }}</td>
             </tr>
           {% endfor %}
@@ -239,7 +233,7 @@
   {% endif %}
 </section>
 
-<section class="box top-offset">
+<section class="box" data-home-collapsible>
   <h2>Дни рождения</h2>
   {% if birthdays_this_week %}
     <ul class="notifications-list">
@@ -257,7 +251,7 @@
   {% endif %}
 </section>
 
-<section class="box top-offset">
+<section class="box" data-home-collapsible>
   <h2>Инфоповоды на ближайшую неделю</h2>
   {% if info_events_week %}
     <ul class="notifications-list">
@@ -278,7 +272,7 @@
   {% endif %}
 </section>
 
-<section class="box top-offset">
+<section class="box" data-home-collapsible>
   <h2>Дни рождения персонажей на сегодня</h2>
   {% if character_birthdays_today %}
     <ul class="notifications-list character-birthdays-list" data-birthday-list>
@@ -310,6 +304,16 @@
     <p class="muted">Сегодня нет данных о днях рождения персонажей.</p>
   {% endif %}
 </section>
+</aside>
+</div>
+
+{% if premium_channel_ad %}
+<aside class="home-promo" aria-label="Реклама Telegram-канала">
+  <img src="{{ premium_channel_ad.avatar_path }}" alt="Аватар канала" loading="lazy" />
+  <div><span>Реклама премиум-пользователя · {{ premium_channel_ad.author_alias }}</span><strong>{{ premium_channel_ad.description }}</strong></div>
+  <a href="{{ premium_channel_ad.channel_url }}" target="_blank" rel="noreferrer" class="btn btn-small">Посмотреть канал</a>
+</aside>
+{% endif %}
 
 <script>
   (function () {
@@ -334,7 +338,7 @@
   })();
 
   (function () {
-    document.querySelectorAll("main section.box:not([data-home-fixed])").forEach(function (section, index) {
+    document.querySelectorAll("main section.box[data-home-collapsible]").forEach(function (section, index) {
       const heading = section.querySelector(":scope > .row-between, :scope > h2");
       if (!heading) return;
       const title = (section.querySelector("h2")?.textContent || `block-${index}`).trim();
@@ -354,7 +358,10 @@
         button.setAttribute("aria-expanded", collapsed ? "false" : "true");
         button.setAttribute("aria-label", `${collapsed ? "Развернуть" : "Свернуть"} блок «${title}»`);
       };
-      setCollapsed(localStorage.getItem(key) === "1");
+      const storedState = localStorage.getItem(key);
+      const compactByDefault = window.matchMedia("(max-width: 900px)").matches
+        && (section.closest(".home-dashboard-aside") || section.classList.contains("home-community-news"));
+      setCollapsed(storedState === "1" || (storedState === null && compactByDefault));
       button.addEventListener("click", function () {
         const collapsed = !section.classList.contains("home-section-collapsed");
         setCollapsed(collapsed);

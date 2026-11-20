@@ -19013,6 +19013,7 @@ def index(request: Request, db: Session = Depends(get_db)):
         home_favorite_options = build_home_favorite_options(db, user)
         home_favorites = home_favorites_for_user(db, user, home_favorite_options)
         home_week_summary = build_home_week_summary(db, user, today)
+        home_project_counters = get_in_progress_active_project_counters(db, user)
         unread_notifications = sum(1 for note in regular_notifications if not note.is_read)
         return template_response(
             request,
@@ -19033,6 +19034,10 @@ def index(request: Request, db: Session = Depends(get_db)):
             home_favorite_options=home_favorite_options,
             home_favorites=home_favorites,
             home_week_summary=home_week_summary,
+            home_active_projects_count=(
+                home_project_counters["cosplayer_active"]
+                + home_project_counters["master_active"]
+            ),
         )
     return template_response(request, "landing.html", user=None, active_tab=None)
 
