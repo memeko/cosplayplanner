@@ -18972,7 +18972,6 @@ def index(request: Request, db: Session = Depends(get_db)):
     user = current_user(request, db)
     if user:
         today = date.today()
-        activity_leaderboard = build_home_activity_leaderboard(db, limit=10)
         premium_channel_ad = build_home_premium_channel_ad(db)
         news_items = db.execute(
             select(HomeNews).order_by(HomeNews.created_at.desc(), HomeNews.id.desc()).limit(40)
@@ -19026,7 +19025,7 @@ def index(request: Request, db: Session = Depends(get_db)):
             character_birthdays_today=character_birthdays_today_rows,
             unread_notifications=unread_notifications,
             news_items=news_items,
-            activity_leaderboard=activity_leaderboard,
+            activity_leaderboard=[],
             premium_channel_ad=premium_channel_ad,
             can_manage_news=is_moderator_user(user),
             can_use_photo_frames_calculator=user_has_premium_status(db, user),
@@ -28445,9 +28444,9 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
     lab_week_days = [
         {
             "date": lab_week_start + timedelta(days=offset),
-            "label": ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"][offset],
+            "label": ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"][offset % 7],
         }
-        for offset in range(7)
+        for offset in range(14)
     ]
     content_rows: list[dict[str, Any]] = []
     planned_telegram_message_keys: set[tuple[str, str]] = set()
@@ -40631,7 +40630,7 @@ def photo_contest_list(request: Request, db: Session = Depends(get_db)):
     if not user:
         return redirect("/login")
 
-    status_filter = str(request.query_params.get("status", PHOTO_CONTEST_STATUS_OPEN)).strip().lower()
+    status_filter = str(request.query_params.get("status", "all")).strip().lower()
     allowed_statuses = {
         PHOTO_CONTEST_STATUS_OPEN,
         PHOTO_CONTEST_STATUS_JUDGING,
@@ -40639,7 +40638,7 @@ def photo_contest_list(request: Request, db: Session = Depends(get_db)):
         "all",
     }
     if status_filter not in allowed_statuses:
-        status_filter = PHOTO_CONTEST_STATUS_OPEN
+        status_filter = "all"
     participating_only = to_bool(request.query_params.get("participating_only", ""))
 
     contests = db.execute(

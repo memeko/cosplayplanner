@@ -1488,34 +1488,53 @@
     let matrix = {};
     try { matrix = JSON.parse(localStorage.getItem(storageKey) || '{}'); } catch (_) { matrix = {}; }
     const saveMatrix = () => localStorage.setItem(storageKey, JSON.stringify(matrix));
-    const makeMatrixToken = (value) => {
+    const normalizeMatrixItem = (item) => {
+      if (typeof item !== 'string') return item;
+      const source = [...lab.querySelectorAll('[data-lab-token]')].find((token) => token.dataset.labToken === item);
+      return {value:item, type:source?.dataset.tokenType || 'format', color:source?.dataset.tokenColor || ''};
+    };
+    Object.keys(matrix).forEach((key) => { matrix[key] = (matrix[key] || []).map(normalizeMatrixItem); });
+    const makeMatrixToken = (items) => {
+      const rubricItem = items.find((item) => item.type === 'rubric');
+      const orderedItems = [...items].sort((left, right) => ({rubric:0, format:1, social:2}[left.type] ?? 3) - ({rubric:0, format:1, social:2}[right.type] ?? 3));
       const token = document.createElement('span');
       token.className = 'lab-token matrix-token';
-      token.textContent = value;
+      token.textContent = orderedItems.map((item) => item.value).join(' • ');
+      if (rubricItem?.color) token.style.setProperty('--token-color', rubricItem.color);
+      if (rubricItem) token.classList.add('lab-token-rubric');
       const remove = document.createElement('button');
-      remove.type = 'button'; remove.textContent = '×'; remove.setAttribute('aria-label', `Удалить ${value}`);
+      remove.type = 'button'; remove.textContent = '×'; remove.setAttribute('aria-label', 'Очистить ячейку');
       token.append(remove);
       return token;
     };
     const renderMatrix = () => {
       lab.querySelectorAll('[data-matrix-cell]').forEach((cell) => {
         const holder = cell.querySelector('.content-matrix-items'); holder.replaceChildren();
-        (matrix[cell.dataset.matrixCell] || []).forEach((value, index) => {
-          const token = makeMatrixToken(value);
-          token.querySelector('button').addEventListener('click', () => { matrix[cell.dataset.matrixCell].splice(index, 1); saveMatrix(); renderMatrix(); });
+        const items = matrix[cell.dataset.matrixCell] || [];
+        if (items.length) {
+          const token = makeMatrixToken(items);
+          token.querySelector('button').addEventListener('click', () => { matrix[cell.dataset.matrixCell] = []; saveMatrix(); renderMatrix(); });
           holder.append(token);
-        });
+        }
       });
     };
-    let tokenValue = ''; let postId = '';
-    lab.querySelectorAll('[data-lab-token]').forEach((token) => token.addEventListener('dragstart', (event) => { tokenValue = token.dataset.labToken; postId = ''; event.dataTransfer.effectAllowed = 'copy'; }));
+    let draggedToken = null; let postId = '';
+    lab.querySelectorAll('[data-lab-token]').forEach((token) => token.addEventListener('dragstart', (event) => {
+      draggedToken = {value:token.dataset.labToken, type:token.dataset.tokenType || 'format', color:token.dataset.tokenColor || ''};
+      postId = ''; event.dataTransfer.effectAllowed = 'copy';
+    }));
     lab.querySelectorAll('[data-matrix-cell]').forEach((cell) => {
-      cell.addEventListener('dragover', (event) => { if (!tokenValue) return; event.preventDefault(); cell.classList.add('is-drag-over'); });
+      cell.addEventListener('dragover', (event) => { if (!draggedToken) return; event.preventDefault(); cell.classList.add('is-drag-over'); });
       cell.addEventListener('dragleave', () => cell.classList.remove('is-drag-over'));
-      cell.addEventListener('drop', (event) => { event.preventDefault(); cell.classList.remove('is-drag-over'); if (!tokenValue) return; (matrix[cell.dataset.matrixCell] ||= []).push(tokenValue); saveMatrix(); renderMatrix(); });
+      cell.addEventListener('drop', (event) => {
+        event.preventDefault(); cell.classList.remove('is-drag-over'); if (!draggedToken) return;
+        const items = (matrix[cell.dataset.matrixCell] ||= []);
+        if (!items.some((item) => item.value === draggedToken.value && item.type === draggedToken.type)) items.push({...draggedToken});
+        saveMatrix(); renderMatrix(); draggedToken = null;
+      });
     });
     renderMatrix();
-    lab.querySelectorAll('[data-post-id]').forEach((card) => card.addEventListener('dragstart', (event) => { postId = card.dataset.postId; tokenValue = ''; card.classList.add('is-dragging'); event.dataTransfer.effectAllowed = 'move'; }));
+    lab.querySelectorAll('[data-post-id]').forEach((card) => card.addEventListener('dragstart', (event) => { postId = card.dataset.postId; draggedToken = null; card.classList.add('is-dragging'); event.dataTransfer.effectAllowed = 'move'; }));
     lab.querySelectorAll('[data-post-id]').forEach((card) => card.addEventListener('dragend', () => card.classList.remove('is-dragging')));
     lab.querySelectorAll('[data-calendar-date]').forEach((day) => {
       day.addEventListener('dragover', (event) => { if (!postId) return; event.preventDefault(); day.classList.add('is-drag-over'); });
@@ -1529,7 +1548,15 @@
       });
     });
     const dialog = lab.querySelector('[data-draft-dialog]');
-    lab.querySelector('[data-lab-open-draft]')?.addEventListener('click', () => dialog.showModal());
+    lab.querySelectorAll('[data-lab-open-draft]').forEach((button) => button.addEventListener('click', () => dialog.showModal()));
+    lab.querySelectorAll('[data-delete-post]').forEach((button) => button.addEventListener('click', async (event) => {
+      event.preventDefault(); event.stopPropagation();
+      if (!confirm('Удалить этот черновик со склада и из контент-плана?')) return;
+      const body = new FormData(); body.set('content_scope', '{{ content_scope }}');
+      {% if content_owner_id %}body.set('content_owner_id', '{{ content_owner_id }}');{% endif %}
+      const response = await fetch(`/my-calendar/content/${button.dataset.deletePost}/delete`, {method:'POST', body});
+      if (response.ok) window.location.reload(); else alert('Не удалось удалить черновик.');
+    }));
     lab.querySelector('[data-draft-form]')?.addEventListener('submit', async (event) => {
       event.preventDefault(); const form = event.currentTarget; const status = lab.querySelector('[data-draft-status]'); status.textContent = 'Сохраняю…';
       const response = await fetch('/my-calendar/content/lab/drafts', {method:'POST', body:new FormData(form)}); const payload = await response.json();
@@ -1545,7 +1572,6 @@
     });
   })();
 </script>
-<script src="https://cdn.jsdelivr.net/npm/fabric@5.3.0/dist/fabric.min.js"></script>
 <script>
   (function () {
     function escapeHtml(value) {
@@ -2512,7 +2538,43 @@
 
     initializePinterestTrends();
     initializeContentAiAssistant();
-    initializeContentPhotoEditor();
+
+    const photoEditorDetails = document.getElementById('content-photo-editor');
+    let photoEditorLoadPromise = null;
+    const loadContentPhotoEditor = () => {
+      if (!photoEditorDetails || photoEditorDetails.dataset.editorInitialized === '1') return;
+      if (window.fabric && window.fabric.Canvas) {
+        photoEditorDetails.dataset.editorInitialized = '1';
+        initializeContentPhotoEditor();
+        return;
+      }
+      if (photoEditorLoadPromise) return;
+      const statusNode = document.getElementById('content_photo_editor_status');
+      if (statusNode) statusNode.textContent = 'Загружаю редактор…';
+      photoEditorLoadPromise = new Promise((resolve, reject) => {
+        const script = document.createElement('script');
+        script.src = 'https://cdn.jsdelivr.net/npm/fabric@5.3.0/dist/fabric.min.js';
+        script.async = true;
+        script.onload = resolve;
+        script.onerror = reject;
+        document.head.appendChild(script);
+      }).then(() => {
+        photoEditorDetails.dataset.editorInitialized = '1';
+        initializeContentPhotoEditor();
+      }).catch(() => {
+        photoEditorLoadPromise = null;
+        if (statusNode) {
+          statusNode.textContent = 'Не удалось загрузить редактор. Проверьте соединение и откройте раздел снова.';
+          statusNode.style.color = '#b91c1c';
+        }
+      });
+    };
+    if (photoEditorDetails) {
+      photoEditorDetails.addEventListener('toggle', () => {
+        if (photoEditorDetails.open) loadContentPhotoEditor();
+      });
+      if (photoEditorDetails.open) loadContentPhotoEditor();
+    }
 
     const mode = document.getElementById("shift_mode");
     const repeatKind = document.getElementById("shift_repeat_kind");
