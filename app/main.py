@@ -983,6 +983,8 @@ MAX_FESTIVAL_TICKET_FILES = 5
 
 telegram_auth_state_lock = threading.Lock()
 telegram_auth_state: dict[str, dict[str, str]] = {}
+telegram_bot_flow_state_lock = threading.Lock()
+telegram_bot_flow_state: dict[str, dict[str, str]] = {}
 telegram_worker_lock = threading.Lock()
 telegram_worker_thread: threading.Thread | None = None
 content_telegram_worker_lock = threading.Lock()
@@ -991,6 +993,8 @@ content_telegram_worker_thread: threading.Thread | None = None
 content_vk_last_sync_monotonic = time.monotonic()
 vk_bot_auth_state_lock = threading.Lock()
 vk_bot_auth_state: dict[str, dict[str, str]] = {}
+vk_bot_flow_state_lock = threading.Lock()
+vk_bot_flow_state: dict[str, dict[str, str]] = {}
 vk_bot_worker_lock = threading.Lock()
 vk_bot_worker_thread: threading.Thread | None = None
 external_import_worker_lock = threading.Lock()
@@ -9032,7 +9036,12 @@ def telegram_api_url(method: str) -> str:
     return f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/{method}"
 
 
-def telegram_send_message(chat_id: str, message: str) -> tuple[bool, int | None]:
+def telegram_send_message(
+    chat_id: str,
+    message: str,
+    *,
+    reply_markup: dict[str, Any] | None = None,
+) -> tuple[bool, int | None]:
     if not TELEGRAM_BOT_ENABLED or not TELEGRAM_BOT_TOKEN:
         return False, None
     payload = {
@@ -9040,6 +9049,8 @@ def telegram_send_message(chat_id: str, message: str) -> tuple[bool, int | None]
         "text": message,
         "disable_web_page_preview": True,
     }
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
     try:
         response = requests.post(
             telegram_api_url("sendMessage"),
@@ -9052,6 +9063,19 @@ def telegram_send_message(chat_id: str, message: str) -> tuple[bool, int | None]
     if not response.ok or not response_payload.get("ok"):
         return False, int(response_payload.get("error_code") or response.status_code or 0)
     return True, None
+
+
+def telegram_answer_callback(callback_query_id: str) -> None:
+    if not callback_query_id:
+        return
+    try:
+        requests.post(
+            telegram_api_url("answerCallbackQuery"),
+            json={"callback_query_id": callback_query_id},
+            timeout=10,
+        )
+    except requests.RequestException:
+        pass
 
 
 def telegram_delete_message(chat_id: str, message_id: int) -> bool:
@@ -9095,6 +9119,27 @@ def telegram_get_updates(offset: int) -> list[dict[str, Any]]:
     return results if isinstance(results, list) else []
 
 
+def telegram_set_bot_commands() -> None:
+    if not TELEGRAM_BOT_ENABLED or not TELEGRAM_BOT_TOKEN:
+        return
+    commands = [
+        {"command": "menu", "description": "Открыть меню Cosplay Planner"},
+        {"command": "idea", "description": "Добавить быструю идею косплана"},
+        {"command": "search", "description": "Найти косплан, фотосет или дело"},
+        {"command": "deadlines", "description": "Дедлайны и события на неделю"},
+        {"command": "festivals", "description": "Фестивали на ближайшие две недели"},
+        {"command": "my_festivals", "description": "Фестивали, куда я иду"},
+        {"command": "post_ideas", "description": "Идеи для постов"},
+        {"command": "help", "description": "Справка по командам"},
+        {"command": "login", "description": "Привязать аккаунт"},
+        {"command": "logout", "description": "Отвязать аккаунт"},
+    ]
+    try:
+        requests.post(telegram_api_url("setMyCommands"), json={"commands": commands}, timeout=15)
+    except requests.RequestException:
+        pass
+
+
 def reset_telegram_auth(chat_id: str) -> None:
     with telegram_auth_state_lock:
         telegram_auth_state.pop(chat_id, None)
@@ -9111,6 +9156,233 @@ def set_telegram_auth_step(chat_id: str, *, step: str, username: str = "") -> No
 def get_telegram_auth_step(chat_id: str) -> dict[str, str]:
     with telegram_auth_state_lock:
         return dict(telegram_auth_state.get(chat_id, {}))
+
+
+BOT_HELP_TEXT = (
+    "✨ Cosplay Planner — быстрые команды\n\n"
+    "/idea — добавить быструю идею косплана\n"
+    "/search — найти косплан, фотосет или список дел\n"
+    "/deadlines — события и дедлайны на 7 дней\n"
+    "/festivals — фестивали на ближайшие 14 дней\n"
+    "/my_festivals — фестивали с отметкой «Я иду»\n"
+    "/post_ideas — идеи для постов из контент-плана\n"
+    "/reply текст — ответить на последний «голубь»\n"
+    "/menu — открыть кнопки\n"
+    "/login — привязать аккаунт, /logout — отвязать"
+)
+
+BOT_ACTION_ALIASES = {
+    "/idea": "idea", "быстрая идея": "idea", "💡 быстрая идея": "idea",
+    "/search": "search", "поиск": "search", "🔎 поиск": "search",
+    "/deadlines": "deadlines", "дедлайны": "deadlines", "📅 дедлайны недели": "deadlines",
+    "/festivals": "festivals", "фестивали": "festivals", "🎪 фестивали 2 недели": "festivals",
+    "/my_festivals": "my_festivals", "мои фестивали": "my_festivals", "⭐ мои фестивали": "my_festivals",
+    "/post_ideas": "post_ideas", "идеи для постов": "post_ideas", "📝 идеи для постов": "post_ideas",
+    "/help": "help", "help": "help", "помощь": "help",
+    "/menu": "menu", "меню": "menu",
+}
+
+
+def bot_action_from_text(text_value: str) -> str:
+    command = str(text_value or "").strip().casefold().split("@", 1)[0]
+    return BOT_ACTION_ALIASES.get(command, "")
+
+
+def bot_menu_keyboard_telegram() -> dict[str, Any]:
+    return {"inline_keyboard": [
+        [{"text": "💡 Быстрая идея", "callback_data": "bot:idea"}, {"text": "🔎 Поиск", "callback_data": "bot:search"}],
+        [{"text": "📅 Дедлайны недели", "callback_data": "bot:deadlines"}],
+        [{"text": "🎪 Фестивали 2 недели", "callback_data": "bot:festivals"}, {"text": "⭐ Мои фестивали", "callback_data": "bot:my_festivals"}],
+        [{"text": "📝 Идеи для постов", "callback_data": "bot:post_ideas"}, {"text": "❔ Помощь", "callback_data": "bot:help"}],
+    ]}
+
+
+def set_bot_flow_state(platform: str, identity: str, step: str = "") -> None:
+    lock, storage = ((telegram_bot_flow_state_lock, telegram_bot_flow_state) if platform == "telegram" else (vk_bot_flow_state_lock, vk_bot_flow_state))
+    with lock:
+        if step:
+            storage[identity] = {"step": step}
+        else:
+            storage.pop(identity, None)
+
+
+def get_bot_flow_state(platform: str, identity: str) -> dict[str, str]:
+    lock, storage = ((telegram_bot_flow_state_lock, telegram_bot_flow_state) if platform == "telegram" else (vk_bot_flow_state_lock, vk_bot_flow_state))
+    with lock:
+        return dict(storage.get(identity, {}))
+
+
+def bot_local_today() -> date:
+    return datetime.now(SITE_TIMEZONE).date()
+
+
+def bot_date_label(value: date | None) -> str:
+    return value.strftime("%d.%m.%Y") if isinstance(value, date) else "дата не указана"
+
+
+def bot_user_for_identity(db: Session, platform: str, identity: str, peer_id: str = "") -> User | None:
+    if platform == "telegram":
+        return db.execute(select(User).where(User.telegram_chat_id == identity)).scalar_one_or_none()
+    return db.execute(select(User).where(or_(User.vk_bot_user_id == identity, User.vk_bot_peer_id == peer_id))).scalar_one_or_none()
+
+
+def create_quick_cosplan_idea(db: Session, user: User, raw_text: str) -> CosplanCard:
+    parts = [part.strip() for part in str(raw_text or "").split("|", 2)]
+    character_name = parts[0] if parts and parts[0] else "Новая идея"
+    fandom = parts[1] if len(parts) > 1 and parts[1] else None
+    notes = parts[2] if len(parts) > 2 and parts[2] else None
+    card = CosplanCard(user_id=user.id, character_name=character_name[:255], fandom=(fandom[:255] if fandom else None), notes=notes, is_quick_draft=True, status_percent=0)
+    db.add(card)
+    db.commit()
+    db.refresh(card)
+    return card
+
+
+def bot_search_results(db: Session, user: User, query: str) -> list[dict[str, str]]:
+    needle = str(query or "").strip().casefold()
+    if not needle:
+        return []
+    results: list[dict[str, str]] = []
+    cards = db.execute(select(CosplanCard).where(CosplanCard.user_id == user.id).order_by(CosplanCard.updated_at.desc())).scalars().all()
+    for card in cards:
+        haystack = " ".join([card.character_name or "", card.fandom or "", card.notes or ""]).casefold()
+        if needle in haystack:
+            results.append({"label": f"Косплан · {card.character_name}", "url": f"{APP_BASE_URL}/cosplan/{card.id}"})
+    for item in accessible_photosets_for_user(db, user.id):
+        haystack = " ".join([item.title or "", item.fandom or "", " ".join(map(str, as_list(item.characters_json)))]).casefold()
+        if needle in haystack:
+            results.append({"label": f"Фотосет · {item.title}", "url": f"{APP_BASE_URL}/cosplan/photosets/{item.id}"})
+        matching_tasks = [str(row.get("text") or "").strip() for row in as_list(item.tasks_json) if isinstance(row, dict) and needle in str(row.get("text") or "").casefold()]
+        if matching_tasks:
+            results.append({"label": f"Дела · {item.title}: {matching_tasks[0]}", "url": f"{APP_BASE_URL}/cosplan/photosets/{item.id}/tasks"})
+    progress_rows = db.execute(select(InProgressCard).where(InProgressCard.user_id == user.id)).scalars().all()
+    for progress in progress_rows:
+        matching = [str(row.get("text") or "").strip() for row in as_list(progress.checklist_json) if isinstance(row, dict) and needle in str(row.get("text") or "").casefold()]
+        if matching:
+            card_name = progress.cosplan_card.character_name if progress.cosplan_card else "Косплан"
+            results.append({"label": f"Дела · {card_name}: {matching[0]}", "url": f"{APP_BASE_URL}/in-progress"})
+    return results[:8]
+
+
+def bot_week_entries(db: Session, user: User, days: int = 7) -> list[tuple[date, str, str]]:
+    start = bot_local_today()
+    end = start + timedelta(days=max(1, days) - 1)
+    rows: list[tuple[date, str, str]] = []
+    personal = db.execute(select(PersonalCalendarEvent).where(PersonalCalendarEvent.user_id == user.id, PersonalCalendarEvent.event_date.between(start, end))).scalars().all()
+    rows.extend((item.event_date, "Событие", item.title or "Без названия") for item in personal)
+    rehearsals = db.execute(select(RehearsalEntry).where(RehearsalEntry.user_id == user.id, RehearsalEntry.entry_date.between(start, end))).scalars().all()
+    rows.extend((item.entry_date, "Репетиция", item.cosplan_card.character_name if item.cosplan_card else "Без названия") for item in rehearsals)
+    festivals = db.execute(select(Festival).where(Festival.user_id == user.id, Festival.is_going.is_(True), Festival.event_date.between(start, end))).scalars().all()
+    rows.extend((item.event_date, "Фестиваль", f"{item.name} · {item.city or 'город не указан'}") for item in festivals)
+    photosets = [item for item in accessible_photosets_for_user(db, user.id) if photoset_calendar_date(item) and start <= photoset_calendar_date(item) <= end]
+    rows.extend((photoset_calendar_date(item), "Фотосет", item.title or "Без названия") for item in photosets)
+    cards = db.execute(select(CosplanCard).where(CosplanCard.user_id == user.id, CosplanCard.is_shared_copy.is_(False), CosplanCard.photoset_date.between(start, end))).scalars().all()
+    linked_photoset_ids = {item.id for item in photosets}
+    rows.extend((item.photoset_date, "Фотосет", item.character_name or "Без названия") for item in cards if item.linked_photoset_id not in linked_photoset_ids)
+    progress_rows = db.execute(select(InProgressCard).where(InProgressCard.user_id == user.id)).scalars().all()
+    for progress in progress_rows:
+        for item in as_list(progress.checklist_json):
+            deadline = parse_date(str(item.get("deadline") or "")) if isinstance(item, dict) else None
+            if deadline and start <= deadline <= end:
+                rows.append((deadline, "Дедлайн", str(item.get("text") or "Дело")))
+    masters = db.execute(select(InProgressMasterCard).where(or_(InProgressMasterCard.user_id == user.id, InProgressMasterCard.customer_user_id == user.id), InProgressMasterCard.is_archived.is_(False))).scalars().all()
+    for card in masters:
+        if card.deadline_date and start <= card.deadline_date <= end:
+            rows.append((card.deadline_date, "Дедлайн мастера", card.name or "Без названия"))
+        for deadline in normalize_master_intermediate_deadline_dates(as_list(card.intermediate_deadlines_json)):
+            if start <= deadline <= end:
+                rows.append((deadline, "Примерка", card.name or "Без названия"))
+    return sorted(rows, key=lambda item: (item[0], item[1], item[2].casefold()))
+
+
+def bot_festivals(db: Session, user: User, *, only_going: bool = False) -> list[Festival]:
+    today = bot_local_today()
+    stmt = select(Festival).where(Festival.user_id == user.id, Festival.event_date.is_not(None))
+    if only_going:
+        stmt = stmt.where(Festival.is_going.is_(True))
+    festivals = db.execute(stmt).scalars().all()
+    limit = None if only_going else today + timedelta(days=13)
+    return sorted(
+        [item for item in festivals if item.event_date and item.event_date >= today and (limit is None or item.event_date <= limit)],
+        key=lambda item: (item.event_date, (item.city or "").casefold(), (item.name or "").casefold()),
+    )[:20]
+
+
+def bot_post_ideas(db: Session, user: User) -> list[tuple[date, str, str]]:
+    today = bot_local_today()
+    limit = today + timedelta(days=13)
+    posts = db.execute(select(ContentPlanPost).where(ContentPlanPost.user_id == user.id, ContentPlanPost.publish_date.between(today, limit)).order_by(ContentPlanPost.publish_date)).scalars().all()
+    result = [(post.publish_date, "Контент-план", post.title) for post in posts]
+    recommendations = build_content_plan_recommendations(db, user, posts, today=today)
+    result.extend((item["publish_date"], str(item.get("kind_label") or "Предложение"), str(item.get("title") or "Идея")) for item in recommendations if today <= item["publish_date"] <= limit)
+    for event_date, kind, title in bot_week_entries(db, user, days=14):
+        if kind in {"Репетиция", "Дедлайн", "Дедлайн мастера"}:
+            result.append((event_date, f"Инфоповод: {kind}", f"Рассказать про «{title}»"))
+    users = db.execute(select(User).where(User.birth_date.is_not(None))).scalars().all()
+    for item in upcoming_user_birthdays_this_week(users, today):
+        birthday_user, birthday_date = item.get("user"), item.get("date")
+        if isinstance(birthday_user, User) and isinstance(birthday_date, date) and birthday_user.id != user.id:
+            result.append((birthday_date, "День рождения", f"Поздравить @{preferred_user_alias(birthday_user)}"))
+    unique: dict[tuple[date, str], tuple[date, str, str]] = {}
+    for row in result:
+        unique[(row[0], row[2].casefold())] = row
+    return sorted(unique.values(), key=lambda item: (item[0], item[1], item[2].casefold()))[:15]
+
+
+def bot_text_for_action(db: Session, user: User, action: str) -> str:
+    if action == "deadlines":
+        rows = bot_week_entries(db, user)[:30]
+        return "📅 На ближайшие 7 дней ничего не запланировано." if not rows else "📅 Неделя впереди:\n\n" + "\n".join(f"• {bot_date_label(day)} · {kind}: {title}" for day, kind, title in rows)
+    if action in {"festivals", "my_festivals"}:
+        rows = bot_festivals(db, user, only_going=action == "my_festivals")
+        heading = "⭐ Мои фестивали" if action == "my_festivals" else "🎪 Фестивали на 14 дней"
+        return f"{heading}: ничего не найдено." if not rows else heading + ":\n\n" + "\n".join(f"• {bot_date_label(item.event_date)} · {item.city or 'город не указан'} · {item.name}" for item in rows)
+    if action == "post_ideas":
+        rows = bot_post_ideas(db, user)
+        return "📝 На ближайшие две недели идей пока нет." if not rows else "📝 Идеи для постов:\n\n" + "\n".join(f"• {bot_date_label(day)} · {kind}: {title}" for day, kind, title in rows)
+    return BOT_HELP_TEXT
+
+
+def run_bot_action(platform: str, identity: str, peer_id: str, action: str) -> tuple[str, list[dict[str, str]]]:
+    if action not in {"idea", "search"}:
+        set_bot_flow_state(platform, identity)
+    if action == "help":
+        return BOT_HELP_TEXT, []
+    if action == "menu":
+        return "Выберите действие:", []
+    with SessionLocal() as db:
+        user = bot_user_for_identity(db, platform, identity, peer_id)
+        if not user:
+            return "Сначала привяжите аккаунт через /start или /login.", []
+        if action == "idea":
+            set_bot_flow_state(platform, identity, "quick_idea")
+            return "💡 Отправьте идею в формате:\nПерсонаж | Фандом | Заметка\n\nФандом и заметку можно не указывать.", []
+        if action == "search":
+            set_bot_flow_state(platform, identity, "search")
+            return "🔎 Что найти? Отправьте часть названия персонажа, фандома, фотосета или дела.", []
+        return bot_text_for_action(db, user, action), []
+
+
+def consume_bot_flow(platform: str, identity: str, peer_id: str, text_value: str) -> tuple[str, list[dict[str, str]]] | None:
+    step = get_bot_flow_state(platform, identity).get("step")
+    if not step:
+        return None
+    with SessionLocal() as db:
+        user = bot_user_for_identity(db, platform, identity, peer_id)
+        if not user:
+            set_bot_flow_state(platform, identity)
+            return "Сначала привяжите аккаунт через /start или /login.", []
+        if step == "quick_idea":
+            card = create_quick_cosplan_idea(db, user, text_value)
+            set_bot_flow_state(platform, identity)
+            return f"✨ Идея «{card.character_name}» сохранена в черновики косплана.\n{APP_BASE_URL}/cosplan/{card.id}", []
+        if step == "search":
+            results = bot_search_results(db, user, text_value)
+            set_bot_flow_state(platform, identity)
+            if not results:
+                return "Ничего не найдено. Попробуйте другое слово или снова выберите «Поиск».", []
+            return "🔎 Найдено:\n\n" + "\n".join(f"• {item['label']}\n  {item['url']}" for item in results), results
+    return None
 
 
 def start_telegram_auth(chat_id: str, *, with_greeting: bool = False) -> None:
@@ -9231,7 +9503,11 @@ def handle_telegram_auth_message(
             db.commit()
 
         reset_telegram_auth(chat_id)
-        telegram_send_message(chat_id, "Авторизация успешно пройдена!")
+        telegram_send_message(
+            chat_id,
+            "Авторизация успешно пройдена! Выберите действие:",
+            reply_markup=bot_menu_keyboard_telegram(),
+        )
         return True
 
     return False
@@ -9271,6 +9547,26 @@ def handle_telegram_reply_command(chat_id: str, text_value: str) -> bool:
 
 
 def handle_telegram_update(update: dict[str, Any]) -> None:
+    callback = update.get("callback_query")
+    if isinstance(callback, dict):
+        callback_id = str(callback.get("id") or "")
+        sender = callback.get("from") or {}
+        message = callback.get("message") or {}
+        chat = message.get("chat") or {}
+        chat_id = str(chat.get("id") or sender.get("id") or "").strip()
+        sender_id = str(sender.get("id") or chat_id).strip()
+        data = str(callback.get("data") or "")
+        telegram_answer_callback(callback_id)
+        if chat_id and data.startswith("bot:"):
+            action = data.removeprefix("bot:")
+            response_text, _results = run_bot_action("telegram", sender_id, chat_id, action)
+            telegram_send_message(
+                chat_id,
+                response_text,
+                reply_markup=bot_menu_keyboard_telegram() if action in {"menu", "help"} else None,
+            )
+        return
+
     message = update.get("message")
     if not isinstance(message, dict):
         return
@@ -9292,9 +9588,11 @@ def handle_telegram_update(update: dict[str, Any]) -> None:
 
     lowered = text_value.casefold()
     if lowered == "/start":
+        set_bot_flow_state("telegram", linked_telegram_user_id)
         start_telegram_auth(chat_id, with_greeting=True)
         return
     if lowered == "/login":
+        set_bot_flow_state("telegram", linked_telegram_user_id)
         start_telegram_auth(chat_id, with_greeting=False)
         return
     if lowered == "/logout":
@@ -9310,6 +9608,7 @@ def handle_telegram_update(update: dict[str, Any]) -> None:
             if linked_users:
                 db.commit()
         reset_telegram_auth(chat_id)
+        set_bot_flow_state("telegram", linked_telegram_user_id)
         telegram_send_message(chat_id, "Telegram-привязка удалена.")
         return
     if lowered.startswith("/reply"):
@@ -9327,6 +9626,25 @@ def handle_telegram_update(update: dict[str, Any]) -> None:
         telegram_username=sender_username,
         telegram_user_id=linked_telegram_user_id,
     ):
+        return
+
+    action = bot_action_from_text(text_value)
+    if action:
+        response_text, _results = run_bot_action("telegram", linked_telegram_user_id, chat_id, action)
+        telegram_send_message(
+            chat_id,
+            response_text,
+            reply_markup=bot_menu_keyboard_telegram() if action in {"menu", "help"} else None,
+        )
+        return
+
+    flow_result = consume_bot_flow("telegram", linked_telegram_user_id, chat_id, text_value)
+    if flow_result:
+        response_text, results = flow_result
+        result_markup = None
+        if results:
+            result_markup = {"inline_keyboard": [[{"text": item["label"][:64], "url": item["url"]}] for item in results]}
+        telegram_send_message(chat_id, response_text, reply_markup=result_markup)
         return
 
     telegram_send_message(
@@ -9452,6 +9770,7 @@ def start_telegram_worker() -> None:
     with telegram_worker_lock:
         if telegram_worker_thread and telegram_worker_thread.is_alive():
             return
+        telegram_set_bot_commands()
         telegram_worker_thread = threading.Thread(
             target=telegram_bot_loop,
             name="telegram-bot-worker",
@@ -10588,7 +10907,12 @@ def vk_bot_api_call(method: str, params: dict[str, Any]) -> dict[str, Any]:
         return {"error": {"error_code": 0, "error_msg": "VK API request failed"}}
 
 
-def vk_bot_send_message(peer_id: str | int, message: str) -> tuple[bool, int | None]:
+def vk_bot_send_message(
+    peer_id: str | int,
+    message: str,
+    *,
+    keyboard: dict[str, Any] | None = None,
+) -> tuple[bool, int | None]:
     if not VK_BOT_ENABLED or not VK_BOT_TOKEN:
         return False, None
     try:
@@ -10602,12 +10926,28 @@ def vk_bot_send_message(peer_id: str | int, message: str) -> tuple[bool, int | N
             "peer_id": peer_value,
             "message": message,
             "random_id": secrets.randbelow(2_147_483_647),
+            **({"keyboard": json.dumps(keyboard, ensure_ascii=False)} if keyboard else {}),
         },
     )
     error_payload = payload.get("error")
     if isinstance(error_payload, dict):
         return False, int(error_payload.get("error_code") or 0)
     return "response" in payload, None
+
+
+def bot_menu_keyboard_vk() -> dict[str, Any]:
+    def button(label: str, command: str, color: str = "secondary") -> dict[str, Any]:
+        return {"action": {"type": "text", "label": label, "payload": json.dumps({"command": command}, ensure_ascii=False)}, "color": color}
+    return {
+        "one_time": False,
+        "inline": False,
+        "buttons": [
+            [button("💡 Быстрая идея", "/idea", "primary"), button("🔎 Поиск", "/search")],
+            [button("📅 Дедлайны недели", "/deadlines")],
+            [button("🎪 Фестивали 2 недели", "/festivals"), button("⭐ Мои фестивали", "/my_festivals")],
+            [button("📝 Идеи для постов", "/post_ideas"), button("❔ Помощь", "/help")],
+        ],
+    }
 
 
 def reset_vk_bot_auth(sender_id: str) -> None:
@@ -10701,7 +11041,11 @@ def handle_vk_bot_auth_message(sender_id: str, peer_id: str, text_value: str) ->
             db.commit()
 
         reset_vk_bot_auth(sender_id)
-        vk_bot_send_message(peer_id, "Авторизация успешно пройдена!")
+        vk_bot_send_message(
+            peer_id,
+            "Авторизация успешно пройдена! Выберите действие:",
+            keyboard=bot_menu_keyboard_vk(),
+        )
         return True
 
     return False
@@ -10768,9 +11112,11 @@ def handle_vk_bot_message(message: dict[str, Any]) -> None:
 
     lowered = text_value.casefold()
     if lowered in {"/start", "start", "начать"}:
+        set_bot_flow_state("vk", sender_id)
         start_vk_bot_auth(sender_id, peer_id, with_greeting=True)
         return
     if lowered in {"/login", "login", "войти"}:
+        set_bot_flow_state("vk", sender_id)
         start_vk_bot_auth(sender_id, peer_id, with_greeting=False)
         return
     if lowered in {"/logout", "logout", "выйти"}:
@@ -10790,14 +11136,35 @@ def handle_vk_bot_message(message: dict[str, Any]) -> None:
             if linked_users:
                 db.commit()
         reset_vk_bot_auth(sender_id)
+        set_bot_flow_state("vk", sender_id)
         vk_bot_send_message(peer_id, "VK-привязка удалена.")
         return
     if lowered.startswith("/reply") or lowered.startswith("reply ") or lowered.startswith("ответ "):
         if handle_vk_bot_reply_command(sender_id, peer_id, text_value):
             return
 
-    state = get_vk_bot_auth_step(sender_id)
-    if state or not text_value.startswith("/"):
+    auth_state = get_vk_bot_auth_step(sender_id)
+    if auth_state:
+        if handle_vk_bot_auth_message(sender_id, peer_id, text_value):
+            return
+
+    action = bot_action_from_text(text_value)
+    if action:
+        response_text, _results = run_bot_action("vk", sender_id, peer_id, action)
+        vk_bot_send_message(
+            peer_id,
+            response_text,
+            keyboard=bot_menu_keyboard_vk() if action in {"menu", "help"} else None,
+        )
+        return
+
+    flow_result = consume_bot_flow("vk", sender_id, peer_id, text_value)
+    if flow_result:
+        response_text, _results = flow_result
+        vk_bot_send_message(peer_id, response_text)
+        return
+
+    if not text_value.startswith("/"):
         if handle_vk_bot_auth_message(sender_id, peer_id, text_value):
             return
 
