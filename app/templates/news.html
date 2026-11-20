@@ -31,13 +31,21 @@
 </section>
 
 <section class="box home-favorites" id="home-favorites" data-home-fixed>
-  <div class="row-between">
-    <div>
-      <h2>Избранное</h2>
-      <p class="muted">Три быстрых пути к самому важному.</p>
-    </div>
+  <div class="home-favorites-bar">
+    <h2>Избранное</h2>
+    {% set visible_favorites = home_favorites if home_favorites else home_favorite_options[:3] %}
+    {% if visible_favorites %}
+      <nav class="home-favorites-grid" aria-label="Избранные разделы">
+        {% for favorite in visible_favorites %}
+          <a class="home-favorite-tile" href="{{ favorite.value }}" aria-label="{{ favorite.label }}" title="{{ favorite.label }}">
+            <span class="home-favorite-icon" aria-hidden="true">{{ favorite.icon }}</span>
+            <span class="sr-only">{{ favorite.label }}</span>
+          </a>
+        {% endfor %}
+      </nav>
+    {% endif %}
     <details class="home-favorites-settings">
-      <summary class="btn btn-small">Настроить</summary>
+      <summary class="btn btn-small home-favorites-settings-button" aria-label="Настроить избранное" title="Настроить избранное">⚙</summary>
       <form method="post" action="/home/favorites" class="grid one-col top-offset">
         {% for slot in range(3) %}
           <label>
@@ -54,17 +62,6 @@
       </form>
     </details>
   </div>
-  {% set visible_favorites = home_favorites if home_favorites else home_favorite_options[:3] %}
-  {% if visible_favorites %}
-    <div class="home-favorites-grid top-offset">
-      {% for favorite in visible_favorites %}
-        <a class="home-favorite-tile" href="{{ favorite.value }}">
-          <span class="home-favorite-icon" aria-hidden="true">{{ favorite.icon }}</span>
-          <strong>{{ favorite.label }}</strong>
-        </a>
-      {% endfor %}
-    </div>
-  {% endif %}
 </section>
 
 <div class="home-dashboard-layout">
