@@ -27996,6 +27996,9 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
         return redirect("/login")
 
     active_view = normalize_calendar_view(request.query_params.get("view"))
+    content_section = str(request.query_params.get("content_section", "plan")).strip().lower()
+    if content_section not in {"plan", "lab"}:
+        content_section = "plan"
     content_review_week_requested = to_bool(request.query_params.get("content_review_week"))
     edit_post_id_raw = str(request.query_params.get("edit_post_id", "")).strip()
     try:
@@ -28323,6 +28326,7 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
         content_action_query_params["content_owner_id"] = str(content_owner_id)
     content_action_query = urlencode(content_action_query_params)
     content_view_query = urlencode({"view": CALENDAR_VIEW_CONTENT, **content_action_query_params})
+    content_lab_query = urlencode({"view": CALENDAR_VIEW_CONTENT, "content_section": "lab", **content_action_query_params})
     content_client_view_query = urlencode({"view": CALENDAR_VIEW_CONTENT, "content_scope": CONTENT_SCOPE_CLIENT})
     if content_owner_id:
         content_client_view_query = urlencode(
@@ -28437,6 +28441,14 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
         )
         rubric_options = [rubric for rubric in rubric_options if rubric not in hidden_rubrics]
     rubric_colors = rubric_color_map(rubric_options)
+    lab_week_start = today - timedelta(days=today.weekday())
+    lab_week_days = [
+        {
+            "date": lab_week_start + timedelta(days=offset),
+            "label": ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"][offset],
+        }
+        for offset in range(7)
+    ]
     content_rows: list[dict[str, Any]] = []
     planned_telegram_message_keys: set[tuple[str, str]] = set()
     planned_vk_post_keys: set[tuple[str, str]] = set()
@@ -28700,6 +28712,8 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
         content_rubric_options=rubric_options,
         content_rubric_colors=rubric_colors,
         content_rubric_tags=rubric_tags,
+        content_lab_week_days=lab_week_days,
+        content_lab_drafts=[post for post in content_posts if normalize_content_status(post.status) != "published"],
         content_form=get_content_plan_form_values(
             editing_content_post,
             rubric_tags,
@@ -28714,6 +28728,8 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
         content_is_client_scope=(content_scope == CONTENT_SCOPE_CLIENT),
         content_is_personal_scope=(content_scope == CONTENT_SCOPE_PERSONAL),
         content_view_query=content_view_query,
+        content_lab_query=content_lab_query,
+        content_section=content_section,
         content_action_query=content_action_query,
         content_client_view_query=content_client_view_query,
         content_personal_view_query=content_personal_view_query,
@@ -29564,6 +29580,108 @@ async def my_calendar_content_update(post_id: int, request: Request, db: Session
     else:
         add_flash(request, "Пост контент-плана обновлен.", "success")
     return content_calendar_redirect(request, user, form=form, content_owner=content_owner)
+
+
+@app.post("/my-calendar/content/lab/drafts")
+async def content_lab_create_draft(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return JSONResponse({"detail": "Требуется вход."}, status_code=401)
+    if ensure_content_plan_access(request, user, db):
+        return JSONResponse({"detail": "Нет доступа к контент-плану."}, status_code=403)
+    form = await request.form()
+    content_owner, owner_redirect = ensure_content_owner_for_action(request, user, db, form=form)
+    if owner_redirect or not content_owner:
+        return JSONResponse({"detail": "Контент-план не выбран."}, status_code=400)
+    title = str(form.get("title", "")).strip()
+    if not title:
+        return JSONResponse({"detail": "Укажите название черновика."}, status_code=400)
+    raw_date = str(form.get("publish_date", "")).strip()
+    publish_date = parse_date(raw_date) if raw_date else date.today()
+    if not publish_date:
+        return JSONResponse({"detail": "Некорректная дата."}, status_code=400)
+    rubric = str(form.get("rubric", "")).strip() or "Неизвестно"
+    body = str(form.get("body", "")).strip()
+    media_refs = parse_reference_values(str(form.get("media_urls", "")))[:10]
+    upload_dir = Path("app/static/uploads/content-lab")
+    for upload in form.getlist("media_files"):
+        filename = str(getattr(upload, "filename", "") or "").strip()
+        if not filename or len(media_refs) >= 10:
+            continue
+        content_type = str(getattr(upload, "content_type", "") or "").lower()
+        if not (content_type.startswith("image/") or content_type.startswith("video/")):
+            continue
+        suffix = Path(filename).suffix.lower()
+        if suffix not in {".jpg", ".jpeg", ".png", ".webp", ".gif", ".mp4", ".mov", ".webm"}:
+            continue
+        payload = await upload.read()
+        if not payload or len(payload) > 50 * 1024 * 1024:
+            continue
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        stored_name = f"{uuid.uuid4().hex}{suffix}"
+        (upload_dir / stored_name).write_bytes(payload)
+        media_refs.append(f"/static/uploads/content-lab/{stored_name}")
+    post = ContentPlanPost(
+        user_id=content_owner.id,
+        title=title[:255],
+        description=re.sub(r"<[^>]+>", " ", body)[:1000],
+        publish_date=publish_date,
+        publish_time=parse_time_hhmm(str(form.get("publish_time", "")).strip()),
+        socials_json=[],
+        rubric=rubric[:120],
+        rubric_tag=get_content_rubric_tags(db, content_owner.id).get(rubric),
+        status="draft",
+        telegram_body_html=bleach.clean(body, tags=["b", "strong", "i", "em", "u", "s", "a", "br", "p", "ul", "ol", "li"], attributes={"a": ["href"]}),
+        telegram_photos_json=media_refs,
+    )
+    db.add(post)
+    remember_options(db, content_owner.id, "content_rubric", [rubric])
+    db.commit()
+    db.refresh(post)
+    return JSONResponse({"ok": True, "id": post.id, "title": post.title, "date": post.publish_date.isoformat()})
+
+
+@app.post("/my-calendar/content/lab/rubrics")
+async def content_lab_save_rubric(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return JSONResponse({"detail": "Требуется вход."}, status_code=401)
+    form = await request.form()
+    content_owner, owner_redirect = ensure_content_owner_for_action(request, user, db, form=form)
+    if owner_redirect or not content_owner:
+        return JSONResponse({"detail": "Контент-план не выбран."}, status_code=400)
+    rubric = str(form.get("rubric", "")).strip()
+    tag = normalize_content_rubric_tag(str(form.get("tag", "")).strip())
+    if not rubric or len(rubric) > 120:
+        return JSONResponse({"detail": "Укажите название рубрики до 120 символов."}, status_code=400)
+    tags = get_content_rubric_tags(db, content_owner.id)
+    if tag:
+        tags[rubric] = tag
+    else:
+        tags.pop(rubric, None)
+    save_content_rubric_tags(db, content_owner.id, tags)
+    remember_options(db, content_owner.id, "content_rubric", [rubric])
+    remove_user_option_value(db, content_owner.id, CONTENT_RUBRIC_HIDDEN_GROUP, rubric)
+    db.commit()
+    return JSONResponse({"ok": True, "rubric": rubric, "tag": tag})
+
+
+@app.post("/my-calendar/content/lab/posts/{post_id}/schedule")
+async def content_lab_schedule_post(post_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return JSONResponse({"detail": "Требуется вход."}, status_code=401)
+    form = await request.form()
+    content_owner, owner_redirect = ensure_content_owner_for_action(request, user, db, form=form)
+    if owner_redirect or not content_owner:
+        return JSONResponse({"detail": "Контент-план не выбран."}, status_code=400)
+    post = db.execute(select(ContentPlanPost).where(ContentPlanPost.id == post_id, ContentPlanPost.user_id == content_owner.id)).scalar_one_or_none()
+    target_date = parse_date(str(form.get("publish_date", "")).strip())
+    if not post or not target_date:
+        return JSONResponse({"detail": "Карточка или дата не найдены."}, status_code=404)
+    post.publish_date = target_date
+    db.commit()
+    return JSONResponse({"ok": True, "date": target_date.isoformat()})
 
 
 @app.post("/my-calendar/content/{post_id}/delete")

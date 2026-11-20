@@ -1,0 +1,110 @@
+<div class="content-lab" data-content-lab data-owner="{{ content_owner.id if content_owner else user.id }}">
+  <header class="content-lab-hero">
+    <div>
+      <h2>Лаборатория контента</h2>
+      <p>Собирайте ритм недели, готовьте материалы и раскладывайте публикации прямо по календарю.</p>
+    </div>
+    <button class="btn btn-accent" type="button" data-lab-open-draft>+ Новый черновик</button>
+  </header>
+
+  <section class="box content-lab-section">
+    <div class="content-lab-section-head">
+      <div><span class="content-lab-index">01</span><h3>Матрица контента</h3></div>
+      <p>Перетаскивайте рубрики и форматы. Один элемент можно использовать сколько угодно раз.</p>
+    </div>
+    <div class="content-lab-palette">
+      <div>
+        <strong>Теги и рубрики</strong>
+        <div class="content-lab-token-list">
+          {% for rubric in content_rubric_options %}
+            <button type="button" draggable="true" class="lab-token lab-token-rubric" data-lab-token="{{ rubric }}" style="--token-color:{{ content_rubric_colors.get(rubric, '#8ecae6') }}">{{ rubric }}{% if content_rubric_tags.get(rubric) %}<small>{{ content_rubric_tags.get(rubric) }}</small>{% endif %}</button>
+          {% endfor %}
+        </div>
+        <form class="content-lab-rubric-form" data-rubric-form>
+          <input type="hidden" name="content_scope" value="{{ content_scope }}" />{% if content_owner_id %}<input type="hidden" name="content_owner_id" value="{{ content_owner_id }}" />{% endif %}
+          <input name="rubric" maxlength="120" placeholder="Новая рубрика" required />
+          <input name="tag" maxlength="120" placeholder="#тег" />
+          <button class="btn btn-small" type="submit">Добавить</button>
+        </form>
+      </div>
+      <div>
+        <strong>Форматы</strong>
+        <div class="content-lab-token-list">
+          {% for format in ['Горизонтальное видео','Короткое видео','Шопс','Карусель','Комикс','Обсуждение','Интерактив','Беки','Прогресс','Проф. фото','Моб. фото','Другое'] %}
+            <button type="button" draggable="true" class="lab-token lab-token-format" data-lab-token="{{ format }}">{{ format }}</button>
+          {% endfor %}
+        </div>
+      </div>
+    </div>
+    <div class="content-matrix-wrap">
+      <div class="content-matrix" role="grid" aria-label="Матрица контента на неделю">
+        {% for day in content_lab_week_days %}
+          <div class="content-matrix-day" role="columnheader"><strong>{{ day.label }}</strong><small>{{ day.date.strftime('%d.%m') }}</small></div>
+        {% endfor %}
+        {% for period in ['Утро','День','Вечер'] %}
+          {% for day in content_lab_week_days %}
+            <div class="content-matrix-cell" data-matrix-cell="{{ day.date.isoformat() }}-{{ period }}" data-period="{{ period }}" tabindex="0"><span>{{ period }}</span><div class="content-matrix-items"></div></div>
+          {% endfor %}
+        {% endfor %}
+      </div>
+    </div>
+  </section>
+
+  <section class="box content-lab-section">
+    <div class="content-lab-section-head">
+      <div><span class="content-lab-index">02</span><h3>Склад</h3></div>
+      <p>Все неопубликованные материалы. Потяните карточку за верхнюю часть и бросьте на день календаря.</p>
+    </div>
+    <div class="content-warehouse" data-warehouse>
+      {% for post in content_lab_drafts %}
+        <article class="warehouse-card" draggable="true" data-post-id="{{ post.id }}">
+          <div class="warehouse-media">
+            {% set media = post.telegram_photos_json or [] %}
+            {% if media %}<img src="{{ media[0] }}" alt="" loading="lazy" />{% else %}<span>Черновик</span>{% endif %}
+          </div>
+          <div class="warehouse-card-body">
+            <div class="warehouse-card-meta"><span>{{ content_status_labels.get(post.status, 'Черновик') }}</span><time>{{ post.publish_date.strftime('%d.%m.%Y') }}</time></div>
+            <h4>{{ post.title or 'Без названия' }}</h4>
+            <p>{{ post.description or 'Текст пока не добавлен' }}</p>
+            <div class="warehouse-card-foot"><span class="lab-token lab-token-rubric">{{ post.rubric or 'Неизвестно' }}</span><a href="/my-calendar?{{ content_view_query }}&edit_post_id={{ post.id }}#content-form">Открыть</a></div>
+          </div>
+        </article>
+      {% else %}
+        <div class="content-lab-empty">Склад пуст — создайте первый черновик.</div>
+      {% endfor %}
+    </div>
+  </section>
+
+  <section class="box content-lab-section">
+    <div class="content-lab-section-head">
+      <div><span class="content-lab-index">03</span><h3>Текущая неделя</h3></div>
+      <p>Карточки можно переносить между днями — дата публикации обновится сразу.</p>
+    </div>
+    <div class="lab-week-calendar">
+      {% for day in content_lab_week_days %}
+        <div class="lab-week-day" data-calendar-date="{{ day.date.isoformat() }}">
+          <header><strong>{{ day.label }}</strong><time>{{ day.date.strftime('%d.%m') }}</time></header>
+          <div class="lab-week-day-items">
+            {% for post in content_lab_drafts if post.publish_date == day.date %}
+              <article class="lab-calendar-card" draggable="true" data-post-id="{{ post.id }}"><strong>{{ post.title }}</strong><small>{{ post.publish_time or 'Весь день' }} · {{ post.rubric }}</small></article>
+            {% endfor %}
+          </div>
+        </div>
+      {% endfor %}
+    </div>
+  </section>
+
+  <dialog class="content-draft-dialog" data-draft-dialog>
+    <form method="dialog" class="content-draft-dialog-head"><h3>Новый черновик</h3><button class="btn btn-small" value="cancel" aria-label="Закрыть">×</button></form>
+    <form data-draft-form class="grid one-col">
+      <input type="hidden" name="content_scope" value="{{ content_scope }}" />{% if content_owner_id %}<input type="hidden" name="content_owner_id" value="{{ content_owner_id }}" />{% endif %}
+      <label>Название<input name="title" maxlength="255" required placeholder="О чём публикация" /></label>
+      <div class="grid two-col"><label>Дата публикации<input type="date" name="publish_date" /></label><label>Время<input type="time" name="publish_time" /></label></div>
+      <label>Рубрика<select name="rubric"><option value="Неизвестно">Без рубрики</option>{% for rubric in content_rubric_options %}<option>{{ rubric }}</option>{% endfor %}</select></label>
+      <label>Медиа с устройства<input type="file" name="media_files" accept="image/*,video/*" multiple /></label>
+      <label>Или медиа по ссылке<textarea name="media_urls" rows="2" placeholder="По одной ссылке на строку"></textarea></label>
+      <label>Текст публикации<textarea name="body" rows="8" placeholder="Можно использовать b, i, ссылки и списки"></textarea></label>
+      <div class="actions-inline"><button class="btn btn-accent" type="submit">Сохранить на склад</button><span class="muted" data-draft-status></span></div>
+    </form>
+  </dialog>
+</div>
