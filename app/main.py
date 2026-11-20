@@ -1767,6 +1767,7 @@ def apply_schema_migrations() -> None:
             ("shared_partner_user_id", "INTEGER"),
             ("is_repost", "BOOLEAN NOT NULL DEFAULT 0"),
             ("manual_publish_only", "BOOLEAN NOT NULL DEFAULT 0"),
+            ("lab_scheduled", "BOOLEAN NOT NULL DEFAULT 0"),
             ("description", "TEXT"),
             ("publish_time", "VARCHAR(8)"),
             ("socials_json", "JSON NOT NULL DEFAULT '[]'"),
@@ -29679,6 +29680,7 @@ async def content_lab_schedule_post(post_id: int, request: Request, db: Session 
     if not post or not target_date:
         return JSONResponse({"detail": "Карточка или дата не найдены."}, status_code=404)
     post.publish_date = target_date
+    post.lab_scheduled = True
     db.commit()
     return JSONResponse({"ok": True, "date": target_date.isoformat()})
 

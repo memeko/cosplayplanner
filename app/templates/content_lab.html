@@ -63,14 +63,14 @@
     </div>
     <div class="content-warehouse" data-warehouse>
       {% for post in content_lab_drafts %}
-        <article class="warehouse-card" draggable="true" data-post-id="{{ post.id }}">
+        <article class="warehouse-card{% if post.lab_scheduled %} is-scheduled{% endif %}" draggable="true" data-post-id="{{ post.id }}">
           <button type="button" class="warehouse-card-delete" data-delete-post="{{ post.id }}" aria-label="Удалить {{ post.title or 'черновик' }}" title="Удалить черновик">×</button>
           <div class="warehouse-media">
             {% set media = post.telegram_photos_json or [] %}
             {% if media %}<img src="{{ media[0] }}" alt="" loading="lazy" />{% else %}<span>Черновик</span>{% endif %}
           </div>
           <div class="warehouse-card-body">
-            <div class="warehouse-card-meta"><span>{{ content_status_labels.get(post.status, 'Черновик') }}</span><time>{{ post.publish_date.strftime('%d.%m.%Y') }}</time></div>
+            <div class="warehouse-card-meta"><span>{% if post.lab_scheduled %}В календаре{% else %}{{ content_status_labels.get(post.status, 'Черновик') }}{% endif %}</span><time>{{ post.publish_date.strftime('%d.%m.%Y') }}</time></div>
             <h4>{{ post.title or 'Без названия' }}</h4>
             <p>{{ post.description or 'Текст пока не добавлен' }}</p>
             <div class="warehouse-card-foot"><span class="lab-token lab-token-rubric" style="--token-color:{{ content_rubric_colors.get(post.rubric or 'Неизвестно', '#8ecae6') }}">{{ post.rubric or 'Неизвестно' }}</span><a href="/my-calendar?{{ content_view_query }}&edit_post_id={{ post.id }}#content-form">Открыть</a></div>
