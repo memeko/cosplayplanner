@@ -3340,6 +3340,8 @@ body.modal-open {
 .home-collapse-button { margin-left: auto; float: right; }
 .home-section-collapsed > :not(h2):not(.row-between):not(.home-collapse-button) { display: none !important; }
 .home-section-collapsed > .row-between > :not(h2):not(.home-collapse-button) { display: none !important; }
+.home-section-collapsed > .row-between > div:first-child { display: block !important; }
+.home-section-collapsed > .row-between > h2:first-child { display: flex !important; }
 
 @media (max-width: 700px) {
   .home-favorites-grid { grid-template-columns: 1fr; }

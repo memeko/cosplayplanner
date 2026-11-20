@@ -359,9 +359,7 @@
         button.setAttribute("aria-label", `${collapsed ? "Развернуть" : "Свернуть"} блок «${title}»`);
       };
       const storedState = localStorage.getItem(key);
-      const compactByDefault = window.matchMedia("(max-width: 900px)").matches
-        && (section.closest(".home-dashboard-aside") || section.classList.contains("home-community-news"));
-      setCollapsed(storedState === "1" || (storedState === null && compactByDefault));
+      setCollapsed(storedState === "1");
       button.addEventListener("click", function () {
         const collapsed = !section.classList.contains("home-section-collapsed");
         setCollapsed(collapsed);
