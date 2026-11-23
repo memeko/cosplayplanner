@@ -78,6 +78,7 @@ def run_scenario(db_path: Path) -> None:
         CosplanCard,
         PhotoContest,
         PhotoContestAnonymousBallot,
+        PhotoContestAwardCertificate,
         PhotoContestEntry,
         PhotoContestEntryPhoto,
         PhotoContestRequest,
@@ -683,6 +684,14 @@ def run_scenario(db_path: Path) -> None:
         assert_ok(response.status_code == 200, "Winner could not download award PDF")
         assert_ok(response.headers.get("content-type") == "application/pdf", "Award download is not a PDF")
         assert_ok(response.content.startswith(b"%PDF"), "Award download has invalid PDF bytes")
+        with SessionLocal() as db:
+            certificate = db.query(PhotoContestAwardCertificate).filter_by(
+                contest_id=contest_id,
+                entry_id=voted_entry_id,
+            ).one()
+            verification_code = str(certificate.verification_code)
+        verification = client.get(f"/award-verification?code={verification_code}")
+        assert_ok("Грамота подлинная" in verification.text, "Valid award verification code was rejected")
         logout()
 
         login("contest_viewer")

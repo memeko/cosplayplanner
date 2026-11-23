@@ -1318,6 +1318,20 @@ class PhotoContestAwardEmail(Base):
     )
 
 
+class PhotoContestAwardCertificate(Base):
+    __tablename__ = "photo_contest_award_certificates"
+
+    id = Column(Integer, primary_key=True)
+    contest_id = Column(Integer, ForeignKey("photo_contests.id", ondelete="CASCADE"), nullable=False, index=True)
+    entry_id = Column(Integer, ForeignKey("photo_contest_entries.id", ondelete="CASCADE"), nullable=False, index=True)
+    verification_code = Column(String(32), nullable=False, unique=True, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("contest_id", "entry_id", name="uq_photo_contest_award_certificate"),
+    )
+
+
 class CommunityArticle(Base):
     __tablename__ = "community_articles"
 

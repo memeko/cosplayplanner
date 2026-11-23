@@ -112,6 +112,7 @@ from .models import (
     PasswordResetToken,
     PerformanceVideoAnalysisJob,
     PhotoContestAnonymousBallot,
+    PhotoContestAwardCertificate,
     PhotoContestAwardEmail,
     PhotoContest,
     PhotoContestEntry,
@@ -40727,12 +40728,16 @@ def build_photo_contest_award_email_html(
     contest_title: str,
     nomination_title: str,
     place: int,
-    points: int,
+    results_month: str,
+    verification_code: str,
 ) -> str:
     safe_name = html.escape(recipient_name)
     safe_contest = html.escape(contest_title)
     safe_nomination = html.escape(nomination_title)
-    contest_url = html.escape(f"{APP_BASE_URL}/photocosplay", quote=True)
+    safe_results_month = html.escape(results_month)
+    safe_code = html.escape(verification_code)
+    verification_url = html.escape(f"{APP_BASE_URL}/award-verification?code={quote(verification_code)}", quote=True)
+    fox_url = html.escape(f"{APP_BASE_URL}/static/photo-contest-award-fox.png", quote=True)
     return f"""<!doctype html>
 <html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Грамота победителя</title></head>
 <body style="margin:0;padding:0;background:#eef5ff;color:#1f2e4a;font-family:Arial,Helvetica,sans-serif">
@@ -40745,10 +40750,12 @@ def build_photo_contest_award_email_html(
       <tr><td style="padding:0 28px"><div style="padding:24px;background:rgba(255,255,255,.78);border:1px solid #d7e4ff;border-radius:20px;text-align:center">
         <div style="color:#5e5bff;font-size:36px;font-weight:800">{int(place)} место</div>
         <div style="margin-top:10px;font-size:18px;font-weight:700">{safe_nomination}</div>
-        <div style="margin-top:8px;color:#62728c">Фотоконкурс «{safe_contest}» · {int(points)} баллов</div>
+        <div style="margin-top:18px;color:#1f2e4a;font-size:25px;line-height:1.3;font-weight:800">«{safe_contest}»</div>
+        <div style="margin-top:8px;color:#62728c;font-size:15px">Итоги подведены: {safe_results_month}</div>
       </div></td></tr>
-      <tr><td align="center" style="padding:26px 28px"><a href="{contest_url}" style="display:inline-block;padding:13px 22px;border-radius:14px;background:linear-gradient(135deg,#5e5bff,#7b72ff);color:#fff;text-decoration:none;font-weight:700">Открыть Cosplay Planner</a></td></tr>
-      <tr><td align="center" style="padding:0 28px 32px;color:#62728c;font-size:13px;line-height:1.5">Plan. Create. Bring to Life.<br>✦ Это автоматическое письмо, отвечать на него не нужно. ✦</td></tr>
+      <tr><td align="center" style="padding:20px 28px 4px"><img src="{fox_url}" width="170" alt="Лисёнок Cosplay Planner с кубком" style="display:block;width:170px;max-width:45%;height:auto"></td></tr>
+      <tr><td align="center" style="padding:8px 28px;color:#5e5bff;font-size:18px;font-weight:800"># Планируй. Твори. Воплощай!</td></tr>
+      <tr><td align="center" style="padding:12px 28px 28px;color:#62728c;font-size:13px;line-height:1.6">Код грамоты: <strong style="color:#344a6b;letter-spacing:1px">{safe_code}</strong><br><a href="{verification_url}" style="color:#5e5bff">Проверить подлинность на сайте</a><br>✦ Это автоматическое письмо, отвечать на него не нужно. ✦</td></tr>
     </table>
   </td></tr></table>
 </body></html>"""
@@ -40759,17 +40766,21 @@ def send_photo_contest_award_email(
     contest: PhotoContest,
     row: dict[str, Any],
     recipient: User,
+    verification_code: str,
 ) -> bool:
     recipient_email = str(recipient.email or "").strip()
     if not recipient_email:
         return False
     recipient_name = preferred_user_alias(recipient)
+    results_month = month_label_ru(contest.results_date).capitalize() if contest.results_date else "Дата не указана"
     plain_body = (
         f"Поздравляем, {recipient_name}!\n\n"
         f"Заявка с косплеерами {row['cosplayers_label']} заняла {int(row['place'])} место "
-        f"в номинации «{row['nomination']}» фотоконкурса «{contest.title}», "
-        f"набрав {int(row['points'])} баллов.\n\n"
-        "Cosplay Planner — Plan. Create. Bring to Life."
+        f"в номинации «{row['nomination']}» фотоконкурса «{contest.title}».\n"
+        f"Итоги подведены: {results_month}.\n\n"
+        f"Код грамоты: {verification_code}\n"
+        f"Проверить: {APP_BASE_URL}/award-verification?code={quote(verification_code)}\n\n"
+        "# Планируй. Твори. Воплощай!"
     )
     return send_email(
         to_email=recipient_email,
@@ -40780,12 +40791,17 @@ def send_photo_contest_award_email(
             contest_title=str(contest.title or ""),
             nomination_title=str(row["nomination"]),
             place=int(row["place"]),
-            points=int(row["points"]),
+            results_month=results_month,
+            verification_code=verification_code,
         ),
     )
 
 
-def build_photo_contest_award_pdf(contest: PhotoContest, row: dict[str, Any]) -> bytes:
+def build_photo_contest_award_pdf(
+    contest: PhotoContest,
+    row: dict[str, Any],
+    verification_code: str,
+) -> bytes:
     width, height = STORYBOARD_PDF_PAGE_HEIGHT, STORYBOARD_PDF_PAGE_WIDTH
     image = Image.new("RGB", (width, height), "#eef5ff")
     draw = ImageDraw.Draw(image)
@@ -40802,7 +40818,8 @@ def build_photo_contest_award_pdf(contest: PhotoContest, row: dict[str, Any]) ->
     title_font = font(68)
     place_font = font(86)
     heading_font = font(36)
-    body_font = font(28)
+    contest_font = font(36)
+    body_font = font(27)
     small_font = font(22)
     for y in range(height):
         ratio = y / max(1, height - 1)
@@ -40842,13 +40859,27 @@ def build_photo_contest_award_pdf(contest: PhotoContest, row: dict[str, Any]) ->
         centered(line, name_y, heading_font, "#1f2e4a")
         name_y += 52
 
-    contest_lines = storyboard_pdf_wrap_text(draw, f"Фотоконкурс «{contest.title}»", body_font, width - 360)
-    contest_y = max(800, name_y + 28)
+    contest_lines = storyboard_pdf_wrap_text(draw, f"«{contest.title}»", contest_font, width - 950)
+    contest_y = max(760, name_y + 24)
     for line in contest_lines[:2]:
-        centered(line, contest_y, body_font, "#62728c")
-        contest_y += 42
-    centered(f"Итог: {int(row['points'])} баллов", contest_y + 24, body_font, "#344a6b")
-    centered("Plan. Create. Bring to Life.", height - 190, small_font, "#62728c")
+        centered(line, contest_y, contest_font, "#1f2e4a")
+        contest_y += 48
+    results_month = month_label_ru(contest.results_date).capitalize() if contest.results_date else "Дата не указана"
+    centered(f"Итоги подведены: {results_month}", contest_y + 8, body_font, "#62728c")
+
+    fox_path = Path("app/static/photo-contest-award-fox.png")
+    if fox_path.is_file():
+        try:
+            with Image.open(fox_path) as fox_source:
+                fox = fox_source.convert("RGBA")
+                fox.thumbnail((360, 360), Image.Resampling.LANCZOS)
+                image.paste(fox, (width - margin - fox.width - 28, height - margin - fox.height - 20), fox)
+        except (OSError, UnidentifiedImageError):
+            pass
+
+    centered("# Планируй. Твори. Воплощай!", height - 250, body_font, "#5e5bff")
+    centered(f"Код грамоты: {verification_code}", height - 205, small_font, "#344a6b")
+    centered(f"Проверка: {APP_BASE_URL}/award-verification", height - 170, small_font, "#62728c")
 
     output = io.BytesIO()
     image.save(output, format="PDF", resolution=150.0)
@@ -40888,6 +40919,46 @@ def photo_contest_award_row(
     return contest, row, recipient
 
 
+def get_or_create_photo_contest_award_certificate(
+    db: Session,
+    *,
+    contest_id: int,
+    entry_id: int,
+) -> PhotoContestAwardCertificate:
+    existing = db.execute(
+        select(PhotoContestAwardCertificate).where(
+            PhotoContestAwardCertificate.contest_id == int(contest_id),
+            PhotoContestAwardCertificate.entry_id == int(entry_id),
+        )
+    ).scalar_one_or_none()
+    if existing:
+        return existing
+    alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+    for _attempt in range(8):
+        chunks = ["".join(secrets.choice(alphabet) for _ in range(4)) for _ in range(3)]
+        certificate = PhotoContestAwardCertificate(
+            contest_id=int(contest_id),
+            entry_id=int(entry_id),
+            verification_code=f"CP-{'-'.join(chunks)}",
+        )
+        db.add(certificate)
+        try:
+            db.commit()
+            db.refresh(certificate)
+            return certificate
+        except IntegrityError:
+            db.rollback()
+            existing = db.execute(
+                select(PhotoContestAwardCertificate).where(
+                    PhotoContestAwardCertificate.contest_id == int(contest_id),
+                    PhotoContestAwardCertificate.entry_id == int(entry_id),
+                )
+            ).scalar_one_or_none()
+            if existing:
+                return existing
+    raise RuntimeError("Не удалось создать уникальный код грамоты.")
+
+
 def send_pending_photo_contest_awards(db: Session) -> int:
     if not smtp_is_configured():
         return 0
@@ -40922,13 +40993,23 @@ def send_pending_photo_contest_awards(db: Session) -> int:
         }
         for row in result_rows:
             entry_id = int(row["entry_id"])
+            certificate = get_or_create_photo_contest_award_certificate(
+                db,
+                contest_id=int(contest.id),
+                entry_id=entry_id,
+            )
             if entry_id in already_sent_entry_ids:
                 continue
             recipient = users_by_id.get(int(row["participant_user_id"]))
             recipient_email = str(recipient.email or "").strip() if recipient else ""
             if not recipient or not recipient_email:
                 continue
-            sent_ok = send_photo_contest_award_email(contest=contest, row=row, recipient=recipient)
+            sent_ok = send_photo_contest_award_email(
+                contest=contest,
+                row=row,
+                recipient=recipient,
+                verification_code=str(certificate.verification_code),
+            )
             if not sent_ok:
                 continue
             db.add(PhotoContestAwardEmail(
@@ -42141,7 +42222,12 @@ def photo_contest_award_pdf_download(
     if not is_primary_admin_user(user) and int(user.id) not in permitted_user_ids:
         add_flash(request, "Эта грамота доступна только участникам заявки и главному администратору.", "error")
         return redirect(f"/photocosplay/{contest_id}")
-    pdf_bytes = build_photo_contest_award_pdf(contest, row)
+    certificate = get_or_create_photo_contest_award_certificate(
+        db,
+        contest_id=int(contest.id),
+        entry_id=int(entry_id),
+    )
+    pdf_bytes = build_photo_contest_award_pdf(contest, row, str(certificate.verification_code))
     filename = f"cosplay-planner-award-contest-{int(contest.id)}-entry-{int(entry_id)}.pdf"
     return StreamingResponse(
         iter([pdf_bytes]),
@@ -42170,7 +42256,17 @@ def photo_contest_award_email_resend(
     if not smtp_is_configured():
         add_flash(request, "Отправка email не настроена на сервере.", "error")
         return redirect(f"/photocosplay/{contest_id}")
-    if not send_photo_contest_award_email(contest=contest, row=row, recipient=recipient):
+    certificate = get_or_create_photo_contest_award_certificate(
+        db,
+        contest_id=int(contest.id),
+        entry_id=int(entry_id),
+    )
+    if not send_photo_contest_award_email(
+        contest=contest,
+        row=row,
+        recipient=recipient,
+        verification_code=str(certificate.verification_code),
+    ):
         add_flash(request, "Не удалось повторно отправить грамоту. Попробуйте позже.", "error")
         return redirect(f"/photocosplay/{contest_id}")
     existing_log = db.execute(
@@ -42192,3 +42288,42 @@ def photo_contest_award_email_resend(
         db.commit()
     add_flash(request, f"Грамота повторно отправлена на {recipient.email}.", "success")
     return redirect(f"/photocosplay/{contest_id}")
+
+
+@app.get("/award-verification", response_class=HTMLResponse)
+def photo_contest_award_verification(
+    request: Request,
+    code: str = "",
+    db: Session = Depends(get_db),
+):
+    normalized_code = re.sub(r"\s+", "", str(code or "")).upper()[:32]
+    certificate = None
+    contest = None
+    award_row = None
+    if normalized_code:
+        certificate = db.execute(
+            select(PhotoContestAwardCertificate).where(
+                PhotoContestAwardCertificate.verification_code == normalized_code
+            )
+        ).scalar_one_or_none()
+        if certificate:
+            contest, award_row, _recipient = photo_contest_award_row(
+                db,
+                int(certificate.contest_id),
+                int(certificate.entry_id),
+            )
+    return template_response(
+        request,
+        "photo_contest_award_verification.html",
+        user=current_user(request, db),
+        active_tab="photocosplay",
+        code=normalized_code,
+        certificate=certificate if award_row else None,
+        contest=contest if award_row else None,
+        award_row=award_row,
+        results_month=(
+            month_label_ru(contest.results_date).capitalize()
+            if contest and contest.results_date
+            else "Дата не указана"
+        ),
+    )

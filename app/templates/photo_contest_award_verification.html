@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block content %}
+<style>
+  .award-verify-wrap { max-width: 760px; margin: 3vh auto; }
+  .award-verify-card { position: relative; overflow: hidden; padding: clamp(1.4rem, 4vw, 2.5rem); border: 1px solid rgba(184, 200, 255, 0.72); border-radius: 30px; background: linear-gradient(145deg, rgba(255,255,255,.98), rgba(234,242,255,.94), rgba(232,230,255,.9)); box-shadow: 0 18px 54px rgba(80,100,180,.16); }
+  .award-verify-card::after { content: "✦"; position: absolute; top: 1rem; right: 1.4rem; color: rgba(108,99,255,.18); font-size: 5rem; }
+  .award-verify-head { position: relative; z-index: 1; text-align: center; }
+  .award-verify-head .contest-results-kicker { margin: .45rem 0 0; color: #6c63ff; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
+  .award-verify-head h1 { margin: .4rem 0; color: #1f2e4a; }
+  .award-verify-form { position: relative; z-index: 1; display: grid; grid-template-columns: 1fr auto; gap: .7rem; margin: 1.5rem 0; }
+  .award-verify-result { position: relative; z-index: 1; margin-top: 1.3rem; padding: 1.3rem; border: 1px solid rgba(184,200,255,.7); border-radius: 22px; background: rgba(255,255,255,.72); }
+  .award-verify-valid { color: #5e5bff; font-weight: 800; }
+  .award-verify-code { display: inline-block; margin-top: .7rem; padding: .55rem .8rem; border-radius: 999px; color: #344a6b; background: rgba(215,228,255,.72); font-weight: 800; letter-spacing: .08em; }
+  .award-verify-fox { position: absolute; right: -26px; bottom: -42px; width: 220px; opacity: .2; pointer-events: none; }
+  html[data-theme="dark"] .award-verify-card { background: linear-gradient(145deg, rgba(54,51,67,.98), rgba(38,39,55,.96)); border-color: rgba(184,200,255,.24); }
+  html[data-theme="dark"] .award-verify-head h1 { color: var(--text); }
+  html[data-theme="dark"] .award-verify-result { background: rgba(94,91,255,.12); border-color: rgba(184,200,255,.2); }
+  @media (max-width: 600px) { .award-verify-form { grid-template-columns: 1fr; } .award-verify-fox { width: 160px; } }
+</style>
+
+<div class="award-verify-wrap">
+  <section class="award-verify-card">
+    <img class="award-verify-fox" src="/static/photo-contest-award-fox.png" alt="" aria-hidden="true" />
+    <header class="award-verify-head">
+      <div aria-hidden="true">✦ ✧ ✦</div>
+      <p class="contest-results-kicker">Cosplay Planner</p>
+      <h1>Проверка грамоты</h1>
+      <p class="muted">Введите код, напечатанный в нижней части грамоты победителя.</p>
+    </header>
+    <form class="award-verify-form" method="get" action="/award-verification">
+      <input name="code" value="{{ code }}" maxlength="32" placeholder="CP-XXXX-XXXX-XXXX" autocomplete="off" required />
+      <button class="btn btn-accent" type="submit">Проверить</button>
+    </form>
+
+    {% if code and certificate and contest and award_row %}
+      <div class="award-verify-result">
+        <p class="award-verify-valid">✦ Грамота подлинная</p>
+        <h2>{{ award_row.cosplayers_label }}</h2>
+        <p><strong>{{ award_row.place }} место</strong> · {{ award_row.nomination }}</p>
+        <p>Фотоконкурс «{{ contest.title }}»</p>
+        <p class="muted">Итоги подведены: {{ results_month }}</p>
+        <span class="award-verify-code">{{ certificate.verification_code }}</span>
+      </div>
+    {% elif code %}
+      <div class="award-verify-result">
+        <p><strong>Грамота с таким кодом не найдена.</strong></p>
+        <p class="muted">Проверьте символы и попробуйте ещё раз.</p>
+      </div>
+    {% endif %}
+  </section>
+</div>
+{% endblock %}
