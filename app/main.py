@@ -1700,6 +1700,7 @@ def apply_schema_migrations() -> None:
         ],
         "personal_calendar_events": [
             ("event_city", "VARCHAR(255)"),
+            ("event_end_date", "DATE"),
             ("category", "VARCHAR(32) NOT NULL DEFAULT 'personal'"),
             ("is_note", "BOOLEAN NOT NULL DEFAULT 0"),
         ],
@@ -9285,8 +9286,15 @@ def bot_week_entries(db: Session, user: User, days: int = 7) -> list[tuple[date,
     start = bot_local_today()
     end = start + timedelta(days=max(1, days) - 1)
     rows: list[tuple[date, str, str]] = []
-    personal = db.execute(select(PersonalCalendarEvent).where(PersonalCalendarEvent.user_id == user.id, PersonalCalendarEvent.event_date.between(start, end))).scalars().all()
-    rows.extend((item.event_date, "Событие", item.title or "Без названия") for item in personal)
+    personal = db.execute(select(PersonalCalendarEvent).where(
+        PersonalCalendarEvent.user_id == user.id,
+        PersonalCalendarEvent.event_date <= end,
+        or_(PersonalCalendarEvent.event_end_date.is_(None), PersonalCalendarEvent.event_end_date >= start),
+    )).scalars().all()
+    for item in personal:
+        for event_day in iter_date_range(item.event_date, item.event_end_date):
+            if start <= event_day <= end:
+                rows.append((event_day, "Событие", item.title or "Без названия"))
     rehearsals = db.execute(select(RehearsalEntry).where(RehearsalEntry.user_id == user.id, RehearsalEntry.entry_date.between(start, end))).scalars().all()
     rows.extend((item.entry_date, "Репетиция", item.cosplan_card.character_name if item.cosplan_card else "Без названия") for item in rehearsals)
     festivals = db.execute(select(Festival).where(Festival.user_id == user.id, Festival.is_going.is_(True), Festival.event_date.between(start, end))).scalars().all()
@@ -18956,12 +18964,14 @@ def build_home_week_summary(db: Session, user: User, today: date) -> dict[str, A
 
     personal_events = db.execute(select(PersonalCalendarEvent).where(
         PersonalCalendarEvent.user_id == user.id,
-        PersonalCalendarEvent.event_date.between(today, week_end),
+        PersonalCalendarEvent.event_date <= week_end,
+        or_(PersonalCalendarEvent.event_end_date.is_(None), PersonalCalendarEvent.event_end_date >= today),
     )).scalars().all()
     for event in personal_events:
         event_category = str(getattr(event, "category", "") or PERSONAL_EVENT_CATEGORY_PERSONAL)
         event_kind = PERSONAL_EVENT_CATEGORY_LABELS.get(event_category, "Личное событие")
-        add(event.event_date, event_kind, event.title, "/my-calendar", event.event_time or "")
+        for event_day in iter_date_range(event.event_date, event.event_end_date):
+            add(event_day, event_kind, event.title, "/my-calendar", event.event_time or "")
 
     master_cards = db.execute(select(InProgressMasterCard).where(
         or_(InProgressMasterCard.user_id == user.id, InProgressMasterCard.customer_user_id == user.id),
@@ -19995,7 +20005,7 @@ def serialize_calendar_event_for_mobile(item: PersonalCalendarEvent) -> dict[str
     category = str(getattr(item, "category", "") or PERSONAL_EVENT_CATEGORY_PERSONAL)
     if category not in PERSONAL_EVENT_CATEGORY_LABELS:
         category = PERSONAL_EVENT_CATEGORY_PERSONAL
-    return {"id": int(item.id), "date": mobile_iso_date(item.event_date), "time": item.event_time, "title": item.title, "city": item.event_city, "details": item.details, "category": category, "is_note": bool(item.is_note), "updated_at": mobile_iso_datetime(item.updated_at)}
+    return {"id": int(item.id), "date": mobile_iso_date(item.event_date), "end_date": mobile_iso_date(item.event_end_date), "time": item.event_time, "title": item.title, "city": item.event_city, "details": item.details, "category": category, "is_note": bool(item.is_note), "updated_at": mobile_iso_datetime(item.updated_at)}
 
 
 def serialize_content_post_for_mobile(item: ContentPlanPost) -> dict[str, Any]:
@@ -20050,7 +20060,10 @@ def mobile_bootstrap_api(request: Request, since: str = "", db: Session = Depend
         .order_by(InProgressCard.updated_at.desc(), InProgressCard.id.desc())
     )
     today = date.today()
-    calendar_stmt = select(PersonalCalendarEvent).where(PersonalCalendarEvent.user_id == user.id, PersonalCalendarEvent.event_date >= today).order_by(PersonalCalendarEvent.event_date, PersonalCalendarEvent.event_time)
+    calendar_stmt = select(PersonalCalendarEvent).where(
+        PersonalCalendarEvent.user_id == user.id,
+        or_(PersonalCalendarEvent.event_date >= today, PersonalCalendarEvent.event_end_date >= today),
+    ).order_by(PersonalCalendarEvent.event_date, PersonalCalendarEvent.event_time)
     content_stmt = select(ContentPlanPost).where(ContentPlanPost.user_id == user.id, ContentPlanPost.publish_date >= today).order_by(ContentPlanPost.publish_date, ContentPlanPost.publish_time)
 
     if since_dt is not None:
@@ -28075,7 +28088,7 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
         .where(
             PersonalCalendarEvent.user_id == user.id,
             PersonalCalendarEvent.event_date.is_not(None),
-            PersonalCalendarEvent.event_date >= today,
+            or_(PersonalCalendarEvent.event_date >= today, PersonalCalendarEvent.event_end_date >= today),
         )
         .order_by(PersonalCalendarEvent.event_date, PersonalCalendarEvent.event_time, PersonalCalendarEvent.id)
     ).scalars().all()
@@ -28210,20 +28223,23 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
         event_category = str(getattr(event, "category", "") or PERSONAL_EVENT_CATEGORY_PERSONAL)
         if event_category not in PERSONAL_EVENT_CATEGORY_LABELS:
             event_category = PERSONAL_EVENT_CATEGORY_PERSONAL
-        entries.append(
-            {
-                "date": event.event_date,
-                "time": "" if event_is_note else (event.event_time or ""),
-                "kind": "Заметка на весь день" if event_is_note else PERSONAL_EVENT_CATEGORY_LABELS[event_category],
-                "type_key": "note" if event_is_note else event_category,
-                "title": event.title or "Без названия",
-                "city": "—" if event_is_note else (event.event_city or "—"),
-                "coproplayers": "",
-                "details": event.details or "",
-                "personal_event_id": event.id,
-                "is_note": event_is_note,
-            }
-        )
+        for event_day in iter_date_range(event.event_date, event.event_end_date):
+            if event_day < today:
+                continue
+            entries.append(
+                {
+                    "date": event_day,
+                    "time": "" if event_is_note else (event.event_time or ""),
+                    "kind": "Заметка на весь день" if event_is_note else PERSONAL_EVENT_CATEGORY_LABELS[event_category],
+                    "type_key": "note" if event_is_note else event_category,
+                    "title": event.title or "Без названия",
+                    "city": "—" if event_is_note else (event.event_city or "—"),
+                    "coproplayers": "",
+                    "details": event.details or "",
+                    "personal_event_id": event.id,
+                    "is_note": event_is_note,
+                }
+            )
     for progress in checklist_progress:
         card = progress.cosplan_card
         for item in as_list(progress.checklist_json):
@@ -28885,6 +28901,7 @@ async def my_calendar_event_create(request: Request, db: Session = Depends(get_d
     form = await request.form()
     next_view = normalize_calendar_view(str(form.get("next_view", CALENDAR_VIEW_MY)))
     event_date = parse_date(str(form.get("event_date", "")).strip())
+    event_end_date = parse_date(str(form.get("event_end_date", "")).strip())
     event_time = parse_time_hhmm(str(form.get("event_time", "")))
     event_title = str(form.get("event_title", "")).strip()
     event_city = str(form.get("event_city", "")).strip()
@@ -28900,11 +28917,18 @@ async def my_calendar_event_create(request: Request, db: Session = Depends(get_d
     if not event_title:
         add_flash(request, "Укажите название события.", "error")
         return calendar_redirect_for_view(next_view)
+    if event_end_date and event_end_date < event_date:
+        add_flash(request, "Дата окончания не может быть раньше даты начала.", "error")
+        return calendar_redirect_for_view(next_view)
+    if event_end_date and (event_end_date - event_date).days > 3650:
+        add_flash(request, "Слишком большой диапазон дат. Укажите не более 10 лет.", "error")
+        return calendar_redirect_for_view(next_view)
 
     db.add(
         PersonalCalendarEvent(
             user_id=user.id,
             event_date=event_date,
+            event_end_date=event_end_date if event_end_date and event_end_date > event_date else None,
             event_time=None if is_note else event_time,
             title=event_title,
             event_city=None if is_note else (event_city or None),
@@ -30781,7 +30805,9 @@ def append_ics_event(
     if normalized_time:
         hh_raw, mm_raw = normalized_time.split(":", 1)
         start_dt = datetime.combine(event_date, datetime.min.time()).replace(hour=int(hh_raw), minute=int(mm_raw))
-        end_dt = start_dt + timedelta(minutes=max(duration_minutes, 15))
+        effective_end = range_end_date if range_end_date and range_end_date >= event_date else event_date
+        end_dt = datetime.combine(effective_end, datetime.min.time()).replace(hour=int(hh_raw), minute=int(mm_raw))
+        end_dt += timedelta(minutes=max(duration_minutes, 15))
         lines.append(f"DTSTART:{start_dt.strftime('%Y%m%dT%H%M%S')}")
         lines.append(f"DTEND:{end_dt.strftime('%Y%m%dT%H%M%S')}")
     else:
@@ -30853,7 +30879,7 @@ def my_calendar_export_ics(request: Request, db: Session = Depends(get_db)):
         .where(
             PersonalCalendarEvent.user_id == user.id,
             PersonalCalendarEvent.event_date.is_not(None),
-            PersonalCalendarEvent.event_date >= today,
+            or_(PersonalCalendarEvent.event_date >= today, PersonalCalendarEvent.event_end_date >= today),
         )
         .order_by(PersonalCalendarEvent.event_date, PersonalCalendarEvent.event_time, PersonalCalendarEvent.id)
     ).scalars().all()
@@ -30994,6 +31020,7 @@ def my_calendar_export_ics(request: Request, db: Session = Depends(get_db)):
             event_date=event.event_date,
             time_hhmm=event.event_time or "",
             duration_minutes=60,
+            range_end_date=event.event_end_date,
             location=event.event_city or "",
             description=event.details or "",
         )

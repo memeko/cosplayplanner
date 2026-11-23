@@ -846,6 +846,7 @@ class PersonalCalendarEvent(Base):
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     event_date = Column(Date, nullable=False, index=True)
+    event_end_date = Column(Date, nullable=True, index=True)
     event_time = Column(String(8), nullable=True)
     title = Column(String(255), nullable=False)
     event_city = Column(String(255), nullable=True, index=True)
