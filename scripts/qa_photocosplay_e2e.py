@@ -676,8 +676,29 @@ def run_scenario(db_path: Path) -> None:
 
         response = client.get("/photocosplay?status=finished")
         assert_ok("QA Фотокосплей 2026" in response.text, "Finished filter did not show contest")
+        logout()
+
+        login("contest_participant")
+        response = client.get(f"/photocosplay/{contest_id}/awards/{voted_entry_id}.pdf")
+        assert_ok(response.status_code == 200, "Winner could not download award PDF")
+        assert_ok(response.headers.get("content-type") == "application/pdf", "Award download is not a PDF")
+        assert_ok(response.content.startswith(b"%PDF"), "Award download has invalid PDF bytes")
+        logout()
+
+        login("contest_viewer")
+        response = client.get(f"/photocosplay/{contest_id}/awards/{voted_entry_id}.pdf")
+        assert_ok(response.headers.get("content-type") != "application/pdf", "Unrelated viewer downloaded award PDF")
+        logout()
+
+        login("brfox_cosplay")
+        response = client.get(f"/photocosplay/{contest_id}")
+        assert_ok("Отправить email повторно" in response.text, "Primary admin resend control is missing")
+        response = client.get(f"/photocosplay/{contest_id}/awards/{voted_entry_id}.pdf")
+        assert_ok(response.headers.get("content-type") == "application/pdf", "Primary admin could not download award PDF")
+        logout()
 
         # 10) Quick cosplan idea is created through JSON and stays highlighted until full edit.
+        login("contest_creator")
         response = client.post(
             "/cosplan/quick",
             data={

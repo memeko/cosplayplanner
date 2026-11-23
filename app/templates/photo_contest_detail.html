@@ -167,10 +167,12 @@
   .contest-results-heading h2 { margin: 0; color: #1f2e4a; font-size: clamp(1.65rem, 4vw, 2.4rem); }
   .contest-results-stars { color: #7b72ff; letter-spacing: 0.28em; }
   .contest-winner-list { position: relative; display: grid; gap: 0.75rem; margin-top: 1.35rem; }
-  .contest-winner-row { display: grid; grid-template-columns: minmax(130px, 1fr) 72px minmax(150px, 1fr) auto; gap: 0.85rem; align-items: center; padding: 0.9rem 1rem; border: 1px solid rgba(184, 200, 255, 0.68); border-radius: 18px; background: rgba(255, 255, 255, 0.7); box-shadow: 0 8px 24px rgba(80, 100, 180, 0.08); }
+  .contest-winner-row { display: grid; grid-template-columns: minmax(130px, 1fr) 72px minmax(150px, 1fr) auto auto; gap: 0.85rem; align-items: center; padding: 0.9rem 1rem; border: 1px solid rgba(184, 200, 255, 0.68); border-radius: 18px; background: rgba(255, 255, 255, 0.7); box-shadow: 0 8px 24px rgba(80, 100, 180, 0.08); }
   .contest-winner-place { color: #5e5bff; font-size: 1.08rem; font-weight: 800; }
   .contest-winner-points { color: #344a6b; font-weight: 700; white-space: nowrap; }
   .contest-results-note { position: relative; margin: 1rem 0 0; color: #62728c; text-align: center; font-size: 0.9rem; }
+  .contest-winner-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 0.45rem; }
+  .contest-winner-actions form { margin: 0; }
   html[data-theme="dark"] .contest-results-banner { background: linear-gradient(145deg, rgba(54, 51, 67, 0.98), rgba(38, 39, 55, 0.96)); border-color: rgba(184, 200, 255, 0.24); }
   html[data-theme="dark"] .contest-results-heading h2, html[data-theme="dark"] .contest-winner-points { color: var(--text); }
   html[data-theme="dark"] .contest-winner-row { background: rgba(94, 91, 255, 0.12); border-color: rgba(184, 200, 255, 0.2); }
@@ -179,6 +181,7 @@
     .contest-winner-row { grid-template-columns: 1fr auto; gap: 0.35rem 0.75rem; }
     .contest-winner-place { grid-row: 1 / span 2; grid-column: 2; }
     .contest-winner-points { grid-column: 1; }
+    .contest-winner-actions { grid-column: 1 / -1; justify-content: flex-start; margin-top: 0.35rem; }
   }
 </style>
 
@@ -489,6 +492,16 @@
           <span class="contest-winner-place">{{ row.place }} место</span>
           <span>{{ row.cosplayers_label }}</span>
           <span class="contest-winner-points">{{ row.points }} баллов</span>
+          <div class="contest-winner-actions">
+            {% if user_is_special(user) or user.id == row.participant_user_id or user.id in row.cosplayer_user_ids %}
+              <a class="btn btn-small" href="/photocosplay/{{ contest.id }}/awards/{{ row.entry_id }}.pdf">Скачать PDF</a>
+            {% endif %}
+            {% if user_is_special(user) %}
+              <form method="post" action="/photocosplay/{{ contest.id }}/awards/{{ row.entry_id }}/email">
+                <button class="btn btn-small btn-accent" type="submit">Отправить email повторно</button>
+              </form>
+            {% endif %}
+          </div>
         </article>
       {% endfor %}
     </div>

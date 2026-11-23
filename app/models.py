@@ -850,6 +850,7 @@ class PersonalCalendarEvent(Base):
     title = Column(String(255), nullable=False)
     event_city = Column(String(255), nullable=True, index=True)
     details = Column(Text, nullable=True)
+    category = Column(String(32), nullable=False, default="personal")
     is_note = Column(Boolean, nullable=False, default=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)

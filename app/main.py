@@ -544,6 +544,17 @@ CALENDAR_VIEW_OPTIONS = {CALENDAR_VIEW_MY, CALENDAR_VIEW_BUDGET, CALENDAR_VIEW_C
 CONTENT_SCOPE_CLIENT = "client"
 CONTENT_SCOPE_PERSONAL = "personal"
 
+PERSONAL_EVENT_CATEGORY_PERSONAL = "personal"
+PERSONAL_EVENT_CATEGORY_PHOTOSET = "photoset"
+PERSONAL_EVENT_CATEGORY_REHEARSAL = "rehearsal"
+PERSONAL_EVENT_CATEGORY_FESTIVAL = "festival"
+PERSONAL_EVENT_CATEGORY_LABELS = {
+    PERSONAL_EVENT_CATEGORY_PERSONAL: "Личное событие",
+    PERSONAL_EVENT_CATEGORY_PHOTOSET: "Фотосет",
+    PERSONAL_EVENT_CATEGORY_REHEARSAL: "Репетиция",
+    PERSONAL_EVENT_CATEGORY_FESTIVAL: "Маркет/Фестиваль",
+}
+
 CONTENT_SOCIAL_OPTIONS = ["ТГ", "IT", "VK", "Pinterest", "Threads", "RedNote", "boosty", "другое"]
 CONTENT_SOCIAL_ALIASES = {
     "telegram": "ТГ",
@@ -1689,6 +1700,7 @@ def apply_schema_migrations() -> None:
         ],
         "personal_calendar_events": [
             ("event_city", "VARCHAR(255)"),
+            ("category", "VARCHAR(32) NOT NULL DEFAULT 'personal'"),
             ("is_note", "BOOLEAN NOT NULL DEFAULT 0"),
         ],
         "community_master_comments": [
@@ -18947,7 +18959,9 @@ def build_home_week_summary(db: Session, user: User, today: date) -> dict[str, A
         PersonalCalendarEvent.event_date.between(today, week_end),
     )).scalars().all()
     for event in personal_events:
-        add(event.event_date, "Календарь", event.title, "/my-calendar", event.event_time or "")
+        event_category = str(getattr(event, "category", "") or PERSONAL_EVENT_CATEGORY_PERSONAL)
+        event_kind = PERSONAL_EVENT_CATEGORY_LABELS.get(event_category, "Личное событие")
+        add(event.event_date, event_kind, event.title, "/my-calendar", event.event_time or "")
 
     master_cards = db.execute(select(InProgressMasterCard).where(
         or_(InProgressMasterCard.user_id == user.id, InProgressMasterCard.customer_user_id == user.id),
@@ -19978,7 +19992,10 @@ def serialize_in_progress_for_mobile(item: InProgressCard) -> dict[str, Any]:
 
 
 def serialize_calendar_event_for_mobile(item: PersonalCalendarEvent) -> dict[str, Any]:
-    return {"id": int(item.id), "date": mobile_iso_date(item.event_date), "time": item.event_time, "title": item.title, "city": item.event_city, "details": item.details, "is_note": bool(item.is_note), "updated_at": mobile_iso_datetime(item.updated_at)}
+    category = str(getattr(item, "category", "") or PERSONAL_EVENT_CATEGORY_PERSONAL)
+    if category not in PERSONAL_EVENT_CATEGORY_LABELS:
+        category = PERSONAL_EVENT_CATEGORY_PERSONAL
+    return {"id": int(item.id), "date": mobile_iso_date(item.event_date), "time": item.event_time, "title": item.title, "city": item.event_city, "details": item.details, "category": category, "is_note": bool(item.is_note), "updated_at": mobile_iso_datetime(item.updated_at)}
 
 
 def serialize_content_post_for_mobile(item: ContentPlanPost) -> dict[str, Any]:
@@ -28190,12 +28207,15 @@ def my_calendar(request: Request, db: Session = Depends(get_db)):
         )
     for event in personal_events:
         event_is_note = bool(getattr(event, "is_note", False))
+        event_category = str(getattr(event, "category", "") or PERSONAL_EVENT_CATEGORY_PERSONAL)
+        if event_category not in PERSONAL_EVENT_CATEGORY_LABELS:
+            event_category = PERSONAL_EVENT_CATEGORY_PERSONAL
         entries.append(
             {
                 "date": event.event_date,
                 "time": "" if event_is_note else (event.event_time or ""),
-                "kind": "Заметка на весь день" if event_is_note else "Личное событие",
-                "type_key": "note" if event_is_note else "personal",
+                "kind": "Заметка на весь день" if event_is_note else PERSONAL_EVENT_CATEGORY_LABELS[event_category],
+                "type_key": "note" if event_is_note else event_category,
                 "title": event.title or "Без названия",
                 "city": "—" if event_is_note else (event.event_city or "—"),
                 "coproplayers": "",
@@ -28869,6 +28889,9 @@ async def my_calendar_event_create(request: Request, db: Session = Depends(get_d
     event_title = str(form.get("event_title", "")).strip()
     event_city = str(form.get("event_city", "")).strip()
     event_details = str(form.get("event_details", "")).strip()
+    event_category = str(form.get("event_category", PERSONAL_EVENT_CATEGORY_PERSONAL)).strip().lower()
+    if event_category not in PERSONAL_EVENT_CATEGORY_LABELS:
+        event_category = PERSONAL_EVENT_CATEGORY_PERSONAL
     is_note = to_bool(form.get("is_note"))
 
     if not event_date:
@@ -28886,6 +28909,7 @@ async def my_calendar_event_create(request: Request, db: Session = Depends(get_d
             title=event_title,
             event_city=None if is_note else (event_city or None),
             details=event_details or None,
+            category=event_category,
             is_note=is_note,
         )
     )
@@ -30960,11 +30984,13 @@ def my_calendar_export_ics(request: Request, db: Session = Depends(get_db)):
         )
 
     for event in personal_events:
+        event_category = str(getattr(event, "category", "") or PERSONAL_EVENT_CATEGORY_PERSONAL)
+        category_label = PERSONAL_EVENT_CATEGORY_LABELS.get(event_category, PERSONAL_EVENT_CATEGORY_LABELS[PERSONAL_EVENT_CATEGORY_PERSONAL])
         append_ics_event(
             lines,
             dtstamp=dtstamp,
             uid_prefix=f"personal-{event.id}",
-            summary=f"Личное: {event.title or 'Событие'}",
+            summary=f"{category_label}: {event.title or 'Событие'}",
             event_date=event.event_date,
             time_hhmm=event.event_time or "",
             duration_minutes=60,
@@ -40643,6 +40669,12 @@ def photo_contest_winning_rows(
             participant_alias = f"@{preferred_user_alias(participant)}" if participant else "@unknown"
             winner_brief = photo_contest_entry_brief(entry, users_by_id)
             winner_cosplayers = winner_brief.get("cosplayers", [])
+            cosplayer_user_ids = {
+                int(user_id)
+                for role in normalize_photo_contest_roles(entry.roles_json)
+                if normalize_photo_contest_role_key(role.get("role")) == PHOTO_CONTEST_ROLE_COSPLAYER
+                and (user_id := parse_positive_int(str(role.get("user_id", "")).strip()))
+            }
             result_rows.append(
                 {
                     "nomination": nomination_title,
@@ -40650,6 +40682,7 @@ def photo_contest_winning_rows(
                     "participant_alias": participant_alias,
                     "cosplayers": winner_cosplayers,
                     "cosplayers_label": ", ".join(winner_cosplayers) or "Косплееры не указаны",
+                    "cosplayer_user_ids": sorted(cosplayer_user_ids),
                     "points": points,
                     "photo_path": str(primary_photo.file_path or "").strip(),
                     "photo_id": int(primary_photo.id),
@@ -40681,7 +40714,7 @@ def build_photo_contest_award_email_html(
       <tr><td align="center" style="padding:34px 28px 8px;color:#7b72ff;font-size:30px;letter-spacing:8px">✦ ✧ ✦</td></tr>
       <tr><td align="center" style="padding:0 28px;color:#6c63ff;font-size:13px;font-weight:700;letter-spacing:2px;text-transform:uppercase">Cosplay Planner</td></tr>
       <tr><td align="center" style="padding:12px 28px 4px;font-size:32px;line-height:1.2;font-weight:800">Грамота победителя</td></tr>
-      <tr><td align="center" style="padding:8px 28px 20px;color:#62728c;font-size:16px">Награждается <strong style="color:#344a6b">{safe_name}</strong></td></tr>
+      <tr><td align="center" style="padding:8px 28px 20px;color:#62728c;font-size:16px">Награждаются <strong style="color:#344a6b">{safe_name}</strong></td></tr>
       <tr><td style="padding:0 28px"><div style="padding:24px;background:rgba(255,255,255,.78);border:1px solid #d7e4ff;border-radius:20px;text-align:center">
         <div style="color:#5e5bff;font-size:36px;font-weight:800">{int(place)} место</div>
         <div style="margin-top:10px;font-size:18px;font-weight:700">{safe_nomination}</div>
@@ -40692,6 +40725,140 @@ def build_photo_contest_award_email_html(
     </table>
   </td></tr></table>
 </body></html>"""
+
+
+def send_photo_contest_award_email(
+    *,
+    contest: PhotoContest,
+    row: dict[str, Any],
+    recipient: User,
+) -> bool:
+    recipient_email = str(recipient.email or "").strip()
+    if not recipient_email:
+        return False
+    recipient_name = preferred_user_alias(recipient)
+    plain_body = (
+        f"Поздравляем, {recipient_name}!\n\n"
+        f"Заявка с косплеерами {row['cosplayers_label']} заняла {int(row['place'])} место "
+        f"в номинации «{row['nomination']}» фотоконкурса «{contest.title}», "
+        f"набрав {int(row['points'])} баллов.\n\n"
+        "Cosplay Planner — Plan. Create. Bring to Life."
+    )
+    return send_email(
+        to_email=recipient_email,
+        subject=f"Грамота победителя · {contest.title}",
+        body=plain_body,
+        html_body=build_photo_contest_award_email_html(
+            recipient_name=str(row["cosplayers_label"]),
+            contest_title=str(contest.title or ""),
+            nomination_title=str(row["nomination"]),
+            place=int(row["place"]),
+            points=int(row["points"]),
+        ),
+    )
+
+
+def build_photo_contest_award_pdf(contest: PhotoContest, row: dict[str, Any]) -> bytes:
+    width, height = STORYBOARD_PDF_PAGE_HEIGHT, STORYBOARD_PDF_PAGE_WIDTH
+    image = Image.new("RGB", (width, height), "#eef5ff")
+    draw = ImageDraw.Draw(image)
+    font_path = resolve_storyboard_pdf_font_path()
+
+    def font(size: int) -> ImageFont.ImageFont:
+        if font_path:
+            try:
+                return ImageFont.truetype(str(font_path), size)
+            except OSError:
+                pass
+        return ImageFont.load_default()
+
+    title_font = font(68)
+    place_font = font(86)
+    heading_font = font(36)
+    body_font = font(28)
+    small_font = font(22)
+    for y in range(height):
+        ratio = y / max(1, height - 1)
+        start = (248, 251, 255)
+        end = (232, 230, 255)
+        color = tuple(int(start[index] + (end[index] - start[index]) * ratio) for index in range(3))
+        draw.line((0, y, width, y), fill=color)
+
+    margin = 90
+    draw.rounded_rectangle(
+        (margin, margin, width - margin, height - margin),
+        radius=46,
+        fill="#ffffff",
+        outline="#b8c8ff",
+        width=4,
+    )
+    draw.rounded_rectangle(
+        (margin + 24, margin + 24, width - margin - 24, height - margin - 24),
+        radius=34,
+        outline="#d7e4ff",
+        width=2,
+    )
+
+    def centered(text_value: str, y: int, selected_font: ImageFont.ImageFont, fill: str) -> None:
+        box = draw.textbbox((0, 0), text_value, font=selected_font)
+        draw.text(((width - (box[2] - box[0])) / 2, y), text_value, font=selected_font, fill=fill)
+
+    centered("✦  ✧  ✦", 150, heading_font, "#7b72ff")
+    centered("COSPLAY PLANNER", 218, small_font, "#6c63ff")
+    centered("ГРАМОТА ПОБЕДИТЕЛЯ", 278, title_font, "#1f2e4a")
+    centered(f"{int(row['place'])} МЕСТО", 400, place_font, "#5e5bff")
+    centered(str(row["nomination"]), 522, heading_font, "#344a6b")
+
+    cosplayer_lines = storyboard_pdf_wrap_text(draw, str(row["cosplayers_label"]), heading_font, width - 360)
+    name_y = 640
+    for line in cosplayer_lines[:3]:
+        centered(line, name_y, heading_font, "#1f2e4a")
+        name_y += 52
+
+    contest_lines = storyboard_pdf_wrap_text(draw, f"Фотоконкурс «{contest.title}»", body_font, width - 360)
+    contest_y = max(800, name_y + 28)
+    for line in contest_lines[:2]:
+        centered(line, contest_y, body_font, "#62728c")
+        contest_y += 42
+    centered(f"Итог: {int(row['points'])} баллов", contest_y + 24, body_font, "#344a6b")
+    centered("Plan. Create. Bring to Life.", height - 190, small_font, "#62728c")
+
+    output = io.BytesIO()
+    image.save(output, format="PDF", resolution=150.0)
+    return output.getvalue()
+
+
+def photo_contest_award_row(
+    db: Session,
+    contest_id: int,
+    entry_id: int,
+) -> tuple[PhotoContest | None, dict[str, Any] | None, User | None]:
+    contest = db.get(PhotoContest, contest_id)
+    if not contest or photo_contest_status_key(contest) != PHOTO_CONTEST_STATUS_FINISHED:
+        return contest, None, None
+    entries = db.execute(select(PhotoContestEntry).where(PhotoContestEntry.contest_id == contest.id)).scalars().all()
+    photos = db.execute(select(PhotoContestEntryPhoto).where(PhotoContestEntryPhoto.contest_id == contest.id)).scalars().all()
+    related_user_ids = {int(entry.participant_user_id) for entry in entries if entry.participant_user_id}
+    for entry in entries:
+        related_user_ids.update(
+            int(user_id)
+            for role in normalize_photo_contest_roles(entry.roles_json)
+            if (user_id := parse_positive_int(str(role.get("user_id", "")).strip()))
+        )
+    users = db.execute(select(User).where(User.id.in_(related_user_ids))).scalars().all() if related_user_ids else []
+    users_by_id = {int(user.id): user for user in users}
+    vote_counts = photo_contest_entry_vote_count_map(db, int(contest.id))
+    vote_counts, _bonus_applied = photo_contest_final_vote_count_map(entries, photos, vote_counts)
+    result_rows, _winning_photo_ids = photo_contest_winning_rows(
+        contest,
+        entries=entries,
+        photos=photos,
+        users_by_id=users_by_id,
+        vote_count_by_entry_id=vote_counts,
+    )
+    row = next((item for item in result_rows if int(item["entry_id"]) == int(entry_id)), None)
+    recipient = users_by_id.get(int(row["participant_user_id"])) if row else None
+    return contest, row, recipient
 
 
 def send_pending_photo_contest_awards(db: Session) -> int:
@@ -40734,25 +40901,7 @@ def send_pending_photo_contest_awards(db: Session) -> int:
             recipient_email = str(recipient.email or "").strip() if recipient else ""
             if not recipient or not recipient_email:
                 continue
-            recipient_name = preferred_user_alias(recipient)
-            plain_body = (
-                f"Поздравляем, {recipient_name}!\n\n"
-                f"Вы заняли {int(row['place'])} место в номинации «{row['nomination']}» "
-                f"фотоконкурса «{contest.title}», набрав {int(row['points'])} баллов.\n\n"
-                "Cosplay Planner — Plan. Create. Bring to Life."
-            )
-            sent_ok = send_email(
-                to_email=recipient_email,
-                subject=f"Грамота победителя · {contest.title}",
-                body=plain_body,
-                html_body=build_photo_contest_award_email_html(
-                    recipient_name=recipient_name,
-                    contest_title=str(contest.title or ""),
-                    nomination_title=str(row["nomination"]),
-                    place=int(row["place"]),
-                    points=int(row["points"]),
-                ),
-            )
+            sent_ok = send_photo_contest_award_email(contest=contest, row=row, recipient=recipient)
             if not sent_ok:
                 continue
             db.add(PhotoContestAwardEmail(
@@ -41945,3 +42094,74 @@ def photo_contest_detail(contest_id: int, request: Request, db: Session = Depend
         photo_contest_max_photo_file_mb=PHOTO_CONTEST_MAX_PHOTO_FILE_BYTES // (1024 * 1024),
         nomination_rows=normalize_photo_contest_nomination_rows(contest.nominations_json),
     )
+
+
+@app.get("/photocosplay/{contest_id}/awards/{entry_id}.pdf")
+def photo_contest_award_pdf_download(
+    contest_id: int,
+    entry_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    contest, row, _recipient = photo_contest_award_row(db, contest_id, entry_id)
+    if not contest or not row:
+        add_flash(request, "Грамота победителя не найдена.", "error")
+        return redirect(f"/photocosplay/{contest_id}")
+    permitted_user_ids = {int(row["participant_user_id"]), *[int(value) for value in row["cosplayer_user_ids"]]}
+    if not is_primary_admin_user(user) and int(user.id) not in permitted_user_ids:
+        add_flash(request, "Эта грамота доступна только участникам заявки и главному администратору.", "error")
+        return redirect(f"/photocosplay/{contest_id}")
+    pdf_bytes = build_photo_contest_award_pdf(contest, row)
+    filename = f"cosplay-planner-award-contest-{int(contest.id)}-entry-{int(entry_id)}.pdf"
+    return StreamingResponse(
+        iter([pdf_bytes]),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.post("/photocosplay/{contest_id}/awards/{entry_id}/email")
+def photo_contest_award_email_resend(
+    contest_id: int,
+    entry_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    if not is_primary_admin_user(user):
+        add_flash(request, "Повторно отправлять грамоты может только главный администратор.", "error")
+        return redirect(f"/photocosplay/{contest_id}")
+    contest, row, recipient = photo_contest_award_row(db, contest_id, entry_id)
+    if not contest or not row or not recipient:
+        add_flash(request, "Не удалось найти грамоту или профиль получателя.", "error")
+        return redirect(f"/photocosplay/{contest_id}")
+    if not smtp_is_configured():
+        add_flash(request, "Отправка email не настроена на сервере.", "error")
+        return redirect(f"/photocosplay/{contest_id}")
+    if not send_photo_contest_award_email(contest=contest, row=row, recipient=recipient):
+        add_flash(request, "Не удалось повторно отправить грамоту. Попробуйте позже.", "error")
+        return redirect(f"/photocosplay/{contest_id}")
+    existing_log = db.execute(
+        select(PhotoContestAwardEmail).where(
+            PhotoContestAwardEmail.contest_id == contest.id,
+            PhotoContestAwardEmail.entry_id == entry_id,
+        )
+    ).scalar_one_or_none()
+    if not existing_log:
+        db.add(PhotoContestAwardEmail(
+            contest_id=int(contest.id),
+            entry_id=int(entry_id),
+            recipient_user_id=int(recipient.id),
+            nomination_title=str(row["nomination"]),
+            place=int(row["place"]),
+            points=int(row["points"]),
+            recipient_email=str(recipient.email or "").strip(),
+        ))
+        db.commit()
+    add_flash(request, f"Грамота повторно отправлена на {recipient.email}.", "success")
+    return redirect(f"/photocosplay/{contest_id}")
