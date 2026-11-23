@@ -40626,18 +40626,25 @@ def photo_contest_winning_rows(
         )
         if not candidate_entries:
             continue
-        for place_index, entry in enumerate(candidate_entries[:places_count], start=1):
+        previous_points: int | None = None
+        current_place = 0
+        for position, entry in enumerate(candidate_entries, start=1):
+            points = int(vote_count_by_entry_id.get(int(entry.id), 0))
+            if previous_points is None or points != previous_points:
+                current_place = position
+                previous_points = points
+            if current_place > places_count:
+                break
             entry_photos = photos_by_entry_id.get(int(entry.id), [])
             if not entry_photos:
                 continue
             primary_photo = entry_photos[0]
             participant = users_by_id.get(int(entry.participant_user_id))
             participant_alias = f"@{preferred_user_alias(participant)}" if participant else "@unknown"
-            points = int(vote_count_by_entry_id.get(int(entry.id), 0))
             result_rows.append(
                 {
                     "nomination": nomination_title,
-                    "place": place_index,
+                    "place": current_place,
                     "participant_alias": participant_alias,
                     "points": points,
                     "photo_path": str(primary_photo.file_path or "").strip(),
