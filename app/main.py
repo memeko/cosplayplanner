@@ -40641,11 +40641,15 @@ def photo_contest_winning_rows(
             primary_photo = entry_photos[0]
             participant = users_by_id.get(int(entry.participant_user_id))
             participant_alias = f"@{preferred_user_alias(participant)}" if participant else "@unknown"
+            winner_brief = photo_contest_entry_brief(entry, users_by_id)
+            winner_cosplayers = winner_brief.get("cosplayers", [])
             result_rows.append(
                 {
                     "nomination": nomination_title,
                     "place": current_place,
                     "participant_alias": participant_alias,
+                    "cosplayers": winner_cosplayers,
+                    "cosplayers_label": ", ".join(winner_cosplayers) or "Косплееры не указаны",
                     "points": points,
                     "photo_path": str(primary_photo.file_path or "").strip(),
                     "photo_id": int(primary_photo.id),
