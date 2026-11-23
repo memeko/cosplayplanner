@@ -112,6 +112,7 @@ from .models import (
     PasswordResetToken,
     PerformanceVideoAnalysisJob,
     PhotoContestAnonymousBallot,
+    PhotoContestAwardEmail,
     PhotoContest,
     PhotoContestEntry,
     PhotoContestEntryPhoto,
@@ -1001,6 +1002,8 @@ external_import_worker_lock = threading.Lock()
 external_import_worker_thread: threading.Thread | None = None
 photo_contest_preview_worker_lock = threading.Lock()
 photo_contest_preview_worker_thread: threading.Thread | None = None
+photo_contest_award_worker_lock = threading.Lock()
+photo_contest_award_worker_thread: threading.Thread | None = None
 
 MASTER_TYPE_OPTIONS = [
     "фотограф",
@@ -2095,6 +2098,7 @@ def startup() -> None:
     start_vk_bot_worker()
     start_external_import_worker()
     start_photo_contest_preview_worker()
+    start_photo_contest_award_worker()
     schedule_auto_backup_if_needed()
 
 
@@ -40153,6 +40157,25 @@ def photo_contest_entry_vote_count_map(db: Session, contest_id: int) -> dict[int
     return counts
 
 
+def photo_contest_final_vote_count_map(
+    entries: list[PhotoContestEntry],
+    photos: list[PhotoContestEntryPhoto],
+    vote_count_by_entry_id: dict[int, int],
+) -> tuple[dict[int, int], bool]:
+    """Apply the published-results consolation bonus without changing ballots."""
+    entry_ids_with_photos = {int(photo.entry_id) for photo in photos if photo.entry_id}
+    if not entry_ids_with_photos:
+        return dict(vote_count_by_entry_id), False
+    valid_entry_ids = {int(entry.id) for entry in entries if entry.id} & entry_ids_with_photos
+    should_add_bonus = any(int(vote_count_by_entry_id.get(entry_id, 0)) == 0 for entry_id in valid_entry_ids)
+    if not should_add_bonus:
+        return dict(vote_count_by_entry_id), False
+    return {
+        entry_id: int(vote_count_by_entry_id.get(entry_id, 0)) + 2
+        for entry_id in valid_entry_ids
+    }, True
+
+
 def photo_contest_ballot_entry_ids(
     ballot: PhotoContestAnonymousBallot,
     entry_id_by_photo_id: dict[int, int],
@@ -40620,10 +40643,149 @@ def photo_contest_winning_rows(
                     "photo_path": str(primary_photo.file_path or "").strip(),
                     "photo_id": int(primary_photo.id),
                     "entry_id": int(entry.id),
+                    "participant_user_id": int(entry.participant_user_id),
                 }
             )
             winning_photo_ids.update(int(photo.id) for photo in entry_photos)
     return result_rows, winning_photo_ids
+
+
+def build_photo_contest_award_email_html(
+    *,
+    recipient_name: str,
+    contest_title: str,
+    nomination_title: str,
+    place: int,
+    points: int,
+) -> str:
+    safe_name = html.escape(recipient_name)
+    safe_contest = html.escape(contest_title)
+    safe_nomination = html.escape(nomination_title)
+    contest_url = html.escape(f"{APP_BASE_URL}/photocosplay", quote=True)
+    return f"""<!doctype html>
+<html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Грамота победителя</title></head>
+<body style="margin:0;padding:0;background:#eef5ff;color:#1f2e4a;font-family:Arial,Helvetica,sans-serif">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background:#eef5ff"><tr><td align="center" style="padding:32px 14px">
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="max-width:680px;background:linear-gradient(145deg,#ffffff,#eaf2ff);border:1px solid #b8c8ff;border-radius:28px;box-shadow:0 16px 45px rgba(80,100,180,.16)">
+      <tr><td align="center" style="padding:34px 28px 8px;color:#7b72ff;font-size:30px;letter-spacing:8px">✦ ✧ ✦</td></tr>
+      <tr><td align="center" style="padding:0 28px;color:#6c63ff;font-size:13px;font-weight:700;letter-spacing:2px;text-transform:uppercase">Cosplay Planner</td></tr>
+      <tr><td align="center" style="padding:12px 28px 4px;font-size:32px;line-height:1.2;font-weight:800">Грамота победителя</td></tr>
+      <tr><td align="center" style="padding:8px 28px 20px;color:#62728c;font-size:16px">Награждается <strong style="color:#344a6b">{safe_name}</strong></td></tr>
+      <tr><td style="padding:0 28px"><div style="padding:24px;background:rgba(255,255,255,.78);border:1px solid #d7e4ff;border-radius:20px;text-align:center">
+        <div style="color:#5e5bff;font-size:36px;font-weight:800">{int(place)} место</div>
+        <div style="margin-top:10px;font-size:18px;font-weight:700">{safe_nomination}</div>
+        <div style="margin-top:8px;color:#62728c">Фотоконкурс «{safe_contest}» · {int(points)} баллов</div>
+      </div></td></tr>
+      <tr><td align="center" style="padding:26px 28px"><a href="{contest_url}" style="display:inline-block;padding:13px 22px;border-radius:14px;background:linear-gradient(135deg,#5e5bff,#7b72ff);color:#fff;text-decoration:none;font-weight:700">Открыть Cosplay Planner</a></td></tr>
+      <tr><td align="center" style="padding:0 28px 32px;color:#62728c;font-size:13px;line-height:1.5">Plan. Create. Bring to Life.<br>✦ Это автоматическое письмо, отвечать на него не нужно. ✦</td></tr>
+    </table>
+  </td></tr></table>
+</body></html>"""
+
+
+def send_pending_photo_contest_awards(db: Session) -> int:
+    if not smtp_is_configured():
+        return 0
+    contests = db.execute(select(PhotoContest)).scalars().all()
+    sent_count = 0
+    for contest in contests:
+        if photo_contest_status_key(contest) != PHOTO_CONTEST_STATUS_FINISHED:
+            continue
+        entries = db.execute(
+            select(PhotoContestEntry).where(PhotoContestEntry.contest_id == contest.id)
+        ).scalars().all()
+        photos = db.execute(
+            select(PhotoContestEntryPhoto).where(PhotoContestEntryPhoto.contest_id == contest.id)
+        ).scalars().all()
+        participant_ids = {int(entry.participant_user_id) for entry in entries if entry.participant_user_id}
+        users = db.execute(select(User).where(User.id.in_(participant_ids))).scalars().all() if participant_ids else []
+        users_by_id = {int(user.id): user for user in users}
+        vote_counts = photo_contest_entry_vote_count_map(db, int(contest.id))
+        vote_counts, _bonus_applied = photo_contest_final_vote_count_map(entries, photos, vote_counts)
+        result_rows, _winning_photo_ids = photo_contest_winning_rows(
+            contest,
+            entries=entries,
+            photos=photos,
+            users_by_id=users_by_id,
+            vote_count_by_entry_id=vote_counts,
+        )
+        already_sent_entry_ids = {
+            int(entry_id)
+            for entry_id in db.execute(
+                select(PhotoContestAwardEmail.entry_id).where(PhotoContestAwardEmail.contest_id == contest.id)
+            ).scalars().all()
+        }
+        for row in result_rows:
+            entry_id = int(row["entry_id"])
+            if entry_id in already_sent_entry_ids:
+                continue
+            recipient = users_by_id.get(int(row["participant_user_id"]))
+            recipient_email = str(recipient.email or "").strip() if recipient else ""
+            if not recipient or not recipient_email:
+                continue
+            recipient_name = preferred_user_alias(recipient)
+            plain_body = (
+                f"Поздравляем, {recipient_name}!\n\n"
+                f"Вы заняли {int(row['place'])} место в номинации «{row['nomination']}» "
+                f"фотоконкурса «{contest.title}», набрав {int(row['points'])} баллов.\n\n"
+                "Cosplay Planner — Plan. Create. Bring to Life."
+            )
+            sent_ok = send_email(
+                to_email=recipient_email,
+                subject=f"Грамота победителя · {contest.title}",
+                body=plain_body,
+                html_body=build_photo_contest_award_email_html(
+                    recipient_name=recipient_name,
+                    contest_title=str(contest.title or ""),
+                    nomination_title=str(row["nomination"]),
+                    place=int(row["place"]),
+                    points=int(row["points"]),
+                ),
+            )
+            if not sent_ok:
+                continue
+            db.add(PhotoContestAwardEmail(
+                contest_id=int(contest.id),
+                entry_id=entry_id,
+                recipient_user_id=int(recipient.id),
+                nomination_title=str(row["nomination"]),
+                place=int(row["place"]),
+                points=int(row["points"]),
+                recipient_email=recipient_email,
+            ))
+            try:
+                db.commit()
+            except IntegrityError:
+                db.rollback()
+            already_sent_entry_ids.add(entry_id)
+            sent_count += 1
+    return sent_count
+
+
+def run_photo_contest_award_worker() -> None:
+    while True:
+        db = SessionLocal()
+        try:
+            send_pending_photo_contest_awards(db)
+        except Exception as exc:
+            db.rollback()
+            print(f"Photo contest award email worker failed: {exc}", file=sys.stderr)
+        finally:
+            db.close()
+        time.sleep(600)
+
+
+def start_photo_contest_award_worker() -> None:
+    global photo_contest_award_worker_thread
+    with photo_contest_award_worker_lock:
+        if photo_contest_award_worker_thread and photo_contest_award_worker_thread.is_alive():
+            return
+        photo_contest_award_worker_thread = threading.Thread(
+            target=run_photo_contest_award_worker,
+            name="photo-contest-award-worker",
+            daemon=True,
+        )
+        photo_contest_award_worker_thread.start()
 
 
 @app.get("/photocosplay", response_class=HTMLResponse)
@@ -41582,7 +41744,15 @@ def photo_contest_detail(contest_id: int, request: Request, db: Session = Depend
         related_users = db.execute(select(User).where(User.id.in_(participant_ids))).scalars().all()
         users_by_id = {int(item.id): item for item in related_users if item and item.id}
 
+    contest_status = photo_contest_status_key(contest)
     vote_count_by_entry_id = photo_contest_entry_vote_count_map(db, int(contest.id))
+    consolation_bonus_applied = False
+    if contest_status == PHOTO_CONTEST_STATUS_FINISHED:
+        vote_count_by_entry_id, consolation_bonus_applied = photo_contest_final_vote_count_map(
+            entries,
+            photos,
+            vote_count_by_entry_id,
+        )
     user_voted_photo_ids = {
         int(item)
         for item in db.execute(
@@ -41636,7 +41806,6 @@ def photo_contest_detail(contest_id: int, request: Request, db: Session = Depend
         if nomination_title not in ordered_nomination_titles:
             ordered_nomination_titles.append(nomination_title)
 
-    contest_status = photo_contest_status_key(contest)
     can_manage = photo_contest_can_manage(user, contest)
     can_vote = photo_contest_can_vote(contest, user)
     submission_open = photo_contest_submission_period_active(contest)
@@ -41757,6 +41926,7 @@ def photo_contest_detail(contest_id: int, request: Request, db: Session = Depend
         vote_count_by_entry_id=vote_count_by_entry_id,
         user_voted_entry_ids=user_voted_entry_ids,
         result_rows=result_rows,
+        consolation_bonus_applied=consolation_bonus_applied,
         photo_modal_items_json=json.dumps(photo_modal_items, ensure_ascii=False),
         photo_contest_judging_label=photo_contest_judging_label,
         photo_contest_visibility_label=photo_contest_visibility_label,

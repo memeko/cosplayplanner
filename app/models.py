@@ -1298,6 +1298,24 @@ class PhotoContestAnonymousBallot(Base):
     )
 
 
+class PhotoContestAwardEmail(Base):
+    __tablename__ = "photo_contest_award_emails"
+
+    id = Column(Integer, primary_key=True)
+    contest_id = Column(Integer, ForeignKey("photo_contests.id", ondelete="CASCADE"), nullable=False, index=True)
+    entry_id = Column(Integer, ForeignKey("photo_contest_entries.id", ondelete="CASCADE"), nullable=False, index=True)
+    recipient_user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    nomination_title = Column(String(255), nullable=False)
+    place = Column(Integer, nullable=False)
+    points = Column(Integer, nullable=False)
+    recipient_email = Column(String(255), nullable=False)
+    sent_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
+
+    __table_args__ = (
+        UniqueConstraint("contest_id", "entry_id", name="uq_photo_contest_award_email"),
+    )
+
+
 class CommunityArticle(Base):
     __tablename__ = "community_articles"
 
