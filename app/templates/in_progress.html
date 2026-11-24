@@ -312,7 +312,7 @@
   {% elif status_value > 100 %}
     {% set status_value = 100 %}
   {% endif %}
-  <article class="card {% if row.is_frozen %}frozen-progress{% endif %} {% if row.id in urgent_progress_ids %}urgent-progress{% endif %} {% if card and (card.plan_type or '') == 'project' %}shared-project-card{% endif %}">
+  <article class="card {% if row.is_frozen %}frozen-progress{% endif %} {% if row.id in urgent_progress_ids %}urgent-progress{% endif %} {% if card and (card.plan_type or '') == 'project' %}shared-project-card{% endif %}" data-progress-card="{{ row.id }}">
     <div class="row-between">
       <h3>
         {% if card %}
@@ -402,6 +402,7 @@
       </ul>
     {% endif %}
 
+    <div data-checklist-section>
     {% set items = row.checklist_json or [] %}
     {% if items %}
       {% set checklist_form_id = "checklist-save-" ~ row.id %}
@@ -435,14 +436,16 @@
       </form>
     {% endif %}
 
-    <form method="post" action="/in-progress/{{ row.id }}/checklist/add" class="checklist-add-form">
+    <form method="post" action="/in-progress/{{ row.id }}/checklist/add" class="checklist-add-form" data-checklist-add-form data-progress-id="{{ row.id }}">
       <input type="text" name="item_text" placeholder="Новый пункт чеклиста" required />
       <label class="checklist-date-control" title="Выбрать дату">
         <span aria-hidden="true">📅</span>
         <input type="date" name="deadline" aria-label="Дата в календаре" data-checklist-date />
       </label>
       <button type="submit" class="btn">Добавить</button>
+      <span class="meta" data-checklist-status aria-live="polite"></span>
     </form>
+    </div>
 
     {% if card and card.plan_type == "project" %}
       {% set task_items = task_rows_by_progress.get(row.id, []) %}
@@ -662,14 +665,61 @@
 {% endif %}
 <script>
 (() => {
-  document.querySelectorAll('[data-checklist-date]').forEach((input) => {
-    const control = input.closest('.checklist-date-control');
-    const syncDateState = () => {
-      control?.classList.toggle('has-date', Boolean(input.value));
-      if (control) control.title = input.value ? `Дата: ${input.value}` : 'Выбрать дату';
-    };
-    input.addEventListener('change', syncDateState);
-    syncDateState();
+  const bindChecklistDates = (root = document) => {
+    root.querySelectorAll('[data-checklist-date]').forEach((input) => {
+      if (input.dataset.dateBound === '1') return;
+      input.dataset.dateBound = '1';
+      const control = input.closest('.checklist-date-control');
+      const syncDateState = () => {
+        control?.classList.toggle('has-date', Boolean(input.value));
+        if (control) control.title = input.value ? `Дата: ${input.value}` : 'Выбрать дату';
+      };
+      input.addEventListener('change', syncDateState);
+      syncDateState();
+    });
+  };
+  bindChecklistDates();
+
+  document.addEventListener('submit', async (event) => {
+    const form = event.target.closest?.('[data-checklist-add-form]');
+    if (!form) return;
+    event.preventDefault();
+    const button = form.querySelector('button[type="submit"]');
+    const status = form.querySelector('[data-checklist-status]');
+    const progressId = form.dataset.progressId;
+    if (button) button.disabled = true;
+    if (status) status.textContent = 'Добавляю…';
+    try {
+      const response = await fetch(form.action, {
+        method: 'POST',
+        body: new FormData(form),
+        credentials: 'same-origin',
+        headers: { Accept: 'application/json' },
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || !payload.ok) throw new Error(payload.error || 'Не удалось добавить дело.');
+
+      const pageResponse = await fetch(window.location.href, {
+        credentials: 'same-origin',
+        headers: { Accept: 'text/html' },
+        cache: 'no-store',
+      });
+      if (!pageResponse.ok) throw new Error('Дело добавлено, но карточку не удалось обновить.');
+      const pageHtml = await pageResponse.text();
+      const parsed = new DOMParser().parseFromString(pageHtml, 'text/html');
+      const freshSection = parsed.querySelector(`[data-progress-card="${progressId}"] [data-checklist-section]`);
+      const currentSection = document.querySelector(`[data-progress-card="${progressId}"] [data-checklist-section]`);
+      if (!freshSection || !currentSection) throw new Error('Дело добавлено, но карточку не удалось обновить.');
+      const insertedSection = document.importNode(freshSection, true);
+      currentSection.replaceWith(insertedSection);
+      bindChecklistDates(insertedSection);
+      const freshStatus = insertedSection.querySelector('[data-checklist-status]');
+      if (freshStatus) freshStatus.textContent = 'Дело добавлено.';
+    } catch (error) {
+      if (status) status.textContent = error.message || 'Не удалось добавить дело.';
+    } finally {
+      if (button) button.disabled = false;
+    }
   });
 
   const taskTableMarkup = () => `

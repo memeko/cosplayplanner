@@ -89,6 +89,11 @@ class User(Base):
         back_populates="user",
         cascade="all, delete-orphan",
     )
+    bot_team_search_posts = relationship(
+        "BotTeamSearchPost",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
     community_questions = relationship("CommunityQuestion", back_populates="user", cascade="all, delete-orphan")
     community_question_comments = relationship(
         "CommunityQuestionComment",
@@ -1136,6 +1141,23 @@ class ProjectSearchComment(Base):
 
     post = relationship("ProjectSearchPost", back_populates="comments")
     user = relationship("User", back_populates="project_search_comments")
+
+
+class BotTeamSearchPost(Base):
+    __tablename__ = "bot_team_search_posts"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    category = Column(String(32), nullable=False, index=True)
+    city = Column(String(255), nullable=False, index=True)
+    contact_tg = Column(String(255), nullable=False)
+    context_title = Column(String(255), nullable=False, index=True)
+    description = Column(Text, nullable=False)
+    status = Column(String(32), nullable=False, default="active", index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    user = relationship("User", back_populates="bot_team_search_posts")
 
 
 class FestivalNotification(Base):

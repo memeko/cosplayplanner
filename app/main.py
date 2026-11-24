@@ -65,6 +65,7 @@ from .cosplay2_parser import (
 )
 from .database import Base, SessionLocal, engine, get_db
 from .models import (
+    BotTeamSearchPost,
     CardComment,
     CharacterLibraryEntry,
     CommunityArticle,
@@ -747,6 +748,8 @@ PERFORMANCE_VIDEO_AI_DAILY_LIMIT = max(1, min(25, int(os.getenv("PERFORMANCE_VID
 MISTRAL_API_BASE_URL = str(os.getenv("MISTRAL_API_BASE_URL", "https://api.mistral.ai")).strip().rstrip("/")
 MISTRAL_API_KEY = str(os.getenv("MISTRAL_API_KEY", "")).strip()
 MISTRAL_FREE_MODEL = str(os.getenv("MISTRAL_FREE_MODEL", "codestral-2508")).strip() or "codestral-2508"
+MISTRAL_AUDIO_MODEL = str(os.getenv("MISTRAL_AUDIO_MODEL", "voxtral-mini-transcribe-3")).strip() or "voxtral-mini-transcribe-3"
+BOT_VOICE_MAX_BYTES = max(1, min(20, int(os.getenv("BOT_VOICE_MAX_MB", "10") or "10"))) * 1024 * 1024
 GEMINI_API_BASE_URL = str(os.getenv("GEMINI_API_BASE_URL", "https://generativelanguage.googleapis.com")).strip().rstrip("/")
 GEMINI_API_KEY = str(os.getenv("GEMINI_API_KEY", "")).strip()
 GEMINI_VIDEO_MODEL = str(os.getenv("GEMINI_VIDEO_MODEL", "gemini-3.5-flash-lite")).strip().lower()
@@ -1827,6 +1830,8 @@ def apply_schema_migrations() -> None:
             ProjectSearchPost.__table__.create(bind=conn, checkfirst=True)
         if "project_search_comments" not in existing_tables:
             ProjectSearchComment.__table__.create(bind=conn, checkfirst=True)
+        if "bot_team_search_posts" not in existing_tables:
+            BotTeamSearchPost.__table__.create(bind=conn, checkfirst=True)
         if "community_questions" not in existing_tables:
             CommunityQuestion.__table__.create(bind=conn, checkfirst=True)
         if "community_question_comments" not in existing_tables:
@@ -6761,16 +6766,21 @@ def extract_mistral_chat_completion_text(payload: dict[str, Any]) -> str:
     return ""
 
 
-def request_mistral_chat_completion(prompt: str) -> str:
+def request_mistral_chat_completion(
+    prompt: str,
+    *,
+    system_prompt: str = "Ты полезный ИИ-помощник для контент-плана косплеера.",
+    temperature: float = 0.4,
+) -> str:
     if not MISTRAL_API_KEY:
         raise RuntimeError("API Mistral не настроен: задайте переменную окружения MISTRAL_API_KEY.")
     request_payload = {
         "model": MISTRAL_FREE_MODEL,
         "messages": [
-            {"role": "system", "content": "Ты полезный ИИ-помощник для контент-плана косплеера."},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": prompt},
         ],
-        "temperature": 0.4,
+        "temperature": temperature,
     }
     try:
         response = requests.post(
@@ -6812,6 +6822,88 @@ def request_mistral_chat_completion(prompt: str) -> str:
     if not answer_text:
         raise RuntimeError("Mistral API не вернул текст ответа.")
     return answer_text
+
+
+def request_mistral_audio_transcription(
+    audio_content: bytes,
+    *,
+    filename: str = "voice.ogg",
+    content_type: str = "audio/ogg",
+) -> str:
+    if not MISTRAL_API_KEY:
+        raise RuntimeError("API Mistral не настроен: задайте переменную окружения MISTRAL_API_KEY.")
+    if not audio_content:
+        raise RuntimeError("Голосовое сообщение пустое.")
+    if len(audio_content) > BOT_VOICE_MAX_BYTES:
+        raise RuntimeError(f"Голосовое сообщение превышает лимит {BOT_VOICE_MAX_BYTES // (1024 * 1024)} МБ.")
+    try:
+        response = requests.post(
+            f"{MISTRAL_API_BASE_URL}/v1/audio/transcriptions",
+            timeout=max(30, HTTP_TIMEOUT_SECONDS * 6),
+            headers={"Authorization": f"Bearer {MISTRAL_API_KEY}"},
+            data=[
+                ("model", MISTRAL_AUDIO_MODEL),
+                ("language", "ru"),
+                ("context_bias", "косплей"),
+                ("context_bias", "персонаж, фандом, фотосет, фестиваль"),
+            ],
+            files={"file": (filename, audio_content, content_type)},
+        )
+    except requests.RequestException as exc:
+        raise RuntimeError("Не удалось отправить голосовое сообщение в Mistral.") from exc
+    if response.status_code >= 400:
+        try:
+            error_payload = response.json()
+        except ValueError:
+            error_payload = {}
+        message = ""
+        if isinstance(error_payload, dict):
+            error_value = error_payload.get("error")
+            if isinstance(error_value, dict):
+                message = str(error_value.get("message") or error_value.get("detail") or "").strip()
+            if not message:
+                message = str(error_payload.get("message") or error_payload.get("detail") or "").strip()
+        raise RuntimeError(f"Mistral не смог расшифровать аудио: {message or f'HTTP {response.status_code}'}")
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise RuntimeError("Mistral вернул некорректный ответ расшифровки.") from exc
+    transcript = str(payload.get("text") or "").strip() if isinstance(payload, dict) else ""
+    if not transcript:
+        raise RuntimeError("В голосовом сообщении не удалось распознать речь.")
+    return transcript
+
+
+def parse_voice_cosplan_fields(transcript: str) -> dict[str, str]:
+    answer = request_mistral_chat_completion(
+        (
+            "Извлеки данные для черновика карточки косплана из расшифровки. "
+            "Верни только JSON-объект без Markdown с ключами character_name, fandom, notes. "
+            "character_name — персонаж или короткое название идеи; fandom — произведение или фандом; "
+            "notes — остальные полезные детали пользователя. Не выдумывай отсутствующие сведения.\n\n"
+            f"Расшифровка: {transcript[:6000]}"
+        ),
+        system_prompt="Ты структурируешь голосовые заметки косплеера в точный JSON без выдуманных данных.",
+        temperature=0.1,
+    )
+    raw_json = answer.strip()
+    if raw_json.startswith("```"):
+        raw_json = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw_json, flags=re.IGNORECASE | re.DOTALL).strip()
+    match = re.search(r"\{.*\}", raw_json, flags=re.DOTALL)
+    if match:
+        raw_json = match.group(0)
+    try:
+        payload = json.loads(raw_json)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("Mistral не смог выделить поля карточки из расшифровки.") from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError("Mistral вернул неверный формат карточки.")
+    character_name = " ".join(str(payload.get("character_name") or "").split())[:255]
+    fandom = " ".join(str(payload.get("fandom") or "").split())[:255]
+    notes = str(payload.get("notes") or "").strip()[:4000]
+    if not character_name:
+        character_name = " ".join(transcript.split())[:255] or "Новая идея"
+    return {"character_name": character_name, "fandom": fandom, "notes": notes}
 
 
 def content_post_targets_telegram(post: ContentPlanPost) -> bool:
@@ -9140,15 +9232,51 @@ def telegram_get_updates(offset: int) -> list[dict[str, Any]]:
     return results if isinstance(results, list) else []
 
 
+def telegram_download_file(file_id: str, *, expected_size: int = 0) -> tuple[bytes, str]:
+    if not TELEGRAM_BOT_ENABLED or not TELEGRAM_BOT_TOKEN:
+        raise RuntimeError("Telegram-бот не настроен.")
+    if expected_size > BOT_VOICE_MAX_BYTES:
+        raise RuntimeError(f"Голосовое сообщение превышает лимит {BOT_VOICE_MAX_BYTES // (1024 * 1024)} МБ.")
+    try:
+        file_response = requests.get(
+            telegram_api_url("getFile"),
+            params={"file_id": file_id},
+            timeout=15,
+        )
+        file_payload = file_response.json() if file_response.content else {}
+    except (requests.RequestException, ValueError) as exc:
+        raise RuntimeError("Не удалось получить голосовое сообщение из Telegram.") from exc
+    file_result = file_payload.get("result") if isinstance(file_payload, dict) else None
+    file_path = str(file_result.get("file_path") or "").strip() if isinstance(file_result, dict) else ""
+    if not file_response.ok or not file_payload.get("ok") or not file_path:
+        raise RuntimeError("Telegram не вернул файл голосового сообщения.")
+    try:
+        audio_response = requests.get(
+            f"https://api.telegram.org/file/bot{TELEGRAM_BOT_TOKEN}/{file_path}",
+            timeout=max(20, HTTP_TIMEOUT_SECONDS * 4),
+        )
+        audio_response.raise_for_status()
+    except requests.RequestException as exc:
+        raise RuntimeError("Не удалось скачать голосовое сообщение из Telegram.") from exc
+    content = audio_response.content
+    if len(content) > BOT_VOICE_MAX_BYTES:
+        raise RuntimeError(f"Голосовое сообщение превышает лимит {BOT_VOICE_MAX_BYTES // (1024 * 1024)} МБ.")
+    return content, Path(file_path).name or "voice.ogg"
+
+
 def telegram_set_bot_commands() -> None:
     if not TELEGRAM_BOT_ENABLED or not TELEGRAM_BOT_TOKEN:
         return
     commands = [
         {"command": "menu", "description": "Открыть меню Cosplay Planner"},
         {"command": "idea", "description": "Добавить быструю идею косплана"},
+        {"command": "voice_card", "description": "Добавить карточку голосом"},
         {"command": "search", "description": "Найти косплан, фотосет или дело"},
         {"command": "deadlines", "description": "Дедлайны и события на неделю"},
         {"command": "festivals", "description": "Фестивали на ближайшие две недели"},
+        {"command": "festival_city", "description": "Найти будущие фестивали по городу"},
+        {"command": "team_search", "description": "Опубликовать поиск команды"},
+        {"command": "team_help", "description": "Найти заявку, где нужна помощь"},
         {"command": "my_festivals", "description": "Фестивали, куда я иду"},
         {"command": "post_ideas", "description": "Идеи для постов"},
         {"command": "help", "description": "Справка по командам"},
@@ -9182,9 +9310,13 @@ def get_telegram_auth_step(chat_id: str) -> dict[str, str]:
 BOT_HELP_TEXT = (
     "✨ Cosplay Planner — быстрые команды\n\n"
     "/idea — добавить быструю идею косплана\n"
+    "/voice_card — добавить черновик карточки голосом\n"
     "/search — найти косплан, фотосет или список дел\n"
     "/deadlines — события и дедлайны на 7 дней\n"
     "/festivals — фестивали на ближайшие 14 дней\n"
+    "/festival_city — все будущие фестивали в выбранном городе\n"
+    "/team_search — опубликовать заявку поиска команды\n"
+    "/team_help — посмотреть, кому нужна помощь\n"
     "/my_festivals — фестивали с отметкой «Я иду»\n"
     "/post_ideas — идеи для постов из контент-плана\n"
     "/reply текст — ответить на последний «голубь»\n"
@@ -9194,9 +9326,13 @@ BOT_HELP_TEXT = (
 
 BOT_ACTION_ALIASES = {
     "/idea": "idea", "быстрая идея": "idea", "💡 быстрая идея": "idea",
+    "/voice_card": "voice_card", "карточка голосом": "voice_card", "🎙 карточка голосом": "voice_card",
     "/search": "search", "поиск": "search", "🔎 поиск": "search",
     "/deadlines": "deadlines", "дедлайны": "deadlines", "📅 дедлайны недели": "deadlines",
     "/festivals": "festivals", "фестивали": "festivals", "🎪 фестивали 2 недели": "festivals",
+    "/festival_city": "festival_city", "поиск фестиваля по городу": "festival_city", "🏙 поиск фестиваля по городу": "festival_city",
+    "/team_search": "team_search", "поиск команды": "team_search", "🤝 поиск команды": "team_search",
+    "/team_help": "team_help", "хочу помочь": "team_help", "🙌 хочу помочь": "team_help",
     "/my_festivals": "my_festivals", "мои фестивали": "my_festivals", "⭐ мои фестивали": "my_festivals",
     "/post_ideas": "post_ideas", "идеи для постов": "post_ideas", "📝 идеи для постов": "post_ideas",
     "/help": "help", "help": "help", "помощь": "help",
@@ -9212,17 +9348,20 @@ def bot_action_from_text(text_value: str) -> str:
 def bot_menu_keyboard_telegram() -> dict[str, Any]:
     return {"inline_keyboard": [
         [{"text": "💡 Быстрая идея", "callback_data": "bot:idea"}, {"text": "🔎 Поиск", "callback_data": "bot:search"}],
+        [{"text": "🎙 Карточка голосом", "callback_data": "bot:voice_card"}],
         [{"text": "📅 Дедлайны недели", "callback_data": "bot:deadlines"}],
         [{"text": "🎪 Фестивали 2 недели", "callback_data": "bot:festivals"}, {"text": "⭐ Мои фестивали", "callback_data": "bot:my_festivals"}],
+        [{"text": "🏙 Поиск фестиваля по городу", "callback_data": "bot:festival_city"}],
+        [{"text": "🤝 Поиск команды", "callback_data": "bot:team_search"}, {"text": "🙌 Хочу помочь", "callback_data": "bot:team_help"}],
         [{"text": "📝 Идеи для постов", "callback_data": "bot:post_ideas"}, {"text": "❔ Помощь", "callback_data": "bot:help"}],
     ]}
 
 
-def set_bot_flow_state(platform: str, identity: str, step: str = "") -> None:
+def set_bot_flow_state(platform: str, identity: str, step: str = "", **values: str) -> None:
     lock, storage = ((telegram_bot_flow_state_lock, telegram_bot_flow_state) if platform == "telegram" else (vk_bot_flow_state_lock, vk_bot_flow_state))
     with lock:
         if step:
-            storage[identity] = {"step": step}
+            storage[identity] = {"step": step, **{key: str(value) for key, value in values.items()}}
         else:
             storage.pop(identity, None)
 
@@ -9231,6 +9370,47 @@ def get_bot_flow_state(platform: str, identity: str) -> dict[str, str]:
     lock, storage = ((telegram_bot_flow_state_lock, telegram_bot_flow_state) if platform == "telegram" else (vk_bot_flow_state_lock, vk_bot_flow_state))
     with lock:
         return dict(storage.get(identity, {}))
+
+
+BOT_TEAM_SEARCH_CATEGORIES = {
+    "coproplayer": "Ищу сокосплеера",
+    "photographer": "Ищу фотографа",
+    "photoset_helper": "Ищу помощника на фотосет",
+    "travel_companion": "Ищу попутчиков",
+    "accommodation": "Ищу жильё / приют",
+}
+
+BOT_TEAM_HELP_CATEGORIES = {
+    "photoset": ("Помощник на фотосет", ("photographer", "photoset_helper")),
+    "accommodation": ("Приютить косплеера", ("accommodation",)),
+    "coproplayer": ("Поиск сокосплеера", ("coproplayer",)),
+    "travel": ("Поиск попутчиков", ("travel_companion",)),
+}
+
+
+def bot_callback_results_markup(results: list[dict[str, str]]) -> dict[str, Any] | None:
+    buttons: list[list[dict[str, str]]] = []
+    for item in results:
+        label = str(item.get("label") or "Открыть")[:64]
+        if item.get("callback_data"):
+            buttons.append([{"text": label, "callback_data": str(item["callback_data"])[:64]}])
+        elif item.get("url"):
+            buttons.append([{"text": label, "url": str(item["url"])}])
+    return {"inline_keyboard": buttons} if buttons else None
+
+
+def bot_team_category_buttons() -> list[dict[str, str]]:
+    return [
+        {"label": label, "callback_data": f"team_create:{key}"}
+        for key, label in BOT_TEAM_SEARCH_CATEGORIES.items()
+    ]
+
+
+def bot_team_help_buttons() -> list[dict[str, str]]:
+    return [
+        {"label": label, "callback_data": f"team_browse:{key}"}
+        for key, (label, _categories) in BOT_TEAM_HELP_CATEGORIES.items()
+    ]
 
 
 def bot_local_today() -> date:
@@ -9257,6 +9437,41 @@ def create_quick_cosplan_idea(db: Session, user: User, raw_text: str) -> Cosplan
     db.commit()
     db.refresh(card)
     return card
+
+
+def create_voice_cosplan_card(db: Session, user: User, fields: dict[str, str]) -> CosplanCard:
+    character_name = str(fields.get("character_name") or "Новая идея").strip()[:255] or "Новая идея"
+    fandom = str(fields.get("fandom") or "").strip()[:255]
+    notes = str(fields.get("notes") or "").strip()[:4000]
+    card = CosplanCard(
+        user_id=user.id,
+        character_name=character_name,
+        fandom=fandom or None,
+        notes=notes or None,
+        plan_type="personal",
+        is_quick_draft=True,
+        status_percent=0,
+    )
+    db.add(card)
+    remember_options(db, user.id, "character", [character_name])
+    remember_options(db, user.id, "fandom", [fandom] if fandom else [])
+    db.commit()
+    db.refresh(card)
+    return card
+
+
+def voice_cosplan_preview_text(fields: dict[str, str], transcript: str = "") -> str:
+    rows = [
+        "🎙 Черновик карточки распознан:",
+        "",
+        f"Персонаж: {fields.get('character_name') or 'не указан'}",
+        f"Фандом: {fields.get('fandom') or 'не указан'}",
+        f"Заметка: {str(fields.get('notes') or 'нет')[:1200]}",
+    ]
+    if transcript:
+        rows.extend(["", f"Расшифровка: {transcript[:800]}"])
+    rows.extend(["", "Сохранить карточку?"])
+    return "\n".join(rows)
 
 
 def bot_search_results(db: Session, user: User, query: str) -> list[dict[str, str]]:
@@ -9336,6 +9551,28 @@ def bot_festivals(db: Session, user: User, *, only_going: bool = False) -> list[
     )[:20]
 
 
+def bot_festivals_by_city(db: Session, user: User, city: str) -> list[Festival]:
+    city_needle = " ".join(str(city or "").split()).casefold()
+    if not city_needle:
+        return []
+    today = bot_local_today()
+    festivals = db.execute(
+        select(Festival).where(
+            Festival.user_id == user.id,
+            Festival.event_date.is_not(None),
+            Festival.event_date >= today,
+        )
+    ).scalars().all()
+    return sorted(
+        [
+            item
+            for item in festivals
+            if " ".join(str(item.city or "").split()).casefold() == city_needle
+        ],
+        key=lambda item: (item.event_date, (item.name or "").casefold()),
+    )
+
+
 def bot_post_ideas(db: Session, user: User) -> list[tuple[date, str, str]]:
     today = bot_local_today()
     limit = today + timedelta(days=13)
@@ -9385,9 +9622,26 @@ def run_bot_action(platform: str, identity: str, peer_id: str, action: str) -> t
         if action == "idea":
             set_bot_flow_state(platform, identity, "quick_idea")
             return "💡 Отправьте идею в формате:\nПерсонаж | Фандом | Заметка\n\nФандом и заметку можно не указывать.", []
+        if action == "voice_card":
+            if platform != "telegram":
+                return "Голосовое добавление карточки пока доступно только в Telegram-боте.", []
+            set_bot_flow_state(platform, identity, "voice_card_wait")
+            return (
+                "🎙 Отправьте голосовое сообщение с персонажем, фандомом и важными деталями. "
+                "Система покажет распознанную карточку перед сохранением."
+            ), []
         if action == "search":
             set_bot_flow_state(platform, identity, "search")
             return "🔎 Что найти? Отправьте часть названия персонажа, фандома, фотосета или дела.", []
+        if action == "festival_city":
+            set_bot_flow_state(platform, identity, "festival_city")
+            return "🏙 Введите название города, чтобы найти все будущие фестивали в нём.", []
+        if action == "team_search":
+            set_bot_flow_state(platform, identity)
+            return "🤝 Кого вы ищете?", bot_team_category_buttons()
+        if action == "team_help":
+            set_bot_flow_state(platform, identity)
+            return "🙌 Как вы хотите помочь?", bot_team_help_buttons()
         return bot_text_for_action(db, user, action), []
 
 
@@ -9404,13 +9658,242 @@ def consume_bot_flow(platform: str, identity: str, peer_id: str, text_value: str
             card = create_quick_cosplan_idea(db, user, text_value)
             set_bot_flow_state(platform, identity)
             return f"✨ Идея «{card.character_name}» сохранена в черновики косплана.\n{APP_BASE_URL}/cosplan/{card.id}", []
+        if step == "voice_card_wait":
+            return "Отправьте именно голосовое сообщение. Для отмены выберите другое действие в /menu.", []
         if step == "search":
             results = bot_search_results(db, user, text_value)
             set_bot_flow_state(platform, identity)
             if not results:
                 return "Ничего не найдено. Попробуйте другое слово или снова выберите «Поиск».", []
             return "🔎 Найдено:\n\n" + "\n".join(f"• {item['label']}\n  {item['url']}" for item in results), results
+        if step == "festival_city":
+            city = " ".join(str(text_value or "").split())
+            if not city:
+                return "Введите название города.", []
+            festivals = bot_festivals_by_city(db, user, city)
+            set_bot_flow_state(platform, identity)
+            if not festivals:
+                return f"🏙 В городе «{city}» будущих фестивалей не найдено.", []
+            return (
+                f"🏙 Будущие фестивали в городе «{city}»:\n\n"
+                + "\n".join(
+                    f"{index}. {bot_date_label(item.event_date)} · {item.name}"
+                    for index, item in enumerate(festivals, start=1)
+                )
+            ), [
+                {"label": str(index), "callback_data": f"festival_select:{item.id}"}
+                for index, item in enumerate(festivals, start=1)
+            ]
+        if step.startswith("team_create_"):
+            state = get_bot_flow_state(platform, identity)
+            category = state.get("category", "")
+            value = " ".join(str(text_value or "").split())
+            if not value:
+                return "Поле не может быть пустым. Введите значение ещё раз.", []
+            if step == "team_create_city":
+                set_bot_flow_state(platform, identity, "team_create_contact", category=category, city=value[:255])
+                return "Укажите Telegram-ник для связи, например @cosplayer.", []
+            if step == "team_create_contact":
+                if not re.fullmatch(r"@?[A-Za-z0-9_]{3,64}", value):
+                    return "Введите корректный Telegram-ник, например @cosplayer.", []
+                contact = "@" + value.lstrip("@")
+                set_bot_flow_state(platform, identity, "team_create_context", category=category, city=state.get("city", ""), contact_tg=contact)
+                return "Введите название фестиваля или фотосета.", []
+            if step == "team_create_context":
+                set_bot_flow_state(
+                    platform,
+                    identity,
+                    "team_create_description",
+                    category=category,
+                    city=state.get("city", ""),
+                    contact_tg=state.get("contact_tg", ""),
+                    context_title=value[:255],
+                )
+                return "Кратко опишите, кого вы ищете и что предстоит делать.", []
+            if step == "team_create_description":
+                post = BotTeamSearchPost(
+                    user_id=user.id,
+                    category=category,
+                    city=state.get("city", "")[:255],
+                    contact_tg=state.get("contact_tg", "")[:255],
+                    context_title=state.get("context_title", "")[:255],
+                    description=value[:1500],
+                    status="active",
+                )
+                db.add(post)
+                db.commit()
+                set_bot_flow_state(platform, identity)
+                return f"✅ Заявка опубликована: {BOT_TEAM_SEARCH_CATEGORIES.get(category, 'Поиск команды')} · {post.context_title}.", []
     return None
+
+
+def run_bot_callback(
+    platform: str,
+    identity: str,
+    peer_id: str,
+    callback_data: str,
+) -> tuple[str, list[dict[str, str]]]:
+    with SessionLocal() as db:
+        user = bot_user_for_identity(db, platform, identity, peer_id)
+        if not user:
+            return "Сначала привяжите аккаунт через /start или /login.", []
+
+        if callback_data.startswith("festival_select:"):
+            festival_id = parse_positive_int(callback_data.partition(":")[2])
+            festival = db.execute(
+                select(Festival).where(Festival.id == festival_id, Festival.user_id == user.id)
+            ).scalar_one_or_none()
+            if not festival or not festival.event_date or festival.event_date < bot_local_today():
+                return "Фестиваль не найден или уже завершён.", []
+            date_text = bot_date_label(festival.event_date)
+            if festival.event_end_date and festival.event_end_date != festival.event_date:
+                date_text += f" — {bot_date_label(festival.event_end_date)}"
+            details = [
+                f"🎪 {festival.name}",
+                f"📅 {date_text}",
+                f"🏙 {festival.city or 'город не указан'}",
+            ]
+            if festival.submission_deadline:
+                details.append(f"⏳ Приём заявок до {bot_date_label(festival.submission_deadline)}")
+            if festival.is_going:
+                details.append("⭐ Вы уже отметили «Я иду»")
+            buttons = [{"label": "Подробнее", "url": f"{APP_BASE_URL}/festivals/{festival.id}/card"}]
+            if not festival.is_going:
+                buttons.append({"label": "Я иду", "callback_data": f"festival_going:{festival.id}"})
+            return "\n".join(details), buttons
+
+        if callback_data == "voice_card_save":
+            state = get_bot_flow_state(platform, identity)
+            if state.get("step") != "voice_card_confirm":
+                return "Черновик голосовой карточки уже обработан или устарел.", []
+            fields = {
+                "character_name": state.get("character_name", ""),
+                "fandom": state.get("fandom", ""),
+                "notes": state.get("notes", ""),
+            }
+            card = create_voice_cosplan_card(db, user, fields)
+            set_bot_flow_state(platform, identity)
+            return (
+                f"✨ Карточка «{card.character_name}» сохранена как черновик.\n"
+                f"{APP_BASE_URL}/cosplan/{card.id}"
+            ), [{"label": "Открыть карточку", "url": f"{APP_BASE_URL}/cosplan/{card.id}"}]
+
+        if callback_data == "voice_card_cancel":
+            set_bot_flow_state(platform, identity)
+            return "Голосовой черновик отменён. Карточка не создана.", []
+
+        if callback_data.startswith("festival_going:"):
+            festival_id = parse_positive_int(callback_data.partition(":")[2])
+            festival = db.execute(
+                select(Festival).where(Festival.id == festival_id, Festival.user_id == user.id)
+            ).scalar_one_or_none()
+            if not festival or not festival.event_date or festival.event_date < bot_local_today():
+                return "Фестиваль не найден или уже завершён.", []
+            festival.is_going = True
+            notify_count = notify_coproplayer_conflicts_for_festival(db, festival=festival, owner=user)
+            db.commit()
+            suffix = f" Обнаружено конфликтов у сокосплееров: {notify_count}." if notify_count else ""
+            return f"⭐ Фестиваль «{festival.name}» добавлен в ваши планы.{suffix}", [
+                {"label": "Подробнее", "url": f"{APP_BASE_URL}/festivals/{festival.id}/card"}
+            ]
+
+        if callback_data.startswith("team_create:"):
+            category = callback_data.partition(":")[2]
+            if category not in BOT_TEAM_SEARCH_CATEGORIES:
+                return "Неизвестная категория поиска.", []
+            set_bot_flow_state(platform, identity, "team_create_city", category=category)
+            return f"{BOT_TEAM_SEARCH_CATEGORIES[category]}. Введите город.", []
+
+        if callback_data.startswith("team_browse:"):
+            help_category = callback_data.partition(":")[2]
+            help_config = BOT_TEAM_HELP_CATEGORIES.get(help_category)
+            if not help_config:
+                return "Неизвестная категория помощи.", []
+            heading, categories = help_config
+            posts = db.execute(
+                select(BotTeamSearchPost)
+                .where(BotTeamSearchPost.status == "active", BotTeamSearchPost.category.in_(categories))
+                .order_by(BotTeamSearchPost.created_at.desc(), BotTeamSearchPost.id.desc())
+                .limit(20)
+            ).scalars().all()
+            if not posts:
+                return f"🙌 «{heading}»: активных заявок пока нет.", []
+            text_rows = [
+                f"{index}. {post.city} · {post.context_title} · {BOT_TEAM_SEARCH_CATEGORIES.get(post.category, 'Поиск команды')}"
+                for index, post in enumerate(posts, start=1)
+            ]
+            buttons = [
+                {"label": str(index), "callback_data": f"team_post:{post.id}"}
+                for index, post in enumerate(posts, start=1)
+            ]
+            return f"🙌 {heading}:\n\n" + "\n".join(text_rows), buttons
+
+        if callback_data.startswith("team_post:"):
+            post_id = parse_positive_int(callback_data.partition(":")[2])
+            post = db.execute(
+                select(BotTeamSearchPost).where(BotTeamSearchPost.id == post_id, BotTeamSearchPost.status == "active")
+            ).scalar_one_or_none()
+            if not post:
+                return "Заявка больше не активна.", []
+            return "\n".join([
+                f"🤝 {BOT_TEAM_SEARCH_CATEGORIES.get(post.category, 'Поиск команды')}",
+                f"🏙 {post.city}",
+                f"🎪/📷 {post.context_title}",
+                f"📝 {post.description}",
+                f"✉️ Связь: {post.contact_tg}",
+            ]), []
+
+    return "Действие не распознано.", []
+
+
+def handle_telegram_voice_card(
+    chat_id: str,
+    identity: str,
+    voice_payload: dict[str, Any],
+) -> None:
+    with SessionLocal() as db:
+        user = bot_user_for_identity(db, "telegram", identity, chat_id)
+        if not user:
+            telegram_send_message(chat_id, "Сначала привяжите аккаунт через /start или /login.")
+            return
+    file_id = str(voice_payload.get("file_id") or "").strip()
+    try:
+        file_size = int(voice_payload.get("file_size") or 0)
+    except (TypeError, ValueError):
+        file_size = 0
+    if not file_id:
+        telegram_send_message(chat_id, "Telegram не передал файл голосового сообщения.")
+        return
+    telegram_send_message(chat_id, "🎙 Расшифровываю голосовое сообщение и собираю карточку…")
+    try:
+        audio_content, filename = telegram_download_file(file_id, expected_size=file_size)
+        transcript = request_mistral_audio_transcription(
+            audio_content,
+            filename=filename,
+            content_type=str(voice_payload.get("mime_type") or "audio/ogg"),
+        )
+        fields = parse_voice_cosplan_fields(transcript)
+    except RuntimeError as exc:
+        set_bot_flow_state("telegram", identity)
+        telegram_send_message(chat_id, f"Не удалось обработать голосовую карточку: {exc}")
+        return
+    set_bot_flow_state(
+        "telegram",
+        identity,
+        "voice_card_confirm",
+        character_name=fields["character_name"],
+        fandom=fields["fandom"],
+        notes=fields["notes"],
+        transcript=transcript[:2000],
+    )
+    telegram_send_message(
+        chat_id,
+        voice_cosplan_preview_text(fields, transcript),
+        reply_markup=bot_callback_results_markup([
+            {"label": "✅ Сохранить", "callback_data": "voice_card_save"},
+            {"label": "❌ Отменить", "callback_data": "voice_card_cancel"},
+        ]),
+    )
 
 
 def start_telegram_auth(chat_id: str, *, with_greeting: bool = False) -> None:
@@ -9585,13 +10068,21 @@ def handle_telegram_update(update: dict[str, Any]) -> None:
         sender_id = str(sender.get("id") or chat_id).strip()
         data = str(callback.get("data") or "")
         telegram_answer_callback(callback_id)
-        if chat_id and data.startswith("bot:"):
-            action = data.removeprefix("bot:")
-            response_text, _results = run_bot_action("telegram", sender_id, chat_id, action)
+        if chat_id:
+            if data.startswith("bot:"):
+                action = data.removeprefix("bot:")
+                response_text, results = run_bot_action("telegram", sender_id, chat_id, action)
+            else:
+                action = ""
+                response_text, results = run_bot_callback("telegram", sender_id, chat_id, data)
             telegram_send_message(
                 chat_id,
                 response_text,
-                reply_markup=bot_menu_keyboard_telegram() if action in {"menu", "help"} else None,
+                reply_markup=(
+                    bot_menu_keyboard_telegram()
+                    if action in {"menu", "help"}
+                    else bot_callback_results_markup(results)
+                ),
             )
         return
 
@@ -9610,8 +10101,16 @@ def handle_telegram_update(update: dict[str, Any]) -> None:
     linked_telegram_user_id = sender_id if parse_positive_int(sender_id) else chat_id
 
     text_value = str(message.get("text") or "").strip()
-    if not text_value:
-        telegram_send_message(chat_id, "Поддерживаются только текстовые сообщения.")
+    voice_payload = message.get("voice") if isinstance(message.get("voice"), dict) else None
+    if not text_value and not voice_payload:
+        telegram_send_message(chat_id, "Поддерживаются текстовые и голосовые сообщения.")
+        return
+
+    if voice_payload:
+        if get_telegram_auth_step(chat_id):
+            telegram_send_message(chat_id, "Сначала завершите авторизацию текстовым сообщением.")
+            return
+        handle_telegram_voice_card(chat_id, linked_telegram_user_id, voice_payload)
         return
 
     lowered = text_value.casefold()
@@ -9658,20 +10157,22 @@ def handle_telegram_update(update: dict[str, Any]) -> None:
 
     action = bot_action_from_text(text_value)
     if action:
-        response_text, _results = run_bot_action("telegram", linked_telegram_user_id, chat_id, action)
+        response_text, results = run_bot_action("telegram", linked_telegram_user_id, chat_id, action)
         telegram_send_message(
             chat_id,
             response_text,
-            reply_markup=bot_menu_keyboard_telegram() if action in {"menu", "help"} else None,
+            reply_markup=(
+                bot_menu_keyboard_telegram()
+                if action in {"menu", "help"}
+                else bot_callback_results_markup(results)
+            ),
         )
         return
 
     flow_result = consume_bot_flow("telegram", linked_telegram_user_id, chat_id, text_value)
     if flow_result:
         response_text, results = flow_result
-        result_markup = None
-        if results:
-            result_markup = {"inline_keyboard": [[{"text": item["label"][:64], "url": item["url"]}] for item in results]}
+        result_markup = bot_callback_results_markup(results)
         telegram_send_message(chat_id, response_text, reply_markup=result_markup)
         return
 
@@ -10973,9 +11474,34 @@ def bot_menu_keyboard_vk() -> dict[str, Any]:
             [button("💡 Быстрая идея", "/idea", "primary"), button("🔎 Поиск", "/search")],
             [button("📅 Дедлайны недели", "/deadlines")],
             [button("🎪 Фестивали 2 недели", "/festivals"), button("⭐ Мои фестивали", "/my_festivals")],
+            [button("🏙 Поиск фестиваля по городу", "/festival_city")],
+            [button("🤝 Поиск команды", "/team_search"), button("🙌 Хочу помочь", "/team_help")],
             [button("📝 Идеи для постов", "/post_ideas"), button("❔ Помощь", "/help")],
         ],
     }
+
+
+def bot_results_keyboard_vk(results: list[dict[str, str]]) -> dict[str, Any] | None:
+    buttons: list[list[dict[str, Any]]] = []
+    for item in results:
+        callback_data = str(item.get("callback_data") or "").strip()
+        url = str(item.get("url") or "").strip()
+        if callback_data:
+            action = {
+                "type": "text",
+                "label": str(item.get("label") or "Открыть")[:40],
+                "payload": json.dumps({"callback_data": callback_data}, ensure_ascii=False),
+            }
+        elif url:
+            action = {"type": "open_link", "label": str(item.get("label") or "Открыть")[:40], "link": url}
+        else:
+            continue
+        button = {"action": action, "color": "secondary"}
+        if str(item.get("label") or "").isdigit() and buttons and len(buttons[-1]) < 4:
+            buttons[-1].append(button)
+        else:
+            buttons.append([button])
+    return {"one_time": True, "inline": True, "buttons": buttons} if buttons else None
 
 
 def reset_vk_bot_auth(sender_id: str) -> None:
@@ -11176,20 +11702,35 @@ def handle_vk_bot_message(message: dict[str, Any]) -> None:
         if handle_vk_bot_auth_message(sender_id, peer_id, text_value):
             return
 
+    raw_payload = message.get("payload")
+    try:
+        button_payload = json.loads(raw_payload) if isinstance(raw_payload, str) else raw_payload
+    except (TypeError, ValueError):
+        button_payload = {}
+    callback_data = str(button_payload.get("callback_data") or "") if isinstance(button_payload, dict) else ""
+    if callback_data:
+        response_text, results = run_bot_callback("vk", sender_id, peer_id, callback_data)
+        vk_bot_send_message(peer_id, response_text, keyboard=bot_results_keyboard_vk(results))
+        return
+
     action = bot_action_from_text(text_value)
     if action:
-        response_text, _results = run_bot_action("vk", sender_id, peer_id, action)
+        response_text, results = run_bot_action("vk", sender_id, peer_id, action)
         vk_bot_send_message(
             peer_id,
             response_text,
-            keyboard=bot_menu_keyboard_vk() if action in {"menu", "help"} else None,
+            keyboard=(
+                bot_menu_keyboard_vk()
+                if action in {"menu", "help"}
+                else bot_results_keyboard_vk(results)
+            ),
         )
         return
 
     flow_result = consume_bot_flow("vk", sender_id, peer_id, text_value)
     if flow_result:
-        response_text, _results = flow_result
-        vk_bot_send_message(peer_id, response_text)
+        response_text, results = flow_result
+        vk_bot_send_message(peer_id, response_text, keyboard=bot_results_keyboard_vk(results))
         return
 
     if not text_value.startswith("/"):
@@ -22232,6 +22773,7 @@ def profile_page(request: Request, db: Session = Depends(get_db)):
         premium_channel_ad_text=str(premium_channel_ad_settings.get("text") or ""),
         premium_channel_ad_url=str(premium_channel_ad_settings.get("url") or ""),
         is_event_organizer=to_bool(get_user_option_value(db, user.id, EVENT_ORGANIZER_ROLE_GROUP)),
+        photo_contest_achievements=photo_contest_winner_achievements_for_user(db, user),
     )
 
 
@@ -22420,6 +22962,7 @@ def user_public_card(alias: str, request: Request, db: Session = Depends(get_db)
         target_premium_active=target_premium_active,
         target_premium_expires_label=target_premium_expires_label,
         premium_duration_options=PREMIUM_DURATION_OPTIONS,
+        photo_contest_achievements=photo_contest_winner_achievements_for_user(db, target_user),
     )
 
 
@@ -26511,24 +27054,36 @@ def in_progress_standalone_delete(task_id: int, request: Request, db: Session = 
 @app.post("/in-progress/{progress_id}/checklist/add")
 async def in_progress_checklist_add(progress_id: int, request: Request, db: Session = Depends(get_db)):
     user = current_user(request, db)
+    wants_json = "application/json" in request.headers.get("accept", "")
     if not user:
+        if wants_json:
+            return JSONResponse({"ok": False, "error": "Требуется войти в аккаунт."}, status_code=401)
         return redirect("/login")
 
     progress = db.execute(
         select(InProgressCard).where(InProgressCard.id == progress_id, InProgressCard.user_id == user.id)
     ).scalar_one_or_none()
     if not progress:
+        if wants_json:
+            return JSONResponse({"ok": False, "error": "Карточка «В работе» не найдена."}, status_code=404)
         add_flash(request, "Карточка «В работе» не найдена.", "error")
         return redirect("/in-progress")
 
     form = await request.form()
     item_text = str(form.get("item_text", "")).strip()
-    if item_text:
-        items = list(progress.checklist_json or [])
-        items.append({"text": item_text, "done": False, "status": CHECKLIST_STATUS_TODO, "deadline": str(form.get("deadline") or "").strip()})
-        progress.checklist_json = items
-        db.commit()
-        add_flash(request, "Пункт добавлен.", "success")
+    if not item_text:
+        if wants_json:
+            return JSONResponse({"ok": False, "error": "Введите текст дела."}, status_code=422)
+        add_flash(request, "Введите текст дела.", "error")
+        return redirect("/in-progress")
+
+    items = list(progress.checklist_json or [])
+    items.append({"text": item_text, "done": False, "status": CHECKLIST_STATUS_TODO, "deadline": str(form.get("deadline") or "").strip()})
+    progress.checklist_json = items
+    db.commit()
+    if wants_json:
+        return JSONResponse({"ok": True, "progress_id": int(progress.id)})
+    add_flash(request, "Пункт добавлен.", "success")
 
     return redirect("/in-progress")
 
@@ -41132,6 +41687,72 @@ def photo_contest_award_row(
     row = next((item for item in result_rows if int(item["entry_id"]) == int(entry_id)), None)
     recipient = users_by_id.get(int(row["participant_user_id"])) if row else None
     return contest, row, recipient
+
+
+def photo_contest_winner_achievements_for_user(db: Session, target_user: User) -> list[dict[str, Any]]:
+    target_aliases = photo_contest_user_aliases_casefold(target_user)
+    contests = db.execute(
+        select(PhotoContest).order_by(
+            PhotoContest.results_date.desc(),
+            PhotoContest.id.desc(),
+        )
+    ).scalars().all()
+    achievements: list[dict[str, Any]] = []
+    for contest in contests:
+        if photo_contest_status_key(contest) != PHOTO_CONTEST_STATUS_FINISHED:
+            continue
+        entries = db.execute(
+            select(PhotoContestEntry).where(PhotoContestEntry.contest_id == contest.id)
+        ).scalars().all()
+        target_entry_ids: set[int] = set()
+        related_user_ids: set[int] = set()
+        for entry in entries:
+            if entry.participant_user_id:
+                related_user_ids.add(int(entry.participant_user_id))
+            for role in normalize_photo_contest_roles(entry.roles_json):
+                role_user_id = parse_positive_int(str(role.get("user_id", "")).strip())
+                if role_user_id:
+                    related_user_ids.add(int(role_user_id))
+                if normalize_photo_contest_role_key(role.get("role")) != PHOTO_CONTEST_ROLE_COSPLAYER:
+                    continue
+                role_person = normalize_username(str(role.get("person") or "")).casefold()
+                if int(role_user_id or 0) == int(target_user.id) or (
+                    not role_user_id and role_person and role_person in target_aliases
+                ):
+                    target_entry_ids.add(int(entry.id))
+        if not target_entry_ids:
+            continue
+        photos = db.execute(
+            select(PhotoContestEntryPhoto).where(PhotoContestEntryPhoto.contest_id == contest.id)
+        ).scalars().all()
+        users = db.execute(select(User).where(User.id.in_(related_user_ids))).scalars().all() if related_user_ids else []
+        users_by_id = {int(user.id): user for user in users}
+        vote_counts = photo_contest_entry_vote_count_map(db, int(contest.id))
+        vote_counts, _bonus_applied = photo_contest_final_vote_count_map(entries, photos, vote_counts)
+        result_rows, _winning_photo_ids = photo_contest_winning_rows(
+            contest,
+            entries=entries,
+            photos=photos,
+            users_by_id=users_by_id,
+            vote_count_by_entry_id=vote_counts,
+        )
+        for row in result_rows:
+            if int(row["entry_id"]) not in target_entry_ids:
+                continue
+            achievements.append({
+                "contest_id": int(contest.id),
+                "entry_id": int(row["entry_id"]),
+                "contest_title": str(contest.title or "Фотоконкурс"),
+                "nomination": str(row["nomination"]),
+                "place": int(row["place"]),
+                "results_date": contest.results_date,
+                "results_month": (
+                    month_label_ru(contest.results_date).capitalize()
+                    if contest.results_date
+                    else ""
+                ),
+            })
+    return achievements
 
 
 def get_or_create_photo_contest_award_certificate(
