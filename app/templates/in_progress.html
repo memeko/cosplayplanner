@@ -213,8 +213,15 @@
   }
 </style>
 
-{% if progress_items or has_checklist_items %}
+{% if progress_items or has_checklist_items or progress_view == "kanban" %}
 {% if progress_view == "kanban" %}
+<form id="standalone-task-form" method="post" action="/in-progress/standalone/add" class="card standalone-task-form">
+  <label for="standalone-task-text"><strong>Добавить задачу вне проектов</strong></label>
+  <div class="standalone-task-controls">
+    <input id="standalone-task-text" name="task_text" maxlength="2000" required placeholder="Например, разобрать материалы после съёмки" />
+    <button type="submit" class="btn btn-accent">Добавить</button>
+  </div>
+</form>
 <section class="kanban-filters" aria-label="Фильтр дел по тегам">
   <strong>Категории</strong>
   <button type="button" class="tag-filter active" data-filter-tag="all">Все</button>
@@ -237,6 +244,11 @@
             <article class="kanban-task" draggable="true" data-card-id="{{ item.card_id }}" data-card-name="{{ item.card_name }}" data-card-url="{{ item.card_url }}" data-tags="{{ item.tags|join(',') }}" data-status-url="{{ item.status_url }}" data-tags-url="{{ item.tags_url }}">
               <div class="kanban-task-head">
                 <p>{{ item.text }}</p>
+                {% if item.is_standalone %}
+                <form method="post" action="{{ item.delete_url }}" onsubmit="return confirm('Удалить задачу?')">
+                  <button type="submit" class="kanban-task-delete" aria-label="Удалить задачу" title="Удалить задачу">×</button>
+                </form>
+                {% endif %}
                 <button type="button" class="kanban-drag-handle" aria-label="Перетащить дело" title="Перетащить между колонками">
                   <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6h.01M15 6h.01M9 12h.01M15 12h.01M9 18h.01M15 18h.01" /></svg>
                 </button>

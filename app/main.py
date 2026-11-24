@@ -123,6 +123,7 @@ from .models import (
     PhotosetAccess,
     RehearsalCard,
     RehearsalEntry,
+    StandaloneTask,
     TitleEntry,
     User,
     UserOption,
@@ -1633,6 +1634,7 @@ def apply_schema_migrations() -> None:
             ("note", "TEXT"),
             ("measurements_json", "JSON NOT NULL DEFAULT '[]'"),
             ("references_json", "JSON NOT NULL DEFAULT '[]'"),
+            ("model_files_json", "JSON NOT NULL DEFAULT '[]'"),
             ("intermediate_deadlines_json", "JSON NOT NULL DEFAULT '[]'"),
             ("deadline_date", "DATE"),
             ("cloud_url", "TEXT"),
@@ -25729,6 +25731,7 @@ def get_in_progress_master_form_values(
             "intermediate_deadline_rows": [{"row_id": "intermediate-0", "value": ""}],
             "deadline_date": "",
             "references_input": "",
+            "model_files": [],
             "cloud_url": "",
             "status_percent": 0,
         }
@@ -25750,6 +25753,7 @@ def get_in_progress_master_form_values(
         "intermediate_deadline_rows": intermediate_deadline_rows,
         "deadline_date": card.deadline_date.isoformat() if card.deadline_date else "",
         "references_input": "\n".join(as_list(card.references_json)),
+        "model_files": as_list(card.model_files_json),
         "cloud_url": card.cloud_url or "",
         "status_percent": min(100, max(0, int(card.status_percent or 0))),
     }
@@ -25833,6 +25837,74 @@ def save_in_progress_master_card_from_form(
     card.references_json = references
     card.cloud_url = cloud_url or None
     card.status_percent = status_percent
+    return True, ""
+
+
+MASTER_MODEL_FILE_MAX_BYTES = 50 * 1024 * 1024
+
+
+def normalize_master_model_files(values: Any) -> list[dict[str, Any]]:
+    files: list[dict[str, Any]] = []
+    for raw in as_list(values):
+        if not isinstance(raw, dict):
+            continue
+        stored_name = safe_media_filename(str(raw.get("stored_name") or ""))
+        original_name = Path(str(raw.get("original_name") or stored_name)).name[:255]
+        if not stored_name or not original_name:
+            continue
+        files.append({
+            "stored_name": stored_name,
+            "original_name": original_name,
+            "size_bytes": max(0, int(raw.get("size_bytes") or 0)),
+            "content_type": str(raw.get("content_type") or "application/octet-stream")[:120],
+        })
+    return files
+
+
+async def update_master_model_files_from_form(form: Any, card: InProgressMasterCard) -> tuple[bool, str]:
+    existing = normalize_master_model_files(card.model_files_json)
+    keep_indexes: set[int] = set()
+    for raw_index in form.getlist("keep_model_file"):
+        try:
+            keep_indexes.add(int(raw_index))
+        except (TypeError, ValueError):
+            continue
+    kept = [item for index, item in enumerate(existing) if index in keep_indexes]
+    uploads = [
+        item for item in form.getlist("model_files")
+        if getattr(item, "filename", "") and hasattr(item, "read")
+    ]
+    prepared: list[tuple[Any, bytes, str, str]] = []
+    for upload in uploads:
+        original_name = Path(str(upload.filename or "")).name.strip()[:255]
+        if not original_name:
+            return False, "У одного из файлов модели отсутствует имя."
+        payload = await upload.read(MASTER_MODEL_FILE_MAX_BYTES + 1)
+        if len(payload) > MASTER_MODEL_FILE_MAX_BYTES:
+            return False, f"Файл «{original_name}» превышает лимит 50 МБ."
+        suffix = Path(original_name).suffix.lower()
+        if not re.fullmatch(r"\.[a-z0-9]{1,12}", suffix):
+            suffix = ".bin"
+        prepared.append((upload, payload, original_name, suffix))
+
+    added: list[dict[str, Any]] = []
+    for upload, payload, original_name, suffix in prepared:
+        stored_name = f"master-model-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:14]}{suffix}"
+        (media_storage_path() / stored_name).write_bytes(payload)
+        added.append({
+            "stored_name": stored_name,
+            "original_name": original_name,
+            "size_bytes": len(payload),
+            "content_type": str(getattr(upload, "content_type", "") or "application/octet-stream")[:120],
+        })
+
+    removed = [item for index, item in enumerate(existing) if index not in keep_indexes]
+    card.model_files_json = kept + added
+    for item in removed:
+        try:
+            (media_storage_path() / item["stored_name"]).unlink(missing_ok=True)
+        except OSError:
+            pass
     return True, ""
 
 
@@ -26301,6 +26373,30 @@ def in_progress_list(request: Request, db: Session = Depends(get_db)):
             }
             checklist_board[status].append(board_item)
             checklist_timeline.append(board_item)
+    standalone_tasks = db.execute(
+        select(StandaloneTask)
+        .where(StandaloneTask.user_id == user.id)
+        .order_by(StandaloneTask.created_at, StandaloneTask.id)
+    ).scalars().all()
+    for task in standalone_tasks:
+        status = task.status if task.status in CHECKLIST_STATUS_LABELS else CHECKLIST_STATUS_TODO
+        board_item = {
+            "progress_id": 0,
+            "item_index": task.id,
+            "text": task.text,
+            "status": status,
+            "tags": normalize_checklist_tags(task.tags_json),
+            "card_id": "standalone",
+            "card_name": "Вне проектов",
+            "deadline": None,
+            "is_frozen": False,
+            "card_url": "/in-progress?view=kanban#standalone-task-form",
+            "status_url": f"/in-progress/standalone/{task.id}/status",
+            "tags_url": f"/in-progress/standalone/{task.id}/tags",
+            "delete_url": f"/in-progress/standalone/{task.id}/delete",
+            "is_standalone": True,
+        }
+        checklist_board[status].append(board_item)
     checklist_timeline.sort(
         key=lambda item: (
             item["deadline"] is None,
@@ -26341,6 +26437,75 @@ def in_progress_list(request: Request, db: Session = Depends(get_db)):
         cosplayer_active_projects_count=active_project_counters.get("cosplayer_active", 0),
         master_active_projects_count=active_project_counters.get("master_active", 0),
     )
+
+
+@app.post("/in-progress/standalone/add")
+async def in_progress_standalone_add(request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    form = await request.form()
+    task_text = str(form.get("task_text") or "").strip()
+    if not task_text:
+        add_flash(request, "Введите текст задачи.", "error")
+        return redirect("/in-progress?view=kanban#standalone-task-form")
+    if len(task_text) > 2000:
+        add_flash(request, "Текст задачи должен быть не длиннее 2000 символов.", "error")
+        return redirect("/in-progress?view=kanban#standalone-task-form")
+    db.add(StandaloneTask(user_id=user.id, text=task_text, status=CHECKLIST_STATUS_TODO, tags_json=[]))
+    db.commit()
+    add_flash(request, "Задача вне проектов добавлена.", "success")
+    return redirect("/in-progress?view=kanban#standalone-task-form")
+
+
+@app.post("/in-progress/standalone/{task_id}/status")
+async def in_progress_standalone_status(task_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        raise HTTPException(status_code=401, detail="Требуется авторизация.")
+    task = db.execute(
+        select(StandaloneTask).where(StandaloneTask.id == task_id, StandaloneTask.user_id == user.id)
+    ).scalar_one_or_none()
+    if not task:
+        raise HTTPException(status_code=404, detail="Задача не найдена.")
+    form = await request.form()
+    status = str(form.get("status") or "").strip()
+    if status not in CHECKLIST_STATUS_LABELS:
+        raise HTTPException(status_code=422, detail="Неизвестный статус задачи.")
+    task.status = status
+    db.commit()
+    return {"ok": True}
+
+
+@app.post("/in-progress/standalone/{task_id}/tags")
+async def in_progress_standalone_tags(task_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        raise HTTPException(status_code=401, detail="Требуется авторизация.")
+    task = db.execute(
+        select(StandaloneTask).where(StandaloneTask.id == task_id, StandaloneTask.user_id == user.id)
+    ).scalar_one_or_none()
+    if not task:
+        raise HTTPException(status_code=404, detail="Задача не найдена.")
+    form = await request.form()
+    task.tags_json = normalize_checklist_tags(form.getlist("tags"))
+    db.commit()
+    return {"ok": True, "tags": task.tags_json}
+
+
+@app.post("/in-progress/standalone/{task_id}/delete")
+def in_progress_standalone_delete(task_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    task = db.execute(
+        select(StandaloneTask).where(StandaloneTask.id == task_id, StandaloneTask.user_id == user.id)
+    ).scalar_one_or_none()
+    if task:
+        db.delete(task)
+        db.commit()
+        add_flash(request, "Задача удалена.", "success")
+    return redirect("/in-progress?view=kanban")
 
 
 @app.post("/in-progress/{progress_id}/checklist/add")
@@ -26830,6 +26995,7 @@ async def in_progress_master_create(request: Request, db: Session = Depends(get_
         intermediate_deadlines_json=[],
         deadline_date=None,
         references_json=[],
+        model_files_json=[],
         status_percent=0,
     )
     open_board_requested = str(form.get("open_board", "")).strip() == "1"
@@ -26838,6 +27004,14 @@ async def in_progress_master_create(request: Request, db: Session = Depends(get_
     ok, error_text = save_in_progress_master_card_from_form(form, card, db=db)
     if not ok:
         add_flash(request, error_text, "error")
+        return redirect(
+            f"/in-progress/master/new?{urlencode({'master_role': master_role, 'archive_scope': master_archive_scope})}"
+        )
+
+    files_ok, files_error = await update_master_model_files_from_form(form, card)
+    if not files_ok:
+        db.rollback()
+        add_flash(request, files_error, "error")
         return redirect(
             f"/in-progress/master/new?{urlencode({'master_role': master_role, 'archive_scope': master_archive_scope})}"
         )
@@ -26921,6 +27095,7 @@ def in_progress_master_detail(card_id: int, request: Request, db: Session = Depe
         intermediate_deadline_labels=format_master_intermediate_deadline_labels(as_list(card.intermediate_deadlines_json)),
         deadline_label=card.deadline_date.strftime("%d-%m-%Y") if card.deadline_date else "—",
         references=as_list(card.references_json),
+        model_files=normalize_master_model_files(card.model_files_json),
         comments=comments,
         authors_by_id=authors_by_id,
         can_edit_master_card=can_edit_master_card,
@@ -27299,6 +27474,14 @@ async def in_progress_master_update(card_id: int, request: Request, db: Session 
             f"/in-progress/master/{card_id}/edit?{urlencode({'master_role': master_role, 'archive_scope': master_archive_scope})}"
         )
 
+    files_ok, files_error = await update_master_model_files_from_form(form, card)
+    if not files_ok:
+        db.rollback()
+        add_flash(request, files_error, "error")
+        return redirect(
+            f"/in-progress/master/{card_id}/edit?{urlencode({'master_role': master_role, 'archive_scope': master_archive_scope})}"
+        )
+
     if open_board_requested:
         get_or_create_master_board(db, card_id=card.id, updated_by_user_id=user.id)
     db.commit()
@@ -27309,6 +27492,33 @@ async def in_progress_master_update(card_id: int, request: Request, db: Session 
         )
     return redirect(
         f"/in-progress/master/{card.id}?{urlencode({'master_role': master_role, 'archive_scope': master_archive_scope})}"
+    )
+
+
+@app.get("/in-progress/master/{card_id}/model-files/{file_index}")
+def in_progress_master_model_file_download(
+    card_id: int,
+    file_index: int,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    card = get_accessible_in_progress_master_card(db, user=user, card_id=card_id)
+    if not card:
+        raise HTTPException(status_code=404, detail="Карточка мастера не найдена.")
+    files = normalize_master_model_files(card.model_files_json)
+    if not (0 <= file_index < len(files)):
+        raise HTTPException(status_code=404, detail="Файл модели не найден.")
+    item = files[file_index]
+    file_path = media_storage_path() / item["stored_name"]
+    if not file_path.exists() or not file_path.is_file():
+        raise HTTPException(status_code=404, detail="Файл модели не найден.")
+    return FileResponse(
+        str(file_path),
+        media_type=item["content_type"],
+        filename=item["original_name"],
     )
 
 
@@ -27326,6 +27536,11 @@ def in_progress_master_delete(card_id: int, request: Request, db: Session = Depe
         add_flash(request, "Недостаточно прав для удаления.", "error")
         return redirect(f"/in-progress/master/{card_id}")
 
+    for item in normalize_master_model_files(card.model_files_json):
+        try:
+            (media_storage_path() / item["stored_name"]).unlink(missing_ok=True)
+        except OSError:
+            pass
     db.delete(card)
     db.commit()
     add_flash(request, "Карточка мастера удалена.", "info")

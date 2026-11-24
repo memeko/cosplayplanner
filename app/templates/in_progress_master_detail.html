@@ -190,6 +190,20 @@
 </section>
 {% endif %}
 
+{% if model_files %}
+<section class="box">
+  <h3>Модель</h3>
+  <div class="master-model-file-list top-offset">
+    {% for file in model_files %}
+      <a class="master-model-file-row" href="/in-progress/master/{{ card.id }}/model-files/{{ loop.index0 }}">
+        <span>{{ file.original_name }}</span>
+        <small>{{ '%.1f'|format((file.size_bytes or 0) / 1048576) }} МБ · Скачать</small>
+      </a>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
 <section class="box">
   <h3>Комментарии</h3>
   <p class="muted">Поддерживается Markdown: **жирный**, *курсив*, `код`, [ссылка](https://...).</p>

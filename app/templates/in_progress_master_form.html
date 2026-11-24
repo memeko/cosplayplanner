@@ -10,7 +10,7 @@
   <a href="/in-progress?scope=master" class="tab {% if (in_progress_scope or 'cosplayer') == 'master' %}active{% endif %}">Заказы</a>
 </nav>
 
-<form method="post" action="{{ '/in-progress/master/' ~ card_id ~ '/edit' if editing else '/in-progress/master/new' }}" class="grid one-col big-form">
+<form method="post" enctype="multipart/form-data" action="{{ '/in-progress/master/' ~ card_id ~ '/edit' if editing else '/in-progress/master/new' }}" class="grid one-col big-form">
   <input type="hidden" name="master_archive_scope" value="{{ master_archive_scope or 'active' }}" />
   <section class="box">
     <div class="grid two-col">
@@ -192,6 +192,26 @@
       <span class="muted" id="references_upload_status"></span>
     </div>
     <div class="reference-grid" id="references_preview"></div>
+  </section>
+
+  <section class="box">
+    <h3>Модель</h3>
+    <p class="muted">Прикрепите файлы модели. Максимальный размер одного файла — 50 МБ.</p>
+    {% if form.model_files %}
+      <div class="master-model-file-list">
+        {% for file in form.model_files %}
+          <label class="master-model-file-row">
+            <input type="checkbox" name="keep_model_file" value="{{ loop.index0 }}" checked />
+            <span>{{ file.original_name }}</span>
+            <small>{{ '%.1f'|format((file.size_bytes or 0) / 1048576) }} МБ · снять отметку, чтобы удалить</small>
+          </label>
+        {% endfor %}
+      </div>
+    {% endif %}
+    <label class="top-offset">
+      Добавить файлы
+      <input type="file" name="model_files" multiple />
+    </label>
   </section>
 
   <div class="actions-inline">

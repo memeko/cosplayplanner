@@ -732,6 +732,18 @@ class InProgressCard(Base):
     cosplan_card = relationship("CosplanCard", back_populates="in_progress")
 
 
+class StandaloneTask(Base):
+    __tablename__ = "standalone_tasks"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    text = Column(Text, nullable=False)
+    status = Column(String(32), nullable=False, default="todo", index=True)
+    tags_json = Column(JSON, nullable=False, default=list)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
 class InProgressMasterCard(Base):
     __tablename__ = "in_progress_master_cards"
 
@@ -747,6 +759,7 @@ class InProgressMasterCard(Base):
     note = Column(Text, nullable=True)
     measurements_json = Column(JSON, nullable=False, default=list)
     references_json = Column(JSON, nullable=False, default=list)
+    model_files_json = Column(JSON, nullable=False, default=list)
     intermediate_deadlines_json = Column(JSON, nullable=False, default=list)
     deadline_date = Column(Date, nullable=True)
     cloud_url = Column(Text, nullable=True)
