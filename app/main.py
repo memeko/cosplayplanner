@@ -752,6 +752,9 @@ MISTRAL_AUDIO_MODEL = str(os.getenv("MISTRAL_AUDIO_MODEL", "voxtral-mini-transcr
 BOT_VOICE_MAX_BYTES = max(1, min(20, int(os.getenv("BOT_VOICE_MAX_MB", "10") or "10"))) * 1024 * 1024
 GEMINI_API_BASE_URL = str(os.getenv("GEMINI_API_BASE_URL", "https://generativelanguage.googleapis.com")).strip().rstrip("/")
 GEMINI_API_KEY = str(os.getenv("GEMINI_API_KEY", "")).strip()
+GEMINI_AUDIO_MODEL = str(os.getenv("GEMINI_AUDIO_MODEL", "gemini-3.5-flash-lite")).strip().lower()
+if GEMINI_AUDIO_MODEL.startswith("models/"):
+    GEMINI_AUDIO_MODEL = GEMINI_AUDIO_MODEL.removeprefix("models/")
 GEMINI_VIDEO_MODEL = str(os.getenv("GEMINI_VIDEO_MODEL", "gemini-3.5-flash-lite")).strip().lower()
 if GEMINI_VIDEO_MODEL.startswith("models/"):
     GEMINI_VIDEO_MODEL = GEMINI_VIDEO_MODEL.removeprefix("models/")
@@ -6863,6 +6866,11 @@ def request_mistral_audio_transcription(
                 message = str(error_value.get("message") or error_value.get("detail") or "").strip()
             if not message:
                 message = str(error_payload.get("message") or error_payload.get("detail") or "").strip()
+        if response.status_code == 429 or "rate limit" in message.casefold():
+            raise RuntimeError(
+                "Лимит распознавания Mistral временно исчерпан. "
+                "Попробуйте отправить голосовое сообщение немного позже."
+            )
         raise RuntimeError(f"Mistral не смог расшифровать аудио: {message or f'HTTP {response.status_code}'}")
     try:
         payload = response.json()
@@ -6904,6 +6912,67 @@ def parse_voice_cosplan_fields(transcript: str) -> dict[str, str]:
     if not character_name:
         character_name = " ".join(transcript.split())[:255] or "Новая идея"
     return {"character_name": character_name, "fandom": fandom, "notes": notes}
+
+
+def request_gemini_voice_cosplan(
+    audio_content: bytes,
+    *,
+    content_type: str = "audio/ogg",
+) -> tuple[dict[str, str], str]:
+    if not GEMINI_API_KEY:
+        raise RuntimeError("Gemini API не настроен.")
+    if not audio_content:
+        raise RuntimeError("Голосовое сообщение пустое.")
+    if len(audio_content) > BOT_VOICE_MAX_BYTES:
+        raise RuntimeError(f"Голосовое сообщение превышает лимит {BOT_VOICE_MAX_BYTES // (1024 * 1024)} МБ.")
+    prompt = (
+        "Распознай русскую речь и создай черновик карточки косплана. "
+        "Верни только JSON с ключами transcript, character_name, fandom, notes. "
+        "transcript — точная расшифровка; character_name — персонаж или короткое название идеи; "
+        "fandom — произведение или фандом; notes — остальные полезные детали. "
+        "Не выдумывай сведения, которых нет в аудио."
+    )
+    try:
+        response = requests.post(
+            f"{GEMINI_API_BASE_URL}/v1beta/models/{GEMINI_AUDIO_MODEL}:generateContent",
+            timeout=max(45, HTTP_TIMEOUT_SECONDS * 8),
+            headers={"Content-Type": "application/json", "X-Goog-Api-Key": GEMINI_API_KEY},
+            json={
+                "contents": [{"parts": [
+                    {"inline_data": {
+                        "mime_type": content_type or "audio/ogg",
+                        "data": base64.b64encode(audio_content).decode("ascii"),
+                    }},
+                    {"text": prompt},
+                ]}],
+                "generationConfig": {"responseMimeType": "application/json", "maxOutputTokens": 2048},
+            },
+        )
+    except requests.RequestException as exc:
+        raise RuntimeError("Не удалось связаться с Gemini.") from exc
+    if response.status_code >= 400:
+        message = gemini_error_message(response)
+        if response.status_code == 429 or any(marker in message.casefold() for marker in ("quota", "rate limit", "resource exhausted")):
+            raise RuntimeError("Бесплатный лимит Gemini временно исчерпан.")
+        raise RuntimeError(f"Gemini не смог обработать аудио: {message}")
+    try:
+        response_payload = response.json()
+    except ValueError as exc:
+        raise RuntimeError("Gemini вернул некорректный ответ.") from exc
+    raw_text = extract_gemini_response_text(response_payload if isinstance(response_payload, dict) else {})
+    try:
+        payload = extract_json_object(raw_text)
+    except RuntimeError as exc:
+        raise RuntimeError("Gemini не смог выделить поля карточки.") from exc
+    transcript = str(payload.get("transcript") or "").strip()
+    character_name = " ".join(str(payload.get("character_name") or "").split())[:255]
+    fandom = " ".join(str(payload.get("fandom") or "").split())[:255]
+    notes = str(payload.get("notes") or "").strip()[:4000]
+    if not transcript:
+        transcript = " ".join(part for part in (character_name, fandom, notes) if part).strip()
+    if not character_name:
+        character_name = " ".join(transcript.split())[:255] or "Новая идея"
+    return {"character_name": character_name, "fandom": fandom, "notes": notes}, transcript
 
 
 def content_post_targets_telegram(post: ContentPlanPost) -> bool:
@@ -9428,7 +9497,12 @@ def bot_user_for_identity(db: Session, platform: str, identity: str, peer_id: st
 
 
 def create_quick_cosplan_idea(db: Session, user: User, raw_text: str) -> CosplanCard:
-    parts = [part.strip() for part in str(raw_text or "").split("|", 2)]
+    raw_value = str(raw_text or "").strip()
+    line_parts = [line.strip() for line in raw_value.splitlines()]
+    if len(line_parts) > 1:
+        parts = [line_parts[0], line_parts[1], "\n".join(line_parts[2:]).strip()]
+    else:
+        parts = [part.strip() for part in re.split(r"\s*[|*=]\s*", raw_value, maxsplit=2)]
     character_name = parts[0] if parts and parts[0] else "Новая идея"
     fandom = parts[1] if len(parts) > 1 and parts[1] else None
     notes = parts[2] if len(parts) > 2 and parts[2] else None
@@ -9621,7 +9695,13 @@ def run_bot_action(platform: str, identity: str, peer_id: str, action: str) -> t
             return "Сначала привяжите аккаунт через /start или /login.", []
         if action == "idea":
             set_bot_flow_state(platform, identity, "quick_idea")
-            return "💡 Отправьте идею в формате:\nПерсонаж | Фандом | Заметка\n\nФандом и заметку можно не указывать.", []
+            return (
+                "💡 Отправьте идею тремя строками:\n"
+                "Персонаж\nФандом\nЗаметка\n\n"
+                "Или разделите поля символом * или =, например:\n"
+                "Персонаж * Фандом * Заметка\n\n"
+                "Фандом и заметку можно не указывать."
+            ), []
         if action == "voice_card":
             if platform != "telegram":
                 return "Голосовое добавление карточки пока доступно только в Telegram-боте.", []
@@ -9635,7 +9715,7 @@ def run_bot_action(platform: str, identity: str, peer_id: str, action: str) -> t
             return "🔎 Что найти? Отправьте часть названия персонажа, фандома, фотосета или дела.", []
         if action == "festival_city":
             set_bot_flow_state(platform, identity, "festival_city")
-            return "🏙 Введите название города, чтобы найти все будущие фестивали в нём.", []
+            return "🏙 Введите название города, чтобы найти будущие фестивали в нём.", []
         if action == "team_search":
             set_bot_flow_state(platform, identity)
             return "🤝 Кого вы ищете?", bot_team_category_buttons()
@@ -9867,15 +9947,45 @@ def handle_telegram_voice_card(
     telegram_send_message(chat_id, "🎙 Расшифровываю голосовое сообщение и собираю карточку…")
     try:
         audio_content, filename = telegram_download_file(file_id, expected_size=file_size)
-        transcript = request_mistral_audio_transcription(
-            audio_content,
-            filename=filename,
-            content_type=str(voice_payload.get("mime_type") or "audio/ogg"),
-        )
-        fields = parse_voice_cosplan_fields(transcript)
+        content_type = str(voice_payload.get("mime_type") or "audio/ogg")
+        fields: dict[str, str] | None = None
+        transcript = ""
+        provider_errors: list[str] = []
+        if GEMINI_API_KEY:
+            try:
+                fields, transcript = request_gemini_voice_cosplan(
+                    audio_content,
+                    content_type=content_type,
+                )
+            except RuntimeError as exc:
+                provider_errors.append(str(exc))
+        if fields is None and MISTRAL_API_KEY:
+            try:
+                transcript = request_mistral_audio_transcription(
+                    audio_content,
+                    filename=filename,
+                    content_type=content_type,
+                )
+                fields = parse_voice_cosplan_fields(transcript)
+            except RuntimeError as exc:
+                provider_errors.append(str(exc))
+        if fields is None:
+            if not GEMINI_API_KEY and not MISTRAL_API_KEY:
+                raise RuntimeError("Сервисы распознавания голоса не настроены.")
+            if any("лимит" in error.casefold() for error in provider_errors):
+                raise RuntimeError(
+                    "Бесплатные лимиты распознавания временно исчерпаны. "
+                    "Попробуйте позже или добавьте карточку текстом через «Быструю идею»."
+                )
+            raise RuntimeError(provider_errors[-1] if provider_errors else "Не удалось распознать голосовое сообщение.")
     except RuntimeError as exc:
-        set_bot_flow_state("telegram", identity)
-        telegram_send_message(chat_id, f"Не удалось обработать голосовую карточку: {exc}")
+        error_text = str(exc)
+        if "лимит" in error_text.casefold():
+            set_bot_flow_state("telegram", identity, "voice_card_wait")
+            telegram_send_message(chat_id, f"⏳ {error_text}\nКарточка не создана.")
+        else:
+            set_bot_flow_state("telegram", identity)
+            telegram_send_message(chat_id, f"Не удалось обработать голосовую карточку: {error_text}")
         return
     set_bot_flow_state(
         "telegram",
