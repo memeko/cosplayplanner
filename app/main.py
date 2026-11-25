@@ -24399,8 +24399,31 @@ def photoset_costs(item: Photoset) -> dict[str, float]:
     dressing = float(item.dressing_room_hours or 0) * float(item.dressing_room_hourly_price or 0)
     extras = sum(float(row.get("price") or 0) for row in as_list(item.extra_expenses_json) if isinstance(row, dict))
     total = rental + smoke + dressing + extras
+    props = sum(
+        float(row.get("price") or 0) * max(1, int(row.get("quantity") or 1))
+        for row in as_list(item.props_json)
+        if isinstance(row, dict)
+    )
+    team = sum(
+        float(row.get("price") or 0)
+        for row in as_list(item.role_costs_json)
+        if isinstance(row, dict)
+    )
+    travel = float(item.travel_to_price or 0) + float(item.travel_from_price or 0)
+    grand_total = total + props + team + travel
     contribution = total / int(item.payers_count or 0) if int(item.payers_count or 0) > 0 else 0.0
-    return {"rental": rental, "smoke": smoke, "dressing": dressing, "extras": extras, "total": total, "contribution": contribution}
+    return {
+        "rental": rental,
+        "smoke": smoke,
+        "dressing": dressing,
+        "extras": extras,
+        "total": total,
+        "props": props,
+        "team": team,
+        "travel": travel,
+        "grand_total": grand_total,
+        "contribution": contribution,
+    }
 
 
 def photoset_form_data(item: Photoset | None = None) -> dict[str, Any]:
