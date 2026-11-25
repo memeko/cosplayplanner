@@ -61,6 +61,36 @@ def parse_nominations_payload(payload: Any, event_url: str | None) -> list[dict[
     return result
 
 
+def parse_submission_deadline_payload(payload: Any, *, today: date | None = None) -> date | None:
+    """Return the nearest active application deadline from the Cosplay2 request API."""
+    if not isinstance(payload, dict) or not isinstance(payload.get("state"), list):
+        return None
+
+    deadlines: list[date] = []
+    for row in payload["state"]:
+        if not isinstance(row, dict):
+            continue
+        parsed = parse_event_date(str(row.get("time_requests_close") or ""))
+        unix_value = row.get("time_requests_close_uts")
+        try:
+            unix_seconds = int(unix_value or 0)
+        except (TypeError, ValueError):
+            unix_seconds = 0
+        if not parsed and unix_seconds > 0:
+            try:
+                parsed = datetime.fromtimestamp(unix_seconds).date()
+            except (OverflowError, OSError, ValueError):
+                parsed = None
+        if parsed:
+            deadlines.append(parsed)
+
+    if not deadlines:
+        return None
+    current_date = today or date.today()
+    future = sorted(value for value in deadlines if value >= current_date)
+    return future[0] if future else max(deadlines)
+
+
 def normalize_url(url: str | None) -> str | None:
     if not url:
         return None

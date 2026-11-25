@@ -62,6 +62,7 @@ from .cosplay2_parser import (
     normalize_url,
     parse_events_from_homepage,
     parse_nominations_payload,
+    parse_submission_deadline_payload,
 )
 from .database import Base, SessionLocal, engine, get_db
 from .models import (
@@ -9301,11 +9302,17 @@ def telegram_get_updates(offset: int) -> list[dict[str, Any]]:
     return results if isinstance(results, list) else []
 
 
-def telegram_download_file(file_id: str, *, expected_size: int = 0) -> tuple[bytes, str]:
+def telegram_download_file(
+    file_id: str,
+    *,
+    expected_size: int = 0,
+    max_bytes: int = BOT_VOICE_MAX_BYTES,
+    file_label: str = "Голосовое сообщение",
+) -> tuple[bytes, str]:
     if not TELEGRAM_BOT_ENABLED or not TELEGRAM_BOT_TOKEN:
         raise RuntimeError("Telegram-бот не настроен.")
-    if expected_size > BOT_VOICE_MAX_BYTES:
-        raise RuntimeError(f"Голосовое сообщение превышает лимит {BOT_VOICE_MAX_BYTES // (1024 * 1024)} МБ.")
+    if expected_size > max_bytes:
+        raise RuntimeError(f"{file_label} превышает лимит {max_bytes // (1024 * 1024)} МБ.")
     try:
         file_response = requests.get(
             telegram_api_url("getFile"),
@@ -9314,11 +9321,11 @@ def telegram_download_file(file_id: str, *, expected_size: int = 0) -> tuple[byt
         )
         file_payload = file_response.json() if file_response.content else {}
     except (requests.RequestException, ValueError) as exc:
-        raise RuntimeError("Не удалось получить голосовое сообщение из Telegram.") from exc
+        raise RuntimeError(f"Не удалось получить файл «{file_label.casefold()}» из Telegram.") from exc
     file_result = file_payload.get("result") if isinstance(file_payload, dict) else None
     file_path = str(file_result.get("file_path") or "").strip() if isinstance(file_result, dict) else ""
     if not file_response.ok or not file_payload.get("ok") or not file_path:
-        raise RuntimeError("Telegram не вернул файл голосового сообщения.")
+        raise RuntimeError(f"Telegram не вернул файл «{file_label.casefold()}».")
     try:
         audio_response = requests.get(
             f"https://api.telegram.org/file/bot{TELEGRAM_BOT_TOKEN}/{file_path}",
@@ -9326,11 +9333,84 @@ def telegram_download_file(file_id: str, *, expected_size: int = 0) -> tuple[byt
         )
         audio_response.raise_for_status()
     except requests.RequestException as exc:
-        raise RuntimeError("Не удалось скачать голосовое сообщение из Telegram.") from exc
+        raise RuntimeError(f"Не удалось скачать файл «{file_label.casefold()}» из Telegram.") from exc
     content = audio_response.content
-    if len(content) > BOT_VOICE_MAX_BYTES:
-        raise RuntimeError(f"Голосовое сообщение превышает лимит {BOT_VOICE_MAX_BYTES // (1024 * 1024)} МБ.")
+    if len(content) > max_bytes:
+        raise RuntimeError(f"{file_label} превышает лимит {max_bytes // (1024 * 1024)} МБ.")
     return content, Path(file_path).name or "voice.ogg"
+
+
+def save_telegram_quick_idea_reference(file_id: str, *, expected_size: int = 0) -> str:
+    raw_bytes, _source_name = telegram_download_file(
+        file_id,
+        expected_size=expected_size,
+        max_bytes=MAX_UPLOAD_INPUT_BYTES,
+        file_label="Изображение",
+    )
+    try:
+        webp_bytes, _width, _height = compress_image_to_webp(
+            raw_bytes,
+            max_output_bytes=MAX_GALLERY_IMAGE_BYTES,
+            max_width=MAX_GALLERY_IMAGE_WIDTH,
+        )
+    except ValueError as exc:
+        raise RuntimeError(f"Не удалось обработать изображение: {exc}") from exc
+    file_name = f"bot-reference-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:14]}.webp"
+    (media_storage_path() / file_name).write_bytes(webp_bytes)
+    return f"/media/{file_name}"
+
+
+def telegram_quick_idea_image(message: dict[str, Any]) -> tuple[str, int] | None:
+    photos = message.get("photo")
+    if isinstance(photos, list):
+        candidates = [item for item in photos if isinstance(item, dict) and item.get("file_id")]
+        if candidates:
+            selected = max(candidates, key=lambda item: int(item.get("file_size") or 0))
+            return str(selected["file_id"]), int(selected.get("file_size") or 0)
+    document = message.get("document")
+    if isinstance(document, dict) and document.get("file_id"):
+        mime_type = str(document.get("mime_type") or "").casefold()
+        if mime_type.startswith("image/"):
+            return str(document["file_id"]), int(document.get("file_size") or 0)
+    return None
+
+
+def handle_telegram_quick_idea_image(
+    chat_id: str,
+    identity: str,
+    image_payload: tuple[str, int],
+    caption: str,
+) -> None:
+    if get_bot_flow_state("telegram", identity).get("step") != "quick_idea":
+        telegram_send_message(chat_id, "Сначала выберите «💡 Быстрая идея» в /menu, затем отправьте референс.")
+        return
+    try:
+        reference_url = save_telegram_quick_idea_reference(
+            image_payload[0],
+            expected_size=image_payload[1],
+        )
+    except RuntimeError as exc:
+        telegram_send_message(chat_id, str(exc))
+        return
+    if not caption:
+        set_bot_flow_state("telegram", identity, "quick_idea", reference_url=reference_url)
+        telegram_send_message(
+            chat_id,
+            "🖼 Референс прикреплён. Теперь отправьте текст идеи тремя строками или через * либо =.",
+        )
+        return
+    with SessionLocal() as db:
+        user = bot_user_for_identity(db, "telegram", identity, chat_id)
+        if not user:
+            set_bot_flow_state("telegram", identity)
+            telegram_send_message(chat_id, "Сначала привяжите аккаунт через /start или /login.")
+            return
+        card = create_quick_cosplan_idea(db, user, caption, reference_url=reference_url)
+    set_bot_flow_state("telegram", identity)
+    telegram_send_message(
+        chat_id,
+        f"✨ Идея «{card.character_name}» с референсом сохранена в черновики косплана.\n{APP_BASE_URL}/cosplan/{card.id}",
+    )
 
 
 def telegram_set_bot_commands() -> None:
@@ -9417,7 +9497,6 @@ def bot_action_from_text(text_value: str) -> str:
 def bot_menu_keyboard_telegram() -> dict[str, Any]:
     return {"inline_keyboard": [
         [{"text": "💡 Быстрая идея", "callback_data": "bot:idea"}, {"text": "🔎 Поиск", "callback_data": "bot:search"}],
-        [{"text": "🎙 Карточка голосом", "callback_data": "bot:voice_card"}],
         [{"text": "📅 Дедлайны недели", "callback_data": "bot:deadlines"}],
         [{"text": "🎪 Фестивали 2 недели", "callback_data": "bot:festivals"}, {"text": "⭐ Мои фестивали", "callback_data": "bot:my_festivals"}],
         [{"text": "🏙 Поиск фестиваля по городу", "callback_data": "bot:festival_city"}],
@@ -9490,13 +9569,25 @@ def bot_date_label(value: date | None) -> str:
     return value.strftime("%d.%m.%Y") if isinstance(value, date) else "дата не указана"
 
 
+def bot_festival_deadline_label(festival: Festival) -> str:
+    if not festival.submission_deadline:
+        return ""
+    return f" · подача до {bot_date_label(festival.submission_deadline)}"
+
+
 def bot_user_for_identity(db: Session, platform: str, identity: str, peer_id: str = "") -> User | None:
     if platform == "telegram":
         return db.execute(select(User).where(User.telegram_chat_id == identity)).scalar_one_or_none()
     return db.execute(select(User).where(or_(User.vk_bot_user_id == identity, User.vk_bot_peer_id == peer_id))).scalar_one_or_none()
 
 
-def create_quick_cosplan_idea(db: Session, user: User, raw_text: str) -> CosplanCard:
+def create_quick_cosplan_idea(
+    db: Session,
+    user: User,
+    raw_text: str,
+    *,
+    reference_url: str = "",
+) -> CosplanCard:
     raw_value = str(raw_text or "").strip()
     line_parts = [line.strip() for line in raw_value.splitlines()]
     if len(line_parts) > 1:
@@ -9506,7 +9597,15 @@ def create_quick_cosplan_idea(db: Session, user: User, raw_text: str) -> Cosplan
     character_name = parts[0] if parts and parts[0] else "Новая идея"
     fandom = parts[1] if len(parts) > 1 and parts[1] else None
     notes = parts[2] if len(parts) > 2 and parts[2] else None
-    card = CosplanCard(user_id=user.id, character_name=character_name[:255], fandom=(fandom[:255] if fandom else None), notes=notes, is_quick_draft=True, status_percent=0)
+    card = CosplanCard(
+        user_id=user.id,
+        character_name=character_name[:255],
+        fandom=(fandom[:255] if fandom else None),
+        notes=notes,
+        references_json=[reference_url] if reference_url else [],
+        is_quick_draft=True,
+        status_percent=0,
+    )
     db.add(card)
     db.commit()
     db.refresh(card)
@@ -9675,7 +9774,11 @@ def bot_text_for_action(db: Session, user: User, action: str) -> str:
     if action in {"festivals", "my_festivals"}:
         rows = bot_festivals(db, user, only_going=action == "my_festivals")
         heading = "⭐ Мои фестивали" if action == "my_festivals" else "🎪 Фестивали на 14 дней"
-        return f"{heading}: ничего не найдено." if not rows else heading + ":\n\n" + "\n".join(f"• {bot_date_label(item.event_date)} · {item.city or 'город не указан'} · {item.name}" for item in rows)
+        return f"{heading}: ничего не найдено." if not rows else heading + ":\n\n" + "\n".join(
+            f"• {bot_date_label(item.event_date)} · {item.city or 'город не указан'} · {item.name}"
+            f"{bot_festival_deadline_label(item)}"
+            for item in rows
+        )
     if action == "post_ideas":
         rows = bot_post_ideas(db, user)
         return "📝 На ближайшие две недели идей пока нет." if not rows else "📝 Идеи для постов:\n\n" + "\n".join(f"• {bot_date_label(day)} · {kind}: {title}" for day, kind, title in rows)
@@ -9700,7 +9803,9 @@ def run_bot_action(platform: str, identity: str, peer_id: str, action: str) -> t
                 "Персонаж\nФандом\nЗаметка\n\n"
                 "Или разделите поля символом * или =, например:\n"
                 "Персонаж * Фандом * Заметка\n\n"
-                "Фандом и заметку можно не указывать."
+                "Фандом и заметку можно не указывать.\n\n"
+                "Можно сначала отправить изображение-референс как фото или файл, а затем текст идеи. "
+                "Если добавить текст в подпись к изображению, карточка сохранится сразу."
             ), []
         if action == "voice_card":
             if platform != "telegram":
@@ -9735,7 +9840,13 @@ def consume_bot_flow(platform: str, identity: str, peer_id: str, text_value: str
             set_bot_flow_state(platform, identity)
             return "Сначала привяжите аккаунт через /start или /login.", []
         if step == "quick_idea":
-            card = create_quick_cosplan_idea(db, user, text_value)
+            state = get_bot_flow_state(platform, identity)
+            card = create_quick_cosplan_idea(
+                db,
+                user,
+                text_value,
+                reference_url=str(state.get("reference_url") or ""),
+            )
             set_bot_flow_state(platform, identity)
             return f"✨ Идея «{card.character_name}» сохранена в черновики косплана.\n{APP_BASE_URL}/cosplan/{card.id}", []
         if step == "voice_card_wait":
@@ -9758,6 +9869,7 @@ def consume_bot_flow(platform: str, identity: str, peer_id: str, text_value: str
                 f"🏙 Будущие фестивали в городе «{city}»:\n\n"
                 + "\n".join(
                     f"{index}. {bot_date_label(item.event_date)} · {item.name}"
+                    f"{bot_festival_deadline_label(item)}"
                     for index, item in enumerate(festivals, start=1)
                 )
             ), [
@@ -10211,9 +10323,23 @@ def handle_telegram_update(update: dict[str, Any]) -> None:
     linked_telegram_user_id = sender_id if parse_positive_int(sender_id) else chat_id
 
     text_value = str(message.get("text") or "").strip()
+    caption = str(message.get("caption") or "").strip()
     voice_payload = message.get("voice") if isinstance(message.get("voice"), dict) else None
-    if not text_value and not voice_payload:
-        telegram_send_message(chat_id, "Поддерживаются текстовые и голосовые сообщения.")
+    quick_idea_image = telegram_quick_idea_image(message)
+    if not text_value and not voice_payload and not quick_idea_image:
+        telegram_send_message(chat_id, "Поддерживаются текстовые сообщения и изображения для быстрой идеи.")
+        return
+
+    if quick_idea_image:
+        if get_telegram_auth_step(chat_id):
+            telegram_send_message(chat_id, "Сначала завершите авторизацию текстовым сообщением.")
+            return
+        handle_telegram_quick_idea_image(
+            chat_id,
+            linked_telegram_user_id,
+            quick_idea_image,
+            caption,
+        )
         return
 
     if voice_payload:
@@ -37213,7 +37339,7 @@ def import_cosplay2_events_for_user(db: Session, user: User, parsed_events: list
                 existing.event_date = event.event_date
                 changed = True
 
-            if event.submission_deadline and not existing.submission_deadline:
+            if event.submission_deadline and existing.submission_deadline != event.submission_deadline:
                 existing.submission_deadline = event.submission_deadline
                 changed = True
 
@@ -37241,20 +37367,37 @@ def import_cosplay2_events_for_user(db: Session, user: User, parsed_events: list
                 updated += 1
             continue
 
-        if any(
-            festivals_look_like_duplicates(
+        duplicate = next(
+            (
+                row
+                for row in existing_rows
+                if festivals_look_like_duplicates(
                 row.name,
                 row.city,
                 row.event_date,
                 event.name,
                 event.city,
                 event.event_date,
+                )
+            ),
+            None,
+        )
+        if duplicate:
+            changed = False
+            if event.submission_deadline and duplicate.submission_deadline != event.submission_deadline:
+                duplicate.submission_deadline = event.submission_deadline
+                changed = True
+            merged_nominations = normalize_festival_nomination_items(
+                [*festival_nomination_items(duplicate), *as_list(getattr(event, "nominations", []))]
             )
-            for row in existing_rows
-        ):
-            conflict_count += 1
-            if event.name:
-                conflict_names.add(event.name)
+            if merged_nominations != normalize_festival_nomination_items(duplicate.nominations_json):
+                duplicate.nominations_json = merged_nominations
+                duplicate.nomination_1 = merged_nominations[0]["title"] if len(merged_nominations) > 0 else None
+                duplicate.nomination_2 = merged_nominations[1]["title"] if len(merged_nominations) > 1 else None
+                duplicate.nomination_3 = merged_nominations[2]["title"] if len(merged_nominations) > 2 else None
+                changed = True
+            if changed:
+                updated += 1
             continue
 
         festival = Festival(
@@ -37299,7 +37442,7 @@ def import_cosplay2_events_for_user(db: Session, user: User, parsed_events: list
 
 def load_cosplay2_event_nominations(parsed_events: list[Any]) -> tuple[int, int]:
     """Enrich homepage events from the public API powering /create_request."""
-    nominations_by_api_url, failed = load_cosplay2_nominations_for_urls(
+    nominations_by_api_url, deadlines_by_api_url, failed = load_cosplay2_nominations_for_urls(
         [getattr(event, "url", None) for event in parsed_events]
     )
     loaded = 0
@@ -37308,11 +37451,15 @@ def load_cosplay2_event_nominations(parsed_events: list[Any]) -> tuple[int, int]
         if api_url not in nominations_by_api_url:
             continue
         event.nominations = nominations_by_api_url[api_url]
+        if api_url in deadlines_by_api_url:
+            event.submission_deadline = deadlines_by_api_url[api_url]
         loaded += 1
     return loaded, failed
 
 
-def load_cosplay2_nominations_for_urls(event_urls: list[Any]) -> tuple[dict[str, list[dict[str, str]]], int]:
+def load_cosplay2_nominations_for_urls(
+    event_urls: list[Any],
+) -> tuple[dict[str, list[dict[str, str]]], dict[str, date], int]:
     """Load nomination lists once per cosplay2.ru festival host."""
     targets: dict[str, str] = {}
     for raw_url in event_urls:
@@ -37322,23 +37469,31 @@ def load_cosplay2_nominations_for_urls(event_urls: list[Any]) -> tuple[dict[str,
             targets[api_url] = event_url
 
     loaded: dict[str, list[dict[str, str]]] = {}
+    deadlines: dict[str, date] = {}
     failed = 0
 
-    def fetch(target: tuple[str, str]) -> tuple[str, list[dict[str, str]]]:
+    def fetch(target: tuple[str, str]) -> tuple[str, list[dict[str, str]], date | None]:
         api_url, event_url = target
         response = requests.get(api_url, timeout=(2, 4), headers={"Accept": "application/json"})
         response.raise_for_status()
-        return api_url, parse_nominations_payload(response.json(), event_url)
+        payload = response.json()
+        return (
+            api_url,
+            parse_nominations_payload(payload, event_url),
+            parse_submission_deadline_payload(payload),
+        )
 
     with ThreadPoolExecutor(max_workers=2) as executor:
         futures = [executor.submit(fetch, target) for target in targets.items()]
         for future in as_completed(futures):
             try:
-                api_url, nominations = future.result()
+                api_url, nominations, submission_deadline = future.result()
                 loaded[api_url] = nominations
+                if submission_deadline:
+                    deadlines[api_url] = submission_deadline
             except (requests.RequestException, ValueError):
                 failed += 1
-    return loaded, failed
+    return loaded, deadlines, failed
 
 
 def merge_cosplay2_nominations_into_festival(
@@ -37413,6 +37568,26 @@ def cosplay2_source_matches_festival(
         if festival_multiscript_search_score(festival.name, candidate.name) < 560:
             continue
         if festival.city and candidate.city and not city_matches(festival.city, candidate.city):
+            continue
+        return True
+
+    try:
+        response = requests.get("https://cosplay2.ru/", timeout=20)
+        response.raise_for_status()
+        public_events = parse_events_from_homepage(response.text)
+    except requests.RequestException:
+        return False
+    for event in public_events:
+        if nomination_api_url(getattr(event, "url", None)) != requested_api:
+            continue
+        if not festivals_look_like_duplicates(
+            festival.name,
+            festival.city,
+            festival.event_date,
+            event.name,
+            event.city,
+            event.event_date,
+        ):
             continue
         return True
     return False
@@ -40620,8 +40795,9 @@ def festival_refresh_cosplay2_nominations(
                 if isinstance(item, dict)
             ]
         )
-    if not incoming_nominations:
-        return JSONResponse({"error": "Источник не вернул номинации."}, status_code=400)
+    imported_deadline = parse_date(str(submission_deadline or "").strip())
+    if not incoming_nominations and not imported_deadline:
+        return JSONResponse({"error": "Источник не вернул номинации или дедлайн подачи."}, status_code=400)
 
     match_conditions = [Festival.id == int(target_festival.id)]
     if target_festival.import_external_id:
@@ -40631,7 +40807,6 @@ def festival_refresh_cosplay2_nominations(
     festivals = db.execute(
         select(Festival).where(or_(*match_conditions)).order_by(Festival.id)
     ).scalars().all()
-    imported_deadline = parse_date(str(submission_deadline or "").strip())
     updated = 0
     for festival in festivals:
         changed = merge_cosplay2_nominations_into_festival(festival, incoming_nominations)

@@ -746,8 +746,6 @@
               .filter(function (item) { return item && typeof item.title === "string"; })
               .map(function (item) { return { title: item.title }; })
           : [];
-        if (!nominations.length) throw new Error("Номинации не найдены");
-
         const nowTimestamp = Date.now();
         const allDeadlines = Array.isArray(sourcePayload.state)
           ? sourcePayload.state
@@ -775,6 +773,9 @@
           const month = String(deadlineDate.getMonth() + 1).padStart(2, "0");
           const day = String(deadlineDate.getDate()).padStart(2, "0");
           submissionDeadline = `${year}-${month}-${day}`;
+        }
+        if (!nominations.length && !submissionDeadline) {
+          throw new Error("Номинации и дедлайн подачи не найдены");
         }
 
         const eventSourceUrl = new URL(apiUrl).origin;
