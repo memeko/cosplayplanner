@@ -243,7 +243,17 @@
   <div class="profile-chatbot-banner top-offset">
     <p class="meta">Подключайте бота, чтобы получать уведомления и не пропускать важные события.</p>
     <p class="muted">Можно использовать Telegram или сообщения сообщества VK.</p>
+    <p class="muted">
+      {% if user.telegram_chat_id %}
+        Telegram связан с профилем{% if user.telegram_username %}: @{{ user.telegram_username }}{% endif %}.
+      {% else %}
+        Telegram пока не связан с профилем.
+      {% endif %}
+    </p>
     <div class="actions-inline top-offset">
+      {% if telegram_web_auth_enabled %}
+      <a href="/auth/telegram?next=/profile" class="btn">{{ "Переподтвердить Telegram" if user.telegram_chat_id else "Связать Telegram с профилем" }}</a>
+      {% endif %}
       <a
         href="https://t.me/cosplay_planner_bot"
         target="_blank"

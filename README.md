@@ -109,6 +109,7 @@ uvicorn app.main:app --reload
 ## Telegram-бот уведомлений
 
 После задания `TELEGRAM_BOT_TOKEN` приложение поднимает текстового Telegram-бота внутри того же процесса FastAPI.
+Для входа и регистрации на сайте через Telegram задайте также `TELEGRAM_BOT_USERNAME` и укажите домен сайта у `@BotFather` командой `/setdomain`. Тот же Telegram ID связывает веб-профиль и авторизацию в боте.
 
 Сценарий авторизации в боте:
 

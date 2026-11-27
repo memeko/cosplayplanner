@@ -44,6 +44,13 @@
     <button type="submit" class="btn btn-accent" id="register-submit">Получить код</button>
   </form>
 
+  {% if telegram_web_auth_enabled %}
+  <div class="top-offset">
+    <h3>Или зарегистрируйтесь через Telegram</h3>
+    <a class="btn btn-accent" href="/auth/telegram">Продолжить через Telegram</a>
+  </div>
+  {% endif %}
+
   <div class="welcome-overlay" id="register-code-overlay" hidden>
     <div class="welcome-modal register-code-modal" role="dialog" aria-modal="true" aria-labelledby="register-code-title">
       <button type="button" class="btn btn-small welcome-close" id="register-code-close" aria-label="Закрыть">✕</button>

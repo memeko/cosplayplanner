@@ -18,6 +18,13 @@
     </div>
   </form>
 
+  {% if telegram_web_auth_enabled %}
+  <div class="top-offset">
+    <h3>Или войдите через Telegram</h3>
+    <a class="btn btn-accent" href="/auth/telegram">Войти через Telegram</a>
+  </div>
+  {% endif %}
+
   {% if vkid_enabled %}
   <div class="top-offset" id="vk-auth-wrapper">
     <h3>Или войдите через VK</h3>

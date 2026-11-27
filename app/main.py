@@ -9569,6 +9569,13 @@ def bot_date_label(value: date | None) -> str:
     return value.strftime("%d.%m.%Y") if isinstance(value, date) else "дата не указана"
 
 
+def bot_festival_date_label(festival: Festival) -> str:
+    start = bot_date_label(festival.event_date)
+    if festival.event_end_date and festival.event_end_date != festival.event_date:
+        return f"{start} — {bot_date_label(festival.event_end_date)}"
+    return start
+
+
 def bot_festival_deadline_label(festival: Festival) -> str:
     if not festival.submission_deadline:
         return ""
@@ -9724,6 +9731,48 @@ def bot_festivals(db: Session, user: User, *, only_going: bool = False) -> list[
     )[:20]
 
 
+def bot_public_festivals(db: Session, *, city: str = "", days: int | None = None) -> list[Festival]:
+    today = bot_local_today()
+    city_needle = " ".join(str(city or "").split()).casefold()
+    rows = db.execute(
+        select(Festival).where(Festival.event_date.is_not(None), Festival.event_date >= today)
+    ).scalars().all()
+    unique: list[Festival] = []
+    for item in rows:
+        if city_needle and " ".join(str(item.city or "").split()).casefold() != city_needle:
+            continue
+        if days is not None and item.event_date > today + timedelta(days=max(1, days) - 1):
+            continue
+        duplicate_index = next(
+            (
+                index for index, current in enumerate(unique)
+                if festivals_look_like_duplicates(
+                    current.name, current.city, current.event_date,
+                    item.name, item.city, item.event_date,
+                )
+            ),
+            None,
+        )
+        if duplicate_index is None:
+            unique.append(item)
+            continue
+        current = unique[duplicate_index]
+        current_score = (
+            1 if current.submission_deadline else 0,
+            1 if current.event_end_date and current.event_end_date != current.event_date else 0,
+        ) + festival_merge_rank(current)
+        item_score = (
+            1 if item.submission_deadline else 0,
+            1 if item.event_end_date and item.event_end_date != item.event_date else 0,
+        ) + festival_merge_rank(item)
+        if item_score > current_score:
+            unique[duplicate_index] = item
+    return sorted(
+        unique,
+        key=lambda item: (item.event_date, (item.city or "").casefold(), (item.name or "").casefold()),
+    )[:20]
+
+
 def bot_festivals_by_city(db: Session, user: User, city: str) -> list[Festival]:
     city_needle = " ".join(str(city or "").split()).casefold()
     if not city_needle:
@@ -9775,7 +9824,7 @@ def bot_text_for_action(db: Session, user: User, action: str) -> str:
         rows = bot_festivals(db, user, only_going=action == "my_festivals")
         heading = "⭐ Мои фестивали" if action == "my_festivals" else "🎪 Фестивали на 14 дней"
         return f"{heading}: ничего не найдено." if not rows else heading + ":\n\n" + "\n".join(
-            f"• {bot_date_label(item.event_date)} · {item.city or 'город не указан'} · {item.name}"
+            f"• {bot_festival_date_label(item)} · {item.city or 'город не указан'} · {item.name}"
             f"{bot_festival_deadline_label(item)}"
             for item in rows
         )
@@ -9794,8 +9843,26 @@ def run_bot_action(platform: str, identity: str, peer_id: str, action: str) -> t
         return "Выберите действие:", []
     with SessionLocal() as db:
         user = bot_user_for_identity(db, platform, identity, peer_id)
+        if action == "festivals":
+            rows = bot_public_festivals(db, days=14)
+            if not rows:
+                return "🎪 На ближайшие 14 дней фестивалей не найдено.", []
+            return "🎪 Фестивали на 14 дней:\n\n" + "\n".join(
+                f"{index}. {bot_festival_date_label(item)} · {item.city or 'город не указан'} · {item.name}"
+                f"{bot_festival_deadline_label(item)}"
+                for index, item in enumerate(rows, start=1)
+            ), [
+                {"label": str(index), "callback_data": f"festival_select:{item.id}"}
+                for index, item in enumerate(rows, start=1)
+            ]
+        if action == "festival_city":
+            set_bot_flow_state(platform, identity, "festival_city")
+            return "🏙 Введите название города, чтобы найти будущие фестивали в нём.", []
+        if action == "team_help":
+            set_bot_flow_state(platform, identity)
+            return "🙌 Как вы хотите помочь?", bot_team_help_buttons()
         if not user:
-            return "Сначала привяжите аккаунт через /start или /login.", []
+            return "Для этого действия привяжите аккаунт через /start или /login.", []
         if action == "idea":
             set_bot_flow_state(platform, identity, "quick_idea")
             return (
@@ -9818,15 +9885,9 @@ def run_bot_action(platform: str, identity: str, peer_id: str, action: str) -> t
         if action == "search":
             set_bot_flow_state(platform, identity, "search")
             return "🔎 Что найти? Отправьте часть названия персонажа, фандома, фотосета или дела.", []
-        if action == "festival_city":
-            set_bot_flow_state(platform, identity, "festival_city")
-            return "🏙 Введите название города, чтобы найти будущие фестивали в нём.", []
         if action == "team_search":
             set_bot_flow_state(platform, identity)
             return "🤝 Кого вы ищете?", bot_team_category_buttons()
-        if action == "team_help":
-            set_bot_flow_state(platform, identity)
-            return "🙌 Как вы хотите помочь?", bot_team_help_buttons()
         return bot_text_for_action(db, user, action), []
 
 
@@ -9836,6 +9897,25 @@ def consume_bot_flow(platform: str, identity: str, peer_id: str, text_value: str
         return None
     with SessionLocal() as db:
         user = bot_user_for_identity(db, platform, identity, peer_id)
+        if step == "festival_city":
+            city = " ".join(str(text_value or "").split())
+            if not city:
+                return "Введите название города.", []
+            festivals = bot_public_festivals(db, city=city)
+            set_bot_flow_state(platform, identity)
+            if not festivals:
+                return f"🏙 В городе «{city}» будущих фестивалей не найдено.", []
+            return (
+                f"🏙 Будущие фестивали в городе «{city}»:\n\n"
+                + "\n".join(
+                    f"{index}. {bot_festival_date_label(item)} · {item.name}"
+                    f"{bot_festival_deadline_label(item)}"
+                    for index, item in enumerate(festivals, start=1)
+                )
+            ), [
+                {"label": str(index), "callback_data": f"festival_select:{item.id}"}
+                for index, item in enumerate(festivals, start=1)
+            ]
         if not user:
             set_bot_flow_state(platform, identity)
             return "Сначала привяжите аккаунт через /start или /login.", []
@@ -9857,25 +9937,6 @@ def consume_bot_flow(platform: str, identity: str, peer_id: str, text_value: str
             if not results:
                 return "Ничего не найдено. Попробуйте другое слово или снова выберите «Поиск».", []
             return "🔎 Найдено:\n\n" + "\n".join(f"• {item['label']}\n  {item['url']}" for item in results), results
-        if step == "festival_city":
-            city = " ".join(str(text_value or "").split())
-            if not city:
-                return "Введите название города.", []
-            festivals = bot_festivals_by_city(db, user, city)
-            set_bot_flow_state(platform, identity)
-            if not festivals:
-                return f"🏙 В городе «{city}» будущих фестивалей не найдено.", []
-            return (
-                f"🏙 Будущие фестивали в городе «{city}»:\n\n"
-                + "\n".join(
-                    f"{index}. {bot_date_label(item.event_date)} · {item.name}"
-                    f"{bot_festival_deadline_label(item)}"
-                    for index, item in enumerate(festivals, start=1)
-                )
-            ), [
-                {"label": str(index), "callback_data": f"festival_select:{item.id}"}
-                for index, item in enumerate(festivals, start=1)
-            ]
         if step.startswith("team_create_"):
             state = get_bot_flow_state(platform, identity)
             category = state.get("category", "")
@@ -9927,32 +9988,83 @@ def run_bot_callback(
 ) -> tuple[str, list[dict[str, str]]]:
     with SessionLocal() as db:
         user = bot_user_for_identity(db, platform, identity, peer_id)
-        if not user:
-            return "Сначала привяжите аккаунт через /start или /login.", []
 
         if callback_data.startswith("festival_select:"):
             festival_id = parse_positive_int(callback_data.partition(":")[2])
-            festival = db.execute(
-                select(Festival).where(Festival.id == festival_id, Festival.user_id == user.id)
-            ).scalar_one_or_none()
+            festival = db.get(Festival, festival_id) if festival_id else None
             if not festival or not festival.event_date or festival.event_date < bot_local_today():
                 return "Фестиваль не найден или уже завершён.", []
-            date_text = bot_date_label(festival.event_date)
-            if festival.event_end_date and festival.event_end_date != festival.event_date:
-                date_text += f" — {bot_date_label(festival.event_end_date)}"
+            personal_festival = None
+            if user:
+                personal_festival = next(
+                    (
+                        item for item in db.execute(
+                            select(Festival).where(Festival.user_id == user.id, Festival.event_date == festival.event_date)
+                        ).scalars().all()
+                        if festivals_look_like_duplicates(
+                            item.name, item.city, item.event_date,
+                            festival.name, festival.city, festival.event_date,
+                        )
+                    ),
+                    None,
+                )
             details = [
                 f"🎪 {festival.name}",
-                f"📅 {date_text}",
+                f"📅 {bot_festival_date_label(festival)}",
                 f"🏙 {festival.city or 'город не указан'}",
             ]
             if festival.submission_deadline:
                 details.append(f"⏳ Приём заявок до {bot_date_label(festival.submission_deadline)}")
-            if festival.is_going:
+            if personal_festival and personal_festival.is_going:
                 details.append("⭐ Вы уже отметили «Я иду»")
-            buttons = [{"label": "Подробнее", "url": f"{APP_BASE_URL}/festivals/{festival.id}/card"}]
-            if not festival.is_going:
-                buttons.append({"label": "Я иду", "callback_data": f"festival_going:{festival.id}"})
+            buttons = []
+            if personal_festival:
+                buttons.append({"label": "Подробнее", "url": f"{APP_BASE_URL}/festivals/{personal_festival.id}/card"})
+            if user and personal_festival and not personal_festival.is_going:
+                buttons.append({"label": "Я иду", "callback_data": f"festival_going:{personal_festival.id}"})
+            elif user and not personal_festival:
+                buttons.append({"label": "Я иду", "callback_data": f"festival_going_public:{festival.id}"})
+            elif not user:
+                details.append("🔐 Авторизация нужна только для отметки «Я иду».")
             return "\n".join(details), buttons
+
+        if callback_data.startswith("team_browse:"):
+            help_category = callback_data.partition(":")[2]
+            help_config = BOT_TEAM_HELP_CATEGORIES.get(help_category)
+            if not help_config:
+                return "Неизвестная категория помощи.", []
+            heading, categories = help_config
+            posts = db.execute(
+                select(BotTeamSearchPost)
+                .where(BotTeamSearchPost.status == "active", BotTeamSearchPost.category.in_(categories))
+                .order_by(BotTeamSearchPost.created_at.desc(), BotTeamSearchPost.id.desc())
+                .limit(20)
+            ).scalars().all()
+            if not posts:
+                return f"🙌 «{heading}»: активных заявок пока нет.", []
+            return f"🙌 {heading}:\n\n" + "\n".join(
+                f"{index}. {post.city} · {post.context_title} · {BOT_TEAM_SEARCH_CATEGORIES.get(post.category, 'Поиск команды')}"
+                for index, post in enumerate(posts, start=1)
+            ), [
+                {"label": str(index), "callback_data": f"team_post:{post.id}"}
+                for index, post in enumerate(posts, start=1)
+            ]
+
+        if callback_data.startswith("team_post:"):
+            post_id = parse_positive_int(callback_data.partition(":")[2])
+            post = db.execute(
+                select(BotTeamSearchPost).where(BotTeamSearchPost.id == post_id, BotTeamSearchPost.status == "active")
+            ).scalar_one_or_none()
+            if not post:
+                return "Заявка больше не активна.", []
+            return "\n".join([
+                f"🤝 {BOT_TEAM_SEARCH_CATEGORIES.get(post.category, 'Поиск команды')}",
+                f"🏙 {post.city}", f"🎪/📷 {post.context_title}",
+                f"📝 {post.description}", f"✉️ Связь: {post.contact_tg}",
+            ]), []
+
+        if not user:
+            return "Для этого действия привяжите аккаунт через /start или /login.", []
 
         if callback_data == "voice_card_save":
             state = get_bot_flow_state(platform, identity)
@@ -9989,51 +10101,43 @@ def run_bot_callback(
                 {"label": "Подробнее", "url": f"{APP_BASE_URL}/festivals/{festival.id}/card"}
             ]
 
+        if callback_data.startswith("festival_going_public:"):
+            source_id = parse_positive_int(callback_data.partition(":")[2])
+            source = db.get(Festival, source_id) if source_id else None
+            if not source or not source.event_date or source.event_date < bot_local_today():
+                return "Фестиваль не найден или уже завершён.", []
+            festival = Festival(
+                user_id=user.id,
+                name=source.name,
+                url=source.url,
+                city=source.city,
+                event_date=source.event_date,
+                event_end_date=source.event_end_date,
+                submission_deadline=source.submission_deadline,
+                nominations_json=as_list(source.nominations_json),
+                nomination_1=source.nomination_1,
+                nomination_2=source.nomination_2,
+                nomination_3=source.nomination_3,
+                has_photo_cosplay=source.has_photo_cosplay,
+                is_partner_festival=source.is_partner_festival,
+                shared_note=source.shared_note,
+                icon_path=source.icon_path,
+                import_source=source.import_source,
+                import_external_id=source.import_external_id,
+                is_going=True,
+            )
+            db.add(festival)
+            db.commit()
+            return f"⭐ Фестиваль «{festival.name}» добавлен в ваши планы.", [
+                {"label": "Подробнее", "url": f"{APP_BASE_URL}/festivals/{festival.id}/card"}
+            ]
+
         if callback_data.startswith("team_create:"):
             category = callback_data.partition(":")[2]
             if category not in BOT_TEAM_SEARCH_CATEGORIES:
                 return "Неизвестная категория поиска.", []
             set_bot_flow_state(platform, identity, "team_create_city", category=category)
             return f"{BOT_TEAM_SEARCH_CATEGORIES[category]}. Введите город.", []
-
-        if callback_data.startswith("team_browse:"):
-            help_category = callback_data.partition(":")[2]
-            help_config = BOT_TEAM_HELP_CATEGORIES.get(help_category)
-            if not help_config:
-                return "Неизвестная категория помощи.", []
-            heading, categories = help_config
-            posts = db.execute(
-                select(BotTeamSearchPost)
-                .where(BotTeamSearchPost.status == "active", BotTeamSearchPost.category.in_(categories))
-                .order_by(BotTeamSearchPost.created_at.desc(), BotTeamSearchPost.id.desc())
-                .limit(20)
-            ).scalars().all()
-            if not posts:
-                return f"🙌 «{heading}»: активных заявок пока нет.", []
-            text_rows = [
-                f"{index}. {post.city} · {post.context_title} · {BOT_TEAM_SEARCH_CATEGORIES.get(post.category, 'Поиск команды')}"
-                for index, post in enumerate(posts, start=1)
-            ]
-            buttons = [
-                {"label": str(index), "callback_data": f"team_post:{post.id}"}
-                for index, post in enumerate(posts, start=1)
-            ]
-            return f"🙌 {heading}:\n\n" + "\n".join(text_rows), buttons
-
-        if callback_data.startswith("team_post:"):
-            post_id = parse_positive_int(callback_data.partition(":")[2])
-            post = db.execute(
-                select(BotTeamSearchPost).where(BotTeamSearchPost.id == post_id, BotTeamSearchPost.status == "active")
-            ).scalar_one_or_none()
-            if not post:
-                return "Заявка больше не активна.", []
-            return "\n".join([
-                f"🤝 {BOT_TEAM_SEARCH_CATEGORIES.get(post.category, 'Поиск команды')}",
-                f"🏙 {post.city}",
-                f"🎪/📷 {post.context_title}",
-                f"📝 {post.description}",
-                f"✉️ Связь: {post.contact_tg}",
-            ]), []
 
     return "Действие не распознано.", []
 
@@ -10352,7 +10456,18 @@ def handle_telegram_update(update: dict[str, Any]) -> None:
     lowered = text_value.casefold()
     if lowered == "/start":
         set_bot_flow_state("telegram", linked_telegram_user_id)
-        start_telegram_auth(chat_id, with_greeting=True)
+        reset_telegram_auth(chat_id)
+        with SessionLocal() as db:
+            linked_user = bot_user_for_identity(db, "telegram", linked_telegram_user_id, chat_id)
+        greeting = (
+            "Добро пожаловать в Cosplay Planner! Выберите действие."
+            if linked_user
+            else (
+                "Добро пожаловать в Cosplay Planner! Фестивали и объявления доступны без авторизации. "
+                "Для личных функций используйте /login или войдите через Telegram на сайте."
+            )
+        )
+        telegram_send_message(chat_id, greeting, reply_markup=bot_menu_keyboard_telegram())
         return
     if lowered == "/login":
         set_bot_flow_state("telegram", linked_telegram_user_id)
@@ -17721,6 +17836,8 @@ def template_response(
         "vkid_app_id": VKID_APP_ID,
         "vkid_redirect_url": VKID_REDIRECT_URL,
         "vkid_scope": VKID_SCOPE,
+        "telegram_web_auth_enabled": bool(TELEGRAM_BOT_TOKEN and TELEGRAM_NOTIFICATIONS_BOT_USERNAME),
+        "telegram_bot_username": TELEGRAM_NOTIFICATIONS_BOT_USERNAME,
         "yandex_oauth_enabled": yandex_oauth_is_configured(),
         "yandex_oauth_url": yandex_oauth_url,
         "yandex_redirect_uri": YANDEX_REDIRECT_URI,
@@ -20417,6 +20534,122 @@ def login_page(request: Request, db: Session = Depends(get_db)):
     if user:
         return redirect("/my-calendar?view=content&content_scope=client" if is_smm_manager_user(user) else "/cosplan")
     return template_response(request, "login_vkid.html", user=None)
+
+
+def verify_telegram_web_auth(values: dict[str, str], *, max_age_seconds: int = 900) -> bool:
+    received_hash = str(values.get("hash") or "").strip().casefold()
+    if not TELEGRAM_BOT_TOKEN or not re.fullmatch(r"[0-9a-f]{64}", received_hash):
+        return False
+    try:
+        auth_timestamp = int(values.get("auth_date") or 0)
+        telegram_id = int(values.get("id") or 0)
+    except (TypeError, ValueError):
+        return False
+    now_timestamp = int(time.time())
+    if telegram_id <= 0 or auth_timestamp <= 0 or abs(now_timestamp - auth_timestamp) > max_age_seconds:
+        return False
+    data_check_string = "\n".join(
+        f"{key}={value}"
+        for key, value in sorted(values.items())
+        if key != "hash" and value is not None
+    )
+    secret_key = hashlib.sha256(TELEGRAM_BOT_TOKEN.encode("utf-8")).digest()
+    expected_hash = hmac.new(secret_key, data_check_string.encode("utf-8"), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected_hash, received_hash)
+
+
+def unique_telegram_site_username(db: Session, telegram_id: str, telegram_username: str = "") -> str:
+    base = re.sub(r"[^A-Za-z0-9_]+", "", telegram_username).strip("_")[:80]
+    if not base:
+        base = f"telegram_{telegram_id}"
+    candidate = base
+    suffix = 1
+    while db.execute(
+        select(User.id).where(or_(User.username == candidate, User.cosplay_nick == candidate))
+    ).scalar_one_or_none():
+        suffix += 1
+        candidate = f"{base[:90]}_{suffix}"
+    return candidate
+
+
+@app.get("/auth/telegram", response_class=HTMLResponse)
+def auth_telegram_page(request: Request, db: Session = Depends(get_db)):
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_NOTIFICATIONS_BOT_USERNAME:
+        add_flash(request, "Вход через Telegram пока не настроен.", "error")
+        return redirect("/login")
+    user = current_user(request, db)
+    next_url = safe_redirect_target(str(request.query_params.get("next") or "").strip(), "/cosplan")
+    return template_response(
+        request,
+        "telegram_auth.html",
+        user=user,
+        active_tab="profile" if user else None,
+        telegram_callback_url=f"{APP_BASE_URL}/auth/telegram/callback?next={quote(next_url)}",
+        telegram_link_mode=bool(user),
+    )
+
+
+@app.get("/auth/telegram/callback")
+def auth_telegram_callback(request: Request, db: Session = Depends(get_db)):
+    values = {
+        key: str(value)
+        for key, value in request.query_params.items()
+        if key in {"id", "first_name", "last_name", "username", "photo_url", "auth_date", "hash"}
+    }
+    if not verify_telegram_web_auth(values):
+        add_flash(request, "Не удалось подтвердить данные Telegram. Попробуйте войти ещё раз.", "error")
+        return redirect("/login")
+
+    telegram_id = str(values["id"])
+    telegram_username = normalize_username(values.get("username"))
+    current = current_user(request, db)
+    linked = db.execute(select(User).where(User.telegram_chat_id == telegram_id)).scalar_one_or_none()
+    if current:
+        if linked and linked.id != current.id:
+            add_flash(request, "Этот Telegram уже связан с другим профилем.", "error")
+            return redirect("/profile")
+        current.telegram_chat_id = telegram_id
+        current.telegram_username = telegram_username or None
+        current.telegram_linked_at = datetime.utcnow()
+        user = current
+        message = "Telegram успешно связан с текущим профилем. Бот уже авторизован."
+    elif linked:
+        user = linked
+        user.telegram_username = telegram_username or user.telegram_username
+        user.telegram_linked_at = datetime.utcnow()
+        message = "Вход через Telegram выполнен."
+    else:
+        username = unique_telegram_site_username(db, telegram_id, telegram_username)
+        user = User(
+            username=username,
+            cosplay_nick=username,
+            email=f"telegram-{telegram_id}@tg.cosplay-planner.ru",
+            password_hash=password_context.hash(secrets.token_urlsafe(32)),
+            telegram_chat_id=telegram_id,
+            telegram_username=telegram_username or None,
+            telegram_linked_at=datetime.utcnow(),
+        )
+        db.add(user)
+        db.flush()
+        message = "Профиль создан через Telegram. Бот уже авторизован."
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        add_flash(request, "Не удалось связать Telegram с профилем.", "error")
+        return redirect("/login")
+    db.refresh(user)
+    if not current and not linked:
+        threading.Thread(
+            target=propagate_registration_seed_data,
+            args=(int(user.id),),
+            name=f"telegram-register-seed-{user.id}",
+            daemon=True,
+        ).start()
+    request.session["user_id"] = user.id
+    add_flash(request, message, "success")
+    next_url = safe_redirect_target(str(request.query_params.get("next") or "").strip(), "/cosplan")
+    return redirect(next_url)
 
 
 
