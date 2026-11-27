@@ -32,6 +32,9 @@
     {% if can_edit_card and edit_card_id %}
       <a href="/cosplan/{{ edit_card_id }}/edit" class="btn">Редактировать</a>
     {% endif %}
+    {% if (card.plan_type or '') == 'project' %}
+      <a href="#group-budget" class="btn">Бюджет</a>
+    {% endif %}
   </div>
 </section>
 
@@ -1000,7 +1003,9 @@
     prev.addEventListener('click', () => show(current - 1, true));
     next.addEventListener('click', () => show(current === sections.length - 1 ? 0 : current + 1, true));
     const hashMatch = location.hash.match(/^#section-(\d+)$/);
-    show(hashMatch ? Number(hashMatch[1]) - 1 : 0);
+    const namedTarget = location.hash ? document.getElementById(decodeURIComponent(location.hash.slice(1))) : null;
+    const namedIndex = namedTarget ? sections.indexOf(namedTarget.closest('section.box')) : -1;
+    show(namedIndex >= 0 ? namedIndex : (hashMatch ? Number(hashMatch[1]) - 1 : 0));
   })();
 </script>
 {% endif %}

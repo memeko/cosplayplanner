@@ -42,7 +42,10 @@
   {% set pending_rehearsals = pending_rehearsals_by_card.get(card.id, []) %}
   {% set rehearsal_history = leader_rehearsal_history_by_card.get(card.id, []) %}
   <article class="card" id="my-project-card-{{ card.id }}">
-    <h3><a href="/cosplan/{{ card.id }}" class="card-title-link">{{ card.character_name }}</a></h3>
+    <div class="row-between">
+      <h3><a href="/cosplan/{{ card.id }}" class="card-title-link">{{ card.character_name }}</a></h3>
+      <a href="/cosplan/{{ card.id }}#group-budget" class="btn btn-small">Бюджет</a>
+    </div>
     <p class="meta">
       Участник:
       {% if owner %}
