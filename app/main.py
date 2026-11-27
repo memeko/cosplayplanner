@@ -1534,6 +1534,8 @@ def apply_schema_migrations() -> None:
             ("status_percent", "INTEGER NOT NULL DEFAULT 0"),
             ("related_cards_json", "JSON NOT NULL DEFAULT '[]'"),
             ("project_characters_json", "JSON NOT NULL DEFAULT '[]'"),
+            ("group_budget_json", "JSON NOT NULL DEFAULT '{}'"),
+            ("group_budget_comment", "TEXT"),
             ("references_json", "JSON NOT NULL DEFAULT '[]'"),
             ("pose_references_json", "JSON NOT NULL DEFAULT '[]'"),
             ("unknown_prices_json", "JSON NOT NULL DEFAULT '[]'"),
@@ -4824,15 +4826,55 @@ def build_budget_month_groups(user: User, db: Session) -> list[dict[str, Any]]:
                 else:
                     add_budget_cost(card, purchase_date, card.craft_material_price)
 
+    # Personal obligations from group-project budget tables. A free-form participant
+    # name is linked only when it matches the account username or cosplay nickname.
+    group_cards = db.execute(
+        select(CosplanCard).where(
+            CosplanCard.plan_type == "project",
+            CosplanCard.is_shared_copy.is_(False),
+        )
+    ).scalars().all()
+    for group_card in group_cards:
+        budget = normalize_group_budget(group_card.group_budget_json)
+        participant_count = max(1, int(budget.get("participants_count") or 1))
+        group_total = 0.0
+        for section_key, rows in budget.get("sections", {}).items():
+            for row in rows if isinstance(rows, list) else []:
+                row_amount = float(row.get("amount") or 0)
+                if section_key == "props" and row.get("mode") == "per_person":
+                    row_amount *= participant_count
+                group_total += row_amount
+        per_person = group_total / participant_count
+        if per_person <= 0:
+            continue
+        matching_payment = next(
+            (
+                payment
+                for payment in budget.get("payments", [])
+                if isinstance(payment, dict) and user_matches_alias(user, str(payment.get("name") or ""))
+            ),
+            None,
+        )
+        if not matching_payment or matching_payment.get("paid_all"):
+            continue
+        remaining = max(0.0, per_person - float(matching_payment.get("partial") or 0))
+        if remaining <= 0:
+            continue
+        target_date = group_card.project_deadline or group_card.photoset_date or date.today()
+        synthetic_id = -int(group_card.id)
+        month_card_totals[(target_date.year, target_date.month)][synthetic_id] += remaining
+        card_titles[synthetic_id] = f"Взнос в проект «{group_card.character_name or f'Карточка #{group_card.id}'}»"
+
     groups: list[dict[str, Any]] = []
     for year_month in sorted(month_card_totals.keys()):
         year, month = year_month
         card_map = month_card_totals[year_month]
         rows = [
             {
-                "card_id": card_id,
+                "card_id": card_id if card_id > 0 else None,
                 "card_title": card_titles.get(card_id, f"Карточка #{card_id}"),
                 "amount": amount,
+                "is_group_contribution": card_id < 0,
             }
             for card_id, amount in card_map.items()
             if amount > 0
@@ -8741,6 +8783,74 @@ def can_manage_project_card(user: User, card: CosplanCard) -> bool:
     return user_matches_alias(user, card.project_leader)
 
 
+def normalize_group_budget(value: Any, participant_names: list[str] | None = None) -> dict[str, Any]:
+    """Return a bounded, display-safe budget structure for a group project."""
+    raw = value if isinstance(value, dict) else {}
+    try:
+        participants_count = max(1, min(200, int(raw.get("participants_count") or 1)))
+    except (TypeError, ValueError):
+        participants_count = 1
+
+    defaults = {
+        "venue": [{"name": "Помещение / студия", "amount": 0.0}],
+        "photo": [
+            {"name": "Фотограф", "amount": 0.0},
+            {"name": "Дым-машина", "amount": 0.0},
+        ],
+        "props": [{"name": "Реквизит", "mode": "total", "amount": 0.0}],
+    }
+
+    def clean_amount(item: Any) -> float:
+        try:
+            return round(max(0.0, min(1_000_000_000.0, float(item or 0))), 2)
+        except (TypeError, ValueError):
+            return 0.0
+
+    sections: dict[str, list[dict[str, Any]]] = {}
+    raw_sections = raw.get("sections") if isinstance(raw.get("sections"), dict) else {}
+    for section_key in ("venue", "photo", "props"):
+        rows: list[dict[str, Any]] = []
+        source_rows = raw_sections.get(section_key)
+        if not isinstance(source_rows, list):
+            source_rows = defaults[section_key]
+        for source in source_rows[:100]:
+            if not isinstance(source, dict):
+                continue
+            name = str(source.get("name") or "").strip()[:120]
+            if not name:
+                continue
+            row = {"name": name, "amount": clean_amount(source.get("amount"))}
+            if section_key == "props":
+                row["mode"] = "per_person" if source.get("mode") == "per_person" else "total"
+            rows.append(row)
+        sections[section_key] = rows or [dict(item) for item in defaults[section_key]]
+
+    payments_by_name: dict[str, dict[str, Any]] = {}
+    for payment in raw.get("payments", []) if isinstance(raw.get("payments"), list) else []:
+        if not isinstance(payment, dict):
+            continue
+        name = str(payment.get("name") or "").strip()[:120]
+        if name:
+            payments_by_name[name.casefold()] = payment
+
+    suggested_names = [str(name or "").strip()[:120] for name in (participant_names or []) if str(name or "").strip()]
+    existing_names = [str(item.get("name") or "").strip()[:120] for item in raw.get("payments", []) if isinstance(item, dict)] if isinstance(raw.get("payments"), list) else []
+    # Manual names/nicknames are authoritative once the table has been saved.
+    names = (existing_names if existing_names else suggested_names)[:participants_count]
+    while len(names) < participants_count:
+        names.append(f"Участник {len(names) + 1}")
+
+    payments: list[dict[str, Any]] = []
+    for index, name in enumerate(names):
+        source = payments_by_name.get(name.casefold(), {})
+        payments.append({
+            "name": name or f"Участник {index + 1}",
+            "paid_all": bool(source.get("paid_all")),
+            "partial": clean_amount(source.get("partial")),
+        })
+    return {"participants_count": participants_count, "sections": sections, "payments": payments}
+
+
 def get_or_create_rehearsal_card(db: Session, *, user_id: int, cosplan_card: CosplanCard) -> RehearsalCard:
     rehearsal_card = db.execute(
         select(RehearsalCard).where(
@@ -9424,6 +9534,7 @@ def telegram_set_bot_commands() -> None:
         {"command": "deadlines", "description": "Дедлайны и события на неделю"},
         {"command": "festivals", "description": "Фестивали на ближайшие две недели"},
         {"command": "festival_city", "description": "Найти будущие фестивали по городу"},
+        {"command": "character_birthdays", "description": "Дни рождения персонажей сегодня"},
         {"command": "team_search", "description": "Опубликовать поиск команды"},
         {"command": "team_help", "description": "Найти заявку, где нужна помощь"},
         {"command": "my_festivals", "description": "Фестивали, куда я иду"},
@@ -9464,6 +9575,7 @@ BOT_HELP_TEXT = (
     "/deadlines — события и дедлайны на 7 дней\n"
     "/festivals — фестивали на ближайшие 14 дней\n"
     "/festival_city — все будущие фестивали в выбранном городе\n"
+    "/character_birthdays — дни рождения персонажей сегодня\n"
     "/team_search — опубликовать заявку поиска команды\n"
     "/team_help — посмотреть, кому нужна помощь\n"
     "/my_festivals — фестивали с отметкой «Я иду»\n"
@@ -9480,6 +9592,7 @@ BOT_ACTION_ALIASES = {
     "/deadlines": "deadlines", "дедлайны": "deadlines", "📅 дедлайны недели": "deadlines",
     "/festivals": "festivals", "фестивали": "festivals", "🎪 фестивали 2 недели": "festivals",
     "/festival_city": "festival_city", "поиск фестиваля по городу": "festival_city", "🏙 поиск фестиваля по городу": "festival_city",
+    "/character_birthdays": "character_birthdays", "др персонажей": "character_birthdays", "🎂 др персонажей": "character_birthdays",
     "/team_search": "team_search", "поиск команды": "team_search", "🤝 поиск команды": "team_search",
     "/team_help": "team_help", "хочу помочь": "team_help", "🙌 хочу помочь": "team_help",
     "/my_festivals": "my_festivals", "мои фестивали": "my_festivals", "⭐ мои фестивали": "my_festivals",
@@ -9500,6 +9613,7 @@ def bot_menu_keyboard_telegram() -> dict[str, Any]:
         [{"text": "📅 Дедлайны недели", "callback_data": "bot:deadlines"}],
         [{"text": "🎪 Фестивали 2 недели", "callback_data": "bot:festivals"}, {"text": "⭐ Мои фестивали", "callback_data": "bot:my_festivals"}],
         [{"text": "🏙 Поиск фестиваля по городу", "callback_data": "bot:festival_city"}],
+        [{"text": "🎂 ДР персонажей", "callback_data": "bot:character_birthdays"}],
         [{"text": "🤝 Поиск команды", "callback_data": "bot:team_search"}, {"text": "🙌 Хочу помочь", "callback_data": "bot:team_help"}],
         [{"text": "📝 Идеи для постов", "callback_data": "bot:post_ideas"}, {"text": "❔ Помощь", "callback_data": "bot:help"}],
     ]}
@@ -9538,12 +9652,22 @@ BOT_TEAM_HELP_CATEGORIES = {
 
 def bot_callback_results_markup(results: list[dict[str, str]]) -> dict[str, Any] | None:
     buttons: list[list[dict[str, str]]] = []
+    last_row_key = ""
     for item in results:
         label = str(item.get("label") or "Открыть")[:64]
+        button: dict[str, str] | None = None
         if item.get("callback_data"):
-            buttons.append([{"text": label, "callback_data": str(item["callback_data"])[:64]}])
+            button = {"text": label, "callback_data": str(item["callback_data"])[:64]}
         elif item.get("url"):
-            buttons.append([{"text": label, "url": str(item["url"])}])
+            button = {"text": label, "url": str(item["url"])}
+        if not button:
+            continue
+        row_key = str(item.get("row") or "")
+        if row_key and row_key == last_row_key and buttons:
+            buttons[-1].append(button)
+        else:
+            buttons.append([button])
+        last_row_key = row_key
     return {"inline_keyboard": buttons} if buttons else None
 
 
@@ -9580,6 +9704,31 @@ def bot_festival_deadline_label(festival: Festival) -> str:
     if not festival.submission_deadline:
         return ""
     return f" · подача до {bot_date_label(festival.submission_deadline)}"
+
+
+def bot_character_birthdays_today_text() -> str:
+    today = bot_local_today()
+    rows = cached_character_birthdays_today(today)
+    if not rows:
+        try:
+            rows = character_birthdays_today(today, include_localization=False)
+        except Exception:
+            rows = []
+    if not rows:
+        return f"🎂 {bot_date_label(today)} дней рождения персонажей не найдено."
+    lines: list[str] = []
+    for item in rows:
+        character_name = str(item.get("name") or "").strip()
+        title = str(item.get("localized_title") or item.get("anime_title") or "").strip()
+        if not character_name:
+            continue
+        lines.append(f"• {title} — {character_name}" if title else f"• {character_name}")
+    if not lines:
+        return f"🎂 {bot_date_label(today)} дней рождения персонажей не найдено."
+    result = f"🎂 ДР персонажей сегодня, {bot_date_label(today)}:\n\n" + "\n".join(lines)
+    if len(result) > 3900:
+        result = result[:3880].rsplit("\n", 1)[0] + "\n\n…список сокращён"
+    return result
 
 
 def bot_user_for_identity(db: Session, platform: str, identity: str, peer_id: str = "") -> User | None:
@@ -9773,6 +9922,45 @@ def bot_public_festivals(db: Session, *, city: str = "", days: int | None = None
     )[:20]
 
 
+BOT_FESTIVAL_PAGE_SIZE = 5
+
+
+def bot_public_festival_page(
+    db: Session,
+    page: int = 0,
+    *,
+    include_full_list: bool = True,
+) -> tuple[str, list[dict[str, str]]]:
+    festivals = bot_public_festivals(db, days=14)
+    if not festivals:
+        return "🎪 На ближайшие 14 дней фестивалей не найдено.", []
+    page_count = max(1, (len(festivals) + BOT_FESTIVAL_PAGE_SIZE - 1) // BOT_FESTIVAL_PAGE_SIZE)
+    current_page = max(0, min(int(page), page_count - 1))
+    start = current_page * BOT_FESTIVAL_PAGE_SIZE
+    page_items = festivals[start : start + BOT_FESTIVAL_PAGE_SIZE]
+    if include_full_list:
+        text_value = "🎪 Фестивали на 14 дней:\n\n" + "\n".join(
+            f"{index}. {bot_festival_date_label(item)} · {item.city or 'город не указан'} · {item.name}"
+            f"{bot_festival_deadline_label(item)}"
+            for index, item in enumerate(festivals, start=1)
+        )
+        if page_count > 1:
+            text_value += f"\n\nКнопки выбора: {current_page + 1}/{page_count}"
+    else:
+        text_value = f"🎪 Кнопки выбора фестиваля · {current_page + 1}/{page_count}"
+    buttons: list[dict[str, str]] = [
+        {"label": str(start + index), "callback_data": f"festival_select:{item.id}"}
+        for index, item in enumerate(page_items, start=1)
+    ]
+    if page_count > 1:
+        if current_page > 0:
+            buttons.append({"label": "⬅️", "callback_data": f"festival_page:{current_page - 1}", "row": "festival_nav"})
+        buttons.append({"label": f"{current_page + 1}/{page_count}", "callback_data": "festival_page_info", "row": "festival_nav"})
+        if current_page + 1 < page_count:
+            buttons.append({"label": "➡️", "callback_data": f"festival_page:{current_page + 1}", "row": "festival_nav"})
+    return text_value, buttons
+
+
 def bot_festivals_by_city(db: Session, user: User, city: str) -> list[Festival]:
     city_needle = " ".join(str(city or "").split()).casefold()
     if not city_needle:
@@ -9844,20 +10032,12 @@ def run_bot_action(platform: str, identity: str, peer_id: str, action: str) -> t
     with SessionLocal() as db:
         user = bot_user_for_identity(db, platform, identity, peer_id)
         if action == "festivals":
-            rows = bot_public_festivals(db, days=14)
-            if not rows:
-                return "🎪 На ближайшие 14 дней фестивалей не найдено.", []
-            return "🎪 Фестивали на 14 дней:\n\n" + "\n".join(
-                f"{index}. {bot_festival_date_label(item)} · {item.city or 'город не указан'} · {item.name}"
-                f"{bot_festival_deadline_label(item)}"
-                for index, item in enumerate(rows, start=1)
-            ), [
-                {"label": str(index), "callback_data": f"festival_select:{item.id}"}
-                for index, item in enumerate(rows, start=1)
-            ]
+            return bot_public_festival_page(db, 0)
         if action == "festival_city":
             set_bot_flow_state(platform, identity, "festival_city")
             return "🏙 Введите название города, чтобы найти будущие фестивали в нём.", []
+        if action == "character_birthdays":
+            return bot_character_birthdays_today_text(), []
         if action == "team_help":
             set_bot_flow_state(platform, identity)
             return "🙌 Как вы хотите помочь?", bot_team_help_buttons()
@@ -9988,6 +10168,16 @@ def run_bot_callback(
 ) -> tuple[str, list[dict[str, str]]]:
     with SessionLocal() as db:
         user = bot_user_for_identity(db, platform, identity, peer_id)
+
+        if callback_data.startswith("festival_page:"):
+            try:
+                page = int(callback_data.partition(":")[2])
+            except (TypeError, ValueError):
+                page = 0
+            return bot_public_festival_page(db, page, include_full_list=False)
+
+        if callback_data == "festival_page_info":
+            return "Используйте стрелки, чтобы перейти к другой странице фестивалей.", []
 
         if callback_data.startswith("festival_select:"):
             festival_id = parse_positive_int(callback_data.partition(":")[2])
@@ -25637,6 +25827,12 @@ def cosplan_detail(card_id: int, request: Request, db: Session = Depends(get_db)
     if related_status_values:
         project_status_percent = int(round(sum(related_status_values) / len(related_status_values)))
         card_status_percent = project_status_percent
+    budget_participant_names = [
+        str(item.get("cosplayer_label") or item.get("character_name") or "").strip()
+        for item in project_character_rows
+        if str(item.get("cosplayer_label") or item.get("character_name") or "").strip()
+    ]
+    group_budget = normalize_group_budget(card.group_budget_json, budget_participant_names)
     linked_photoset = None
     if card.linked_photoset_id:
         linked_photoset = db.execute(
@@ -25663,6 +25859,9 @@ def cosplan_detail(card_id: int, request: Request, db: Session = Depends(get_db)
         unknown_price_fields=as_list(card.unknown_prices_json),
         related_cards=related_cards,
         project_status_percent=project_status_percent,
+        group_budget=group_budget,
+        group_budget_comment=card.group_budget_comment or "",
+        can_manage_group_budget=can_manage_project_card(user, card),
         card_total=card_total,
         card_total_currency=card_total_currency,
         reference_urls=as_list(card.references_json),
@@ -25700,6 +25899,39 @@ def cosplan_detail(card_id: int, request: Request, db: Session = Depends(get_db)
             REHEARSAL_STATUS_DECLINED: rehearsal_status_label(REHEARSAL_STATUS_DECLINED),
         },
     )
+
+
+@app.post("/cosplan/{card_id}/group-budget")
+async def cosplan_update_group_budget(card_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+
+    card = get_accessible_card(db, card_id, user, allow_project_leader=True)
+    if not card or card.plan_type != "project":
+        add_flash(request, "Карточка группового проекта не найдена.", "error")
+        return redirect("/cosplan")
+    if not can_manage_project_card(user, card):
+        add_flash(request, "Изменять бюджет может участник-владелец или руководитель проекта.", "error")
+        return redirect(f"/cosplan/{card.id}")
+
+    form = await request.form()
+    raw_budget = str(form.get("group_budget_json", "")).strip()
+    comment = str(form.get("group_budget_comment", "")).strip()
+    if len(raw_budget) > 200_000 or len(comment) > 20_000:
+        add_flash(request, "Бюджет или комментарий превышает допустимый объём.", "error")
+        return redirect(f"/cosplan/{card.id}#group-budget")
+    try:
+        decoded_budget = json.loads(raw_budget) if raw_budget else {}
+    except (TypeError, ValueError):
+        add_flash(request, "Не удалось прочитать данные бюджета.", "error")
+        return redirect(f"/cosplan/{card.id}#group-budget")
+
+    card.group_budget_json = normalize_group_budget(decoded_budget)
+    card.group_budget_comment = comment or None
+    db.commit()
+    add_flash(request, "Бюджет группового проекта сохранён.", "success")
+    return redirect(f"/cosplan/{card.id}#group-budget")
 
 
 @app.post("/cosplan/{card_id}/comments")

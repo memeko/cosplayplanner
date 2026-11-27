@@ -317,7 +317,7 @@
 {% elif active_calendar_view == "budget" %}
   <section class="box">
     <h2>Бюджет по дедлайнам</h2>
-    <p class="muted">Учитываются дедлайновые траты (фотосет: фотограф и студия; костюм/крафт/вигмейкер по их дедлайнам). Покупки костюма, парика и крафта ставятся за два месяца до фотосета/фестиваля.</p>
+    <p class="muted">Учитываются дедлайновые траты (фотосет: фотограф и студия; костюм/крафт/вигмейкер по их дедлайнам), а также ваш остаток по групповым проектам, где указан ваш ник. Покупки костюма, парика и крафта ставятся за два месяца до фотосета/фестиваля.</p>
   </section>
 
   {% if budget_month_groups %}
@@ -336,7 +336,12 @@
           <ul class="budget-list">
             {% for row in group.rows %}
               <li>
-                <a href="/cosplan/{{ row.card_id }}">{{ row.card_title }}</a>
+                {% if row.card_id %}
+                  <a href="/cosplan/{{ row.card_id }}">{{ row.card_title }}</a>
+                {% else %}
+                  <span>{{ row.card_title }}</span>
+                {% endif %}
+                {% if row.is_group_contribution %}<span class="chip">Групповой взнос</span>{% endif %}
                 <strong>{{ '%.0f'|format(row.amount) }} ₽</strong>
               </li>
             {% endfor %}

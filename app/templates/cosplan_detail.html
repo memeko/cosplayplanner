@@ -127,6 +127,239 @@
   {% endif %}
 </section>
 
+{% if (card.plan_type or '') == 'project' %}
+<section class="box group-budget-card" id="group-budget">
+  <div class="row-between group-budget-heading">
+    <div>
+      <h2>Бюджет</h2>
+      <p class="muted">Общие расходы проекта и взносы участников в рублях.</p>
+    </div>
+    <span class="chip">Групповой проект</span>
+  </div>
+
+  <form method="post" action="/cosplan/{{ card.id }}/group-budget" id="group-budget-form">
+    <input type="hidden" name="group_budget_json" id="group-budget-json" />
+    <fieldset class="group-budget-fieldset" {% if not can_manage_group_budget %}disabled{% endif %}>
+      <label class="group-budget-count">
+        Количество участников
+        <input type="number" id="group-budget-participants" min="1" max="200" step="1" inputmode="numeric" />
+      </label>
+
+      <div class="group-budget-sections" id="group-budget-sections"></div>
+
+      <div class="group-budget-summary-block">
+        <div class="row-between">
+          <div>
+            <h3>Сводная таблица</h3>
+            <p class="muted">Введите имя или ник с сайта. Для распознанного ника остаток появится в его календаре → «Бюджет». «Внес(ла) всё» обнуляет остаток.</p>
+          </div>
+          <span class="group-budget-per-person">На участника: <strong id="group-budget-per-person">0 ₽</strong></span>
+        </div>
+        <div class="table-wrap">
+          <table class="table group-budget-table">
+            <thead>
+              <tr>
+                <th>Участник</th>
+                <th>Нужно внести</th>
+                <th>Внес(ла) всё</th>
+                <th>Внесено частично</th>
+                <th>Остаток</th>
+              </tr>
+            </thead>
+            <tbody id="group-budget-payments"></tbody>
+            <tfoot>
+              <tr>
+                <th>Итого</th>
+                <th id="group-budget-due-total">0 ₽</th>
+                <th></th>
+                <th id="group-budget-paid-total">0 ₽</th>
+                <th id="group-budget-left-total">0 ₽</th>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      </div>
+
+      <label class="group-budget-comment">
+        Комментарии
+        <textarea name="group_budget_comment" rows="7" maxlength="20000" placeholder="Договорённости, сроки взносов, реквизиты для перевода…">{{ group_budget_comment }}</textarea>
+      </label>
+    </fieldset>
+    {% if can_manage_group_budget %}
+      <div class="actions-inline top-offset">
+        <button type="submit" class="btn btn-accent">Сохранить бюджет</button>
+      </div>
+    {% else %}
+      <p class="muted top-offset">Редактирование доступно владельцу карточки и руководителю проекта.</p>
+    {% endif %}
+  </form>
+  <script type="application/json" id="group-budget-initial">{{ group_budget|tojson }}</script>
+</section>
+
+<style>
+  .group-budget-card { overflow: hidden; }
+  .group-budget-heading { gap: 16px; align-items: flex-start; }
+  .group-budget-heading h2, .group-budget-summary-block h3 { margin-bottom: 4px; }
+  .group-budget-fieldset { border: 0; padding: 0; margin: 18px 0 0; min-width: 0; }
+  .group-budget-fieldset:disabled { opacity: .9; }
+  .group-budget-count { max-width: 280px; }
+  .group-budget-sections { display: grid; gap: 16px; margin-top: 18px; }
+  .group-budget-section, .group-budget-summary-block {
+    padding: 18px;
+    border: 1px solid rgba(184, 200, 255, .72);
+    border-radius: 22px;
+    background: linear-gradient(180deg, rgba(255,255,255,.94), rgba(240,247,255,.82));
+    box-shadow: 0 10px 28px rgba(80,100,180,.08);
+  }
+  .group-budget-expense-row { display: grid; grid-template-columns: minmax(180px, 1fr) minmax(150px, .42fr) auto; gap: 10px; align-items: end; margin-top: 10px; }
+  .group-budget-expense-row.props { grid-template-columns: minmax(180px, 1fr) minmax(180px, .55fr) minmax(150px, .42fr) auto; }
+  .group-budget-expense-row label { margin: 0; }
+  .group-budget-section-total { display: flex; flex-wrap: wrap; gap: 8px 18px; margin: 14px 0 0; padding-top: 12px; border-top: 1px solid rgba(184,200,255,.65); color: var(--muted); }
+  .group-budget-section-total strong { color: var(--text); }
+  .group-budget-summary-block { margin-top: 18px; }
+  .group-budget-per-person { padding: 8px 12px; border-radius: 999px; background: rgba(215,228,255,.65); white-space: nowrap; }
+  .group-budget-table { min-width: 780px; }
+  .group-budget-table input[type="text"] { min-width: 150px; }
+  .group-budget-table input[type="number"] { min-width: 130px; }
+  .group-budget-table td, .group-budget-table th { vertical-align: middle; }
+  .group-budget-table tfoot { background: rgba(215,228,255,.4); }
+  .group-budget-comment { margin-top: 18px; }
+  .group-budget-comment textarea { min-height: 150px; resize: vertical; }
+  html[data-theme="dark"] .group-budget-section,
+  html[data-theme="dark"] .group-budget-summary-block { background: linear-gradient(180deg, rgba(54,49,68,.96), rgba(43,39,55,.92)); border-color: rgba(183,160,255,.38); }
+  html[data-theme="dark"] .group-budget-per-person { background: rgba(108,99,255,.2); }
+  @media (max-width: 760px) {
+    .group-budget-expense-row, .group-budget-expense-row.props { grid-template-columns: 1fr; }
+    .group-budget-expense-row .btn { width: 100%; }
+    .group-budget-summary-block { padding: 14px; }
+  }
+</style>
+
+<script>
+  (() => {
+    const form = document.getElementById('group-budget-form');
+    if (!form) return;
+    const initial = JSON.parse(document.getElementById('group-budget-initial').textContent || '{}');
+    const countInput = document.getElementById('group-budget-participants');
+    const sectionsRoot = document.getElementById('group-budget-sections');
+    const paymentsRoot = document.getElementById('group-budget-payments');
+    const hiddenInput = document.getElementById('group-budget-json');
+    const canEdit = {{ 'true' if can_manage_group_budget else 'false' }};
+    const sectionMeta = {
+      venue: { title: 'Помещения / студия', props: false },
+      photo: { title: 'Фотография', props: false },
+      props: { title: 'Реквизит', props: true }
+    };
+    const state = {
+      participants_count: Math.max(1, Number(initial.participants_count) || 1),
+      sections: initial.sections || {},
+      payments: Array.isArray(initial.payments) ? initial.payments : []
+    };
+    const money = value => `${new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 2 }).format(Number(value) || 0)} ₽`;
+    const amount = value => Math.max(0, Number(String(value ?? '').replace(',', '.')) || 0);
+    const el = (tag, className, text) => {
+      const node = document.createElement(tag);
+      if (className) node.className = className;
+      if (text !== undefined) node.textContent = text;
+      return node;
+    };
+    const labeledInput = (labelText, type, value, onInput) => {
+      const label = el('label');
+      label.append(el('span', '', labelText));
+      const input = el('input');
+      input.type = type;
+      input.value = value ?? '';
+      if (type === 'number') { input.min = '0'; input.step = '0.01'; input.inputMode = 'decimal'; }
+      input.addEventListener('input', () => onInput(input.value));
+      label.append(input);
+      return { label, input };
+    };
+    const ensurePayments = () => {
+      const target = Math.max(1, Math.min(200, Number(state.participants_count) || 1));
+      while (state.payments.length < target) state.payments.push({ name: `Участник ${state.payments.length + 1}`, paid_all: false, partial: 0 });
+      state.payments = state.payments.slice(0, target);
+    };
+    const rowTotal = (key, row) => key === 'props' && row.mode === 'per_person' ? amount(row.amount) * state.participants_count : amount(row.amount);
+    const overallTotal = () => Object.entries(state.sections).reduce((sum, [key, rows]) => sum + (Array.isArray(rows) ? rows.reduce((part, row) => part + rowTotal(key, row), 0) : 0), 0);
+    const syncHidden = () => { hiddenInput.value = JSON.stringify(state); };
+
+    const renderSections = () => {
+      sectionsRoot.replaceChildren();
+      Object.entries(sectionMeta).forEach(([key, meta]) => {
+        if (!Array.isArray(state.sections[key])) state.sections[key] = [];
+        const card = el('section', 'group-budget-section');
+        card.append(el('h3', '', meta.title));
+        state.sections[key].forEach((row, index) => {
+          const line = el('div', `group-budget-expense-row${meta.props ? ' props' : ''}`);
+          const nameField = labeledInput('Статья расхода', 'text', row.name, value => { row.name = value.slice(0, 120); syncHidden(); });
+          line.append(nameField.label);
+          if (meta.props) {
+            const modeLabel = el('label');
+            modeLabel.append(el('span', '', 'Способ расчёта'));
+            const select = el('select');
+            [['total', 'Общая сумма'], ['per_person', 'На участника']].forEach(([value, text]) => {
+              const option = el('option', '', text); option.value = value; option.selected = row.mode === value; select.append(option);
+            });
+            select.addEventListener('change', () => { row.mode = select.value; recalculate(); });
+            modeLabel.append(select); line.append(modeLabel);
+          }
+          const amountField = labeledInput(meta.props && row.mode === 'per_person' ? 'Сумма на человека, ₽' : 'Общая сумма, ₽', 'number', row.amount || '', value => { row.amount = amount(value); recalculate(); });
+          line.append(amountField.label);
+          const remove = el('button', 'btn btn-small', 'Удалить'); remove.type = 'button';
+          remove.addEventListener('click', () => { state.sections[key].splice(index, 1); renderAll(); });
+          line.append(remove); card.append(line);
+        });
+        const add = el('button', 'btn btn-small top-offset', 'Добавить строку'); add.type = 'button';
+        add.addEventListener('click', () => { state.sections[key].push({ name: '', amount: 0, ...(meta.props ? { mode: 'total' } : {}) }); renderAll(); });
+        card.append(add);
+        const totals = el('p', 'group-budget-section-total');
+        totals.dataset.sectionTotal = key; card.append(totals); sectionsRoot.append(card);
+      });
+    };
+    const renderPayments = () => {
+      ensurePayments(); paymentsRoot.replaceChildren();
+      state.payments.forEach((payment, index) => {
+        const tr = el('tr');
+        const nameCell = el('td');
+        const nameInput = el('input'); nameInput.type = 'text'; nameInput.value = payment.name || `Участник ${index + 1}`;
+        nameInput.setAttribute('aria-label', `Имя участника ${index + 1}`);
+        nameInput.addEventListener('input', () => { payment.name = nameInput.value.slice(0, 120); syncHidden(); }); nameCell.append(nameInput); tr.append(nameCell);
+        tr.append(el('td', 'budget-due'));
+        const allCell = el('td'); const all = el('input'); all.type = 'checkbox'; all.checked = Boolean(payment.paid_all); all.setAttribute('aria-label', `${nameInput.value}: внесено всё`);
+        all.addEventListener('change', () => { payment.paid_all = all.checked; partial.disabled = all.checked || !canEdit; recalculate(); }); allCell.append(all); tr.append(allCell);
+        const partialCell = el('td'); const partial = el('input'); partial.type = 'number'; partial.min = '0'; partial.step = '0.01'; partial.inputMode = 'decimal'; partial.value = payment.partial || '';
+        partial.disabled = all.checked || !canEdit; partial.setAttribute('aria-label', `${nameInput.value}: внесено частично`);
+        partial.addEventListener('input', () => { payment.partial = amount(partial.value); recalculate(); }); partialCell.append(partial); tr.append(partialCell);
+        tr.append(el('td', 'budget-left')); paymentsRoot.append(tr);
+      });
+    };
+    const recalculate = () => {
+      const total = overallTotal(); const perPerson = total / state.participants_count;
+      document.getElementById('group-budget-per-person').textContent = money(perPerson);
+      Object.keys(sectionMeta).forEach(key => {
+        const sectionTotal = (state.sections[key] || []).reduce((sum, row) => sum + rowTotal(key, row), 0);
+        const target = document.querySelector(`[data-section-total="${key}"]`);
+        if (target) target.innerHTML = `<span>Всего: <strong>${money(sectionTotal)}</strong></span><span>На участника: <strong>${money(sectionTotal / state.participants_count)}</strong></span>`;
+      });
+      let paidTotal = 0; let leftTotal = 0;
+      Array.from(paymentsRoot.rows).forEach((tr, index) => {
+        const payment = state.payments[index]; const paid = payment.paid_all ? perPerson : Math.min(perPerson, amount(payment.partial)); const left = payment.paid_all ? 0 : Math.max(0, perPerson - paid);
+        tr.querySelector('.budget-due').textContent = money(perPerson); tr.querySelector('.budget-left').textContent = money(left); paidTotal += paid; leftTotal += left;
+      });
+      document.getElementById('group-budget-due-total').textContent = money(total);
+      document.getElementById('group-budget-paid-total').textContent = money(paidTotal);
+      document.getElementById('group-budget-left-total').textContent = money(leftTotal);
+      syncHidden();
+    };
+    const renderAll = () => { ensurePayments(); renderSections(); renderPayments(); recalculate(); };
+    countInput.value = state.participants_count;
+    countInput.addEventListener('input', () => { state.participants_count = Math.max(1, Math.min(200, Number(countInput.value) || 1)); renderAll(); });
+    form.addEventListener('submit', syncHidden);
+    renderAll();
+  })();
+</script>
+{% endif %}
+
 {% if rehearsal_rows %}
 <section class="box">
   <h2>Репетиции</h2>
