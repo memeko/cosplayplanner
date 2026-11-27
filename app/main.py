@@ -1561,6 +1561,7 @@ def apply_schema_migrations() -> None:
             ("linked_photoset_id", "INTEGER"),
         ],
         "photosets": [
+            ("linked_card_ids_json", "JSON NOT NULL DEFAULT '[]'"),
             ("corrections_json", "JSON NOT NULL DEFAULT '[]'"),
             ("links_json", "JSON NOT NULL DEFAULT '[]'"),
             ("publication_rows_json", "JSON NOT NULL DEFAULT '[]'"),
@@ -18280,6 +18281,8 @@ def get_card_form_values(card: CosplanCard | None = None, *, actor_user_id: int 
             "project_deadline": "",
             "related_card_ids": [],
             "project_character_rows": [{"row_id": "project-char-0", "character_name": "", "cosplayer_alias": ""}],
+            "group_budget": normalize_group_budget({}),
+            "group_budget_comment": "",
             "planned_festivals_json": [],
             "submission_date": "",
             "nominations_json": [],
@@ -18428,6 +18431,8 @@ def get_card_form_values(card: CosplanCard | None = None, *, actor_user_id: int 
         "project_deadline": card.project_deadline.isoformat() if card.project_deadline else "",
         "related_card_ids": related_ids_for_editor,
         "project_character_rows": project_character_rows,
+        "group_budget": normalize_group_budget(card.group_budget_json),
+        "group_budget_comment": card.group_budget_comment or "",
         "planned_festivals_json": as_list(card.planned_festivals_json),
         "submission_date": card.submission_date.isoformat() if card.submission_date else "",
         "nominations_json": as_list(card.nominations_json),
@@ -18994,6 +18999,18 @@ def card_options(
     photoset_options = db.execute(
         select(Photoset).where(Photoset.user_id == user.id).order_by(Photoset.updated_at.desc())
     ).scalars().all()
+    linked_photoset_ids: set[int] = set()
+    if current_card_id:
+        linked_photoset_ids.update(
+            int(item.id)
+            for item in photoset_options
+            if int(current_card_id) in set(parse_id_list(as_list(item.linked_card_ids_json)))
+        )
+        legacy_photoset_id = db.execute(
+            select(CosplanCard.linked_photoset_id).where(CosplanCard.id == current_card_id)
+        ).scalar_one_or_none()
+        if legacy_photoset_id:
+            linked_photoset_ids.add(int(legacy_photoset_id))
 
     return {
         "character_options": character_options,
@@ -19009,11 +19026,27 @@ def card_options(
         "project_leader_options": project_leader_options,
         "related_card_options": related_card_options,
         "photoset_options": photoset_options,
+        "linked_photoset_ids": linked_photoset_ids,
         "currency_options": merge_unique(
             ["RUB", "USD", "EUR"],
             get_options(db, user.id, "currency"),
         ),
     }
+
+
+def sync_card_photoset_links(db: Session, card: CosplanCard, selected_ids: list[int]) -> None:
+    photosets = db.execute(
+        select(Photoset).where(Photoset.user_id == card.user_id)
+    ).scalars().all()
+    valid_ids = {int(item.id) for item in photosets if int(item.id) in set(selected_ids)}
+    for item in photosets:
+        linked_ids = set(parse_id_list(as_list(item.linked_card_ids_json)))
+        if int(item.id) in valid_ids:
+            linked_ids.add(int(card.id))
+        else:
+            linked_ids.discard(int(card.id))
+        item.linked_card_ids_json = sorted(linked_ids)
+    card.linked_photoset_id = min(valid_ids) if valid_ids else None
 
 def clean_nomination_title(value: Any) -> str:
     raw = str(value or "").replace("\xa0", " ").strip()
@@ -24860,7 +24893,62 @@ def photoset_form_data(item: Photoset | None = None) -> dict[str, Any]:
     }
 
 
-def save_photoset_from_form(form: Any, item: Photoset, db: Session) -> str | None:
+def photoset_link_form_context(
+    db: Session,
+    user: User,
+    item: Photoset | None = None,
+    *,
+    preselected_card_id: int | None = None,
+) -> dict[str, Any]:
+    cards = db.execute(
+        select(CosplanCard).where(
+            CosplanCard.user_id == user.id,
+            CosplanCard.is_shared_copy.is_(False),
+        ).order_by(CosplanCard.updated_at.desc(), CosplanCard.id.desc())
+    ).scalars().all()
+    selected_ids = set(parse_id_list(as_list(item.linked_card_ids_json) if item else []))
+    if item:
+        selected_ids.update(
+            int(value)
+            for value in db.execute(
+                select(CosplanCard.id).where(
+                    CosplanCard.user_id == user.id,
+                    CosplanCard.linked_photoset_id == item.id,
+                )
+            ).scalars().all()
+        )
+    if preselected_card_id and any(int(card.id) == int(preselected_card_id) for card in cards):
+        selected_ids.add(int(preselected_card_id))
+    return {"cosplan_card_options": cards, "selected_cosplan_card_ids": selected_ids}
+
+
+def sync_photoset_card_links(db: Session, item: Photoset, selected_ids: list[int], user: User) -> None:
+    valid_ids = set(
+        int(value)
+        for value in db.execute(
+            select(CosplanCard.id).where(
+                CosplanCard.id.in_(selected_ids or [-1]),
+                CosplanCard.user_id == user.id,
+                CosplanCard.is_shared_copy.is_(False),
+            )
+        ).scalars().all()
+    )
+    item.linked_card_ids_json = sorted(valid_ids)
+    cards = db.execute(
+        select(CosplanCard).where(
+            CosplanCard.user_id == user.id,
+            or_(CosplanCard.id.in_(valid_ids or {-1}), CosplanCard.linked_photoset_id == item.id),
+        )
+    ).scalars().all()
+    for card in cards:
+        if int(card.id) in valid_ids:
+            if not card.linked_photoset_id:
+                card.linked_photoset_id = item.id
+        elif card.linked_photoset_id == item.id:
+            card.linked_photoset_id = None
+
+
+def save_photoset_from_form(form: Any, item: Photoset, db: Session, user: User) -> str | None:
     item.title = str(form.get("title", "")).strip()
     item.fandom = str(form.get("fandom", "")).strip()
     item.characters_json = [str(v).strip() for v in form.getlist("character") if str(v).strip()]
@@ -24902,6 +24990,7 @@ def save_photoset_from_form(form: Any, item: Photoset, db: Session) -> str | Non
     status = str(form.get("status", "preparation")).strip()
     item.status = status if status in PHOTOSET_STATUSES else "preparation"
     item.storyboard_rows_json = parse_photoset_storyboard_rows_from_form(form)
+    item.linked_card_ids_json = parse_id_list(list(form.getlist("linked_card_ids")))
     if not item.title or not item.fandom:
         return "Укажите название фотосета и фэндом."
     if not item.characters_json:
@@ -24935,7 +25024,9 @@ def photoset_new_form(request: Request, db: Session = Depends(get_db)):
     user = current_user(request, db)
     if not user:
         return redirect("/login")
-    return template_response(request, "photoset_form.html", user=user, active_tab="cosplan", item=None, is_new=True, form=photoset_form_data(), statuses=PHOTOSET_STATUSES, role_types=PHOTOSET_ROLE_TYPES, **get_cosplan_section_totals(db, user.id))
+    preselected_raw = str(request.query_params.get("card_id") or "").strip()
+    preselected_card_id = int(preselected_raw) if preselected_raw.isdigit() else None
+    return template_response(request, "photoset_form.html", user=user, active_tab="cosplan", item=None, is_new=True, form=photoset_form_data(), statuses=PHOTOSET_STATUSES, role_types=PHOTOSET_ROLE_TYPES, **photoset_link_form_context(db, user, preselected_card_id=preselected_card_id), **get_cosplan_section_totals(db, user.id))
 
 
 @app.post("/cosplan/photosets/new")
@@ -24945,11 +25036,13 @@ async def photoset_new(request: Request, db: Session = Depends(get_db)):
         return redirect("/login")
     form = await request.form()
     item = Photoset(user_id=user.id, title="", fandom="")
-    error = save_photoset_from_form(form, item, db)
+    error = save_photoset_from_form(form, item, db, user)
     if error:
         add_flash(request, error, "error")
-        return template_response(request, "photoset_form.html", user=user, active_tab="cosplan", item=item, is_new=True, form=photoset_form_data(item), statuses=PHOTOSET_STATUSES, role_types=PHOTOSET_ROLE_TYPES, status_code=422, **get_cosplan_section_totals(db, user.id))
-    db.add(item); db.commit(); db.refresh(item)
+        return template_response(request, "photoset_form.html", user=user, active_tab="cosplan", item=item, is_new=True, form=photoset_form_data(item), statuses=PHOTOSET_STATUSES, role_types=PHOTOSET_ROLE_TYPES, status_code=422, **photoset_link_form_context(db, user, item), **get_cosplan_section_totals(db, user.id))
+    db.add(item); db.flush()
+    sync_photoset_card_links(db, item, parse_id_list(as_list(item.linked_card_ids_json)), user)
+    db.commit(); db.refresh(item)
     add_flash(request, "Карточка фотосета создана.", "success")
     return redirect(f"/cosplan/photosets/{item.id}")
 
@@ -24981,7 +25074,9 @@ def photoset_detail(photoset_id: int, request: Request, db: Session = Depends(ge
     item = accessible_photoset(db, user, photoset_id)
     if not item:
         return redirect("/cosplan/photosets")
-    linked_cards = db.execute(select(CosplanCard).where(CosplanCard.user_id == user.id, CosplanCard.linked_photoset_id == item.id)).scalars().all()
+    linked_ids = set(parse_id_list(as_list(item.linked_card_ids_json)))
+    linked_ids.update(int(value) for value in db.execute(select(CosplanCard.id).where(CosplanCard.linked_photoset_id == item.id)).scalars().all())
+    linked_cards = db.execute(select(CosplanCard).where(CosplanCard.id.in_(linked_ids or {-1}))).scalars().all()
     access_entries = db.execute(
         select(PhotosetAccess).where(PhotosetAccess.photoset_id == item.id).order_by(PhotosetAccess.id)
     ).scalars().all()
@@ -25061,7 +25156,7 @@ def photoset_edit_form(photoset_id: int, request: Request, db: Session = Depends
     item = owned_photoset(db, user, photoset_id)
     if not item:
         return redirect("/cosplan/photosets")
-    return template_response(request, "photoset_form.html", user=user, active_tab="cosplan", item=item, is_new=False, form=photoset_form_data(item), statuses=PHOTOSET_STATUSES, role_types=PHOTOSET_ROLE_TYPES, **get_cosplan_section_totals(db, user.id))
+    return template_response(request, "photoset_form.html", user=user, active_tab="cosplan", item=item, is_new=False, form=photoset_form_data(item), statuses=PHOTOSET_STATUSES, role_types=PHOTOSET_ROLE_TYPES, **photoset_link_form_context(db, user, item), **get_cosplan_section_totals(db, user.id))
 
 
 @app.post("/cosplan/photosets/{photoset_id}/edit")
@@ -25072,10 +25167,11 @@ async def photoset_edit(photoset_id: int, request: Request, db: Session = Depend
     item = owned_photoset(db, user, photoset_id)
     if not item:
         return redirect("/cosplan/photosets")
-    form = await request.form(); error = save_photoset_from_form(form, item, db)
+    form = await request.form(); error = save_photoset_from_form(form, item, db, user)
     if error:
         add_flash(request, error, "error")
-        return template_response(request, "photoset_form.html", user=user, active_tab="cosplan", item=item, is_new=False, form=photoset_form_data(item), statuses=PHOTOSET_STATUSES, role_types=PHOTOSET_ROLE_TYPES, status_code=422, **get_cosplan_section_totals(db, user.id))
+        return template_response(request, "photoset_form.html", user=user, active_tab="cosplan", item=item, is_new=False, form=photoset_form_data(item), statuses=PHOTOSET_STATUSES, role_types=PHOTOSET_ROLE_TYPES, status_code=422, **photoset_link_form_context(db, user, item), **get_cosplan_section_totals(db, user.id))
+    sync_photoset_card_links(db, item, parse_id_list(as_list(item.linked_card_ids_json)), user)
     db.commit(); add_flash(request, "Карточка фотосета обновлена.", "success")
     return redirect(f"/cosplan/photosets/{item.id}")
 
@@ -25464,6 +25560,25 @@ def cosplan_new(request: Request, db: Session = Depends(get_db)):
         return redirect("/login")
 
     form_values = apply_card_form_prefill_from_query(get_card_form_values(), request)
+    parent_project = None
+    parent_project_id_raw = str(request.query_params.get("parent_project_id") or "").strip()
+    if parent_project_id_raw.isdigit():
+        candidate = get_accessible_card(
+            db,
+            int(parent_project_id_raw),
+            user,
+            allow_project_leader=True,
+            allow_coproplayer=True,
+        )
+        if candidate and candidate.plan_type == "project" and can_manage_project_card(user, candidate):
+            parent_project = candidate
+            form_values["plan_type"] = "personal"
+            form_values["fandom"] = candidate.fandom or ""
+            form_values["is_au"] = bool(candidate.is_au)
+            form_values["au_text"] = candidate.au_text or ""
+            form_values["project_deadline"] = candidate.project_deadline.isoformat() if candidate.project_deadline else ""
+            form_values["planned_festivals_json"] = as_list(candidate.planned_festivals_json)
+            form_values["city"] = candidate.city or ""
     return template_response(
         request,
         "cosplan_form.html",
@@ -25472,6 +25587,7 @@ def cosplan_new(request: Request, db: Session = Depends(get_db)):
         editing=False,
         card_id=None,
         form=form_values,
+        parent_project=parent_project,
         can_use_premium_storyboard=user_has_premium_status(db, user),
         **card_options(db, user, current_card_id=None, related_cards_user_id=user.id),
     )
@@ -25833,11 +25949,15 @@ def cosplan_detail(card_id: int, request: Request, db: Session = Depends(get_db)
         if str(item.get("cosplayer_label") or item.get("character_name") or "").strip()
     ]
     group_budget = normalize_group_budget(card.group_budget_json, budget_participant_names)
-    linked_photoset = None
-    if card.linked_photoset_id:
-        linked_photoset = db.execute(
-            select(Photoset).where(Photoset.id == card.linked_photoset_id, Photoset.user_id == card.user_id)
-        ).scalar_one_or_none()
+    owner_photosets = db.execute(
+        select(Photoset).where(Photoset.user_id == card.user_id).order_by(Photoset.updated_at.desc())
+    ).scalars().all()
+    linked_photosets = [
+        item for item in owner_photosets
+        if int(card.id) in set(parse_id_list(as_list(item.linked_card_ids_json)))
+        or int(item.id) == int(card.linked_photoset_id or 0)
+    ]
+    linked_photoset = linked_photosets[0] if linked_photosets else None
     return template_response(
         request,
         "cosplan_detail.html",
@@ -25875,6 +25995,7 @@ def cosplan_detail(card_id: int, request: Request, db: Session = Depends(get_db)
         photoset_props_checklist=format_checklist_for_form(as_list(card.photoset_props_checklist_json)),
         photoset_storyboard_rows=normalize_photoset_storyboard_rows(as_list(card.photoset_storyboard_rows_json)),
         linked_photoset=linked_photoset,
+        linked_photosets=linked_photosets,
         pinterest_embed_src=pinterest_embed_src,
         looks_like_url=looks_like_url,
         is_mp3_url=is_mp3_url,
@@ -26270,6 +26391,30 @@ def save_card_from_form(form: Any, card: CosplanCard, user: User, db: Session) -
             form,
             alias_to_username=alias_to_username,
         )
+        current_budget = normalize_group_budget(card.group_budget_json)
+        def budget_amount(name: str) -> float:
+            return max(0.0, parse_float(str(form.get(name, ""))) or 0.0)
+        current_budget["participants_count"] = (
+            parse_positive_int(str(form.get("group_budget_participants", "")))
+            or current_budget["participants_count"]
+        )
+        budget_updates = {
+            "venue": [("Помещение / студия", "group_budget_venue")],
+            "photo": [("Фотограф", "group_budget_photographer"), ("Дым-машина", "group_budget_smoke")],
+            "props": [("Реквизит", "group_budget_props")],
+        }
+        for section_key, updates in budget_updates.items():
+            rows = current_budget["sections"][section_key]
+            for row_name, field_name in updates:
+                row = next((item for item in rows if str(item.get("name")) == row_name), None)
+                if row is None:
+                    row = {"name": row_name, "amount": 0.0}
+                    if section_key == "props":
+                        row["mode"] = "total"
+                    rows.append(row)
+                row["amount"] = budget_amount(field_name)
+        card.group_budget_json = normalize_group_budget(current_budget)
+        card.group_budget_comment = str(form.get("group_budget_comment", "")).strip()[:20000] or None
     else:
         card.related_cards_json = []
         card.project_characters_json = []
@@ -26443,6 +26588,33 @@ def save_card_from_form(form: Any, card: CosplanCard, user: User, db: Session) -
     )
 
 
+def clear_personal_fields_from_group_card(card: CosplanCard) -> None:
+    """Keep a group project free of costume-specific data and personal costs."""
+    nullable_fields = (
+        "costume_type", "sewing_type", "costume_executor", "costume_executor_contact",
+        "costume_deadline", "costume_prepayment", "costume_postpayment", "costume_fabric_price",
+        "costume_hardware_price", "costume_link", "costume_buy_price", "costume_currency", "costume_notes",
+        "shoes_type", "shoes_link", "shoes_buy_price", "shoes_executor", "shoes_executor_contact",
+        "shoes_deadline", "shoes_price", "shoes_currency", "lenses_comment", "lenses_color",
+        "lenses_price", "lenses_currency", "wig_type", "wigmaker_name", "wigmaker_contact",
+        "wig_price", "wig_buy_price", "wig_currency", "wig_deadline", "wig_link", "wig_no_buy_from",
+        "craft_type", "craft_master", "craft_master_contact", "craft_price", "craft_material_price",
+        "craft_deadline", "craft_currency",
+    )
+    for field_name in nullable_fields:
+        setattr(card, field_name, None)
+    for field_name in (
+        "sewing_fabric", "sewing_hardware", "sewing_pattern", "sewing_mockup", "sewing_fitting",
+        "sewing_details", "costume_bought", "shoes_bought", "lenses_enabled", "wig_restyle",
+    ):
+        setattr(card, field_name, False)
+    for field_name in (
+        "costume_fabric_rows_json", "costume_hardware_rows_json", "wig_accessory_rows_json",
+        "craft_material_rows_json", "costume_parts_json", "craft_parts_json", "unknown_prices_json",
+    ):
+        setattr(card, field_name, [])
+
+
 @app.post("/cosplan/new")
 async def cosplan_create(request: Request, db: Session = Depends(get_db)):
     user = current_user(request, db)
@@ -26456,10 +26628,33 @@ async def cosplan_create(request: Request, db: Session = Depends(get_db)):
         return redirect("/cosplan/new")
 
     card = CosplanCard(user_id=user.id, character_name=character_name)
+    previous_plan_type = card.plan_type
     save_card_from_form(form, card, user, db)
+    if card.plan_type == "project" and previous_plan_type != "project":
+        clear_personal_fields_from_group_card(card)
+
+    parent_project = None
+    parent_project_id_raw = str(form.get("parent_project_id", "")).strip()
+    if parent_project_id_raw.isdigit():
+        candidate = get_accessible_card(db, int(parent_project_id_raw), user, allow_project_leader=True)
+        if candidate and candidate.plan_type == "project" and can_manage_project_card(user, candidate):
+            parent_project = candidate
+            card.plan_type = "personal"
+            card.project_deadline = candidate.project_deadline
+            card.planned_festivals_json = as_list(candidate.planned_festivals_json)
+            card.city = candidate.city
 
     db.add(card)
     db.flush()
+    sync_card_photoset_links(db, card, parse_id_list(list(form.getlist("linked_photoset_ids"))))
+    if parent_project:
+        links = parse_related_card_links(
+            as_list(parent_project.related_cards_json),
+            legacy_user_id=parent_project.user_id,
+        )
+        if not any(int(item["card_id"]) == int(card.id) for item in links):
+            links.append({"card_id": int(card.id), "user_id": int(user.id)})
+            parent_project.related_cards_json = links
     conflict_notifications = notify_coproplayer_conflicts_for_card(db, card=card, owner=user)
     sync_shared_cards_for_nicks(card, user, db)
     db.commit()
@@ -26471,8 +26666,14 @@ async def cosplan_create(request: Request, db: Session = Depends(get_db)):
             "success",
         )
     else:
-        add_flash(request, "Карточка косплана создана.", "success")
-    return redirect("/cosplan")
+        add_flash(
+            request,
+            "Личная карточка создана и привязана к групповому проекту."
+            if parent_project
+            else "Карточка косплана создана.",
+            "success",
+        )
+    return redirect(f"/cosplan/{parent_project.id}" if parent_project else "/cosplan")
 
 
 @app.post("/cosplan/{card_id}/edit")
@@ -26492,8 +26693,27 @@ async def cosplan_update(card_id: int, request: Request, db: Session = Depends(g
         add_flash(request, "Имя персонажа обязательно.", "error")
         return redirect(f"/cosplan/{card.id}/edit")
 
+    previous_plan_type = card.plan_type
     save_card_from_form(form, card, user, db)
+    if card.plan_type == "project" and previous_plan_type != "project":
+        clear_personal_fields_from_group_card(card)
     card.is_quick_draft = False
+    sync_card_photoset_links(db, card, parse_id_list(list(form.getlist("linked_photoset_ids"))))
+    if card.plan_type == "project":
+        related_links = parse_related_card_links(as_list(card.related_cards_json), legacy_user_id=card.user_id)
+        related_ids = [int(item["card_id"]) for item in related_links if int(item["card_id"]) != int(card.id)]
+        if related_ids:
+            linked_personal_cards = db.execute(
+                select(CosplanCard).where(
+                    CosplanCard.id.in_(related_ids),
+                    or_(CosplanCard.plan_type.is_(None), CosplanCard.plan_type != "project"),
+                    CosplanCard.is_shared_copy.is_(False),
+                )
+            ).scalars().all()
+            for linked_card in linked_personal_cards:
+                linked_card.project_deadline = card.project_deadline
+                linked_card.planned_festivals_json = as_list(card.planned_festivals_json)
+                linked_card.city = card.city
     conflict_notifications = notify_coproplayer_conflicts_for_card(db, card=card, owner=user)
     sync_shared_cards_for_nicks(card, user, db)
     linked_rehearsal_cards = db.execute(

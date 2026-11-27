@@ -502,6 +502,7 @@ class Photoset(Base):
     title = Column(String(255), nullable=False, index=True)
     fandom = Column(String(255), nullable=False, index=True)
     characters_json = Column(JSON, nullable=False, default=list)
+    linked_card_ids_json = Column(JSON, nullable=False, default=list)
     au_name = Column(String(255), nullable=True)
     roles_json = Column(JSON, nullable=False, default=list)
     event_date = Column(Date, nullable=True)

@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block content %}
 <section class="section-head">
-  <h1>{{ "Редактирование карточки" if editing else "Новая карточка косплана" }}</h1>
+  <h1>{{ "Редактирование карточки" if editing else ("Новая личная карточка в проекте" if parent_project else "Новая карточка") }}</h1>
   <a href="/cosplan" class="btn">Назад к списку</a>
 </section>
 
@@ -214,6 +214,13 @@
 </style>
 
 <form method="post" action="{{ '/cosplan/' ~ card_id ~ '/edit' if editing else '/cosplan/new' }}" class="grid one-col big-form" id="cosplan-form">
+  {% if parent_project %}
+    <input type="hidden" name="parent_project_id" value="{{ parent_project.id }}" />
+    <section class="box">
+      <h2>Групповой проект: {{ parent_project.character_name }}</h2>
+      <p class="muted">Эта личная карточка будет привязана к проекту. Дедлайн, фестивали, фандом и AU уже скопированы из групповой карточки.</p>
+    </section>
+  {% endif %}
   <p class="muted">Во всех текстовых полях карточки поддерживается Markdown: **жирный**, *курсив*, `код`, [ссылка](https://...).</p>
   <nav class="cosplan-form-pager" id="cosplan-form-pager" aria-label="Разделы формы карточки">
     <button type="button" class="btn cosplan-form-page-prev">← Назад</button>
@@ -226,6 +233,19 @@
   </nav>
   <section class="box">
     <h2>Основное</h2>
+    {% if not parent_project %}
+    <div class="grid two-col">
+      <label class="chip-check">
+        <input type="radio" name="card_kind_selector" value="personal" {% if form.plan_type != 'project' %}checked{% endif %} />
+        <span><strong>Личная карточка</strong><br><span class="muted">Костюм, парик, линзы, крафт и личный бюджет</span></span>
+      </label>
+      <label class="chip-check">
+        <input type="radio" name="card_kind_selector" value="project" {% if form.plan_type == 'project' %}checked{% endif %} />
+        <span><strong>Групповой проект</strong><br><span class="muted">Команда, персонажи, общий дедлайн, фестивали и отдельный бюджет</span></span>
+      </label>
+    </div>
+    {% endif %}
+    <input type="hidden" name="plan_type" id="plan_type" value="{{ 'project' if form.plan_type == 'project' else 'personal' }}" />
     <div class="grid two-col">
       <label>
         Имя персонажа/Название проекта
@@ -262,7 +282,7 @@
     </label>
   </section>
 
-  <section class="box">
+  <section class="box personal-card-section">
     <h2>Костюм</h2>
     <div class="grid two-col">
       <label>
@@ -469,7 +489,7 @@
     </label>
   </section>
 
-  <section class="box">
+  <section class="box personal-card-section">
     <h2>Обувь</h2>
     <label>
       Способ
@@ -520,7 +540,7 @@
     </label>
   </section>
 
-  <section class="box">
+  <section class="box personal-card-section">
     <h2>Линзы</h2>
     <label class="inline-check">
       <input type="checkbox" name="lenses_enabled" id="lenses_enabled" {% if form.lenses_enabled %}checked{% endif %} />
@@ -546,7 +566,7 @@
     </div>
   </section>
 
-  <section class="box">
+  <section class="box personal-card-section">
     <h2>Парик</h2>
     <label>
       Способ
@@ -624,7 +644,7 @@
     <button type="button" class="btn btn-small" id="add_wig_accessory_btn">Добавить украшение</button>
   </section>
 
-  <section class="box">
+  <section class="box personal-card-section">
     <h2>Крафт</h2>
     <div class="grid two-col">
       <label>
@@ -718,11 +738,6 @@
       <a href="/community/cosplayers" class="btn btn-small">Каталог косплееров</a>
       <a href="/my-projects" class="btn btn-small">Мои проекты</a>
     </div>
-    <input type="hidden" name="plan_type" id="plan_type" value="{{ 'project' if form.plan_type == 'project' else 'personal' }}" />
-    <label class="inline-check">
-      <input type="checkbox" id="plan_type_project" {% if form.plan_type == 'project' %}checked{% endif %} />
-      Это общая карточка проекта
-    </label>
     <label id="project_leader_wrap" class="alias-suggest">
       Руководитель
       <input type="text" name="project_leader" id="project_leader" list="project-leader-options" value="{{ form.project_leader }}" autocomplete="off" />
@@ -837,6 +852,23 @@
       {% endfor %}
     </div>
     <button type="button" class="btn" id="add_coproplayer_btn">Добавить ещё</button>
+  </section>
+
+  {% set budget_venue = form.group_budget.sections.venue|selectattr('name', 'equalto', 'Помещение / студия')|first %}
+  {% set budget_photographer = form.group_budget.sections.photo|selectattr('name', 'equalto', 'Фотограф')|first %}
+  {% set budget_smoke = form.group_budget.sections.photo|selectattr('name', 'equalto', 'Дым-машина')|first %}
+  {% set budget_props = form.group_budget.sections.props|selectattr('name', 'equalto', 'Реквизит')|first %}
+  <section class="box project-card-section">
+    <h2>Групповой бюджет</h2>
+    <p class="muted">Начальные общие расходы. После сохранения проекта подробные строки и взносы участников доступны в его карточке.</p>
+    <div class="grid two-col">
+      <label>Количество участников<input type="number" name="group_budget_participants" min="1" max="200" value="{{ form.group_budget.participants_count }}" /></label>
+      <label>Помещение / студия, ₽<input type="number" name="group_budget_venue" min="0" step="0.01" value="{{ budget_venue.amount if budget_venue else 0 }}" /></label>
+      <label>Фотограф, ₽<input type="number" name="group_budget_photographer" min="0" step="0.01" value="{{ budget_photographer.amount if budget_photographer else 0 }}" /></label>
+      <label>Дым-машина, ₽<input type="number" name="group_budget_smoke" min="0" step="0.01" value="{{ budget_smoke.amount if budget_smoke else 0 }}" /></label>
+      <label>Общий реквизит, ₽<input type="number" name="group_budget_props" min="0" step="0.01" value="{{ budget_props.amount if budget_props else 0 }}" /></label>
+    </div>
+    <label>Комментарий к бюджету<textarea name="group_budget_comment" rows="4" maxlength="20000" placeholder="Сроки взносов, договорённости, реквизиты…">{{ form.group_budget_comment }}</textarea></label>
   </section>
 
   <section class="box">
@@ -999,17 +1031,16 @@
   </section>
 
   <section class="box">
-    <h2>Фотосет</h2>
-      <label>
-        Связанная карточка фотосета
-        <select name="linked_photoset_id">
-          <option value="">Не связывать</option>
-          {% for photoset in photoset_options %}
-            <option value="{{ photoset.id }}" {% if form.linked_photoset_id|string == photoset.id|string %}selected{% endif %}>{{ photoset.title }} — {{ photoset.fandom }}</option>
-          {% endfor %}
-        </select>
-      </label>
-      <a class="btn btn-small" href="/cosplan/photosets/new">Создать отдельную карточку фотосета</a>
+    <details {% if form.plan_type != 'project' %}open{% endif %}>
+      <summary><strong>Фотосет</strong>{% if form.plan_type == 'project' %} <span class="muted">— свёрнуто для группового проекта</span>{% endif %}</summary>
+      <p class="muted top-offset">Для полноценного планирования съёмки используйте отдельную карточку фотосета. Один персонаж или групповой проект может быть связан с несколькими фотосетами.</p>
+      <label>Связанные карточки фотосетов</label>
+      <div class="chips-wrap">
+        {% for photoset in photoset_options %}
+          <label class="chip-check"><input type="checkbox" name="linked_photoset_ids" value="{{ photoset.id }}" {% if photoset.id in linked_photoset_ids %}checked{% endif %} /> {{ photoset.title }} — {{ photoset.fandom }}</label>
+        {% else %}<p class="muted">Фотосетов пока нет.</p>{% endfor %}
+      </div>
+      <a class="btn btn-accent btn-small" href="/cosplan/photosets/new{% if editing %}?card_id={{ card_id }}{% endif %}">Создать новый фотосет</a>
       <div class="actions-inline wrap top-offset">
         <a href="/community/studios" class="btn btn-small">Найти студию</a>
         <a href="/community/masters" class="btn btn-small">Найти мастера</a>
@@ -1223,9 +1254,10 @@
           {% endfor %}
         </div>
       </div>
+    </details>
   </section>
 
-  <section class="box">
+  <section class="box personal-card-section">
     <h2>Референсы</h2>
     <label>
       URL изображений (через запятую, ; или с новой строки)
@@ -1246,7 +1278,7 @@
     </div>
   </section>
 
-  <section class="box">
+  <section class="box personal-card-section">
     <h2>Ориентировочная стоимость проекта</h2>
     <p class="estimated-total">
       <strong><span id="estimated_total_value">{{ '%.2f'|format(form.estimated_total or 0) }}</span> <span id="estimated_total_currency">{{ form.estimated_total_currency }}</span></strong>
@@ -1477,6 +1509,12 @@
     toggleVisibility("lenses_wrap", !!lensesEnabled);
 
     const planType = document.getElementById("plan_type")?.value;
+    document.querySelectorAll(".personal-card-section").forEach((section) => {
+      section.hidden = planType === "project";
+    });
+    document.querySelectorAll(".project-card-section").forEach((section) => {
+      section.hidden = planType !== "project";
+    });
     toggleVisibility("project_leader_wrap", planType === "project");
     toggleVisibility("related_cards_wrap", planType === "project");
     toggleVisibility("project_characters_wrap", planType === "project");
@@ -1485,8 +1523,13 @@
   const syncPlanTypeFromProjectCheckbox = () => {
     const planTypeInput = document.getElementById("plan_type");
     const projectCheckbox = document.getElementById("plan_type_project");
-    if (!planTypeInput || !projectCheckbox) return;
-    planTypeInput.value = projectCheckbox.checked ? "project" : "personal";
+    const selectedKind = document.querySelector('input[name="card_kind_selector"]:checked');
+    if (!planTypeInput) return;
+    if (selectedKind) {
+      planTypeInput.value = selectedKind.value === "project" ? "project" : "personal";
+    } else if (projectCheckbox) {
+      planTypeInput.value = projectCheckbox.checked ? "project" : "personal";
+    }
   };
 
   const applyFestivalCityFilter = () => {
@@ -2218,6 +2261,17 @@
         updateStatusMode();
       });
     }
+  });
+  document.querySelectorAll('input[name="card_kind_selector"]').forEach((input) => {
+    input.addEventListener("change", () => {
+      syncPlanTypeFromProjectCheckbox();
+      applyFormRules();
+      updateStatusMode();
+      {% if not editing and not parent_project %}
+      const selectedType = document.getElementById("plan_type")?.value || "personal";
+      window.location.assign(`/cosplan/new?plan_type=${encodeURIComponent(selectedType)}`);
+      {% endif %}
+    });
   });
 
   const cityFilterInput = document.getElementById("festival_city_filter");
@@ -3040,7 +3094,12 @@
     const form = document.getElementById("cosplan-form");
     const pager = document.getElementById("cosplan-form-pager");
     if (!form || !pager) return;
-    const pages = Array.from(form.querySelectorAll(":scope > section.box"));
+    const isProject = document.getElementById("plan_type")?.value === "project";
+    const pages = Array.from(form.querySelectorAll(":scope > section.box")).filter((section) => {
+      if (isProject && section.classList.contains("personal-card-section")) return false;
+      if (!isProject && section.classList.contains("project-card-section")) return false;
+      return true;
+    });
     const select = pager.querySelector(".cosplan-form-page-select");
     const previous = pager.querySelector(".cosplan-form-page-prev");
     const next = pager.querySelector(".cosplan-form-page-next");

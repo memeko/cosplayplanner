@@ -39,6 +39,19 @@
 </section>
 
 {% if (card.plan_type or '') == 'project' %}
+<section class="box">
+  <details>
+    <summary><strong>Фотосеты проекта</strong> <span class="muted">— {{ linked_photosets|length }} связанных</span></summary>
+    <p class="muted top-offset">Планировать съёмку удобнее в отдельной карточке фотосета. Проект можно связать с несколькими фотосетами.</p>
+    <div class="actions-inline wrap">
+      {% for photoset in linked_photosets %}<a class="btn" href="/cosplan/photosets/{{ photoset.id }}">{{ photoset.title }}</a>{% endfor %}
+      {% if can_edit_card %}<a class="btn btn-accent" href="/cosplan/photosets/new?card_id={{ card.id }}">Создать новый фотосет</a>{% endif %}
+    </div>
+  </details>
+</section>
+{% endif %}
+
+{% if (card.plan_type or '') == 'project' %}
 <nav class="cosplan-section-pager" aria-label="Разделы карточки проекта">
   <button type="button" class="btn cosplan-page-prev" aria-label="Предыдущий раздел">Назад</button>
   <label class="cosplan-page-jump">
@@ -76,13 +89,19 @@
   {% if cosbands %}<p class="meta">Cosband: {{ cosbands | join(", ") }}</p>{% endif %}
   {% if planned_festivals %}<p class="meta">Планируемые фестивали: {{ planned_festivals | join(", ") }}</p>{% endif %}
   {% if project_character_rows %}
-    <h3>Персонажи проекта</h3>
+    <div class="row-between top-offset">
+      <h3>Персонажи проекта</h3>
+      {% if can_manage_group_budget %}
+        <a href="/cosplan/new?parent_project_id={{ card.id }}" class="btn btn-accent">Создать личную карточку</a>
+      {% endif %}
+    </div>
     <div class="top-offset">
       <table class="table">
         <thead>
           <tr>
             <th>Имя персонажа</th>
             <th>Косплеер</th>
+            {% if can_manage_group_budget %}<th>Карточка</th>{% endif %}
           </tr>
         </thead>
         <tbody>
@@ -90,10 +109,18 @@
             <tr>
               <td>{{ row.character_name or "—" }}</td>
               <td>{{ row.cosplayer_label or "—" }}</td>
+              {% if can_manage_group_budget %}
+                <td><a href="/cosplan/new?parent_project_id={{ card.id }}&character_name={{ row.character_name|urlencode }}" class="btn btn-small">Создать</a></td>
+              {% endif %}
             </tr>
           {% endfor %}
         </tbody>
       </table>
+    </div>
+  {% endif %}
+  {% if (card.plan_type or '') == 'project' and not project_character_rows and can_manage_group_budget %}
+    <div class="actions-inline top-offset">
+      <a href="/cosplan/new?parent_project_id={{ card.id }}" class="btn btn-accent">Создать личную карточку персонажа</a>
     </div>
   {% endif %}
   {% if related_cards %}
@@ -125,7 +152,7 @@
   {% if card.project_deadline %}<p class="meta">Дедлайн проекта: {{ card.project_deadline.strftime('%d-%m-%Y') }}</p>{% endif %}
   {% if card.submission_date %}<p class="meta">Дата подачи: {{ card.submission_date.strftime('%d-%m-%Y') }}</p>{% endif %}
 
-  {% if card_total > 0 or card_total_currency or unknown_fields %}
+  {% if (card.plan_type or '') != 'project' and (card_total > 0 or card_total_currency or unknown_fields) %}
     <p class="meta">Ориентировочная цена: {{ '%.2f'|format(card_total or 0) }}{% if card_total_currency %} {{ card_total_currency }}{% endif %}</p>
   {% endif %}
 </section>
@@ -387,6 +414,7 @@
 </section>
 {% endif %}
 
+{% if (card.plan_type or '') != 'project' %}
 {% set has_costume = (card.costume_type and card.costume_type != "sew") or (card.sewing_type and card.sewing_type != "self") or card.sewing_fabric or card.sewing_hardware or card.sewing_pattern or card.sewing_mockup or card.sewing_fitting or card.sewing_details or card.costume_executor or card.costume_executor_contact or card.costume_deadline or card.costume_prepayment is not none or card.costume_postpayment is not none or card.costume_fabric_price is not none or card.costume_hardware_price is not none or card.costume_bought or card.costume_link or card.costume_buy_price is not none or card.costume_notes or costume_parts or costume_fabric_rows or costume_hardware_rows or 'costume_prepayment' in unknown_fields or 'costume_postpayment' in unknown_fields or 'costume_buy_price' in unknown_fields or 'costume_fabric_price' in unknown_fields or 'costume_hardware_price' in unknown_fields %}
 {% if has_costume %}
 <section class="box">
@@ -616,12 +644,12 @@
 {% endif %}
 
 {% set has_photoset_breakdown = card.photoset_photographer_price is not none or card.photoset_studio_price is not none or card.photoset_props_price is not none or card.photoset_extra_price is not none or 'photoset_photographer_price' in unknown_fields or 'photoset_studio_price' in unknown_fields or 'photoset_props_price' in unknown_fields or 'photoset_extra_price' in unknown_fields %}
-{% set has_photoset = linked_photoset or photographers or studios or card.photoset_date or has_photoset_breakdown or card.photoset_price is not none or 'photoset_price' in unknown_fields or card.photoset_comment or photoset_props_checklist or photoset_storyboard_rows %}
+{% set has_photoset = linked_photosets or photographers or studios or card.photoset_date or has_photoset_breakdown or card.photoset_price is not none or 'photoset_price' in unknown_fields or card.photoset_comment or photoset_props_checklist or photoset_storyboard_rows %}
 {% set has_coproplayers = coproplayer_people or coproplayers_display %}
 {% if has_photoset %}
 <section class="box">
   <h2>Фотосет</h2>
-  {% if linked_photoset %}<p><a class="btn btn-accent" href="/cosplan/photosets/{{ linked_photoset.id }}">Открыть карточку «{{ linked_photoset.title }}»</a></p>{% endif %}
+  {% if linked_photosets %}<div class="actions-inline wrap">{% for photoset in linked_photosets %}<a class="btn btn-accent" href="/cosplan/photosets/{{ photoset.id }}">Открыть «{{ photoset.title }}»</a>{% endfor %}</div>{% endif %}
   {% if photographers %}<p class="meta">Фотограф(ы): {{ photographers | join(", ") }}</p>{% endif %}
   {% if studios %}<p class="meta">Студия(и): {{ studios | join(", ") }}</p>{% endif %}
   {% if card.photoset_date %}<p class="meta">Дата фотосета: {{ card.photoset_date.strftime('%d-%m-%Y') }}</p>{% endif %}
@@ -811,6 +839,7 @@
   <h2>Примечания</h2>
   <p class="notes-block">{{ card.notes|render_markdown }}</p>
 </section>
+{% endif %}
 {% endif %}
 
 {% if card_date_conflicts.get(card.id) %}
