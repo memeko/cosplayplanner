@@ -439,8 +439,6 @@
     <div class="calendar-tabs">
       <button type="button" class="tab active" data-platform-tab="telegram">Telegram</button>
       <button type="button" class="tab" data-platform-tab="vk">VK</button>
-      <button type="button" class="tab" data-platform-tab="threads">Threads</button>
-      <button type="button" class="tab" data-platform-tab="rednote">RedNote</button>
       <button type="button" class="tab" data-platform-tab="pinterest">Pinterest</button>
     </div>
 
@@ -593,49 +591,10 @@
     </div>
 
     <div class="content-platform-panel" data-platform-panel="vk" hidden>
-      <div class="notes-block telegram-editor-note">
-        <strong>Публикация без Mini App доступна через официальный API VK.</strong>
-      </div>
-      <p class="muted">
-        Для VK используются два разных ключа: ключ сообщества публикует записи, а сервисный ключ приложения читает стену для импорта. VK запрещает вызов <code>wall.get</code> с ключом сообщества и возвращает код 27.
-      </p>
-      <div class="notes-block telegram-editor-note">
-        VK не поддерживает расширенную разметку шрифта для таких постов: полужирный, курсив, подчёркивание, зачёркивание, спойлеры и premium-эмодзи в VK не рендерятся так же, как в Telegram. Для VK используется plain-text версия вашего текста.
-      </div>
-      <details class="top-offset">
-        <summary>Как подключить VK</summary>
-        <ol class="notes-list top-offset">
-          <li>В управлении сообществом откройте «Работа с API → Ключи доступа» и создайте ключ с правом стены.</li>
-          <li>Добавьте по одному сообществу на строку в формате ниже.</li>
-          <li>В настройках отдельного приложения VK скопируйте сервисный ключ доступа и добавьте его в поле импорта стены.</li>
-        </ol>
-      </details>
-      {% if content_can_manage_connections %}
-      <form method="post" action="/my-calendar/content/vk/connect" class="grid one-col top-offset">
-        <input type="hidden" name="content_scope" value="{{ content_scope }}" />
-        {% if content_owner_id %}<input type="hidden" name="content_owner_id" value="{{ content_owner_id }}" />{% endif %}
-        <label>VK-сообщества и токены
-          <textarea name="vk_groups_text" rows="4" placeholder="Название — vk.ru/my_group — токен_доступа"></textarea>
-          {% if vk_settings.groups_masked_text %}<small class="muted">Сохранено: {{ vk_settings.groups_masked_text }}</small>{% endif %}
-        </label>
-        <label>Сервисный ключ для импорта стены
-          <input type="password" name="vk_read_token" value="" placeholder="Сервисный ключ приложения VK" autocomplete="new-password" />
-          <small class="muted">
-            {% if vk_settings.read_token_masked %}Сейчас сохранено: {{ vk_settings.read_token_masked }}. Оставьте пустым, если менять ключ не нужно.{% else %}Обязателен только для <code>wall.get</code>. Ключ сообщества сюда не подходит.{% endif %}
-          </small>
-        </label>
-        <div class="actions-inline wrap"><button type="submit" class="btn btn-accent">Сохранить VK</button></div>
-      </form>
-      {% if vk_content_connected %}
-      <div class="actions-inline wrap top-offset">
-        <form method="post" action="/my-calendar/content/vk/sync?{{ content_action_query }}"><button type="submit" class="btn">Импортировать стену</button></form>
-        <form method="post" action="/my-calendar/content/vk/disconnect?{{ content_action_query }}" onsubmit="return confirm('Удалить настройки VK?');"><button type="submit" class="btn btn-danger">Отключить VK</button></form>
-      </div>
-      {% endif %}
-      {% endif %}
+      <p class="muted">Публикация во VK выполняется через мини-приложение от имени пользователя.</p>
     </div>
 
-    <div class="content-platform-panel" data-platform-panel="threads" hidden>
+    {% if false %}<div class="content-platform-panel" data-platform-panel="threads" hidden>
       <p class="muted">
         Threads подключается через официальное окно OAuth. Cosplay Planner не получает и не хранит логин, ник или пароль аккаунта.
       </p>
@@ -663,31 +622,9 @@
         </form>
       {% endif %}
       {% endif %}
-    </div>
+    </div>{% endif %}
 
-    <div class="content-platform-panel" data-platform-panel="rednote" hidden>
-      <p class="muted">
-        Для RedNote / Xiaohongshu мы пока не делаем OAuth и автопубликацию: в официальной документации открыт merchant/mini-app стек,
-        но публичного content publishing API для обычных постов мы не нашли. Поэтому здесь можно сохранить профиль и вести ручной трекинг публикаций из контент-плана.
-      </p>
-      <div class="notes-block telegram-editor-note">
-        Посты с галочкой <strong>RedNote</strong> не уходят автоматически по времени. Их можно отметить опубликованными вручную из карточки поста или из списка ниже.
-      </div>
-      {% if rednote_settings.connected %}
-        <p class="muted top-offset">
-          Сохранённый профиль:
-          {% if rednote_settings.profile_url %}
-            <a href="{{ rednote_settings.profile_url }}" target="_blank" rel="noreferrer"><strong>{{ rednote_settings.profile_value }}</strong></a>
-          {% else %}
-            <strong>{{ rednote_settings.profile_value }}</strong>
-          {% endif %}
-        </p>
-      {% endif %}
-      {% if not content_can_manage_connections %}
-        <div class="notes-block telegram-editor-note top-offset">
-          Настройки RedNote меняет только владелец этого контент-плана.
-        </div>
-      {% else %}
+    <section class="content-rednote-reference top-offset">
       <form method="post" action="/my-calendar/content/rednote/connect" class="grid one-col top-offset">
         <input type="hidden" name="content_scope" value="{{ content_scope }}" />
         {% if content_owner_id %}<input type="hidden" name="content_owner_id" value="{{ content_owner_id }}" />{% endif %}
@@ -700,13 +637,7 @@
           <button type="submit" class="btn btn-accent">Сохранить RedNote</button>
         </div>
       </form>
-      {% if rednote_content_connected %}
-        <form method="post" action="/my-calendar/content/rednote/disconnect?{{ content_action_query }}" class="top-offset" onsubmit="return confirm('Удалить настройки RedNote?');">
-          <button type="submit" class="btn btn-danger">Очистить RedNote</button>
-        </form>
-      {% endif %}
-      {% endif %}
-    </div>
+    </section>
 
     <div class="content-platform-panel" data-platform-panel="pinterest" hidden>
       <p class="muted">
@@ -822,142 +753,6 @@
     </div>
   </details>{% endif %}
 
-  <details class="box top-offset calendar-spoiler" id="content-ai-assistant">
-    <summary>ИИ-помощник</summary>
-    <div class="calendar-spoiler-body">
-      <p class="muted">
-        Генерация идей и текстов через Mistral API (модель: <strong>{{ content_ai_assistant_model }}</strong>).
-        Лимит: <strong id="content_ai_usage_label">{{ content_ai_assistant_used_today }}/{{ content_ai_assistant_daily_limit }}</strong> запросов сегодня.
-        Осталось: <strong id="content_ai_remaining_label">{{ content_ai_assistant_remaining_today }}</strong>.
-      </p>
-      <form id="content_ai_assistant_form" class="grid one-col top-offset" data-endpoint="/my-calendar/content/ai-assistant/query">
-        <input type="hidden" name="content_scope" value="{{ content_scope }}" />
-        {% if content_owner_id %}<input type="hidden" name="content_owner_id" value="{{ content_owner_id }}" />{% endif %}
-        <label>
-          Запрос к ИИ
-          <textarea id="content_ai_prompt_input" name="prompt" rows="4" maxlength="6000" placeholder="Например: Сгенерируй 7 идей постов для cosplay backstage с короткими описаниями"></textarea>
-        </label>
-        <div class="actions-inline">
-          <button type="submit" class="btn btn-accent" id="content_ai_generate_btn">Сгенерировать</button>
-          <button type="button" class="btn" id="content_ai_copy_response_btn">Копировать ответ</button>
-          <span class="muted" id="content_ai_status"></span>
-        </div>
-        <label>
-          Текст запроса
-          <textarea id="content_ai_request_output" rows="4" readonly placeholder="Здесь появится отправленный запрос"></textarea>
-        </label>
-        <label>
-          Ответ нейросети
-          <textarea id="content_ai_response_output" rows="10" readonly placeholder="Здесь появится ответ Mistral"></textarea>
-        </label>
-      </form>
-    </div>
-  </details>
-
-  <details class="box top-offset calendar-spoiler" id="content-photo-editor">
-    <summary>Редактор фотографий</summary>
-    <div class="calendar-spoiler-body">
-      <p class="muted">
-        Загрузите фото, выберите формат соцсети, при необходимости добавьте водяной знак,
-        настройте яркость/экспозицию/HSL и сохраните изображение в высоком качестве.
-      </p>
-      <div class="grid two-col top-offset">
-        <label>
-          Основное фото
-          <input type="file" id="content_photo_editor_source_input" accept="image/*" />
-        </label>
-        <label>
-          Водяной знак (PNG/SVG/WEBP/JPG)
-          <input type="file" id="content_photo_editor_watermark_input" accept="image/*" />
-        </label>
-      </div>
-      <div class="grid three-col top-offset">
-        <label>
-          Формат
-          <select id="content_photo_editor_preset">
-            <option value="inst_square">Instagram пост 1:1</option>
-            <option value="inst_portrait">Instagram пост 4:5</option>
-            <option value="story">Stories 9:16</option>
-            <option value="landscape">Лента 16:9</option>
-            <option value="pinterest">Pinterest 2:3</option>
-          </select>
-        </label>
-        <label>
-          Размер экспорта
-          <select id="content_photo_editor_export_scale">
-            <option value="1">Стандарт</option>
-            <option value="1.5">Высокий</option>
-            <option value="2" selected>Очень высокий</option>
-          </select>
-        </label>
-        <label>
-          JPEG качество
-          <input type="range" id="content_photo_editor_jpeg_quality" min="0.7" max="1" step="0.01" value="0.95" />
-        </label>
-      </div>
-      <div class="content-photo-editor-canvas-wrap top-offset">
-        <canvas id="content_photo_editor_canvas" width="1080" height="1080"></canvas>
-      </div>
-      <p class="muted">
-        Подсказка: перетаскивайте фото мышью, колесом мыши масштабируйте. Водяной знак можно перетаскивать отдельно.
-      </p>
-      <div class="grid three-col top-offset">
-        <label>
-          Яркость
-          <input type="range" id="content_photo_filter_brightness" min="-1" max="1" step="0.01" value="0" />
-        </label>
-        <label>
-          Экспозиция
-          <input type="range" id="content_photo_filter_exposure" min="-1" max="1" step="0.01" value="0" />
-        </label>
-        <label>
-          Оттенок (Hue)
-          <input type="range" id="content_photo_filter_hue" min="-1" max="1" step="0.01" value="0" />
-        </label>
-      </div>
-      <div class="grid three-col">
-        <label>
-          Насыщенность
-          <input type="range" id="content_photo_filter_saturation" min="-1" max="1" step="0.01" value="0" />
-        </label>
-        <label>
-          Светлота (HSL)
-          <input type="range" id="content_photo_filter_lightness" min="-1" max="1" step="0.01" value="0" />
-        </label>
-        <label>
-          Контраст
-          <input type="range" id="content_photo_filter_contrast" min="-1" max="1" step="0.01" value="0" />
-        </label>
-      </div>
-      <div class="grid three-col top-offset">
-        <label>
-          Непрозрачность водяного знака
-          <input type="range" id="content_photo_watermark_opacity" min="0.1" max="1" step="0.01" value="0.65" />
-        </label>
-        <label>
-          Размер водяного знака (% ширины)
-          <input type="range" id="content_photo_watermark_size" min="8" max="90" step="1" value="24" />
-        </label>
-        <label>
-          Позиция водяного знака
-          <select id="content_photo_watermark_position">
-            <option value="bottom-right">Справа снизу</option>
-            <option value="bottom-left">Слева снизу</option>
-            <option value="top-right">Справа сверху</option>
-            <option value="top-left">Слева сверху</option>
-            <option value="center">По центру</option>
-          </select>
-        </label>
-      </div>
-      <div class="actions-inline top-offset">
-        <button type="button" class="btn" id="content_photo_editor_apply_preset_btn">Применить формат</button>
-        <button type="button" class="btn" id="content_photo_editor_reset_btn">Сбросить правки</button>
-        <button type="button" class="btn btn-accent" id="content_photo_editor_download_jpeg_btn">Скачать JPG</button>
-        <button type="button" class="btn" id="content_photo_editor_download_png_btn">Скачать PNG</button>
-        <span class="muted" id="content_photo_editor_status"></span>
-      </div>
-    </div>
-  </details>
 
   {% if content_recommendations %}
   <section class="box top-offset">
@@ -1063,11 +858,8 @@
         {% endfor %}
       </datalist>
       <section class="top-offset">
-        <h3>Оформление для Telegram</h3>
-        <p class="muted">Редактор использует HTML-разметку Telegram Bot API. Обычные эмодзи можно вставлять прямо в текст. Для премиум-эмодзи можно использовать сохраненные кнопки ниже или вставить тег <code>&lt;tg-emoji&gt;</code> вручную. ID удобно брать через <code>@Emoji_ID_Extractor_bot</code>.</p>
-        <div class="notes-block telegram-editor-note telegram-editor-note-warning">
-          Premium-эмодзи в Telegram пока корректно отображаются только у небольшой части пользователей. Это ограничение со стороны Telegram, поэтому в пост мы сохраняем тег вида <code>&lt;tg-emoji emoji-id="5368324170671202286"&gt;👍&lt;/tg-emoji&gt;</code> с обычным emoji внутри как fallback.
-        </div>
+        <h3>Текст публикации</h3>
+        <p class="muted">Выделите текст и выберите форматирование. Горячие клавиши: Ctrl/⌘ + B — жирный, I — курсив, U — подчёркивание, Shift + S — зачёркивание.</p>
         <div class="actions-inline wrap top-offset">
           <button type="button" class="btn btn-small content-format-btn" data-tag-open="<b>" data-tag-close="</b>" data-target="telegram_body_html">Жирный</button>
           <button type="button" class="btn btn-small content-format-btn" data-tag-open="<i>" data-tag-close="</i>" data-target="telegram_body_html">Курсив</button>
@@ -1077,52 +869,29 @@
           <button type="button" class="btn btn-small content-format-btn" data-tag-open="<code>" data-tag-close="</code>" data-target="telegram_body_html">Моноширинный</button>
           <button type="button" class="btn btn-small content-format-btn" data-tag-open="<blockquote>" data-tag-close="</blockquote>" data-target="telegram_body_html">Цитата</button>
           <button type="button" class="btn btn-small content-link-btn" data-target="telegram_body_html">Ссылка</button>
-          <button type="button" class="btn btn-small content-premium-emoji-btn" data-target="telegram_body_html">Премиум вручную</button>
           {% for emoji in ['✨','🔥','🖤','🌸','🎭','📸','🕊️','⭐'] %}
             <button type="button" class="btn btn-small content-insert-btn" data-target="telegram_body_html" data-insert="{{ emoji }}">{{ emoji }}</button>
           {% endfor %}
-          {% for premium_emoji in telegram_settings.premium_emojis %}
-            <button
-              type="button"
-              class="btn btn-small content-premium-emoji-entry-btn"
-              data-target="telegram_body_html"
-              data-emoji-id="{{ premium_emoji.emoji_id }}"
-              data-fallback="{{ premium_emoji.emoji }}"
-              data-preview-url="{{ telegram_settings.premium_emoji_preview_base_url }}/{{ premium_emoji.emoji_id }}?{{ content_action_query }}"
-              title="emoji-id: {{ premium_emoji.emoji_id }}"
-            >
-              <img
-                src="{{ telegram_settings.premium_emoji_preview_base_url }}/{{ premium_emoji.emoji_id }}?{{ content_action_query }}"
-                alt="{{ premium_emoji.emoji }}"
-                class="telegram-custom-emoji-button-img"
-                data-fallback="{{ premium_emoji.emoji }}"
-                loading="lazy"
-              />
-            </button>
-          {% endfor %}
         </div>
         <details class="top-offset telegram-symbol-picker">
-          <summary><span class="btn btn-small telegram-symbol-picker-toggle">Без премиум (не-эмодзи)</span></summary>
+          <summary><span class="btn btn-small telegram-symbol-picker-toggle">Символы</span></summary>
           <div class="actions-inline wrap top-offset">
             {% for symbol in ['✧','✦','✩','☆','★','✪','❋','❈','❀','✿','❁','❃','❥','❣','♡','♢','◈','⊹','✶','✷','•','∙','●','◦','○','◉','◌','▪','▫','■','□','⬛','⬜','◾','◽','→','↗','↘','➜','➤','➝','➞','➣'] %}
               <button type="button" class="btn btn-small content-insert-btn" data-target="telegram_body_html" data-insert="{{ symbol }}">{{ symbol }}</button>
             {% endfor %}
           </div>
-          <small class="muted">Эти символы не зависят от premium-функций Telegram и помогают красиво оформить текст поста.</small>
+          <small class="muted">Используйте символы как разделители и декоративные акценты.</small>
         </details>
         <label class="top-offset">
-          Текст поста для Telegram
-          <textarea name="telegram_body_html" id="telegram_body_html" rows="10" maxlength="12000" placeholder="<b>Заголовок</b>&#10;&#10;Текст публикации...">{{ content_form.telegram_body_html }}</textarea>
+          Текст поста
+          <textarea name="telegram_body_html" id="telegram_body_html" rows="10" maxlength="12000" placeholder="Заголовок&#10;&#10;Текст публикации...">{{ content_form.telegram_body_html }}</textarea>
         </label>
         <div class="top-offset">
           <p class="muted">Предпросмотр</p>
           <div id="telegram_body_custom_emoji_preview" class="notes-block telegram-editor-custom-emoji-preview"></div>
-          <div class="notes-block telegram-editor-note">
-            В предпросмотре premium-эмодзи показаны для лучшей визуализации. После публикации Telegram может заменить их на обычные emoji, поэтому этот блок помогает быстрее подготовить пост и при необходимости вручную подправить итоговый текст в канале.
-          </div>
         </div>
         <label>
-          Фотографии для Telegram (URL, по одной на строку)
+          Фотографии (URL, по одной на строку)
           <textarea name="telegram_photos_input" id="telegram_photos_input" rows="4" placeholder="https://...">{{ content_form.telegram_photos_input }}</textarea>
         </label>
         <div class="gallery-upload-row">
@@ -1136,7 +905,7 @@
           <span class="muted" id="telegram_photo_upload_status"></span>
         </div>
         <p class="muted">Поддерживаемые форматы загрузки: JPG, JPEG, PNG, WEBP. GIF и видео (например, MP4) не загружаются.</p>
-        <p class="muted">Фото для Telegram не ужимаются по размеру файла. Если большая сторона больше 2000 px, изображение уменьшается до 2000 px; если меньше, сохраняется без сжатия. Через 24 часа после отправки поста в Telegram локально загруженные картинки удаляются с сервера.</p>
+        <p class="muted">Если большая сторона изображения больше 2000 px, оно уменьшается до 2000 px. Локально загруженные файлы удаляются с сервера через 24 часа после публикации.</p>
         <div class="reference-grid comment-images" id="telegram_photos_preview"></div>
       </section>
       <div class="grid two-col">
@@ -1155,14 +924,11 @@
           </div>
         </label>
       </div>
-      <p class="muted" id="content_auto_publish_hint" {% if content_form.manual_publish_only %}hidden{% endif %}>
-        Если отмечены <strong>ТГ</strong>, <strong>Pinterest</strong> и/или <strong>Threads</strong>, пост отправится автоматически по указанным дате и времени. <strong>VK</strong> публикуется вручную через Mini App с нативными фотографиями; для <strong>RedNote</strong> сохраняется ручной трекинг.
-      </p>
       <p class="muted" id="content_manual_publish_hint" data-force-manual="{{ 1 if content_form.manual_publish_only else 0 }}" {% if not content_form.manual_publish_only %}hidden{% endif %}>
         Для совместных карточек автопубликация отключена. VK всегда публикуется вручную через Mini App; остальные сети — соответствующими кнопками.
       </p>
       <div>
-        <p class="muted">Telegram-каналы для публикации</p>
+        <p class="muted">Каналы для публикации</p>
         {% if telegram_settings.channels %}
           <div class="chips-wrap">
             {% for channel in telegram_settings.channels %}
@@ -1179,7 +945,7 @@
           </div>
           <small class="muted">Можно выбрать несколько каналов: пост уйдет во все отмеченные.</small>
         {% else %}
-          <p class="muted">Сначала добавьте Telegram-каналы в блоке выше.</p>
+          <p class="muted">Сначала добавьте каналы в настройках публикации.</p>
         {% endif %}
       </div>
       <div>
@@ -1201,35 +967,8 @@
               </label>
             {% endfor %}
           </div>
-          <small class="muted">Можно выбрать несколько досок: один и тот же пост уйдёт во все отмеченные Pinterest-доски.</small>
         {% else %}
           <p class="muted">Сначала подключите Pinterest и подтяните доски в блоке выше.</p>
-        {% endif %}
-      </div>
-      <div>
-        <p class="muted">RedNote</p>
-        {% if rednote_settings.connected %}
-          <p class="muted">
-            Автопубликации нет. Тексты и медиа готовятся здесь, а после ручного постинга можно отметить публикацию в RedNote.
-            {% if rednote_settings.profile_url %}
-              Профиль:
-              <a href="{{ rednote_settings.profile_url }}" target="_blank" rel="noreferrer">{{ rednote_settings.profile_value }}</a>.
-            {% else %}
-              Профиль: {{ rednote_settings.profile_value }}.
-            {% endif %}
-          </p>
-        {% else %}
-          <p class="muted">При необходимости сохраните профиль RedNote в блоке выше, чтобы менеджерам было видно, куда уходит ручная публикация.</p>
-        {% endif %}
-      </div>
-      <div>
-        <p class="muted">Threads</p>
-        {% if threads_content_connected %}
-          <p class="muted">Threads подключён через OAuth. Для автопубликации нужен заполненный блок даты и времени.</p>
-        {% elif threads_content_account_connected %}
-          <p class="muted">OAuth-токен сохранён, но приложение Threads сейчас не настроено на сервере.</p>
-        {% else %}
-          <p class="muted">Сначала подключите Threads через официальное окно OAuth в блоке настроек выше.</p>
         {% endif %}
       </div>
       <div>
@@ -1282,9 +1021,6 @@
           {% endif %}
           {% if pinterest_content_connected %}
             <button type="submit" class="btn" formaction="/my-calendar/content/{{ editing_content_post.id }}/pinterest-publish?{{ content_action_query }}" formmethod="post">Опубликовать в Pinterest</button>
-          {% endif %}
-          {% if threads_content_connected %}
-            <button type="submit" class="btn" formaction="/my-calendar/content/{{ editing_content_post.id }}/threads-publish?{{ content_action_query }}" formmethod="post">Опубликовать в Threads</button>
           {% endif %}
           {% if 'RedNote' in content_form.socials_json %}
             <button type="submit" class="btn" formaction="/my-calendar/content/{{ editing_content_post.id }}/rednote-publish?{{ content_action_query }}" formmethod="post">Отметить в RedNote</button>
@@ -1434,11 +1170,6 @@
                 {% if pinterest_content_connected %}
                   <form method="post" action="/my-calendar/content/{{ item.post_id }}/pinterest-publish?{{ content_action_query }}">
                     <button type="submit" class="btn btn-small">В Pinterest</button>
-                  </form>
-                {% endif %}
-                {% if threads_content_connected %}
-                  <form method="post" action="/my-calendar/content/{{ item.post_id }}/threads-publish?{{ content_action_query }}">
-                    <button type="submit" class="btn btn-small">В Threads</button>
                   </form>
                 {% endif %}
                 {% if item.rednote_targeted %}
@@ -1647,6 +1378,7 @@
       if (!tabs.length || !panels.length) return;
 
       function activate(platform) {
+        if (!tabs.some((tab) => tab.dataset.platformTab === platform)) platform = 'telegram';
         tabs.forEach((tab) => {
           const isActive = tab.dataset.platformTab === platform;
           tab.classList.toggle('active', isActive);
@@ -1764,6 +1496,23 @@
         insertAtCursor(target, button.dataset.tagOpen || '', button.dataset.tagClose || '');
       });
     });
+
+    const friendlyEditor = document.getElementById('telegram_body_html');
+    if (friendlyEditor) {
+      friendlyEditor.addEventListener('keydown', function (event) {
+        if (!(event.ctrlKey || event.metaKey)) return;
+        const key = event.key.toLowerCase();
+        const shortcuts = {
+          b: ['<b>', '</b>'],
+          i: ['<i>', '</i>'],
+          u: ['<u>', '</u>'],
+          s: ['<s>', '</s>'],
+        };
+        if (!shortcuts[key] || (key === 's' && !event.shiftKey)) return;
+        event.preventDefault();
+        insertAtCursor(friendlyEditor, shortcuts[key][0], shortcuts[key][1]);
+      });
+    }
 
     document.querySelectorAll('.content-insert-btn').forEach((button) => {
       button.addEventListener('click', function () {

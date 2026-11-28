@@ -1,0 +1,136 @@
+  <details class="box content-lab-section calendar-spoiler" id="content-ai-assistant">
+    <summary>ИИ-помощник</summary>
+    <div class="calendar-spoiler-body">
+      <p class="muted">
+        Генерация идей и текстов через Mistral API (модель: <strong>{{ content_ai_assistant_model }}</strong>).
+        Лимит: <strong id="content_ai_usage_label">{{ content_ai_assistant_used_today }}/{{ content_ai_assistant_daily_limit }}</strong> запросов сегодня.
+        Осталось: <strong id="content_ai_remaining_label">{{ content_ai_assistant_remaining_today }}</strong>.
+      </p>
+      <form id="content_ai_assistant_form" class="grid one-col top-offset" data-endpoint="/my-calendar/content/ai-assistant/query">
+        <input type="hidden" name="content_scope" value="{{ content_scope }}" />
+        {% if content_owner_id %}<input type="hidden" name="content_owner_id" value="{{ content_owner_id }}" />{% endif %}
+        <label>
+          Запрос к ИИ
+          <textarea id="content_ai_prompt_input" name="prompt" rows="4" maxlength="6000" placeholder="Например: Сгенерируй 7 идей постов для cosplay backstage с короткими описаниями"></textarea>
+        </label>
+        <div class="actions-inline">
+          <button type="submit" class="btn btn-accent" id="content_ai_generate_btn">Сгенерировать</button>
+          <button type="button" class="btn" id="content_ai_copy_response_btn">Копировать ответ</button>
+          <span class="muted" id="content_ai_status"></span>
+        </div>
+        <label>
+          Текст запроса
+          <textarea id="content_ai_request_output" rows="4" readonly placeholder="Здесь появится отправленный запрос"></textarea>
+        </label>
+        <label>
+          Ответ нейросети
+          <textarea id="content_ai_response_output" rows="10" readonly placeholder="Здесь появится ответ Mistral"></textarea>
+        </label>
+      </form>
+    </div>
+  </details>
+
+  <details class="box content-lab-section calendar-spoiler" id="content-photo-editor">
+    <summary>Редактор фотографий</summary>
+    <div class="calendar-spoiler-body">
+      <p class="muted">
+        Загрузите фото, выберите формат соцсети, при необходимости добавьте водяной знак,
+        настройте яркость/экспозицию/HSL и сохраните изображение в высоком качестве.
+      </p>
+      <div class="grid two-col top-offset">
+        <label>
+          Основное фото
+          <input type="file" id="content_photo_editor_source_input" accept="image/*" />
+        </label>
+        <label>
+          Водяной знак (PNG/SVG/WEBP/JPG)
+          <input type="file" id="content_photo_editor_watermark_input" accept="image/*" />
+        </label>
+      </div>
+      <div class="grid three-col top-offset">
+        <label>
+          Формат
+          <select id="content_photo_editor_preset">
+            <option value="inst_square">Instagram пост 1:1</option>
+            <option value="inst_portrait">Instagram пост 4:5</option>
+            <option value="story">Stories 9:16</option>
+            <option value="landscape">Лента 16:9</option>
+            <option value="pinterest">Pinterest 2:3</option>
+          </select>
+        </label>
+        <label>
+          Размер экспорта
+          <select id="content_photo_editor_export_scale">
+            <option value="1">Стандарт</option>
+            <option value="1.5">Высокий</option>
+            <option value="2" selected>Очень высокий</option>
+          </select>
+        </label>
+        <label>
+          JPEG качество
+          <input type="range" id="content_photo_editor_jpeg_quality" min="0.7" max="1" step="0.01" value="0.95" />
+        </label>
+      </div>
+      <div class="content-photo-editor-canvas-wrap top-offset">
+        <canvas id="content_photo_editor_canvas" width="1080" height="1080"></canvas>
+      </div>
+      <p class="muted">
+        Подсказка: перетаскивайте фото мышью, колесом мыши масштабируйте. Водяной знак можно перетаскивать отдельно.
+      </p>
+      <div class="grid three-col top-offset">
+        <label>
+          Яркость
+          <input type="range" id="content_photo_filter_brightness" min="-1" max="1" step="0.01" value="0" />
+        </label>
+        <label>
+          Экспозиция
+          <input type="range" id="content_photo_filter_exposure" min="-1" max="1" step="0.01" value="0" />
+        </label>
+        <label>
+          Оттенок (Hue)
+          <input type="range" id="content_photo_filter_hue" min="-1" max="1" step="0.01" value="0" />
+        </label>
+      </div>
+      <div class="grid three-col">
+        <label>
+          Насыщенность
+          <input type="range" id="content_photo_filter_saturation" min="-1" max="1" step="0.01" value="0" />
+        </label>
+        <label>
+          Светлота (HSL)
+          <input type="range" id="content_photo_filter_lightness" min="-1" max="1" step="0.01" value="0" />
+        </label>
+        <label>
+          Контраст
+          <input type="range" id="content_photo_filter_contrast" min="-1" max="1" step="0.01" value="0" />
+        </label>
+      </div>
+      <div class="grid three-col top-offset">
+        <label>
+          Непрозрачность водяного знака
+          <input type="range" id="content_photo_watermark_opacity" min="0.1" max="1" step="0.01" value="0.65" />
+        </label>
+        <label>
+          Размер водяного знака (% ширины)
+          <input type="range" id="content_photo_watermark_size" min="8" max="90" step="1" value="24" />
+        </label>
+        <label>
+          Позиция водяного знака
+          <select id="content_photo_watermark_position">
+            <option value="bottom-right">Справа снизу</option>
+            <option value="bottom-left">Слева снизу</option>
+            <option value="top-right">Справа сверху</option>
+            <option value="top-left">Слева сверху</option>
+            <option value="center">По центру</option>
+          </select>
+        </label>
+      </div>
+      <div class="actions-inline top-offset">
+        <button type="button" class="btn" id="content_photo_editor_apply_preset_btn">Применить формат</button>
+        <button type="button" class="btn" id="content_photo_editor_reset_btn">Сбросить правки</button>
+        <button type="button" class="btn btn-accent" id="content_photo_editor_download_jpeg_btn">Скачать JPG</button>
+        <button type="button" class="btn" id="content_photo_editor_download_png_btn">Скачать PNG</button>
+        <span class="muted" id="content_photo_editor_status"></span>
+      </div>
+    </div>
+  </details>

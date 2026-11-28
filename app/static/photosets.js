@@ -1,5 +1,12 @@
 (function () {
   const form = document.getElementById('photoset-form'); if (!form) return;
+  const storyboardPremium = document.getElementById('photoset-storyboard-premium')?.value === '1';
+  const storyboardHeading = form.querySelector('[data-form-step="3"] h2');
+  if (storyboardHeading) storyboardHeading.textContent = 'План раскадровки (премиум)';
+  if (!storyboardPremium) {
+    const storyboardStep = form.querySelector('[data-form-step="3"]');
+    storyboardStep?.querySelectorAll('input, textarea, select, button').forEach(control => { control.disabled = true; });
+  }
   const money = new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 2 });
   function renumberStoryboard() { document.querySelectorAll('.storyboard-row').forEach((row, i) => { const id='story-'+i; row.querySelector('[name="photoset_storyboard_row_id"]').value=id; const done=row.querySelector('[name="photoset_storyboard_done"]'); done.value=id; }); const out=document.querySelector('[data-story-count]'); if(out) out.textContent=document.querySelectorAll('.storyboard-row').length; }
   function calculate() { const n = name => Number(form.elements[name]?.value || 0); let total=n('hourly_price')*n('rental_hours')+n('dressing_room_hours')*n('dressing_room_hourly_price'); if(form.elements.smoke_machine_required?.checked) total+=n('smoke_machine_price'); form.querySelectorAll('[name="extra_price"]').forEach(input=>total+=Number(input.value||0)); document.querySelector('[data-total]').textContent=money.format(total)+' ₽'; const payers=Number(form.elements.payers_count?.value||0); document.querySelector('[data-contribution]').textContent=money.format(payers>0?total/payers:0)+' ₽'; }

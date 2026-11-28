@@ -72,6 +72,11 @@
     margin: 0.2rem 0 0;
     padding-left: 1.1rem;
   }
+  .expense-distribution-chart { display: flex; width: 100%; height: 28px; margin-top: 14px; overflow: hidden; border-radius: 999px; background: #eaf2ff; }
+  .expense-distribution-segment { min-width: 0; transition: width .2s ease; }
+  .expense-distribution-legend { display: flex; flex-wrap: wrap; gap: 8px 16px; margin-top: 12px; }
+  .expense-distribution-legend span { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: .88rem; }
+  .expense-distribution-legend i { width: 10px; height: 10px; border-radius: 50%; }
   .storyboard-table-wrap {
     overflow-x: auto;
     margin-top: 0.6rem;
@@ -731,8 +736,29 @@
     <button type="button" class="btn" id="add_craft_part_btn">Добавить ссылку</button>
   </section>
 
-  <section class="box">
-    <h2>Проект / личное</h2>
+  <section class="box personal-card-section">
+    <h2>Референсы персонажа</h2>
+    <label>
+      URL изображений (через запятую, ; или с новой строки)
+      <textarea name="references_input" id="references_input" rows="5" placeholder="https://...">{{ form.references_input }}</textarea>
+    </label>
+    <div class="gallery-upload-row">
+      <input type="file" id="references_upload_files" accept="image/*" multiple />
+      <button type="button" class="btn" id="references_upload_btn">Загрузить фото</button>
+      <span class="muted" id="references_upload_status"></span>
+    </div>
+    <p class="muted">Можно вставить ссылки вручную или загрузить изображения: они будут конвертированы в WebP (до 30 КБ, ширина до 512 px).</p>
+    <div class="reference-grid" id="references_preview">
+      {% for url in form.references_json %}
+        <a class="reference-tile" href="{{ url }}" target="_blank" rel="noreferrer">
+          <img src="{{ url }}" alt="Референс" loading="lazy" onerror="this.parentElement.remove();" />
+        </a>
+      {% endfor %}
+    </div>
+  </section>
+
+  <section class="box project-card-section">
+    <h2>Проект</h2>
     <div class="actions-inline wrap top-offset">
       <a href="/project-board/new" class="btn btn-small">Поиск участников</a>
       <a href="/community/cosplayers" class="btn btn-small">Каталог косплееров</a>
@@ -1031,8 +1057,7 @@
   </section>
 
   <section class="box">
-    <details {% if form.plan_type != 'project' %}open{% endif %}>
-      <summary><strong>Фотосет</strong>{% if form.plan_type == 'project' %} <span class="muted">— свёрнуто для группового проекта</span>{% endif %}</summary>
+    <h2>Фотосет</h2>
       <p class="muted top-offset">Для полноценного планирования съёмки используйте отдельную карточку фотосета. Один персонаж или групповой проект может быть связан с несколькими фотосетами.</p>
       <label>Связанные карточки фотосетов</label>
       <div class="chips-wrap">
@@ -1254,28 +1279,6 @@
           {% endfor %}
         </div>
       </div>
-    </details>
-  </section>
-
-  <section class="box personal-card-section">
-    <h2>Референсы</h2>
-    <label>
-      URL изображений (через запятую, ; или с новой строки)
-      <textarea name="references_input" id="references_input" rows="5" placeholder="https://...">{{ form.references_input }}</textarea>
-    </label>
-    <div class="gallery-upload-row">
-      <input type="file" id="references_upload_files" accept="image/*" multiple />
-      <button type="button" class="btn" id="references_upload_btn">Загрузить фото</button>
-      <span class="muted" id="references_upload_status"></span>
-    </div>
-    <p class="muted">Можно вставить ссылки вручную или загрузить изображения: они будут конвертированы в WebP (до 30 КБ, ширина до 512 px).</p>
-    <div class="reference-grid" id="references_preview">
-      {% for url in form.references_json %}
-        <a class="reference-tile" href="{{ url }}" target="_blank" rel="noreferrer">
-          <img src="{{ url }}" alt="Референс" loading="lazy" onerror="this.parentElement.remove();" />
-        </a>
-      {% endfor %}
-    </div>
   </section>
 
   <section class="box personal-card-section">
@@ -1284,6 +1287,22 @@
       <strong><span id="estimated_total_value">{{ '%.2f'|format(form.estimated_total or 0) }}</span> <span id="estimated_total_currency">{{ form.estimated_total_currency }}</span></strong>
       <span class="muted">Сумма по всем указанным ценам в карточке. Если есть неизвестные цены, будет пометка «УТОЧНЯЕТСЯ».</span>
     </p>
+    <div class="expense-distribution-chart" id="expense-distribution-chart" role="img" aria-label="Распределение расходов по разделам">
+      <span class="expense-distribution-segment" data-expense-segment="costume" style="background:#6c63ff"></span>
+      <span class="expense-distribution-segment" data-expense-segment="shoes" style="background:#8f88ff"></span>
+      <span class="expense-distribution-segment" data-expense-segment="lenses" style="background:#77a9ff"></span>
+      <span class="expense-distribution-segment" data-expense-segment="wig" style="background:#b58cff"></span>
+      <span class="expense-distribution-segment" data-expense-segment="craft" style="background:#63c6d6"></span>
+      <span class="expense-distribution-segment" data-expense-segment="photoset" style="background:#b8c8ff"></span>
+    </div>
+    <div class="expense-distribution-legend">
+      <span><i style="background:#6c63ff"></i>Костюм <strong data-expense-value="costume">0</strong></span>
+      <span><i style="background:#8f88ff"></i>Обувь <strong data-expense-value="shoes">0</strong></span>
+      <span><i style="background:#77a9ff"></i>Линзы <strong data-expense-value="lenses">0</strong></span>
+      <span><i style="background:#b58cff"></i>Парик <strong data-expense-value="wig">0</strong></span>
+      <span><i style="background:#63c6d6"></i>Крафт <strong data-expense-value="craft">0</strong></span>
+      <span><i style="background:#b8c8ff"></i>Фотосет и выступление <strong data-expense-value="photoset">0</strong></span>
+    </div>
   </section>
 
   <section class="box">
@@ -1774,6 +1793,29 @@
         currencyTarget.textContent = "";
       }
     }
+
+    const numericField = (name) => {
+      const input = document.querySelector(`[name="${name}"]`);
+      const value = Number(String(input?.value || "").replace(/\s+/g, "").replace(",", "."));
+      return Number.isFinite(value) && value > 0 ? value : 0;
+    };
+    const sumNamed = (names) => names.reduce((sum, name) => sum + numericField(name), 0);
+    const distribution = {
+      costume: sumNamed(["costume_prepayment", "costume_postpayment", "costume_buy_price", "costume_fabric_price", "costume_hardware_price"]),
+      shoes: sumNamed(["shoes_buy_price", "shoes_price"]),
+      lenses: sumNamed(["lenses_price"]),
+      wig: sumNamed(["wig_price", "wig_buy_price"]),
+      craft: sumNamed(["craft_price", "craft_material_price"]),
+      photoset: sumNamed(["photoset_price", "photoset_photographer_price", "photoset_studio_price", "photoset_props_price", "photoset_extra_price"]),
+    };
+    distribution.photoset += numericField("performance_rehearsal_price") * Math.max(0, numericField("performance_rehearsal_count"));
+    const distributionTotal = Object.values(distribution).reduce((sum, value) => sum + value, 0);
+    Object.entries(distribution).forEach(([key, value]) => {
+      const segment = document.querySelector(`[data-expense-segment="${key}"]`);
+      const label = document.querySelector(`[data-expense-value="${key}"]`);
+      if (segment) segment.style.width = `${distributionTotal > 0 ? (value / distributionTotal) * 100 : 0}%`;
+      if (label) label.textContent = value.toFixed(2);
+    });
   };
 
   const attachUnknownPriceCheckboxes = () => {

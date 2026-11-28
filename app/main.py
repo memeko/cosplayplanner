@@ -559,7 +559,7 @@ PERSONAL_EVENT_CATEGORY_LABELS = {
     PERSONAL_EVENT_CATEGORY_FESTIVAL: "Маркет/Фестиваль",
 }
 
-CONTENT_SOCIAL_OPTIONS = ["ТГ", "IT", "VK", "Pinterest", "Threads", "RedNote", "boosty", "другое"]
+CONTENT_SOCIAL_OPTIONS = ["ТГ", "IT", "VK", "Pinterest", "RedNote", "boosty", "другое"]
 CONTENT_SOCIAL_ALIASES = {
     "telegram": "ТГ",
     "tg": "ТГ",
@@ -13203,7 +13203,7 @@ def load_storyboard_reference_image_for_pdf(reference_url: str | None) -> Image.
         return None
 
 
-def build_storyboard_pdf_document(card: CosplanCard, rows: list[dict[str, Any]]) -> bytes:
+def build_storyboard_pdf_document(card: Any, rows: list[dict[str, Any]]) -> bytes:
     page_width = STORYBOARD_PDF_PAGE_WIDTH
     page_height = STORYBOARD_PDF_PAGE_HEIGHT
     margin = 56
@@ -13243,9 +13243,10 @@ def build_storyboard_pdf_document(card: CosplanCard, rows: list[dict[str, Any]])
         page = Image.new("RGB", (page_width, page_height), "white")
         draw = ImageDraw.Draw(page)
 
-        title_text = f"Раскадровка: {card.character_name or 'Карточка'}"
+        subject_title = str(getattr(card, "character_name", None) or getattr(card, "title", None) or "Карточка")
+        title_text = f"Раскадровка: {subject_title}"
         subtitle_parts = [f"Экспорт: {now_label}", f"Карточка #{card.id}"]
-        if card.fandom:
+        if getattr(card, "fandom", None):
             subtitle_parts.append(f"Фандом: {card.fandom}")
         subtitle_text = " | ".join(subtitle_parts)
 
@@ -24989,7 +24990,10 @@ def save_photoset_from_form(form: Any, item: Photoset, db: Session, user: User) 
     item.shooting_time_end = str(form.get("shooting_time_end", "")).strip() or None
     status = str(form.get("status", "preparation")).strip()
     item.status = status if status in PHOTOSET_STATUSES else "preparation"
-    item.storyboard_rows_json = parse_photoset_storyboard_rows_from_form(form)
+    if user_has_premium_status(db, user):
+        item.storyboard_rows_json = parse_photoset_storyboard_rows_from_form(form)
+    else:
+        item.storyboard_rows_json = normalize_photoset_storyboard_rows(as_list(item.storyboard_rows_json))
     item.linked_card_ids_json = parse_id_list(list(form.getlist("linked_card_ids")))
     if not item.title or not item.fandom:
         return "Укажите название фотосета и фэндом."
@@ -25026,7 +25030,7 @@ def photoset_new_form(request: Request, db: Session = Depends(get_db)):
         return redirect("/login")
     preselected_raw = str(request.query_params.get("card_id") or "").strip()
     preselected_card_id = int(preselected_raw) if preselected_raw.isdigit() else None
-    return template_response(request, "photoset_form.html", user=user, active_tab="cosplan", item=None, is_new=True, form=photoset_form_data(), statuses=PHOTOSET_STATUSES, role_types=PHOTOSET_ROLE_TYPES, **photoset_link_form_context(db, user, preselected_card_id=preselected_card_id), **get_cosplan_section_totals(db, user.id))
+    return template_response(request, "photoset_form.html", user=user, active_tab="cosplan", item=None, is_new=True, form=photoset_form_data(), statuses=PHOTOSET_STATUSES, role_types=PHOTOSET_ROLE_TYPES, can_use_premium_storyboard=user_has_premium_status(db, user), **photoset_link_form_context(db, user, preselected_card_id=preselected_card_id), **get_cosplan_section_totals(db, user.id))
 
 
 @app.post("/cosplan/photosets/new")
@@ -25039,7 +25043,7 @@ async def photoset_new(request: Request, db: Session = Depends(get_db)):
     error = save_photoset_from_form(form, item, db, user)
     if error:
         add_flash(request, error, "error")
-        return template_response(request, "photoset_form.html", user=user, active_tab="cosplan", item=item, is_new=True, form=photoset_form_data(item), statuses=PHOTOSET_STATUSES, role_types=PHOTOSET_ROLE_TYPES, status_code=422, **photoset_link_form_context(db, user, item), **get_cosplan_section_totals(db, user.id))
+        return template_response(request, "photoset_form.html", user=user, active_tab="cosplan", item=item, is_new=True, form=photoset_form_data(item), statuses=PHOTOSET_STATUSES, role_types=PHOTOSET_ROLE_TYPES, can_use_premium_storyboard=user_has_premium_status(db, user), status_code=422, **photoset_link_form_context(db, user, item), **get_cosplan_section_totals(db, user.id))
     db.add(item); db.flush()
     sync_photoset_card_links(db, item, parse_id_list(as_list(item.linked_card_ids_json)), user)
     db.commit(); db.refresh(item)
@@ -25095,6 +25099,7 @@ def photoset_detail(photoset_id: int, request: Request, db: Session = Depends(ge
         is_owner=int(item.user_id) == int(user.id),
         access_users=access_users,
         access_alias_options=access_alias_options,
+        can_export_storyboard_pdf=user_has_premium_status(db, user),
         **get_cosplan_section_totals(db, user.id),
     )
 
@@ -25156,7 +25161,7 @@ def photoset_edit_form(photoset_id: int, request: Request, db: Session = Depends
     item = owned_photoset(db, user, photoset_id)
     if not item:
         return redirect("/cosplan/photosets")
-    return template_response(request, "photoset_form.html", user=user, active_tab="cosplan", item=item, is_new=False, form=photoset_form_data(item), statuses=PHOTOSET_STATUSES, role_types=PHOTOSET_ROLE_TYPES, **photoset_link_form_context(db, user, item), **get_cosplan_section_totals(db, user.id))
+    return template_response(request, "photoset_form.html", user=user, active_tab="cosplan", item=item, is_new=False, form=photoset_form_data(item), statuses=PHOTOSET_STATUSES, role_types=PHOTOSET_ROLE_TYPES, can_use_premium_storyboard=user_has_premium_status(db, user), **photoset_link_form_context(db, user, item), **get_cosplan_section_totals(db, user.id))
 
 
 @app.post("/cosplan/photosets/{photoset_id}/edit")
@@ -25170,7 +25175,7 @@ async def photoset_edit(photoset_id: int, request: Request, db: Session = Depend
     form = await request.form(); error = save_photoset_from_form(form, item, db, user)
     if error:
         add_flash(request, error, "error")
-        return template_response(request, "photoset_form.html", user=user, active_tab="cosplan", item=item, is_new=False, form=photoset_form_data(item), statuses=PHOTOSET_STATUSES, role_types=PHOTOSET_ROLE_TYPES, status_code=422, **photoset_link_form_context(db, user, item), **get_cosplan_section_totals(db, user.id))
+        return template_response(request, "photoset_form.html", user=user, active_tab="cosplan", item=item, is_new=False, form=photoset_form_data(item), statuses=PHOTOSET_STATUSES, role_types=PHOTOSET_ROLE_TYPES, can_use_premium_storyboard=user_has_premium_status(db, user), status_code=422, **photoset_link_form_context(db, user, item), **get_cosplan_section_totals(db, user.id))
     sync_photoset_card_links(db, item, parse_id_list(as_list(item.linked_card_ids_json)), user)
     db.commit(); add_flash(request, "Карточка фотосета обновлена.", "success")
     return redirect(f"/cosplan/photosets/{item.id}")
@@ -25186,6 +25191,36 @@ def photoset_delete(photoset_id: int, request: Request, db: Session = Depends(ge
         for card in db.execute(select(CosplanCard).where(CosplanCard.linked_photoset_id == item.id)).scalars().all(): card.linked_photoset_id = None
         db.delete(item); db.commit(); add_flash(request, "Фотосет удалён.", "info")
     return redirect("/cosplan/photosets")
+
+
+@app.get("/cosplan/photosets/{photoset_id}/storyboard.pdf")
+def photoset_storyboard_export_pdf(photoset_id: int, request: Request, db: Session = Depends(get_db)):
+    user = current_user(request, db)
+    if not user:
+        return redirect("/login")
+    item = accessible_photoset(db, user, photoset_id)
+    if not item:
+        add_flash(request, "Карточка фотосета не найдена.", "error")
+        return redirect("/cosplan/photosets")
+    if not user_has_premium_status(db, user):
+        add_flash(request, "Экспорт раскадровки в PDF доступен только премиум-пользователям.", "error")
+        return redirect(f"/cosplan/photosets/{item.id}")
+    rows = normalize_photoset_storyboard_rows(as_list(item.storyboard_rows_json))
+    if not rows:
+        add_flash(request, "В раскадровке фотосета пока нет кадров.", "error")
+        return redirect(f"/cosplan/photosets/{item.id}")
+    try:
+        pdf_bytes = build_storyboard_pdf_document(item, rows)
+    except (ValueError, OSError) as exc:
+        add_flash(request, str(exc) or "Не удалось сформировать PDF.", "error")
+        return redirect(f"/cosplan/photosets/{item.id}")
+    safe_name = re.sub(r"[^A-Za-z0-9_-]+", "-", normalize_username(item.title) or f"photoset-{item.id}").strip("-")
+    filename = f"storyboard-{safe_name or item.id}-{date.today().isoformat()}.pdf"
+    return StreamingResponse(
+        iter([pdf_bytes]),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 def photoset_subpage_context(request: Request, db: Session, user: User, item: Photoset, page: str) -> dict[str, Any]:
@@ -26419,7 +26454,11 @@ def save_card_from_form(form: Any, card: CosplanCard, user: User, db: Session) -
         card.related_cards_json = []
         card.project_characters_json = []
 
-    cosbands = merge_unique(form.getlist("cosbands"), split_csv(str(form.get("cosbands_new", ""))))
+    cosbands = (
+        merge_unique(form.getlist("cosbands"), split_csv(str(form.get("cosbands_new", ""))))
+        if card.plan_type == "project"
+        else as_list(card.cosbands_json)
+    )
     festivals = merge_unique(
         form.getlist("planned_festivals"),
         split_csv(str(form.get("planned_festivals_new", ""))),

@@ -2,7 +2,9 @@
 <section class="section-head"><div><h1>{{ 'Новый фотосет' if is_new else 'Редактирование фотосета' }}</h1><p class="meta">Команда, аренда, сроки и раскадровка</p></div><a class="btn" href="{{ '/cosplan/photosets' if is_new else '/cosplan/photosets/' ~ item.id }}">Отмена</a></section>
 {% set section='photosets' %}{% include '_cosplan_section_tabs.html' %}{% set photoset_page='main' %}{% include '_photoset_tabs.html' %}
 <form method="post" class="photoset-form" id="photoset-form">
-<nav class="photoset-form-pagination" aria-label="Страницы формы"><button type="button" class="tab active" data-step-go="0">1. Основное</button><button type="button" class="tab" data-step-go="1">2. Студия</button><button type="button" class="tab" data-step-go="2">3. Сроки</button><button type="button" class="tab" data-step-go="3">4. Раскадровка</button></nav>
+<input type="hidden" id="photoset-storyboard-premium" value="{{ '1' if can_use_premium_storyboard else '0' }}">
+{% if not can_use_premium_storyboard %}<div class="card-disclaimer"><strong>План раскадровки — премиум-функция.</strong> Остальные разделы фотосета доступны без ограничений.</div>{% elif item %}<div class="actions-inline"><a class="btn" href="/cosplan/photosets/{{ item.id }}/storyboard.pdf" target="_blank" rel="noreferrer">Выгрузить раскадровку в PDF</a></div>{% endif %}
+<nav class="photoset-form-pagination" aria-label="Страницы формы"><button type="button" class="tab active" data-step-go="0">1. Основное</button><button type="button" class="tab" data-step-go="1">2. Студия</button><button type="button" class="tab" data-step-go="2">3. Сроки</button><button type="button" class="tab" data-step-go="3">4. План раскадровки (премиум)</button></nav>
 <div data-form-step="0">
   <section class="card">
     <h2>Основное</h2>
